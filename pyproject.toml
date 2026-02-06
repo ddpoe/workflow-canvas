@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "workflow-canvas"
+version = "0.1.0"
+description = "Visual workflow builder and run history explorer using LiteGraph.js"
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+fastapi = "^0.109.0"
+uvicorn = {extras = ["standard"], version = "^0.27.0"}
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
