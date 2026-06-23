@@ -1,0 +1,29 @@
+---
+title: nodeRun
+---
+stateDiagram-v2
+  [*] --> idle
+  idle --> queued: RUN
+  idle --> cancelled.becauseUpstream: UPSTREAM_FAILED
+  idle --> cancelled.becauseUser: USER_STOP
+  idle --> stale: STALE
+  idle --> cached: CACHE_HIT
+  queued --> running: HEARTBEAT
+  queued --> cancelled.becauseUpstream: UPSTREAM_FAILED
+  queued --> cancelled.becauseUser: USER_STOP
+  queued --> cached: CACHE_HIT
+  running --> completed_with_failures: RUN_OK
+  running --> succeeded: RUN_OK
+  running --> failed: RUN_FAILED
+  running --> cancelled.becauseUpstream: UPSTREAM_FAILED
+  running --> cancelled.becauseUser: USER_STOP
+  running --> orphaned: ORPHAN_DETECTED
+  running --> cached: CACHE_HIT
+  succeeded --> [*]
+  completed_with_failures --> [*]
+  failed --> [*]
+  cancelled.becauseUpstream --> [*]
+  cancelled.becauseUser --> [*]
+  orphaned --> [*]
+  cached --> [*]
+  stale --> [*]

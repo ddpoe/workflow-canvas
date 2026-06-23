@@ -1,0 +1,62 @@
+{
+  "topology": "streaming_fail-handauthored",
+  "node": "node_faulty",
+  "recordedAt": "2026-05-01T00:00:00.000Z",
+  "_provenance": "Hand-authored for ADR-015 Phase D Pass 3 — 3 stdout ticks ~1.5s apart, then a stderr crash with traceback, then terminal:failed. Drives faultMidStream.webm gallery video. Will be overwritten by record-sse.ts against the streaming_fail topology in scripts/dev_routes.py once that backend path is validated.",
+  "events": [
+    {
+      "delayMs": 600,
+      "eventType": "stdout",
+      "data": { "data": "[stream-fail] starting · pre_crash_duration=4.5s · pre_crash_ticks=3 · crash_at_tick=3" }
+    },
+    {
+      "delayMs": 1500,
+      "eventType": "stdout",
+      "data": { "data": "[stream-fail] tick 1/3 · still going..." }
+    },
+    {
+      "delayMs": 1500,
+      "eventType": "stdout",
+      "data": { "data": "[stream-fail] tick 2/3 · still going..." }
+    },
+    {
+      "delayMs": 1500,
+      "eventType": "stdout",
+      "data": { "data": "[stream-fail] tick 3/3 · still going..." }
+    },
+    {
+      "delayMs": 50,
+      "eventType": "stderr",
+      "data": { "data": "[stream-fail] hit fatal condition at tick 3" }
+    },
+    {
+      "delayMs": 50,
+      "eventType": "stderr",
+      "data": { "data": "Traceback (most recent call last):" }
+    },
+    {
+      "delayMs": 0,
+      "eventType": "stderr",
+      "data": { "data": "  File \"faulty.py\", line 73, in main" }
+    },
+    {
+      "delayMs": 0,
+      "eventType": "stderr",
+      "data": { "data": "    raise RuntimeError(f\"stream_fail: fatal at tick {crash_at}\")" }
+    },
+    {
+      "delayMs": 0,
+      "eventType": "stderr",
+      "data": { "data": "RuntimeError: stream_fail: fatal at tick 3" }
+    },
+    {
+      "delayMs": 200,
+      "eventType": "terminal",
+      "data": {
+        "status": "failed",
+        "error_message": "RuntimeError: stream_fail: fatal at tick 3",
+        "error_traceback": "[stream-fail] hit fatal condition at tick 3\nTraceback (most recent call last):\n  File \"faulty.py\", line 73, in main\n    raise RuntimeError(f\"stream_fail: fatal at tick {crash_at}\")\nRuntimeError: stream_fail: fatal at tick 3\n"
+      }
+    }
+  ]
+}

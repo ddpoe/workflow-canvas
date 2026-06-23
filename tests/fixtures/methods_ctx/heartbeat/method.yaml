@@ -1,0 +1,32 @@
+# heartbeat (RunContext) — emit timed stdout/stderr for streaming dogfood.
+inputs:
+  data:
+    type: csv
+    required: true
+    description: "Input CSV (passed through to output unchanged)"
+
+outputs:
+  output:
+    type: csv
+    required: true
+    description: "Unchanged copy of the input CSV"
+
+params:
+  duration_s:
+    type: float
+    required: false
+    default: 5.0
+    description: "Total run duration; spread evenly across stdout_lines ticks"
+  stdout_lines:
+    type: int
+    required: false
+    default: 15
+    description: "Number of [heartbeat tick] stdout lines to emit"
+  stderr_every:
+    type: int
+    required: false
+    default: 4
+    description: "Emit a matching [heartbeat warn] stderr line every Nth tick (0 = none)"
+
+executor: python
+env: inherit

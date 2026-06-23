@@ -1,0 +1,37 @@
+# tests/fixtures/methods/qc/method.yaml
+# Multi-i/o stress test: 2 inputs (csv + csv) → 3 outputs (json + csv + csv).
+# `data`: rows to QC. `metadata`: per-row annotations (joined by id).
+# Emits a JSON report, the surviving rows, and the dropped rows.
+inputs:
+  data:
+    type: csv
+    required: true
+    description: "Rows to QC"
+  metadata:
+    type: csv
+    required: false
+    description: "Optional per-row annotations (joined by id)"
+
+outputs:
+  report:
+    type: json
+    required: true
+    description: "QC summary (kept/dropped counts, reasons)"
+  clean:
+    type: csv
+    required: true
+    description: "Rows that passed QC"
+  dropped:
+    type: csv
+    required: true
+    description: "Rows that failed QC"
+
+params:
+  min_rows:
+    type: int
+    required: false
+    default: 1
+    description: "Fail QC if fewer than this many rows survive"
+
+executor: python
+env: inherit

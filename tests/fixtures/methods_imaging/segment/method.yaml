@@ -1,0 +1,13 @@
+# 1-hop from stitch: reads stitched, writes masks.
+inputs:
+  stitched:
+    type: csv
+    required: true
+
+outputs:
+  masks:
+    type: csv
+    required: true
+
+executor: python
+env: inherit

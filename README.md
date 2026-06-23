@@ -1,63 +1,56 @@
-# Workflow Canvas
+﻿# Workflow Canvas
+A decorator-and-database approach to reproducible computational pipelines.
 
-A visual workflow builder and run history explorer using [LiteGraph.js](https://github.com/jagenjo/litegraph.js).
+Workflow Canvas tracks methods, contracts, data lineage, and caching in a local SQLite database, then generates Snakefiles so [Snakemake](https://snakemake.readthedocs.io/) handles execution, parallelism, and environment isolation.
 
-## Features
+## Key Features
 
-### Builder View
-- **Node Palette** - Drag-and-drop modules with workflow step documentation
-- **Visual Canvas** - Connect nodes to build pipelines
-- **Type-safe Connections** - Color-coded ports prevent invalid connections
-
-### History View  
-- **Run Tree** - Hierarchical view of experiment runs with parent-child relationships
-- **Filters** - Filter by data source, time range, or module
-- **Detail Panel** - View run parameters, metrics, and artifacts
+| Feature | What it does |
+|---|---|
+| **Core Pipeline** | Register methods & samples, define pipelines as JSON, generate & execute Snakefiles |
+| **↳ Contracts** | Two-tier validation (module + method) via `method.yaml` — errors caught before execution |
+| **↳ Caching** | Git-commit discipline, SHA256 cache keys, automatic skip of unchanged steps |
+| **↳ Lineage** | Recursive ancestry tracing through the full run DAG |
+| **Canvas** | Browser-based visual pipeline builder + run history (FastAPI + LiteGraph.js) |
+| **Report Compositor** | Multi-panel figure rendering from pipeline data *(design spec complete, implementation planned)* |
 
 ## Quick Start
 
 ```bash
-# Install dependencies
-poetry install
+# 1. Initialize a project
+workflow-canvas init my_project
+cd my_project
 
-# Run the server
-poetry run uvicorn server:app --reload
+# 2. Register a module and method
+workflow-canvas register-module my_module methods/my_module
+workflow-canvas register-method my_module my_method
 
-# Open http://127.0.0.1:8000
+# 3. Register sample data
+workflow-canvas register-sample sample_01 data/samples/sample_01.csv
+
+# 4. Define a pipeline (pipeline.json) and run it
+workflow-canvas run-pipeline pipeline.json
 ```
 
-## Architecture
+## Project Structure
 
 ```
-workflow-canvas/
-├── server.py           # FastAPI backend
-├── static/
-│   ├── index.html      # Main HTML (Builder + History views)
-│   ├── css/style.css   # All styles
-│   └── js/
-│       ├── app.js      # Main app logic, canvas setup
-│       ├── nodes.js    # LiteGraph node definitions
-│       └── history.js  # History view logic
+my_project/
+  .wfc/                  ← SQLite database (wfc.db)
+  .runs/                ← Archived outputs + workspace hardlinks
+  methods/
+    my_module/
+      my_method/
+        run.py          ← Method implementation
+        method.yaml     ← Contract (inputs, outputs, params)
+        environment.yml ← Conda environment
+  data/samples/         ← Registered sample files
+  pipeline.json         ← Pipeline definition
 ```
 
-## Data Sources
+## Requirements
 
-The app is designed to work with different data backends:
-
-| Backend | Status | Use Case |
-|---------|--------|----------|
-| Mock Data | ✅ Working | Development/demo |
-| MLflow | 🚧 Planned | Experiment tracking |
-| Custom DB | 🚧 Planned | Production provenance |
-
-## API Endpoints
-
-- `GET /api/modules` - Available modules and methods (with workflow steps)
-- `GET /api/types` - Data type metadata for UI styling
-- `POST /api/workflow/validate` - Validate workflow connections
-- `POST /api/workflow/run` - Execute workflow
-- `GET /api/history/*` - Run history queries
-
-## License
-
-MIT
+- Python 3.11+
+- Git
+- Snakemake 8+
+- SQLite (bundled with Python)

@@ -1,0 +1,107 @@
+{
+  "topology": "fault_only",
+  "node": "node_faulty",
+  "recordedAt": "2026-05-01T22:34:09.844Z",
+  "events": [
+    {
+      "delayMs": 1400,
+      "eventType": "stdout",
+      "data": {
+        "data": "faulty: starting (failure_mode='crash')"
+      }
+    },
+    {
+      "delayMs": 0,
+      "eventType": "stderr",
+      "data": {
+        "data": "faulty: about to raise RuntimeError"
+      }
+    },
+    {
+      "delayMs": 0,
+      "eventType": "stderr",
+      "data": {
+        "data": "Traceback (most recent call last):"
+      }
+    },
+    {
+      "delayMs": 0,
+      "eventType": "stderr",
+      "data": {
+        "data": "  File \"C:\\Users\\dap182\\Documents\\git\\temp\\workflow-canvas\\.claude\\worktrees\\pev-2026-05-01-phase-d-pass2-sse-record-replay\\.dev\\methods\\faulty_dec\\faulty.py\", line 50, in <module>"
+      }
+    },
+    {
+      "delayMs": 0,
+      "eventType": "stderr",
+      "data": {
+        "data": "    pm_method_main()"
+      }
+    },
+    {
+      "delayMs": 0,
+      "eventType": "stderr",
+      "data": {
+        "data": "  File \"C:\\\\Users\\\\dap182\\\\Documents\\\\git\\\\temp\\\\workflow-canvas\\\\.claude\\\\worktrees\\\\pev-2026-05-01-phase-d-pass2-sse-record-replay\\\\pm\\method.py\", line 185, in pm_method_main"
+      }
+    },
+    {
+      "delayMs": 0,
+      "eventType": "stderr",
+      "data": {
+        "data": "    _execute_pm_method(func)"
+      }
+    },
+    {
+      "delayMs": 0,
+      "eventType": "stderr",
+      "data": {
+        "data": "  File \"C:\\\\Users\\\\dap182\\\\Documents\\\\git\\\\temp\\\\workflow-canvas\\\\.claude\\\\worktrees\\\\pev-2026-05-01-phase-d-pass2-sse-record-replay\\\\pm\\method.py\", line 223, in _execute_pm_method"
+      }
+    },
+    {
+      "delayMs": 0,
+      "eventType": "stderr",
+      "data": {
+        "data": "    result = func(input_data, ctx.params)"
+      }
+    },
+    {
+      "delayMs": 0,
+      "eventType": "stderr",
+      "data": {
+        "data": "             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^"
+      }
+    },
+    {
+      "delayMs": 0,
+      "eventType": "stderr",
+      "data": {
+        "data": "  File \"C:\\Users\\dap182\\Documents\\git\\temp\\workflow-canvas\\.claude\\worktrees\\pev-2026-05-01-phase-d-pass2-sse-record-replay\\.dev\\methods\\faulty_dec\\faulty.py\", line 35, in faulty"
+      }
+    },
+    {
+      "delayMs": 0,
+      "eventType": "stderr",
+      "data": {
+        "data": "    raise RuntimeError(\"faulty: intentional crash (decorated)\")"
+      }
+    },
+    {
+      "delayMs": 0,
+      "eventType": "stderr",
+      "data": {
+        "data": "RuntimeError: faulty: intentional crash (decorated)"
+      }
+    },
+    {
+      "delayMs": 200,
+      "eventType": "terminal",
+      "data": {
+        "status": "failed",
+        "error_message": "RuntimeError: faulty: intentional crash (decorated)",
+        "error_traceback": "faulty: about to raise RuntimeError\nTraceback (most recent call last):\n  File \"C:\\Users\\dap182\\Documents\\git\\temp\\workflow-canvas\\.claude\\worktrees\\pev-2026-05-01-phase-d-pass2-sse-record-replay\\.dev\\methods\\faulty_dec\\faulty.py\", line 50, in <module>\n    pm_method_main()\n  File \"C:\\\\Users\\\\dap182\\\\Documents\\\\git\\\\temp\\\\workflow-canvas\\\\.claude\\\\worktrees\\\\pev-2026-05-01-phase-d-pass2-sse-record-replay\\\\pm\\method.py\", line 185, in pm_method_main\n    _execute_pm_method(func)\n  File \"C:\\\\Users\\\\dap182\\\\Documents\\\\git\\\\temp\\\\workflow-canvas\\\\.claude\\\\worktrees\\\\pev-2026-05-01-phase-d-pass2-sse-record-replay\\\\pm\\method.py\", line 223, in _execute_pm_method\n    result = func(input_data, ctx.params)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\dap182\\Documents\\git\\temp\\workflow-canvas\\.claude\\worktrees\\pev-2026-05-01-phase-d-pass2-sse-record-replay\\.dev\\methods\\faulty_dec\\faulty.py\", line 35, in faulty\n    raise RuntimeError(\"faulty: intentional crash (decorated)\")\nRuntimeError: faulty: intentional crash (decorated)\n"
+      }
+    }
+  ]
+}

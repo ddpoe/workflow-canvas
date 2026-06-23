@@ -1,0 +1,25 @@
+---
+title: variant
+---
+stateDiagram-v2
+  [*] --> boot
+  boot --> committed: (always)
+  boot --> noVariants: (always)
+  noVariants --> addingVariant: ADD_VARIANT
+  addingVariant --> editingValue: CHANGE_VALUE
+  addingVariant --> noVariants: CANCEL
+  editingValue --> committing: COMMIT
+  editingValue --> committed: CANCEL
+  editingValue --> confirmingDelete: DELETE
+  committing --> mergingDuplicate: onDone
+  committing --> committed: onDone
+  committing --> editingValue: onDone
+  committing --> editingValue: onError
+  mergingDuplicate --> committed: ACK_MERGE
+  mergingDuplicate --> deleted: DELETE
+  committed --> editingValue: EDIT
+  committed --> confirmingDelete: DELETE
+  confirmingDelete --> deleted: CONFIRM_DELETE
+  confirmingDelete --> editingValue: CANCEL_DELETE
+  confirmingDelete --> committed: CANCEL_DELETE
+  deleted --> [*]

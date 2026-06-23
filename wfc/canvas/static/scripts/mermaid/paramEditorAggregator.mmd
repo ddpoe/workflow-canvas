@@ -1,0 +1,12 @@
+---
+title: paramEditorAggregator
+---
+stateDiagram-v2
+  [*] --> idle
+  [*] --> idle: RESET
+  idle --> allCommitted: COMMIT_ALL
+  idle --> committingAll: COMMIT_ALL
+  committingAll --> allCommitted: CHILD_SETTLED
+  committingAll --> allCommitted: (always)
+  allCommitted --> allCommitted: COMMIT_ALL
+  allCommitted --> committingAll: COMMIT_ALL

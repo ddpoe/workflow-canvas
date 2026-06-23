@@ -1,0 +1,25 @@
+# 3-slot skip-level fan-in — the marquee Phase 1 test case.
+# measurements: immediate from quantify
+# stitched:     3 hops upstream (skip) from stitch
+# masks:        2 hops upstream (skip) from segment
+inputs:
+  measurements:
+    type: csv
+    required: true
+    description: "Measurements from quantify (immediate)"
+  stitched:
+    type: csv
+    required: true
+    description: "Stitched data from stitch (3-hop skip)"
+  masks:
+    type: csv
+    required: true
+    description: "Segmentation masks from segment (2-hop skip)"
+
+outputs:
+  final:
+    type: csv
+    required: true
+
+executor: python
+env: inherit

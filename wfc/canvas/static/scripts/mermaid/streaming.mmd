@@ -1,0 +1,13 @@
+---
+title: streaming
+---
+stateDiagram-v2
+  [*] --> connection-alive
+  connection-alive --> succeeded: SSE_TERMINAL [isSuccessStatus]
+  connection-alive --> cancelled: SSE_TERMINAL [isCancelledStatus]
+  connection-alive --> failed: SSE_TERMINAL
+  connection-alive --> failed: SSE_ERROR
+  connection-alive.connecting --> streaming: SSE_LINE
+  succeeded --> [*]
+  failed --> [*]
+  cancelled --> [*]

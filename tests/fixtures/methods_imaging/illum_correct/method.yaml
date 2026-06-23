@@ -1,0 +1,13 @@
+# 2-hop from build_config: reads tiles, writes corrected.
+inputs:
+  tiles:
+    type: csv
+    required: true
+
+outputs:
+  corrected:
+    type: csv
+    required: true
+
+executor: python
+env: inherit

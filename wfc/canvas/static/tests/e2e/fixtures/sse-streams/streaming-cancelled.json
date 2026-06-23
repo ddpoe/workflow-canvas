@@ -1,0 +1,58 @@
+{
+  "topology": "streaming",
+  "node": "node_heartbeat",
+  "cancelAfterEvents": 5,
+  "recordedAt": "2026-05-01T22:34:20.436Z",
+  "events": [
+    {
+      "delayMs": 1400,
+      "eventType": "stdout",
+      "data": {
+        "data": "[heartbeat] starting Â· duration=5.0s Â· ticks=15 Â· rows=10"
+      }
+    },
+    {
+      "delayMs": 400,
+      "eventType": "stdout",
+      "data": {
+        "data": "[heartbeat] tick 1/15 Â· t=327ms Â· rows=10"
+      }
+    },
+    {
+      "delayMs": 200,
+      "eventType": "stdout",
+      "data": {
+        "data": "[heartbeat] tick 2/15 Â· t=671ms Â· rows=10"
+      }
+    },
+    {
+      "delayMs": 400,
+      "eventType": "stdout",
+      "data": {
+        "data": "[heartbeat] tick 3/15 Â· t=1000ms Â· rows=10"
+      }
+    },
+    {
+      "delayMs": 400,
+      "eventType": "stdout",
+      "data": {
+        "data": "[heartbeat] tick 4/15 Â· t=1327ms Â· rows=10"
+      }
+    },
+    {
+      "delayMs": 0,
+      "eventType": "stderr",
+      "data": {
+        "data": "[heartbeat warn] tick 4/15 hit stderr checkpoint at t=1327ms"
+      }
+    },
+    {
+      "delayMs": 200,
+      "eventType": "terminal",
+      "data": {
+        "status": "cancelled",
+        "error_message": "Cancelled by user"
+      }
+    }
+  ]
+}

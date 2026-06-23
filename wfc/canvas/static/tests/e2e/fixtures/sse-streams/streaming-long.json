@@ -1,0 +1,57 @@
+{
+  "topology": "streaming-long-handauthored",
+  "node": "node_heartbeat",
+  "recordedAt": "2026-05-01T00:00:00.000Z",
+  "_provenance": "Hand-authored for ADR-015 Phase D Pass 3 — paces 5 stdout ticks ~2s apart so the gallery video for liveLogLineAppend.webm visibly shows progressive log lines. Total run ~11s. Replace via record-sse.ts against the streaming topology with duration_s=10/stdout_lines=5 if a recorded version is desired.",
+  "events": [
+    {
+      "delayMs": 800,
+      "eventType": "stdout",
+      "data": { "data": "[heartbeat] starting · duration=10.0s · ticks=5 · rows=10" }
+    },
+    {
+      "delayMs": 2000,
+      "eventType": "stdout",
+      "data": { "data": "[heartbeat] tick 1/5 · t=2000ms · rows=10" }
+    },
+    {
+      "delayMs": 2000,
+      "eventType": "stdout",
+      "data": { "data": "[heartbeat] tick 2/5 · t=4000ms · rows=10" }
+    },
+    {
+      "delayMs": 0,
+      "eventType": "stderr",
+      "data": { "data": "[heartbeat warn] tick 2/5 stderr checkpoint at t=4000ms" }
+    },
+    {
+      "delayMs": 2000,
+      "eventType": "stdout",
+      "data": { "data": "[heartbeat] tick 3/5 · t=6000ms · rows=10" }
+    },
+    {
+      "delayMs": 2000,
+      "eventType": "stdout",
+      "data": { "data": "[heartbeat] tick 4/5 · t=8000ms · rows=10" }
+    },
+    {
+      "delayMs": 2000,
+      "eventType": "stdout",
+      "data": { "data": "[heartbeat] tick 5/5 · t=10000ms · rows=10" }
+    },
+    {
+      "delayMs": 100,
+      "eventType": "stdout",
+      "data": { "data": "[heartbeat] done · total=10100ms" }
+    },
+    {
+      "delayMs": 200,
+      "eventType": "terminal",
+      "data": {
+        "status": "success",
+        "error_message": null,
+        "error_traceback": null
+      }
+    }
+  ]
+}

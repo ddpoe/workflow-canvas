@@ -1,0 +1,27 @@
+# tests/fixtures/methods/filter/method.yaml
+# Filter rows by numeric threshold on the 'value' column.
+inputs:
+  data:
+    type: csv
+    required: true
+    description: "Input CSV with a numeric 'value' column"
+
+outputs:
+  output:
+    type: csv
+    required: true
+    description: "Rows where value >= threshold"
+
+params:
+  threshold:
+    type: float
+    required: true
+    description: "Rows with value < threshold are dropped"
+  drop_na:
+    type: bool
+    required: false
+    default: true
+    description: "Drop rows whose value is missing/non-numeric"
+
+executor: python
+env: inherit

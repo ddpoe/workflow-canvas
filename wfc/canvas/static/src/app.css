@@ -1,0 +1,79 @@
+@import url('https://fonts.googleapis.com/css2?family=Mukta+Vaani:wght@200;300;400;500;600;700;800&display=swap');
+
+:root {
+  --bg-canvas: #1a1a1a;
+  --bg-panel: #252526;
+  --bg-input: #1e1e1e;
+  --bg-header: #2d2d30;
+  --border: #3e3e42;
+  --border-node: #4a4a4a;
+  --text-primary: #ccc;
+  --text-secondary: #888;
+  --text-muted: #666;
+  --accent: #4A90D9;
+  --color-running: #E9A847;
+  --color-completed: #50C878;
+  --color-failed: #E74C3C;
+  --node-bg: #353535;
+
+  /* SvelteFlow dark mode overrides */
+  --xy-background-color: #1a1a1a;
+  --xy-background-pattern-color: #333;
+  --xy-edge-stroke: #555;
+  --xy-edge-stroke-selected: #4A90D9;
+  --xy-minimap-background: #252526;
+  --xy-minimap-mask-background: rgba(26, 26, 26, 0.7);
+  --xy-controls-button-background: #2d2d30;
+  --xy-controls-button-background-hover: #3e3e42;
+  --xy-controls-button-color: #ccc;
+  --xy-controls-button-color-hover: #fff;
+  --xy-controls-button-border-color: #3e3e42;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body, #app {
+  width: 100%; height: 100%;
+  font-family: 'Mukta Vaani', 'Segoe UI', sans-serif;
+  background: var(--bg-canvas);
+  color: var(--text-primary);
+  overflow: hidden;
+}
+
+/* SvelteFlow controls (zoom/fit buttons, lower-left) */
+.svelte-flow__controls {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+.svelte-flow__controls button {
+  background: #2d2d30 !important;
+  border: 1px solid #3e3e42 !important;
+  color: #ccc !important;
+  fill: #ccc !important;
+  width: 26px;
+  height: 26px;
+}
+.svelte-flow__controls button:hover {
+  background: #3e3e42 !important;
+  color: #fff !important;
+  fill: #fff !important;
+}
+.svelte-flow__controls button svg {
+  fill: inherit;
+}
+
+/* SvelteFlow attribution (lower-right) */
+.svelte-flow__attribution {
+  background: rgba(45, 45, 48, 0.8) !important;
+  color: #555 !important;
+  font-size: 9px;
+}
+.svelte-flow__attribution a {
+  color: #666 !important;
+}
+
+/* SvelteFlow panels general */
+.svelte-flow__panel {
+  margin: 8px;
+}

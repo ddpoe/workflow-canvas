@@ -2,4 +2,58 @@ __pycache__/
 *.pyc
 *.pyo
 .env
-.venv/
+*.egg-info/
+dist/
+build/
+.runs/
+.wfc/wfc.db
+.wfc/cache/
+.wfc/envs/*/pixi.lock
+.wfc/envs/*/.pixi/
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.snakemake/
+docs/_build/
+Snakefile
+Snakefile_selective
+
+# Build artifacts at root
+*.parquet
+reports/
+us1_*.json
+
+# workflow_canvas inspection snapshot
+tests/e2e/_last_run/
+
+# Node modules
+node_modules/
+
+# PEV state (managed by orchestrator)
+.pev-state.json
+
+# Dev server project
+.dev/
+
+# PEV worktrees
+pev-worktrees/
+.claude/worktrees/
+
+# Scratch / generated test output
+test-results/
+
+# Brainstorm session transcripts (transient scratch)
+.superpowers/brainstorm/
+
+# Windows stackdumps
+*.stackdump
+
+# Local Claude settings
+.claude/settings.local.json
+
+# Generated mkdocs site
+site/

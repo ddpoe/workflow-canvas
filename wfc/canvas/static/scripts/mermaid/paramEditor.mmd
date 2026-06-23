@@ -1,0 +1,18 @@
+---
+title: paramEditor
+---
+stateDiagram-v2
+  [*] --> viewing
+  viewing --> editing: EDIT
+  editing --> committing: COMMIT
+  editing --> viewing: CANCEL
+  editing --> viewing: RESET_TO
+  committing --> committed: onDone
+  committing --> invalid: onDone
+  committing --> invalid: onError
+  committed --> editing: EDIT
+  committed --> viewing: RESET_TO
+  invalid --> editing: CHANGE_VALUE
+  invalid --> committing: COMMIT
+  invalid --> viewing: CANCEL
+  invalid --> viewing: RESET_TO

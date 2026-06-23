@@ -1,0 +1,1396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Research Process Manager — System Overview</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  :root {
+    --bg: #ffffff; --bg-sidebar: #f8f9fa; --text: #1a1a2e;
+    --text-muted: #6c757d; --accent: #4361ee; --accent-light: #e8ecff;
+    --border: #dee2e6; --badge-done: #198754; --badge-wip: #fd7e14;
+    --badge-planned: #6c757d; --code-bg: #f1f3f5;
+  }
+  [data-theme="dark"] {
+    --bg: #1a1a2e; --bg-sidebar: #16213e; --text: #e0e0e0;
+    --text-muted: #8a8a9a; --accent: #7b8cff; --accent-light: #2a2a4e;
+    --border: #2a2a4e; --code-bg: #222244;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
+
+  /* Layout */
+  .layout { display: grid; grid-template-columns: 260px 1fr; min-height: 100vh; }
+
+  /* Sidebar */
+  .sidebar {
+    position: sticky; top: 0; height: 100vh; overflow-y: auto;
+    background: var(--bg-sidebar); border-right: 1px solid var(--border);
+    padding: 1.5rem 0; z-index: 10;
+  }
+  .sidebar h2 { padding: 0 1.25rem 1rem; font-size: 1rem; color: var(--accent); letter-spacing: 0.5px; text-transform: uppercase; }
+  .sidebar a {
+    display: block; padding: 0.5rem 1.25rem; color: var(--text-muted);
+    text-decoration: none; font-size: 0.9rem; border-left: 3px solid transparent; transition: all 0.15s;
+  }
+  .sidebar a:hover { color: var(--text); background: var(--accent-light); }
+  .sidebar a.active { color: var(--accent); border-left-color: var(--accent); font-weight: 600; }
+  .sidebar a.sub { padding-left: 2.25rem; font-size: 0.82rem; }
+  .sidebar-footer { position: absolute; bottom: 1rem; left: 0; right: 0; padding: 0 1.25rem; }
+  .theme-toggle {
+    background: none; border: 1px solid var(--border); color: var(--text-muted);
+    padding: 0.4rem 0.8rem; border-radius: 6px; cursor: pointer; font-size: 0.8rem; width: 100%;
+  }
+
+  /* Main */
+  main { max-width: 780px; margin: 0 auto; padding: 3rem 2rem 6rem; }
+  h1 { font-size: 2rem; margin-bottom: 0.5rem; }
+  .subtitle { color: var(--text-muted); font-size: 1.05rem; margin-bottom: 3rem; }
+  section { margin-bottom: 3.5rem; scroll-margin-top: 2rem; }
+  h2 { font-size: 1.4rem; margin-bottom: 1rem; padding-bottom: 0.4rem; border-bottom: 2px solid var(--accent); }
+  h3 { font-size: 1.1rem; margin: 1.5rem 0 0.5rem; }
+  p, li { margin-bottom: 0.6rem; }
+  ul, ol { padding-left: 1.5rem; }
+  code { background: var(--code-bg); padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.88em; }
+  pre { background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; margin: 1rem 0; }
+  pre code { background: none; padding: 0; }
+
+  /* Status badges */
+  .badge {
+    display: inline-block; padding: 0.15rem 0.6rem; border-radius: 10px;
+    font-size: 0.75rem; font-weight: 600; color: white; vertical-align: middle;
+  }
+  .badge-done { background: var(--badge-done); }
+  .badge-wip { background: var(--badge-wip); }
+  .badge-planned { background: var(--badge-planned); }
+
+  /* Status table */
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  th, td { text-align: left; padding: 0.6rem 0.8rem; border-bottom: 1px solid var(--border); }
+  th { font-size: 0.8rem; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.5px; }
+
+  /* Comparison table */
+  .compare-table td:first-child { font-weight: 600; white-space: nowrap; }
+  .compare-table td { font-size: 0.9rem; vertical-align: top; }
+
+  /* Mermaid */
+  .mermaid { margin: 1.5rem 0; text-align: center; }
+
+  /* Callout */
+  .callout { background: var(--accent-light); border-left: 4px solid var(--accent); padding: 1rem 1.25rem; border-radius: 0 8px 8px 0; margin: 1.5rem 0; }
+  .callout strong { color: var(--accent); }
+
+  @media print { .sidebar { display: none; } .layout { grid-template-columns: 1fr; } }
+  @media (max-width: 768px) { .layout { grid-template-columns: 1fr; } .sidebar { display: none; } }
+</style>
+</head>
+<body>
+<div class="layout">
+
+<!-- Sidebar -->
+<nav class="sidebar">
+  <h2>System Overview</h2>
+  <a href="#vision">The Vision</a>
+  <a href="#user-stories">User Stories</a>
+  <a href="#three-tools">The Three Tools</a>
+  <a href="#three-tools-dflow" class="sub">dFlow</a>
+  <a href="#three-tools-db" class="sub">Process Manager DB</a>
+  <a href="#three-tools-canvas" class="sub">Workflow Canvas</a>
+  <a href="#data-model">Core Data Model</a>
+  <a href="#hierarchy" class="sub">Module → Method → Run</a>
+  <a href="#db-schema" class="sub">Database Schema</a>
+  <a href="#param-tracking" class="sub">Parameter Tracking</a>
+  <a href="#output-contracts" class="sub">Output Contracts</a>
+  <a href="#method-lifecycle">Method Lifecycle</a>
+  <a href="#authoring" class="sub">Authoring Contract</a>
+  <a href="#registration" class="sub">Registration Wizard</a>
+  <a href="#versioning" class="sub">Versioning &amp; Git</a>
+  <a href="#versioning-diff" class="sub">Structured Diffs</a>
+  <a href="#execution">Execution</a>
+  <a href="#execution-plans" class="sub">Execution Plans</a>
+  <a href="#nextflow" class="sub">Nextflow Integration</a>
+  <a href="#duplicate-detection" class="sub">Duplicate Detection</a>
+  <a href="#exploratory" class="sub">Exploratory Mode</a>
+  <a href="#storage">Storage &amp; Integrity</a>
+  <a href="#managed-store" class="sub">Global Managed Store</a>
+  <a href="#views" class="sub">Views &amp; Symlinks</a>
+  <a href="#run-logging" class="sub">Per-Run Logging</a>
+  <a href="#checksumming" class="sub">Tiered Checksumming</a>
+  <a href="#upstream-verify" class="sub">Upstream Verification</a>
+  <a href="#error-handling" class="sub">Error Handling</a>
+  <a href="#architecture">Architecture</a>
+  <a href="#mvp">MVP Prototype</a>
+  <a href="#mvp-scope" class="sub">Scope &amp; Non-Goals</a>
+  <a href="#mvp-schema" class="sub">Reduced Schema</a>
+  <a href="#mvp-nf" class="sub">Nextflow Generation</a>
+  <a href="#mvp-wfc-cli" class="sub">wfc CLI Bridge</a>
+  <a href="#mvp-canvas" class="sub">Canvas MVP</a>
+  <a href="#mvp-lineage" class="sub">Lineage View</a>
+  <a href="#mvp-phases" class="sub">Build Phases</a>
+  <a href="#status">What Exists Today</a>
+  <a href="#comparisons">Comparisons</a>
+  <a href="#future">Future Features</a>
+  <div class="sidebar-footer">
+    <button class="theme-toggle" onclick="toggleTheme()">🌙 Toggle Theme</button>
+  </div>
+</nav>
+
+<!-- Main content -->
+<main>
+<h1>Research Process Manager</h1>
+<p class="subtitle">A system for tracking, documenting, and visualizing multi-step scientific workflows — built for researchers who work in notebooks.</p>
+
+<!-- ============================================================ -->
+<section id="vision">
+<h2>The Vision</h2>
+<p>Scientific analysis pipelines are messy. Data flows through notebooks, parameters change between experiments, and six months later nobody remembers which threshold produced which result.</p>
+<p>This system solves that with three lightweight tools that work together: <strong>automatic documentation</strong> of what your code does, a <strong>relational database</strong> that tracks every run with full lineage, and a <strong>visual canvas</strong> that lets you see the whole pipeline at a glance, configure runs, and launch execution.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="user-stories">
+<h2>User Stories</h2>
+
+<h3>Design and run a pipeline step</h3>
+<p>Open the Workflow Canvas. Select a registered method, configure parameters, pick the upstream data source, and launch. The system tracks everything to the database and chains it to the upstream run.</p>
+
+<h3>Browse available upstream data</h3>
+<p>In the Canvas, click on a method's input port to see all completed runs from compatible upstream modules. Select one — the Canvas wires the connection and validates the output contract matches.</p>
+
+<h3>Fan-out analysis</h3>
+<p>Multiple downstream analyses (pRB labeling, OPP labeling, elastic net, etc.) all load from the same upstream run. Each gets its own tracked run with a clear parent linkage in the database.</p>
+
+<h3>Run a pipeline for multiple samples</h3>
+<p>Design a workflow template in the Canvas, parameterize it with three cell lines and two ploidy thresholds, preview the 6-run tree, and submit. Nextflow executes all paths in parallel. The Canvas shows live progress and groups all runs under one execution plan.</p>
+
+<h3>Visualize the full pipeline</h3>
+<p>Open the Workflow Canvas. It reads all runs from the database, follows parent linkages, and renders the full DAG. Click a node to see parameters, metrics, and artifacts.</p>
+
+<h3>Verify results before publication</h3>
+<p>Run <code>wfc verify --plan 42</code>. Every artifact from the paper's pipeline is checked against its checksum manifest. All clean — no post-generation modifications.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="three-tools">
+<h2>The Three Tools</h2>
+
+<h3 id="three-tools-dflow">1. dFlow — Workflow Documentation</h3>
+<p>Generates structured documentation from annotated notebooks and Python modules. Two modes:</p>
+<ul>
+  <li><strong>Comment-based:</strong> Parses <code># Step N:</code> markers with PURPOSE/INPUTS/OUTPUTS annotations</li>
+  <li><strong>Decorator-based:</strong> <code>@workflow</code> and <code>@task</code> decorators + AST scanning build a knowledge graph via <code>WorkflowRegistry</code></li>
+</ul>
+<p>Outputs <code>.workflow.md</code> files with quick-reference tables, function signatures, and Mermaid diagrams. Agents read these to understand notebook structure without parsing implementation code.</p>
+
+<h3 id="three-tools-db">2. Process Manager Database</h3>
+<p>A Postgres database that stores the complete state of the system: registered modules, methods with versioned code pointers, tracked function schemas, parameter sets, run history with full lineage, and artifact manifests. All operations are ACID-transactional.</p>
+<p>The database is the single source of truth for <em>what methods exist</em>, <em>what has been run</em>, and <em>how runs connect</em>. The filesystem stores the actual code (in a git-tracked monorepo) and the actual artifacts (in the managed <code>.runs/</code> store).</p>
+
+<h3 id="three-tools-canvas">3. Workflow Canvas</h3>
+<p>A visual frontend (FastAPI + LiteGraph.js) that reads from and writes to the Postgres database. It serves as the primary interface for:</p>
+<ul>
+  <li><strong>Registering methods</strong> — A 4-step wizard that parses code and writes to the DB</li>
+  <li><strong>Building pipelines</strong> — Drag-and-drop DAG construction with automatic connection validation</li>
+  <li><strong>Configuring runs</strong> — Parameter forms generated from tracked function schemas</li>
+  <li><strong>Monitoring execution</strong> — Live status of execution plans and individual runs</li>
+  <li><strong>Browsing results</strong> — Navigate the run lineage graph, inspect artifacts and metrics</li>
+</ul>
+</section>
+
+<!-- ============================================================ -->
+<section id="data-model">
+<h2>Core Data Model</h2>
+
+<section id="hierarchy">
+<h3>Module → Method → Run</h3>
+<p>The core data model organizes work into three levels:</p>
+<ul>
+  <li><strong>Module</strong> — A pipeline stage or domain of analysis (e.g., <code>data_labeling</code>, <code>ploidy_filtering</code>). Defines the output contract that all its methods must satisfy.</li>
+  <li><strong>Method</strong> — A specific analysis approach within a module (e.g., <code>mIF_pRB_labeling</code>, <code>mIF_ploidy_filtering</code>). Versioned, with tracked functions and parameter schemas.</li>
+  <li><strong>Run</strong> — A single execution of a method version with specific parameters and data inputs.</li>
+</ul>
+<p>There is one global Postgres instance. All modules, methods, and runs live in the same database. There is no per-experiment partitioning — the module/method hierarchy is the organizational structure.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="db-schema">
+<h3>Database Schema</h3>
+<p>The database uses 15 tables. No migrations are needed when methods, functions, or input types change — the schema handles everything with rows, not columns.</p>
+
+<div class="mermaid">
+erDiagram
+    modules ||--o{ methods : contains
+    modules ||--o{ output_contracts : defines
+    methods ||--o{ method_versions : "versioned as"
+    methods ||--o{ tracked_functions : has
+    methods ||--o{ method_inputs : requires
+    tracked_functions ||--o{ param_defs : has
+    param_defs ||--o{ param_set_values : "value in"
+    param_sets ||--o{ param_set_values : contains
+    methods ||--o{ runs : executes
+    method_versions ||--o{ runs : "code snapshot"
+    param_sets ||--o{ runs : "used by"
+    runs ||--o{ run_inputs : consumes
+    runs ||--o{ run_outputs : produces
+    runs ||--o{ run_logs : "logged by"
+    method_inputs ||--o{ run_inputs : "filled by"
+    workflow_templates ||--o{ execution_plans : "instantiated as"
+    execution_plans ||--o{ runs : spawns
+
+    modules {
+        int id PK
+        text name UK
+        text description
+    }
+    methods {
+        int id PK
+        int module_id FK
+        text name
+    }
+    method_versions {
+        int id PK
+        int method_id FK
+        int version
+        text description
+        text git_commit_hash
+        text git_tag
+        text pixi_lock_hash
+        timestamp created_at
+        text created_by
+    }
+    tracked_functions {
+        int id PK
+        int method_id FK
+        text function_name
+        text source_file
+        int ordinal
+    }
+    param_defs {
+        int id PK
+        int tracked_function_id FK
+        text param_name
+        text param_type
+        text default_value
+    }
+    param_sets {
+        int id PK
+        int method_id FK
+        text fingerprint UK
+    }
+    param_set_values {
+        int param_set_id FK
+        int param_def_id FK
+        text value
+    }
+    method_inputs {
+        int id PK
+        int method_id FK
+        text input_name
+        text input_type
+        int source_module_id FK
+        bool required
+    }
+    runs {
+        int id PK
+        int method_id FK
+        int method_version_id FK
+        int param_set_id FK
+        int execution_plan_id FK
+        text plan_step
+        text plan_branch
+        text status
+        timestamp started_at
+        timestamp finished_at
+    }
+    run_inputs {
+        int id PK
+        int run_id FK
+        int method_input_id FK
+        int source_run_id FK
+        jsonb value
+    }
+    run_outputs {
+        int id PK
+        int run_id FK
+        text output_name
+        text artifact_path
+        text artifact_type
+        bigint size_bytes
+        text checksum
+    }
+    run_logs {
+        int id PK
+        int run_id FK
+        text level
+        text message
+        timestamp logged_at
+    }
+    output_contracts {
+        int id PK
+        int module_id FK
+        text field_name
+        text field_type
+        bool required
+    }
+    workflow_templates {
+        int id PK
+        text name UK
+        text description
+        jsonb definition
+        text content_hash
+        timestamp created_at
+        timestamp updated_at
+    }
+    execution_plans {
+        int id PK
+        int template_id FK
+        text name
+        jsonb data_sources
+        jsonb branch_params
+        text status
+        text nextflow_run_id
+        text nextflow_session_id
+        timestamp created_at
+    }
+</div>
+
+<h3>Table Responsibilities</h3>
+<ul>
+  <li><strong>modules / methods / method_versions</strong> — The hierarchy and version history. Each version captures a git commit hash pointing to an immutable code snapshot.</li>
+  <li><strong>tracked_functions / param_defs</strong> — The parameter schema: which functions are tracked and what parameters they accept. Defined at registration, stored as rows.</li>
+  <li><strong>param_sets / param_set_values</strong> — Deduplicated parameter combinations. 50 runs with the same defaults share one <code>param_set</code> row.</li>
+  <li><strong>method_inputs</strong> — What data a method needs (upstream modules or user-supplied values).</li>
+  <li><strong>runs / run_inputs / run_outputs</strong> — Execution history: what happened, what data went in, what came out. Each run links to a specific <code>method_version</code> and <code>param_set</code>.</li>
+  <li><strong>run_logs</strong> — Structured log entries (level, message, timestamp) for each run, queryable from the Canvas.</li>
+  <li><strong>output_contracts</strong> — Per-module output shape requirements.</li>
+  <li><strong>workflow_templates</strong> — Reusable pipeline DAG definitions stored as JSONB. Created in the Canvas builder, referenced by execution plans.</li>
+  <li><strong>execution_plans</strong> — Template instantiations with data sources, parameter branches, Nextflow session IDs, and lifecycle status.</li>
+</ul>
+</section>
+
+<!-- ============================================================ -->
+<section id="param-tracking">
+<h3>Parameter Tracking &amp; Deduplication</h3>
+
+<h4>Parameter Storage</h4>
+<p>Parameters are stored as <strong>(function_name, param_name, value)</strong> triples, scoped to tracked functions. This handles duplicate parameter names across functions (e.g., two functions both having a <code>threshold</code> parameter).</p>
+
+<h4>Fingerprint-Based Deduplication</h4>
+<p>When a run is created, the system computes a fingerprint from all parameter values — a sorted, concatenated hash like <code>sha256("filter_cells.threshold=0.5|train_clf.model_type=logistic|train_clf.n_iter=100")</code>. If a <code>param_set</code> with that fingerprint already exists, the run reuses it. This means 50 runs with identical defaults produce 50 rows in <code>runs</code> but only 1 row in <code>param_sets</code>.</p>
+<p>Fingerprints exist only on <code>param_sets</code>. Runs do not have their own fingerprint — duplicate detection is done by querying for matching <code>param_set_id</code> + <code>run_inputs</code> combinations (see <a href="#duplicate-detection">Duplicate Detection</a>).</p>
+
+<h4>Data Inputs</h4>
+<p>Data inputs are fundamentally different from parameters. They come in several forms:</p>
+<table>
+  <thead><tr><th>Input Type</th><th>Example</th><th>Storage</th></tr></thead>
+  <tbody>
+    <tr><td>Upstream run</td><td>Filtered data from preprocessing run #47</td><td>FK to <code>runs</code> table via <code>source_run_id</code></td></tr>
+    <tr><td>Scalar</td><td><code>sample_id = "Pa16c"</code></td><td>JSONB value</td></tr>
+    <tr><td>List</td><td><code>features = ["CycD1", "p27"]</code></td><td>JSONB array</td></tr>
+    <tr><td>File</td><td><code>feature_set.txt</code></td><td>Copied into run directory, path in JSONB</td></tr>
+  </tbody>
+</table>
+<p>All data inputs use the <code>run_inputs</code> table with a JSONB <code>value</code> column, avoiding the need for separate tables per input type. Upstream inputs additionally set <code>source_run_id</code> as a foreign key for lineage tracking.</p>
+
+<h4>Adding Tracked Functions Later</h4>
+<p>Because parameters are stored as rows (not columns), adding a new tracked function to an existing method is just <code>INSERT</code> operations into <code>tracked_functions</code> and <code>param_defs</code>. No schema migration needed. Old runs retain their original parameter sets; new runs include the additional function's parameters.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="output-contracts">
+<h3>Output Contracts</h3>
+<p>Every method in a module must produce output that conforms to the module's output contract. Contracts define required columns, types, and constraints for the output data.</p>
+
+<p>For example, all methods in the <code>data_preprocessing</code> module must output a table with <code>cell_id</code> (str), <code>condition</code> (str), and <code>quality_score</code> (float). This is validated when a run saves its results.</p>
+
+<p>Contracts serve two purposes:</p>
+<ul>
+  <li><strong>Validation</strong> — Catch bad output before it propagates downstream. If a preprocessing method drops the <code>cell_id</code> column, the save fails immediately.</li>
+  <li><strong>Compatibility</strong> — When the Canvas wires modules together, it checks that the upstream module's output contract matches what the downstream method expects. This enables automatic connection suggestions in the visual DAG.</li>
+</ul>
+</section>
+</section>
+
+<!-- ============================================================ -->
+<section id="method-lifecycle">
+<h2>Method Lifecycle</h2>
+
+<section id="authoring">
+<h3>Authoring Contract</h3>
+<p>Users write methods as plain Python — no special notebook format required. Any editor works (VS Code, Jupyter, vim, marimo). The contract is simple: provide two files and an environment.</p>
+
+<h4>The Method Directory</h4>
+<p>Each method lives in a self-contained directory:</p>
+<ul>
+  <li><code>helper.py</code> — Reusable functions (data loaders, filters, model builders, save logic). Plain Python module, importable normally.</li>
+  <li><code>run.py</code> — One main function that orchestrates the pipeline by calling helpers.</li>
+  <li><code>pixi.toml</code> + <code>pixi.lock</code> — Environment specification. Copied from the user's selected environment at registration time.</li>
+</ul>
+
+<h4>Example</h4>
+<pre><code>import helper
+
+def run(input_path: str, output_dir: str = "./output"):
+    adata = helper.load_adata(input_path)
+
+    # Parameters for tracked functions are captured by the system
+    filtered = helper.filter_cells(adata, threshold=0.5)
+    model = helper.train_classifier(filtered.X, filtered.obs["label"],
+                                     model_type="logistic", n_iter=100)
+
+    helper.save_results(model, filtered, output_dir=output_dir)
+    return {"n_cells": len(filtered), "accuracy": model.score}</code></pre>
+
+<p>The code is plain Python. Which functions are tracked (and which of their parameters are captured) is determined during registration in the Canvas wizard — not in the code itself.</p>
+
+<div class="callout">
+  <strong>Why not require annotations in code?</strong> The value is in the registration wizard + the database — not in how the user writes code. Users develop however they want, then register via the Canvas. The wizard does AST scanning to extract function signatures automatically.
+</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="registration">
+<h3>Registration Wizard (4-Step)</h3>
+<p>The Workflow Canvas provides a guided wizard for registering methods. The user never writes config files manually — the Canvas parses the code and lets them point-and-click.</p>
+
+<h4>Step 1: Select Files</h4>
+<p>User selects <code>helper.py</code>, <code>run.py</code>, and picks a pixi environment. The Canvas validates the files are parseable Python.</p>
+
+<h4>Step 2: Pick Tracked Functions</h4>
+<p>The Canvas parses both files with AST, extracts all function signatures (names, parameters, types, defaults), and presents them with checkboxes. The user selects which functions matter for tracking.</p>
+
+<h4>Step 3: Define Outputs &amp; Inputs</h4>
+<p>The user declares what the method produces (output artifacts with names and types) and what data it consumes. Data inputs can be:</p>
+<ul>
+  <li><strong>Upstream module</strong> — data from a run of another module (typed, validated against output contracts)</li>
+  <li><strong>User-supplied</strong> — scalars, lists, files, or identifiers provided at run time (e.g., sample ID, feature set)</li>
+</ul>
+
+<h4>Step 4: Review &amp; Register</h4>
+<p>The Canvas shows a summary: tracked functions, extracted parameters with defaults, declared outputs, and data inputs. The user can go back to any step before confirming. On "Register," the Canvas writes to the database and copies the pixi environment into the method directory.</p>
+
+<div class="callout">
+  <strong>No parameters are needed at registration.</strong> The wizard extracts everything from code. Parameters are supplied later when configuring a run in the Canvas.
+</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="versioning">
+<h3>Versioning &amp; Git Integration</h3>
+<p>Methods evolve. A cell cycle phase annotation might start with a GMM model, switch to SVM, then move to XGBoost with new features. The system tracks every version with full traceability.</p>
+
+<h4>Version Lifecycle</h4>
+<p>When a user modifies <code>run.py</code> or <code>helper.py</code> and re-registers through the Canvas wizard, the version increments automatically. Each version captures:</p>
+<ul>
+  <li>The exact source code (via git commit hash)</li>
+  <li>The tracked functions and their parameter schemas</li>
+  <li>The frozen dependencies (<code>pixi.lock</code>)</li>
+  <li>A human-readable description of what changed</li>
+</ul>
+
+<h4>The Methods Monorepo</h4>
+<p>All methods live in a git-tracked monorepo. Each method is a subdirectory under its module:</p>
+<pre><code>methods/
+  data_preprocessing/
+    mIF_ploidy_filtering/
+      helper.py
+      run.py
+      pixi.toml
+      pixi.lock
+  feature_selection/
+    gas_brake_feature_sets/
+      ...
+  classification/
+    calibrated_classifier/
+      ...</code></pre>
+
+<h4>Auto-Commit on Registration</h4>
+<p>When the Canvas registers a new version, it auto-commits:</p>
+<ol>
+  <li>Writes updated files to the method directory</li>
+  <li>Stages only that directory: <code>git add methods/classification/calibrated_classifier/</code></li>
+  <li>Commits with a structured message: <code>method: calibrated_classifier v3 - XGBoost + CycD1 feature</code></li>
+  <li>Tags the commit: <code>git tag calibrated_classifier/v3</code></li>
+  <li>Stores the git hash and tag in <code>method_versions</code></li>
+</ol>
+
+<div class="callout">
+  <strong>Why auto-commit?</strong> If users commit manually, they might forget, or bundle unrelated changes. Auto-commits ensure every registered version has a clean, atomic, 1:1 commit. Users who want to manually edit code use Exploratory Mode — the Canvas handles git when they save a new version.
+</div>
+
+<h4>Git Policy</h4>
+<ul>
+  <li>Tagged commits on <code>main</code> (not per-method branches) keeps history linear</li>
+  <li><code>git log -- methods/classification/calibrated_classifier/</code> gives the full version history of any method</li>
+  <li>No model artifacts or large binary files in the repo — those go in <code>.runs/</code></li>
+  <li>A <code>.gitignore</code> at the repo root excludes <code>*.joblib</code>, <code>*.h5</code>, <code>*.tif</code>, <code>data/</code>, and other heavyweight patterns</li>
+  <li>No source code is stored in the database — git is the source of truth for code, the DB stores the pointer</li>
+</ul>
+
+<h4>Version Selection in the Canvas</h4>
+<p>When wiring up a pipeline in the Canvas, each method node has a version selector. Different pipeline configurations can use different versions of the same method — enabling side-by-side comparison of results from "the old way" vs. "the new way."</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="versioning-diff">
+<h3>Structured Diffs</h3>
+<p>The Canvas provides two layers of diff when comparing versions:</p>
+<ul>
+  <li><strong>Code diff</strong> — from <code>git diff tag/v2 tag/v3 -- method_dir/</code>. Raw line-level changes.</li>
+  <li><strong>Semantic diff</strong> — from the database. Shows parameter changes (added/removed/modified), tracked function changes, and dependency changes in a structured, human-readable format.</li>
+</ul>
+<p>A researcher can glance at the semantic diff and immediately see "v3 switched from SVM to XGBoost and added CycD1 as a feature" without parsing code.</p>
+</section>
+</section>
+
+<!-- ============================================================ -->
+<section id="execution">
+<h2>Execution</h2>
+
+<section id="execution-plans">
+<h3>Execution Plans &amp; Templates</h3>
+<p>A <strong>workflow template</strong> defines <em>what</em> methods to run and how they connect. An <strong>execution plan</strong> defines <em>for which samples</em> and <em>with which parameter branches</em>. The Canvas builds templates; the user parameterizes them into execution plans; Nextflow runs them.</p>
+
+<h4>Workflow Templates</h4>
+<p>Templates are the DAG definitions created in the Canvas builder — stored as JSONB in the <code>workflow_templates</code> table. Each template captures the steps, connections, and method versions.</p>
+<p>The Canvas lists available templates by querying the database. Templates are versioned via a <code>content_hash</code> — if the definition changes, the hash changes, and execution plans that reference the old version retain their original template snapshot.</p>
+
+<h4>Parameterization &amp; Fan-Out</h4>
+<p>From a template, the user creates an execution plan by specifying:</p>
+<ul>
+  <li><strong>Data sources</strong> — which samples to process (e.g., <code>["Pa16c", "CFPAC", "HPAC"]</code>). Each sample creates an independent path through the pipeline.</li>
+  <li><strong>Parameter branches per step</strong> — one or more parameter sets for each step in the template. Multiple param sets at a step create a fork in the pipeline.</li>
+</ul>
+<p>The total run count is the product of all branches: 2 samples × 1 QC config × 2 ploidy thresholds × 1 labeling config × 2 analysis configs = <strong>8 runs</strong>.</p>
+
+<h4>Run Tree Preview</h4>
+<p>Before launching, the Canvas shows the full run tree — every (sample, param) combination that will be executed. The preview includes:</p>
+<ul>
+  <li>Total run count</li>
+  <li>Estimated time (from <code>CRITICAL</code> markers in method workflow docs)</li>
+  <li>Duplicate detection — runs with matching param_set + inputs that already completed</li>
+  <li>A visual tree of all paths with parameters at each fork</li>
+</ul>
+
+<h4>Execution Plan Lifecycle</h4>
+<table>
+  <thead><tr><th>Status</th><th>Meaning</th><th>Canvas Action</th></tr></thead>
+  <tbody>
+    <tr><td><code>draft</code></td><td>Template + params chosen, not yet submitted</td><td>Edit parameters, preview run tree</td></tr>
+    <tr><td><code>submitted</code></td><td>Nextflow workflow generated and launched</td><td>View progress</td></tr>
+    <tr><td><code>running</code></td><td>Nextflow processes executing</td><td>Live status updates per run</td></tr>
+    <tr><td><code>completed</code></td><td>All runs finished successfully</td><td>Browse results, compare branches</td></tr>
+    <tr><td><code>partial</code></td><td>Some runs completed, some failed</td><td>Inspect failures, Resume</td></tr>
+    <tr><td><code>failed</code></td><td>Pipeline-level failure</td><td>View error, Resume or Re-run</td></tr>
+  </tbody>
+</table>
+<p>Resume works by calling <code>nextflow run pipeline.nf -resume</code> with the stored session ID. Nextflow skips completed processes natively.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="nextflow">
+<h3>Nextflow Integration</h3>
+<p>Each registered method directory is a self-contained executable unit that maps directly to a Nextflow process:</p>
+
+<table>
+  <thead><tr><th>Method Artifact</th><th>Nextflow Mapping</th></tr></thead>
+  <tbody>
+    <tr><td>Method directory</td><td>Nextflow process</td></tr>
+    <tr><td><code>run.py</code></td><td>Process script (<code>python run.py --args</code>)</td></tr>
+    <tr><td><code>helper.py</code></td><td>Imported by run.py (comes along for the ride)</td></tr>
+    <tr><td><code>pixi.toml</code></td><td>Conda/pixi directive (local dev)</td></tr>
+    <tr><td>Docker image</td><td>Container directive (production/HPC)</td></tr>
+    <tr><td>Canvas DAG edges</td><td>Nextflow channel connections</td></tr>
+  </tbody>
+</table>
+
+<p>The Workflow Canvas exports the visual DAG as a Nextflow <code>.nf</code> file. Each node becomes a process, edges become channels, and the Canvas parameterization UI maps to Nextflow <code>params</code>.</p>
+
+<h4>The wfc CLI Bridge</h4>
+<p>Each Nextflow process calls the <code>wfc</code> CLI at two points — start and finish — to register run metadata in the database and record artifacts:</p>
+<pre><code># At process START — register the run, get back a run ID
+RUN_ID=$(python -m wfc.register_run \
+    --plan-id 42 \
+    --method mIF_ploidy_filtering \
+    --sample Pa16c \
+    --branch "Pa16c/QC_strict/G0G1_tight" \
+    --parent-run-id 17 \
+    --params '{"dna_norm_max": 2.0}')
+
+# Run the actual method
+python methods/data_preprocessing/mIF_ploidy_filtering/run.py \
+    --input upstream_output.parquet --output output.parquet
+
+# At process END — record completion, artifacts, metrics
+python -m wfc.complete_run \
+    --run-id $RUN_ID \
+    --status completed \
+    --output output.parquet \
+    --metrics '{"n_cells": 9102, "pct_filtered": 18.3}'</code></pre>
+
+<div class="callout">
+  <strong>Nextflow handles execution; wfc handles bookkeeping.</strong> Nextflow manages fan-out, parallelism, resumability, and dependency ordering. The wfc CLI registers each run in the database so the Canvas can display lineage, compare parameters, and track provenance.
+</div>
+
+<div class="callout">
+  <strong>Two execution modes:</strong> During development, users run methods interactively via the Canvas (which calls <code>pixi run python run.py</code>). For production, the Canvas exports the full pipeline as a Nextflow workflow that runs on HPC or cloud infrastructure.
+</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="duplicate-detection">
+<h3>Duplicate Run Detection</h3>
+<p>Before executing, the system checks: does a completed run exist with the same <code>method_version_id</code>, <code>param_set_id</code>, and identical <code>run_inputs</code>? If so, the user gets a warning with the option to:</p>
+<ul>
+  <li><strong>Skip</strong> — reuse the existing run (default for batch execution)</li>
+  <li><strong>Re-run</strong> — create a new run anyway (for reproducibility checks)</li>
+</ul>
+<p>This is a "detect and warn" model, not "lock and block." Two users could independently start execution plans that overlap — the second will see a warning that some runs already exist and can choose to skip them.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="exploratory">
+<h3>Exploratory Mode</h3>
+<p>The Canvas is rigid by design — structured pipelines with tracked parameters and validated outputs. But researchers need to poke at data interactively. Exploratory Mode bridges the gap.</p>
+
+<h4>How It Works</h4>
+<p>From any method node in the Canvas, click <strong>"Explore"</strong>. The Canvas generates a pre-wired notebook (Jupyter or marimo — user's choice) with:</p>
+<ul>
+  <li>All helper functions imported and available</li>
+  <li>Data loaded from the selected upstream run</li>
+  <li>The current <code>run.py</code> main function body, editable</li>
+  <li>An output preview / validation cell</li>
+</ul>
+<p>The user tinkers — trying different thresholds, visualizing intermediate results, iterating on the pipeline. When they're done:</p>
+<ul>
+  <li><strong>Save as new version</strong> — The Canvas registers the modified code as v(N+1) of the method, auto-commits to git, and updates the database.</li>
+  <li><strong>Discard</strong> — No changes. The exploration was just for understanding.</li>
+</ul>
+
+<div class="callout">
+  <strong>No editor lock-in.</strong> Users can develop in any environment (VS Code, Jupyter, marimo, vim). Exploratory Mode is a convenience — a pre-wired notebook is faster than manually loading upstream data and importing helpers. But users can also just edit <code>run.py</code> directly and re-register through the wizard.
+</div>
+</section>
+</section>
+
+<!-- ============================================================ -->
+<section id="storage">
+<h2>Storage &amp; Integrity</h2>
+
+<section id="managed-store">
+<h3>Global Managed Store</h3>
+<p>Run outputs — DataFrames, images, TIF stacks, model files — are stored on the filesystem in a single global managed directory. The database stores metadata and pointers; the filesystem stores the actual data.</p>
+
+<p>All run artifacts live under a global <code>.runs/</code> directory, indexed by run ID:</p>
+<pre><code>.runs/                                # Global managed store
+  00000001/                           # Run ID (auto-incrementing)
+    meta.json                         # Cached run metadata (mirrors DB)
+    .manifest.json                    # Checksums for integrity verification
+    run.log                           # stdout/stderr captured during execution
+    output.parquet                    # Primary output
+    plots/
+      umap.png
+  00000002/
+    meta.json
+    .manifest.json
+    run.log
+    exported_tiles/
+      tile_001.tif
+      ...tile_3000.tif
+  00000003/
+    meta.json
+    .manifest.json
+    run.log
+    classifier.joblib</code></pre>
+
+<p>This structure is <strong>flat by design</strong>. No nested module/method/sample directories to disagree about. Run IDs are unique (auto-incrementing integers from Postgres), so collisions are structurally impossible. If you want to browse by module or sample, use the views (below) or the Canvas.</p>
+
+<div class="callout">
+  <strong>Why not user-defined directory structures?</strong> This was a primary design goal — eliminate the 50-different-naming-conventions problem. The system owns the directory structure. Users never run <code>mkdir</code> for output directories.
+</div>
+
+<h4>The <code>meta.json</code> File</h4>
+<p>Each run directory includes a <code>meta.json</code> that mirrors the database record. This makes the store self-describing — even without the database, you can inspect any run directory and understand what it is:</p>
+<pre><code>{
+  "run_id": 2,
+  "method": "export_tiles",
+  "method_version": 1,
+  "params": {"lif_file": "experiment.lif", "channel": "DAPI", "tile_size": 512},
+  "parent_run_id": 1,
+  "status": "completed",
+  "started_at": "2026-02-14T10:23:00Z",
+  "finished_at": "2026-02-14T10:25:30Z",
+  "outputs": ["exported_tiles/tile_001.tif", "exported_tiles/tile_002.tif"]
+}</code></pre>
+<p>The <code>.runs/</code> directory is portable — zip it, move it to another machine, and the <code>meta.json</code> files can reconstruct the database entries.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="views">
+<h3>Views &amp; Symlinks</h3>
+<p>The <code>views/</code> directory provides human-navigable projections of the managed store, generated entirely from the database:</p>
+<pre><code>views/
+  by_sample/
+    Pa16c/
+      mIF_multiround_qc_QC_strict → ../../.runs/00000001
+      mIF_ploidy_filtering_G0G1_tight → ../../.runs/00000002
+    CFPAC/
+      mIF_multiround_qc_QC_strict → ../../.runs/00000004
+  by_method/
+    mIF_multiround_qc/
+      Pa16c_QC_strict → ../../.runs/00000001
+      CFPAC_QC_strict → ../../.runs/00000004
+  by_plan/
+    2026-02-14_full_comparison/
+      Pa16c_QC_strict_G0G1_tight → ../../.runs/00000002
+  latest/
+    mIF_multiround_qc → ../../.runs/00000007
+    mIF_ploidy_filtering → ../../.runs/00000008</code></pre>
+<p>Views are <strong>disposable</strong>. Delete the entire <code>views/</code> directory and regenerate it from the database in seconds. The managed store is unaffected. Custom view generators can be added without changing the storage model.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="run-logging">
+<h3>Per-Run Logging</h3>
+<p>Every run captures its stdout/stderr to a <code>run.log</code> file in the run directory. When a run fails, click the node in the Canvas to see the full traceback.</p>
+
+<p>Logging is implemented at two levels:</p>
+<ul>
+  <li><strong>File-based</strong> — <code>.runs/{id}/run.log</code> captures everything the process printed. Always available, zero overhead.</li>
+  <li><strong>Structured (DB)</strong> — The <code>run_logs</code> table stores parsed log entries (level, message, timestamp). The Canvas can filter by level, search across runs, and show warnings/errors inline on DAG nodes.</li>
+</ul>
+<p>The execution engine pipes stdout/stderr to the log file and optionally parses Python <code>logging</code>-formatted lines into the <code>run_logs</code> table.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="checksumming">
+<h3>Tiered Checksumming</h3>
+<p>Data inside the managed store has a verified chain of custody. Once it leaves the system (via export or manual copy), it's the user's responsibility. The system doesn't prevent tampering — it <strong>detects</strong> it.</p>
+
+<h4>Three Trust Zones</h4>
+<table>
+  <thead><tr><th>Zone</th><th>Location</th><th>Protection</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Verified</strong></td><td><code>.runs/</code></td><td>Read-only permissions + checksum manifests. Only the execution engine writes here.</td></tr>
+    <tr><td><strong>Browsable</strong></td><td><code>views/</code></td><td>Symlinks to read-only targets. Can't modify through symlinks.</td></tr>
+    <tr><td><strong>User</strong></td><td>Exported copies</td><td>User-owned. Includes provenance manifest for optional verification.</td></tr>
+  </tbody>
+</table>
+
+<h4>Read-Only After Completion</h4>
+<p>When a run finishes, the engine locks the run directory:</p>
+<ol>
+  <li>Hash output files and write <code>.manifest.json</code></li>
+  <li>Set all files to read-only (<code>chmod 444</code> / NTFS deny-write ACL)</li>
+  <li>Update the database with artifact paths, sizes, and checksums</li>
+</ol>
+
+<h4>Tiered Hashing</h4>
+<p>Not all outputs are created equal. A single <code>output.parquet</code> file is cheap to hash. A directory of 3,000 TIF tiles is not. Three tiers:</p>
+<table>
+  <thead><tr><th>Tier</th><th>What It Checks</th><th>Speed (3K TIFs)</th><th>When Used</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Directory fingerprint</strong></td><td>File count + names + sizes</td><td>&lt; 1 second</td><td>Every time: finalization, upstream load, verify</td></tr>
+    <tr><td><strong>Spot-check sampling</strong></td><td>Full SHA-256 of N random files</td><td>~5–10 seconds (N=10)</td><td>At finalization + thorough verify</td></tr>
+    <tr><td><strong>Full content hash</strong></td><td>SHA-256 of every file</td><td>~5–15 minutes</td><td>Only on full verify or before publication</td></tr>
+  </tbody>
+</table>
+<p>The threshold: ≤50 files → full hash everything. &gt;50 files → directory fingerprint + 10 random spot-checks.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="upstream-verify">
+<h3>Upstream Verification</h3>
+<p>The execution engine verifies upstream data <strong>before every run</strong>. If a checksum fails, the run refuses to start:</p>
+<pre><code>ERROR: Upstream run 00000003 has been tampered with.
+  File: output.parquet
+  Expected checksum: sha256:a3f7c2...
+  Actual checksum:   sha256:9b1e44...
+
+  Options:
+    1. Re-run upstream step to regenerate clean data
+    2. Override with reason (logged in DB)</code></pre>
+
+<div class="callout">
+  <strong>Override with audit trail.</strong> The system isn't a prison. Researchers can bypass integrity checks with a documented override, which logs the reason, the user, and the timestamp in the database. Every result generated through the normal flow has a verified chain of custody; overrides are clearly marked.
+</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="error-handling">
+<h3>Error Handling</h3>
+<p>The system adheres to ACID transactions — database operations either fully commit or fully roll back. The main risk is a split between the filesystem and the database: the DB commits but the artifact write fails, or vice versa.</p>
+
+<h4>Write-First Strategy</h4>
+<p>The execution engine follows a strict order:</p>
+<ol>
+  <li><strong>Write artifacts to <code>.runs/{id}/</code></strong> — the filesystem operation happens first</li>
+  <li><strong>Hash and lock the artifacts</strong> — create <code>.manifest.json</code>, set read-only</li>
+  <li><strong>Commit to the database</strong> — insert <code>run_outputs</code>, update <code>runs.status = 'completed'</code></li>
+</ol>
+<p>If the DB commit fails after artifacts are written, the orphan files in <code>.runs/</code> are harmless — they can be detected and cleaned up (run directories with no matching DB record). This is simpler and safer than the reverse, where a DB record points to missing files.</p>
+
+<h4>Failed Runs</h4>
+<p>If <code>run.py</code> crashes mid-execution:</p>
+<ul>
+  <li>The run directory may contain partial outputs</li>
+  <li>The DB record stays at <code>status = 'running'</code></li>
+  <li>The <code>run.log</code> file contains the traceback</li>
+  <li>No <code>.manifest.json</code> is created (finalization didn't happen)</li>
+  <li>A cleanup sweep can detect stale <code>running</code> records with no heartbeat and mark them <code>failed</code></li>
+</ul>
+</section>
+</section>
+
+<!-- ============================================================ -->
+<section id="architecture">
+<h2>Architecture</h2>
+<p>Now that all the pieces are described, here's how they connect:</p>
+<div class="mermaid">
+graph TB
+  subgraph Authoring["Method Authoring"]
+    HP[helper.py — functions]
+    RP[run.py — main function]
+    PX[pixi.toml — environment]
+  end
+
+  subgraph Frontend["Workflow Canvas"]
+    WIZ[Registration Wizard]
+    WC[Visual DAG Builder]
+    PARAM[Run Parameterization]
+    MON[Execution Monitor]
+  end
+
+  subgraph Registration["Registration Wizard Steps"]
+    S1["1. Select Files"]
+    S2["2. Pick Tracked Functions"]
+    S3["3. Define Outputs"]
+    S4["4. Review & Register"]
+    S1 --> S2 --> S3 --> S4
+  end
+
+  subgraph DB["Postgres (ACID)"]
+    MOD[modules]
+    MTH[methods]
+    MV[method_versions]
+    TF[tracked_functions]
+    PD[param_defs]
+    PS[param_sets]
+    RN[runs]
+    RI[run_inputs]
+    RO[run_outputs]
+    RL[run_logs]
+    OC[output_contracts]
+    WT[workflow_templates]
+    EP[execution_plans]
+  end
+
+  subgraph Execution
+    NF[Nextflow]
+    CLI["wfc CLI bridge"]
+    PIX[Pixi environments]
+    DK[Docker containers]
+  end
+
+  subgraph Storage["Artifact Storage"]
+    RS[".runs/ global store"]
+    VW["views/ symlinks"]
+    MF[".manifest.json checksums"]
+    LOG["run.log per run"]
+  end
+
+  subgraph Docs
+    DF[dFlow]
+  end
+
+  HP & RP & PX --> WIZ
+  WIZ --> S1
+  S4 -->|writes| MOD & MTH & MV & TF & PD & OC
+  WC -->|reads/writes| WT
+  PARAM -->|creates| EP
+  MON -->|reads| RN & RL
+  EP -->|generates| NF
+  NF --> PIX & DK
+  NF -->|each process calls| CLI
+  CLI -->|registers & completes| RN
+  CLI -->|writes artifacts| RS
+  RS ---|integrity| MF
+  RS -->|generates| VW
+  RS ---|captures| LOG
+  HP & RP -.->|scans| DF
+  DF -->|generates| WMD[".workflow.md"]
+
+  style DB fill:#198754,color:#fff
+  style NF fill:#4361ee,color:#fff
+  style Storage fill:#fd7e14,color:#fff
+</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="mvp">
+<h2>MVP Prototype</h2>
+<p>The MVP proves one thing: <strong>define a branched pipeline in the Canvas, fan it out across samples, execute it via Nextflow, and trace any result back through the full lineage tree.</strong> Everything else is polish.</p>
+
+<section id="mvp-scope">
+<h3>Scope &amp; Non-Goals</h3>
+
+<h4>The demo</h4>
+<p>3 Python scripts (same pixi environment), 2 samples. The Canvas shows a 3-step pipeline. User hits Run, provides the sample list. The system generates a <code>.nf</code> file, Nextflow executes all 6 runs (3 steps × 2 samples), artifacts land in <code>.runs/</code>, the DB records everything, and the Canvas shows a lineage tree where clicking run 6 traces back through runs 4 → 2 → 1.</p>
+
+<h4>In scope</h4>
+<ul>
+  <li>Postgres DB (reduced tables)</li>
+  <li>Nextflow <code>.nf</code> file generation from Canvas DAG</li>
+  <li><code>wfc</code> CLI bridge (register_run / complete_run)</li>
+  <li>Canvas: DAG builder, parameterization, execution monitor, lineage view</li>
+  <li><code>.runs/</code> flat artifact store with <code>meta.json</code></li>
+  <li>Methods seeded manually (SQL insert or seed script)</li>
+</ul>
+
+<h4>Out of scope</h4>
+<ul>
+  <li>Registration wizard (manual seeding instead)</li>
+  <li>dFlow / workflow documentation</li>
+  <li>Method versioning (hardcoded v1)</li>
+  <li>Parameter deduplication / fingerprints</li>
+  <li>Output contracts / validation</li>
+  <li>Views / symlinks</li>
+  <li>Integrity / checksumming</li>
+  <li>Exploratory mode</li>
+  <li>Duplicate run detection</li>
+  <li>Git auto-commit</li>
+</ul>
+</section>
+
+<!-- ============================================================ -->
+<section id="mvp-schema">
+<h3>Reduced Schema (7 tables)</h3>
+<p>Just enough to record methods, runs, and lineage:</p>
+
+<div class="mermaid">
+erDiagram
+    modules ||--o{ methods : contains
+    methods ||--o{ tracked_functions : has
+    tracked_functions ||--o{ param_defs : has
+    methods ||--o{ runs : executes
+    runs ||--o{ run_inputs : consumes
+    runs ||--o{ run_outputs : produces
+
+    modules {
+        int id PK
+        text name UK
+        text description
+    }
+    methods {
+        int id PK
+        int module_id FK
+        text name
+        text script_path
+    }
+    tracked_functions {
+        int id PK
+        int method_id FK
+        text function_name
+        int ordinal
+    }
+    param_defs {
+        int id PK
+        int tracked_function_id FK
+        text param_name
+        text param_type
+        text default_value
+    }
+    runs {
+        int id PK
+        int method_id FK
+        jsonb params
+        text sample
+        text status
+        text nf_process_name
+        timestamp started_at
+        timestamp finished_at
+    }
+    run_inputs {
+        int id PK
+        int run_id FK
+        int source_run_id FK
+        text input_name
+        text artifact_path
+    }
+    run_outputs {
+        int id PK
+        int run_id FK
+        text output_name
+        text artifact_path
+        text artifact_type
+    }
+</div>
+
+<h4>MVP Simplifications</h4>
+<ul>
+  <li><strong>No <code>param_sets</code></strong> — params stored directly as JSONB on <code>runs</code>. Deduplication can be added later.</li>
+  <li><strong>No <code>method_versions</code></strong> — implicit v1. The FK can be added later without changing the rest.</li>
+  <li><strong>No <code>execution_plans</code> or <code>workflow_templates</code></strong> — the Canvas stores the DAG in memory and generates the <code>.nf</code> directly. Templates saved to DB come later.</li>
+  <li><strong><code>runs.sample</code></strong> — denormalized sample name so lineage queries are simple. No separate samples table.</li>
+  <li><strong><code>runs.nf_process_name</code></strong> — links the DB record to the Nextflow process for log correlation.</li>
+</ul>
+</section>
+
+<!-- ============================================================ -->
+<section id="mvp-nf">
+<h3>Nextflow Generation</h3>
+<p>The system generates a <strong>concrete, disposable <code>.nf</code> file</strong> for each execution. No Nextflow params, no config files, no reusable templates. Everything is hardcoded. The <code>.nf</code> file is a throwaway build artifact; the DB is the record of truth.</p>
+
+<h4>Generation Strategy</h4>
+<p>The Canvas DAG has N method nodes with edges. The user provides a sample list. The generator produces a DSL2 <code>.nf</code> file where:</p>
+<ol>
+  <li>Each method → one Nextflow <code>process</code></li>
+  <li>The sample list → a <code>Channel.fromList()</code></li>
+  <li>Each edge in the DAG → a channel connecting output to input</li>
+  <li>Params for each process are hardcoded in the script block</li>
+  <li>Each process script calls the <code>wfc</code> CLI at start and end</li>
+</ol>
+
+<h4>Example: Generated <code>.nf</code> file</h4>
+<p>Given a Canvas DAG of <code>preprocess → filter → label</code> with samples <code>["Pa16c", "CFPAC"]</code>:</p>
+
+<pre><code>nextflow.enable.dsl = 2
+
+process preprocess {
+    input:
+        val sample
+    output:
+        tuple val(sample), path("output.parquet")
+    script:
+    """
+    RUN_ID=\$(python -m wfc.register_run \\
+        --method preprocess \\
+        --sample ${sample})
+
+    pixi run python methods/data_preprocessing/preprocess/run.py \\
+        --sample ${sample} \\
+        --output output.parquet \\
+        --threshold 0.5
+
+    python -m wfc.complete_run \\
+        --run-id \$RUN_ID \\
+        --status completed \\
+        --output output.parquet
+    """
+}
+
+process filter_cells {
+    input:
+        tuple val(sample), path(input_file)
+    output:
+        tuple val(sample), path("filtered.parquet")
+    script:
+    """
+    PARENT_ID=\$(python -m wfc.lookup_run \\
+        --method preprocess --sample ${sample})
+
+    RUN_ID=\$(python -m wfc.register_run \\
+        --method filter_cells \\
+        --sample ${sample} \\
+        --parent-run-id \$PARENT_ID)
+
+    pixi run python methods/data_preprocessing/filter_cells/run.py \\
+        --input ${input_file} \\
+        --output filtered.parquet \\
+        --min_quality 0.8
+
+    python -m wfc.complete_run \\
+        --run-id \$RUN_ID \\
+        --status completed \\
+        --output filtered.parquet
+    """
+}
+
+process label {
+    input:
+        tuple val(sample), path(input_file)
+    output:
+        tuple val(sample), path("labeled.parquet")
+    script:
+    """
+    PARENT_ID=\$(python -m wfc.lookup_run \\
+        --method filter_cells --sample ${sample})
+
+    RUN_ID=\$(python -m wfc.register_run \\
+        --method label \\
+        --sample ${sample} \\
+        --parent-run-id \$PARENT_ID)
+
+    pixi run python methods/data_labeling/label/run.py \\
+        --input ${input_file} \\
+        --output labeled.parquet
+
+    python -m wfc.complete_run \\
+        --run-id \$RUN_ID \\
+        --status completed \\
+        --output labeled.parquet
+    """
+}
+
+workflow {
+    samples_ch = Channel.fromList(["Pa16c", "CFPAC"])
+    preprocess_out = preprocess(samples_ch)
+    filter_out = filter_cells(preprocess_out)
+    label(filter_out)
+}</code></pre>
+
+<h4>DAG Shapes Handled</h4>
+<table>
+  <thead><tr><th>Shape</th><th>Example</th><th>Nextflow Mapping</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Linear chain</strong></td><td>A → B → C</td><td>Channels pipe output to input sequentially</td></tr>
+    <tr><td><strong>Fan-out</strong></td><td>A → B, A → C</td><td>A's output channel is consumed by both B and C (Nextflow handles this natively with <code>into</code>)</td></tr>
+    <tr><td><strong>Fan-in</strong></td><td>B → D, C → D</td><td>D takes a merged channel from B and C (via <code>mix</code> or <code>join</code>)</td></tr>
+    <tr><td><strong>Diamond</strong></td><td>A → B → D, A → C → D</td><td>Combination of fan-out and fan-in</td></tr>
+  </tbody>
+</table>
+
+<div class="callout">
+  <strong>One <code>.nf</code> per execution.</strong> No attempt at reuse. If the user changes one parameter and re-runs, a brand new <code>.nf</code> is generated. Old <code>.nf</code> files are kept in <code>.runs/plans/{timestamp}/pipeline.nf</code> for debugging but are never re-executed.
+</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="mvp-wfc-cli">
+<h3>wfc CLI Bridge</h3>
+<p>A minimal Python CLI with 3 commands, called by Nextflow process scripts:</p>
+
+<table>
+  <thead><tr><th>Command</th><th>What It Does</th><th>Returns</th></tr></thead>
+  <tbody>
+    <tr><td><code>wfc register_run</code></td><td>Inserts a <code>runs</code> row with <code>status='running'</code>, writes <code>started_at</code></td><td>Run ID (printed to stdout)</td></tr>
+    <tr><td><code>wfc complete_run</code></td><td>Updates <code>runs.status</code>, writes <code>finished_at</code>, inserts <code>run_outputs</code>, copies artifacts to <code>.runs/{id}/</code>, writes <code>meta.json</code></td><td>Nothing (exit 0 on success)</td></tr>
+    <tr><td><code>wfc lookup_run</code></td><td>Finds the most recent completed run for a given method + sample</td><td>Run ID (for wiring parent_run_id)</td></tr>
+  </tbody>
+</table>
+
+<h4>Artifact Routing</h4>
+<p>When <code>wfc complete_run</code> is called:</p>
+<ol>
+  <li>Creates <code>.runs/{run_id}/</code> directory</li>
+  <li>Copies the output file(s) into it</li>
+  <li>Writes <code>meta.json</code> with run metadata</li>
+  <li>Captures <code>run.log</code> (Nextflow already captures stdout/stderr per process via <code>.command.log</code> — copy it)</li>
+  <li>Inserts <code>run_outputs</code> rows with artifact paths</li>
+  <li>Inserts <code>run_inputs</code> row with <code>source_run_id</code> pointing to the parent run</li>
+</ol>
+
+<p>The <code>run_inputs.source_run_id</code> FK is what creates the lineage chain. Every run knows which upstream run produced its input data.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="mvp-canvas">
+<h3>Canvas MVP</h3>
+<p>The Canvas for the MVP has 4 views, all reading from the same Postgres database:</p>
+
+<h4>1. Method Palette</h4>
+<p>Sidebar listing all registered methods (from <code>GET /methods</code>). Shows method name, module, and parameter list. No registration wizard — methods are seeded into the DB manually or via seed script.</p>
+
+<h4>2. DAG Builder</h4>
+<p>LiteGraph.js canvas where the user drags methods from the palette, places them as nodes, and draws edges to connect outputs to inputs. Each node shows its parameter fields (from <code>param_defs</code>) with editable values. A "Samples" input at the top lets the user type a comma-separated list of sample names.</p>
+
+<h4>3. Execution Monitor</h4>
+<p>After hitting "Run":</p>
+<ol>
+  <li>The Canvas sends the DAG + params + samples to <code>POST /execute</code></li>
+  <li>The backend generates the <code>.nf</code> file and launches <code>nextflow run pipeline.nf</code></li>
+  <li>The Canvas polls <code>GET /runs?execution_id=X</code> and updates node badges: ⏳ pending → 🔄 running → ✅ completed / ❌ failed</li>
+  <li>Clicking a node shows its <code>run.log</code> and output file listing</li>
+</ol>
+
+<h4>4. Lineage View</h4>
+<p>The key view. Click any completed run and see its full ancestry:</p>
+<div class="mermaid">
+graph LR
+    R1["Run 1\npreprocess\nPa16c"] --> R3["Run 3\nfilter_cells\nPa16c"]
+    R3 --> R5["Run 5\nlabel\nPa16c"]
+    R2["Run 2\npreprocess\nCFPAC"] --> R4["Run 4\nfilter_cells\nCFPAC"]
+    R4 --> R6["Run 6\nlabel\nCFPAC"]
+    
+    style R5 fill:#198754,color:#fff,stroke-width:3px
+    style R6 fill:#198754,color:#fff,stroke-width:3px
+</div>
+<p>Clicking Run 5 highlights the chain: Run 5 ← Run 3 ← Run 1. The panel shows: sample = Pa16c, method = label, params = {…}, input came from Run 3 (filter_cells), which came from Run 1 (preprocess). Full provenance in one click.</p>
+
+<p>The lineage query is a recursive CTE on <code>run_inputs.source_run_id</code>:</p>
+<pre><code>WITH RECURSIVE lineage AS (
+    -- Start from the clicked run
+    SELECT r.id, r.method_id, r.sample, r.status, ri.source_run_id
+    FROM runs r
+    LEFT JOIN run_inputs ri ON ri.run_id = r.id
+    WHERE r.id = 5   -- clicked run
+
+    UNION ALL
+
+    -- Walk up the chain
+    SELECT r.id, r.method_id, r.sample, r.status, ri.source_run_id
+    FROM runs r
+    LEFT JOIN run_inputs ri ON ri.run_id = r.id
+    JOIN lineage l ON l.source_run_id = r.id
+)
+SELECT * FROM lineage;</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="mvp-lineage">
+<h3>Lineage: The Core Feature</h3>
+<p>Lineage isn't a feature — it's THE feature. Everything else (the Canvas, Nextflow, the DB) exists to make this one thing work: <strong>click a result, see exactly how it was produced.</strong></p>
+
+<p>For each run in the lineage chain, the panel shows:</p>
+<ul>
+  <li><strong>Method</strong> — what code ran</li>
+  <li><strong>Sample</strong> — what data it processed</li>
+  <li><strong>Parameters</strong> — every setting that was used</li>
+  <li><strong>Input</strong> — which upstream run produced its input (clickable link)</li>
+  <li><strong>Output</strong> — what files it produced (viewable/downloadable)</li>
+  <li><strong>Timestamps</strong> — when it started and finished</li>
+  <li><strong>Status</strong> — completed / failed</li>
+  <li><strong>Log</strong> — full stdout/stderr</li>
+</ul>
+
+<p>This is what you show your coworkers. Not the schema, not the Nextflow DSL — the lineage view. "I clicked this result and I can see every step and parameter that produced it."</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="mvp-phases">
+<h3>Build Phases</h3>
+<table>
+  <thead><tr><th>Phase</th><th>What</th><th>Deliverable</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>1. DB + wfc CLI</strong></td>
+      <td>Postgres schema (7 tables), SQLAlchemy models, <code>wfc register_run</code> / <code>complete_run</code> / <code>lookup_run</code>, seed script with 3 methods</td>
+      <td>Run <code>wfc register_run --method preprocess --sample Pa16c</code> from terminal, see the row in the DB</td>
+    </tr>
+    <tr>
+      <td><strong>2. Nextflow gen + execution</strong></td>
+      <td>Python function that takes a DAG definition (JSON) + sample list + params → generates <code>.nf</code> file. Run it manually: <code>nextflow run pipeline.nf</code>. wfc CLI populates DB.</td>
+      <td>3 scripts × 2 samples = 6 runs in the DB with full lineage chain. Query with the recursive CTE and see the tree.</td>
+    </tr>
+    <tr>
+      <td><strong>3. FastAPI + Canvas</strong></td>
+      <td>REST endpoints for methods, runs, lineage. Canvas frontend: drag methods, wire them, set params, type samples, hit Run. Poll for status. Click node → see lineage.</td>
+      <td>The full demo: build a pipeline visually, run it, trace any result.</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="callout">
+  <strong>Phase 1 and 2 have no UI.</strong> They're backend-only and testable from the terminal. This means you can validate that the DB schema, wfc CLI, and Nextflow generation all work correctly before touching any frontend code. The Canvas (Phase 3) is a skin over a working system.
+</div>
+</section>
+</section>
+
+<!-- ============================================================ -->
+<section id="status">
+<h2>What Exists Today</h2>
+<table>
+  <thead><tr><th>Component</th><th>Status</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>Pipeline notebooks</td><td><span class="badge badge-done">Done</span></td><td>Regionprops → QC → Ploidy → Labeling → Analysis</td></tr>
+    <tr><td>dFlow comment-based</td><td><span class="badge badge-done">Done</span></td><td>Generates .workflow.md from Step markers</td></tr>
+    <tr><td>dFlow decorators</td><td><span class="badge badge-wip">WIP</span></td><td>@workflow, @task, WorkflowRegistry, AST scanning</td></tr>
+    <tr><td>Workflow Canvas frontend</td><td><span class="badge badge-wip">WIP</span></td><td>LiteGraph.js + FastAPI, basic DAG rendering</td></tr>
+    <tr><td>Registration wizard (Canvas)</td><td><span class="badge badge-planned">Planned</span></td><td>4-step guided flow: files → functions → outputs → register</td></tr>
+    <tr><td>Postgres database</td><td><span class="badge badge-planned">Planned</span></td><td>15-table schema: modules, methods, method_versions, runs, etc.</td></tr>
+    <tr><td>Parameter deduplication</td><td><span class="badge badge-planned">Planned</span></td><td>Fingerprint-based param_sets, duplicate run detection</td></tr>
+    <tr><td>Output contracts</td><td><span class="badge badge-planned">Planned</span></td><td>Per-module output shape validation</td></tr>
+    <tr><td>Run parameterization (Canvas)</td><td><span class="badge badge-planned">Planned</span></td><td>Configure runs in the Canvas UI with upstream data selection</td></tr>
+    <tr><td>Nextflow export</td><td><span class="badge badge-planned">Planned</span></td><td>Canvas DAG → .nf file, pixi/Docker execution</td></tr>
+    <tr><td>Method versioning + git</td><td><span class="badge badge-planned">Planned</span></td><td>Auto-commit per version, git tags, structured diffs</td></tr>
+    <tr><td>Exploratory Mode</td><td><span class="badge badge-planned">Planned</span></td><td>Spawn pre-wired notebooks from Canvas for interactive editing</td></tr>
+    <tr><td>Execution plans</td><td><span class="badge badge-planned">Planned</span></td><td>Template + data sources + param branches → Nextflow run tree</td></tr>
+    <tr><td>Workflow templates</td><td><span class="badge badge-planned">Planned</span></td><td>Canvas DAG stored as JSONB in workflow_templates table</td></tr>
+    <tr><td>wfc CLI bridge</td><td><span class="badge badge-planned">Planned</span></td><td>register_run / complete_run called by each Nextflow process</td></tr>
+    <tr><td>Artifact storage (<code>.runs/</code>)</td><td><span class="badge badge-planned">Planned</span></td><td>Global managed flat store with meta.json, views/ symlinks</td></tr>
+    <tr><td>Data integrity</td><td><span class="badge badge-planned">Planned</span></td><td>Tiered checksumming, read-only lock, upstream verification</td></tr>
+    <tr><td>Per-run logging</td><td><span class="badge badge-planned">Planned</span></td><td>run.log files + structured run_logs table</td></tr>
+  </tbody>
+</table>
+</section>
+
+<!-- ============================================================ -->
+<section id="comparisons">
+<h2>Comparisons</h2>
+<p>This system isn't trying to replace any single tool — it fills the gaps between them.</p>
+<table class="compare-table">
+  <thead><tr><th>Tool</th><th>What It Does Well</th><th>Gap This Fills</th></tr></thead>
+  <tbody>
+    <tr><td>W&amp;B</td><td>Beautiful dashboards, team collaboration</td><td>Cloud-only, no notebook-native workflow, no lineage chains</td></tr>
+    <tr><td>Airflow / Prefect</td><td>Production orchestration, scheduling</td><td>Too heavy for exploratory research, DAGs defined in code not visually</td></tr>
+    <tr><td>Nextflow</td><td>HPC pipeline execution, reproducibility</td><td>Doesn't help with interactive exploration or parameter discovery — we use it as the execution engine, not the brain</td></tr>
+    <tr><td>KNIME</td><td>Visual pipeline building, no-code</td><td>Can't integrate with custom Python notebooks, limited extensibility</td></tr>
+    <tr><td>CellProfiler</td><td>Image analysis pipelines</td><td>Domain-specific, no general-purpose downstream tracking</td></tr>
+  </tbody>
+</table>
+<div class="callout">
+  <strong>Key differentiator:</strong> This system is built around the researcher's existing workflow. You write plain Python, register via a visual wizard, and the tracking happens automatically. The Canvas is the brain (design, parameterize, monitor); Nextflow is the muscle (execute, parallelize, resume); Postgres is the memory (lineage, parameters, integrity).
+</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="future">
+<h2>Future Features</h2>
+
+<h3>Tests Per Method</h3>
+<p>Attach test suites directly to methods in the registry. When a method runs, its tests run automatically. Three levels:</p>
+<ul>
+  <li><strong>Contract tests</strong> — Does the output match the declared schema?</li>
+  <li><strong>Sanity tests</strong> — Row count &gt; 0, no NaN in label columns, no duplicate cell IDs</li>
+  <li><strong>Domain tests</strong> — Proliferation rate between 5-80%, intensity values in expected range</li>
+</ul>
+<p>This turns every pipeline step into a validated, testable unit without requiring researchers to write test frameworks from scratch.</p>
+
+<h3>CLI Interface</h3>
+<p>An optional command-line interface for power users who want to script operations outside the Canvas GUI. This is not a priority — the Canvas is the primary interface — but could be added later for automation and scripting.</p>
+
+</section>
+
+</main>
+</div>
+
+<script>
+mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'loose' });
+
+// Active section highlighting
+const links = document.querySelectorAll('.sidebar a[href^="#"]');
+const sections = document.querySelectorAll('section[id]');
+
+const observer = new IntersectionObserver(entries => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      links.forEach(l => l.classList.remove('active'));
+      const active = document.querySelector(`.sidebar a[href="#${entry.target.id}"]`);
+      if (active) active.classList.add('active');
+    }
+  });
+}, { rootMargin: '-20% 0px -60% 0px' });
+
+sections.forEach(s => observer.observe(s));
+
+// Theme toggle
+function toggleTheme() {
+  const current = document.documentElement.getAttribute('data-theme');
+  const next = current === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next === 'dark' ? 'dark' : '');
+  localStorage.setItem('theme', next);
+}
+const saved = localStorage.getItem('theme');
+if (saved === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+
+// Smooth scroll
+links.forEach(link => {
+  link.addEventListener('click', e => {
+    e.preventDefault();
+    document.querySelector(link.getAttribute('href'))?.scrollIntoView({ behavior: 'smooth' });
+  });
+});
+</script>
+</body>
+</html>

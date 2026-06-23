@@ -1,0 +1,28 @@
+# tests/fixtures/methods/scale/method.yaml
+# Multiply 'value' column by factor, round to `precision` decimals.
+inputs:
+  data:
+    type: csv
+    required: true
+    description: "Input CSV with a numeric 'value' column"
+
+outputs:
+  output:
+    type: csv
+    required: true
+    description: "Scaled CSV"
+
+params:
+  factor:
+    type: float
+    required: false
+    default: 1.0
+    description: "Multiplier applied to the 'value' column"
+  precision:
+    type: int
+    required: false
+    default: 2
+    description: "Decimal places to round the scaled value to"
+
+executor: python
+env: inherit

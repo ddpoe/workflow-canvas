@@ -1,0 +1,37 @@
+# Multiply 'value' column by factor, round to `precision` decimals (decorated form).
+inputs:
+  data:
+    type: csv
+    required: true
+    description: "Input CSV with a numeric 'value' column"
+    columns:
+      strict:
+        - id
+        - value
+
+outputs:
+  output:
+    type: csv
+    required: true
+    description: "Scaled CSV"
+    columns:
+      strict:
+        - id
+        - value
+
+params:
+  factor:
+    type: float
+    required: false
+    default: 1.0
+    description: "Multiplier applied to the 'value' column"
+  precision:
+    type: int
+    required: false
+    default: 2
+    description: "Decimal places to round the scaled value to"
+    constraints:
+      min: 0
+
+executor: python
+env: inherit

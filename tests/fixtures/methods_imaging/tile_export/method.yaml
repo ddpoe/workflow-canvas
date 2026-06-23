@@ -1,0 +1,13 @@
+# 1-hop from build_config: reads config, writes tiles.
+inputs:
+  config:
+    type: csv
+    required: true
+
+outputs:
+  tiles:
+    type: csv
+    required: true
+
+executor: python
+env: inherit

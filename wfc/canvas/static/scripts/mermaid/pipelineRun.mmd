@@ -1,0 +1,14 @@
+---
+title: pipelineRun
+---
+stateDiagram-v2
+  [*] --> idle
+  [*] --> idle: RESET
+  idle --> preflight: RUN_CLICKED
+  preflight --> submitting: onDone
+  preflight --> submitting: onError
+  submitting --> polling: onDone
+  submitting --> idle: onError
+  polling --> done: PIPELINE_DONE
+  polling --> done: USER_STOP
+  done --> preflight: RUN_CLICKED

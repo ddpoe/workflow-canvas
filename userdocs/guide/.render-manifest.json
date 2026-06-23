@@ -1,0 +1,50 @@
+{
+  "canvas.md": {
+    "doc_id": "pm_mvp::docs.consumer.canvas",
+    "hash": "9f0f320a9a4e"
+  },
+  "explanation/caching-and-reproducibility.md": {
+    "doc_id": "pm_mvp::docs.consumer.explanation.caching-and-reproducibility",
+    "hash": "855bd9c5fd1a"
+  },
+  "explanation/how-a-run-executes.md": {
+    "doc_id": "pm_mvp::docs.consumer.explanation.how-a-run-executes",
+    "hash": "470fe36dca67"
+  },
+  "explanation/storage-and-provenance.md": {
+    "doc_id": "pm_mvp::docs.consumer.explanation.storage-and-provenance",
+    "hash": "5f6783c3c90c"
+  },
+  "getting-started.md": {
+    "doc_id": "pm_mvp::docs.consumer.getting-started",
+    "hash": "e58c2aa8dfe5"
+  },
+  "how-to/sweep-parameters-and-fan-out.md": {
+    "doc_id": "pm_mvp::docs.consumer.how-to.sweep-parameters-and-fan-out",
+    "hash": "787c114af7c8"
+  },
+  "inspecting-results.md": {
+    "doc_id": "pm_mvp::docs.consumer.inspecting-results",
+    "hash": "ed5b2bccf1d1"
+  },
+  "project-anatomy.md": {
+    "doc_id": "pm_mvp::docs.consumer.project-anatomy",
+    "hash": "111b92d1b97d"
+  },
+  "registration.md": {
+    "doc_id": "pm_mvp::docs.consumer.registration",
+    "hash": "9e2e6d7b7ded"
+  },
+  "tutorials/registering-an-environment.md": {
+    "doc_id": "pm_mvp::docs.consumer.tutorials.registering-an-environment",
+    "hash": "6d2b0c7454b5"
+  },
+  "tutorials/writing-contracts.md": {
+    "doc_id": "pm_mvp::docs.consumer.tutorials.writing-contracts",
+    "hash": "9a0ec8852838"
+  },
+  "writing-methods.md": {
+    "doc_id": "pm_mvp::docs.consumer.writing-methods",
+    "hash": "efaf02366f71"
+  }
+}

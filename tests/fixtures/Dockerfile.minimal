@@ -1,0 +1,27 @@
+# Minimal image for ADR-019 Cycle D Tier 3 integration smoke test.
+#
+# Installs the `wfc` package + the handful of runtime deps `wfc/__init__.py`
+# pulls in at import time (pandas, sqlmodel, snakemake, etc.). The container
+# only needs enough to execute `python -m wfc run-step`; the rest of the
+# project's dev-dependency surface is intentionally absent so the image
+# stays small. The container dispatch branch strips PYTHONPATH per Cycle D
+# constraint, so the package MUST be installed (no bind-mount + PYTHONPATH).
+FROM python:3.11-slim
+
+# git is required at runtime by wfc's pre_run (cache-key computation reads
+# git SHAs) and by DVC. Without it wfc bails with "No such file or directory:
+# 'git'" before reaching the method body.
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Copy package metadata + source. README.md is referenced by pyproject.toml.
+COPY pyproject.toml README.md ./
+COPY wfc ./wfc
+
+# Install wfc with its declared dependencies so the import surface (`pandas`,
+# `sqlmodel`, `snakemake`, `dvc`, etc.) resolves inside the container.
+RUN pip install .
+
+WORKDIR /work

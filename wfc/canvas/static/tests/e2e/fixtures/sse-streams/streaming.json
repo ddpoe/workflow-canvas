@@ -1,0 +1,154 @@
+{
+  "topology": "streaming",
+  "node": "node_heartbeat",
+  "recordedAt": "2026-05-01T22:34:00.738Z",
+  "events": [
+    {
+      "delayMs": 1600,
+      "eventType": "stdout",
+      "data": {
+        "data": "[heartbeat] starting Â· duration=5.0s Â· ticks=15 Â· rows=10"
+      }
+    },
+    {
+      "delayMs": 200,
+      "eventType": "stdout",
+      "data": {
+        "data": "[heartbeat] tick 1/15 Â· t=342ms Â· rows=10"
+      }
+    },
+    {
+      "delayMs": 400,
+      "eventType": "stdout",
+      "data": {
+        "data": "[heartbeat] tick 2/15 Â· t=671ms Â· rows=10"
+      }
+    },
+    {
+      "delayMs": 400,
+      "eventType": "stdout",
+      "data": {
+        "data": "[heartbeat] tick 3/15 Â· t=1000ms Â· rows=10"
+      }
+    },
+    {
+      "delayMs": 200,
+      "eventType": "stdout",
+      "data": {
+        "data": "[heartbeat] tick 4/15 Â· t=1342ms Â· rows=10"
+      }
+    },
+    {
+      "delayMs": 0,
+      "eventType": "stderr",
+      "data": {
+        "data": "[heartbeat warn] tick 4/15 hit stderr checkpoint at t=1342ms"
+      }
+    },
+    {
+      "delayMs": 400,
+      "eventType": "stdout",
+      "data": {
+        "data": "[heartbeat] tick 5/15 Â· t=1671ms Â· rows=10"
+      }
+    },
+    {
+      "delayMs": 200,
+      "eventType": "stdout",
+      "data": {
+        "data": "[heartbeat] tick 6/15 Â· t=2000ms Â· rows=10"
+      }
+    },
+    {
+      "delayMs": 400,
+      "eventType": "stdout",
+      "data": {
+        "data": "[heartbeat] tick 7/15 Â· t=2342ms Â· rows=10"
+      }
+    },
+    {
+      "delayMs": 200,
+      "eventType": "stdout",
+      "data": {
+        "data": "[heartbeat] tick 8/15 Â· t=2671ms Â· rows=10"
+      }
+    },
+    {
+      "delayMs": 0,
+      "eventType": "stderr",
+      "data": {
+        "data": "[heartbeat warn] tick 8/15 hit stderr checkpoint at t=2671ms"
+      }
+    },
+    {
+      "delayMs": 400,
+      "eventType": "stdout",
+      "data": {
+        "data": "[heartbeat] tick 9/15 Â· t=3000ms Â· rows=10"
+      }
+    },
+    {
+      "delayMs": 400,
+      "eventType": "stdout",
+      "data": {
+        "data": "[heartbeat] tick 10/15 Â· t=3342ms Â· rows=10"
+      }
+    },
+    {
+      "delayMs": 200,
+      "eventType": "stdout",
+      "data": {
+        "data": "[heartbeat] tick 11/15 Â· t=3671ms Â· rows=10"
+      }
+    },
+    {
+      "delayMs": 400,
+      "eventType": "stdout",
+      "data": {
+        "data": "[heartbeat] tick 12/15 Â· t=4014ms Â· rows=10"
+      }
+    },
+    {
+      "delayMs": 0,
+      "eventType": "stderr",
+      "data": {
+        "data": "[heartbeat warn] tick 12/15 hit stderr checkpoint at t=4014ms"
+      }
+    },
+    {
+      "delayMs": 400,
+      "eventType": "stdout",
+      "data": {
+        "data": "[heartbeat] tick 13/15 Â· t=4342ms Â· rows=10"
+      }
+    },
+    {
+      "delayMs": 200,
+      "eventType": "stdout",
+      "data": {
+        "data": "[heartbeat] tick 14/15 Â· t=4671ms Â· rows=10"
+      }
+    },
+    {
+      "delayMs": 400,
+      "eventType": "stdout",
+      "data": {
+        "data": "[heartbeat] tick 15/15 Â· t=5014ms Â· rows=10"
+      }
+    },
+    {
+      "delayMs": 0,
+      "eventType": "stdout",
+      "data": {
+        "data": "[heartbeat] done Â· total=5014ms"
+      }
+    },
+    {
+      "delayMs": 200,
+      "eventType": "terminal",
+      "data": {
+        "status": "success"
+      }
+    }
+  ]
+}

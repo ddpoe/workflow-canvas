@@ -1,0 +1,20 @@
+# Skip-level fan-in: config arrives 3 hops upstream from build_config;
+# corrected is immediate from illum_correct. The primary Phase 1
+# exercise — RunDetailPanel should show both parent chips.
+inputs:
+  config:
+    type: csv
+    required: true
+    description: "Config from build_config (3-hop skip)"
+  corrected:
+    type: csv
+    required: true
+    description: "Corrected tiles from illum_correct (immediate)"
+
+outputs:
+  stitched:
+    type: csv
+    required: true
+
+executor: python
+env: inherit

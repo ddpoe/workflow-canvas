@@ -1,0 +1,23 @@
+# tests/fixtures/methods/transform/method.yaml
+# Reads a CSV, adds a computed column, writes the result.
+inputs:
+  data:
+    type: csv
+    required: true
+    description: "Input CSV to transform"
+
+outputs:
+  output:
+    type: csv
+    required: true
+    description: "Transformed CSV with added column"
+
+params:
+  suffix:
+    type: str
+    required: false
+    default: "_transformed"
+    description: "Suffix appended to new column name"
+
+executor: python
+env: inherit

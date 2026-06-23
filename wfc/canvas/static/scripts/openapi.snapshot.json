@@ -1,0 +1,2440 @@
+{
+  "components": {
+    "schemas": {
+      "ContractSpec": {
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "required": {
+            "default": true,
+            "title": "Required",
+            "type": "boolean"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          },
+          "value_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value Type"
+          }
+        },
+        "required": [
+          "type",
+          "name"
+        ],
+        "title": "ContractSpec",
+        "type": "object"
+      },
+      "ExportArtifactsRequest": {
+        "properties": {
+          "file_types": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Types"
+          },
+          "run_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Ids"
+          }
+        },
+        "title": "ExportArtifactsRequest",
+        "type": "object"
+      },
+      "ExportCSVsRequest": {
+        "properties": {
+          "run_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Ids"
+          }
+        },
+        "title": "ExportCSVsRequest",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "MethodRegisterRequest": {
+        "properties": {
+          "directory": {
+            "title": "Directory",
+            "type": "string"
+          },
+          "env": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "inherit",
+            "title": "Env"
+          },
+          "method_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Method Name"
+          },
+          "module": {
+            "title": "Module",
+            "type": "string"
+          }
+        },
+        "required": [
+          "directory",
+          "module"
+        ],
+        "title": "MethodRegisterRequest",
+        "type": "object"
+      },
+      "MethodValidateRequest": {
+        "properties": {
+          "method": {
+            "title": "Method",
+            "type": "string"
+          },
+          "module": {
+            "title": "Module",
+            "type": "string"
+          }
+        },
+        "required": [
+          "module",
+          "method"
+        ],
+        "title": "MethodValidateRequest",
+        "type": "object"
+      },
+      "ModuleRegisterRequest": {
+        "properties": {
+          "contracts": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ContractSpec"
+            },
+            "title": "Contracts",
+            "type": "array"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "folder": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Folder"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "ModuleRegisterRequest",
+        "type": "object"
+      },
+      "NodeRunState": {
+        "properties": {
+          "cache_hit": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Hit"
+          },
+          "cache_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Key"
+          },
+          "cancelled_due_to_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancelled Due To Run Id"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "error_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Run Id"
+          },
+          "error_sample": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Sample"
+          },
+          "original_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Run Id"
+          },
+          "push_failed_count": {
+            "default": 0,
+            "title": "Push Failed Count",
+            "type": "integer"
+          },
+          "push_pending_count": {
+            "default": 0,
+            "title": "Push Pending Count",
+            "type": "integer"
+          },
+          "push_state": {
+            "default": "deferred",
+            "title": "Push State",
+            "type": "string"
+          },
+          "run_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Ids"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "tally": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tally"
+          },
+          "upstream_node_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upstream Node Id"
+          },
+          "upstream_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upstream Run Id"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "NodeRunState",
+        "type": "object"
+      },
+      "PipelineInput": {
+        "properties": {
+          "explicit_combos": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Explicit Combos"
+          },
+          "keep_going": {
+            "default": false,
+            "title": "Keep Going",
+            "type": "boolean"
+          },
+          "links": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/PipelineLink"
+            },
+            "title": "Links",
+            "type": "array"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/PipelineNode"
+            },
+            "title": "Nodes",
+            "type": "array"
+          },
+          "param_sets": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "additionalProperties": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "object"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Param Sets"
+          },
+          "samples": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Samples",
+            "type": "array"
+          },
+          "variables": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variables"
+          }
+        },
+        "required": [
+          "nodes"
+        ],
+        "title": "PipelineInput",
+        "type": "object"
+      },
+      "PipelineLink": {
+        "properties": {
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "sourceHandle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sourcehandle"
+          },
+          "target": {
+            "title": "Target",
+            "type": "string"
+          },
+          "targetHandle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Targethandle"
+          }
+        },
+        "required": [
+          "source",
+          "target"
+        ],
+        "title": "PipelineLink",
+        "type": "object"
+      },
+      "PipelineNode": {
+        "properties": {
+          "fan_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fan Mode"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "method": {
+            "default": "",
+            "title": "Method",
+            "type": "string"
+          },
+          "module": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Module"
+          },
+          "output_slot": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Slot"
+          },
+          "params": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Params",
+            "type": "object"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "samples": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Samples"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "method",
+            "title": "Type"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "PipelineNode",
+        "type": "object"
+      },
+      "RegisterEnvRequest": {
+        "description": "Body for ``POST /api/envs``. See :func:`wfc.envs.register`.\n\nNo ``push`` field \u2014 ADR-019's 2026-05-17 amendment defers\nregistry push to v1.x. The canvas surface mirrors the CLI flags.",
+        "properties": {
+          "backend": {
+            "title": "Backend",
+            "type": "string"
+          },
+          "base_image": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Image"
+          },
+          "force": {
+            "default": false,
+            "title": "Force",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "source": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Source",
+            "type": "object"
+          }
+        },
+        "required": [
+          "name",
+          "backend"
+        ],
+        "title": "RegisterEnvRequest",
+        "type": "object"
+      },
+      "RunPatchRequest": {
+        "description": "Partial update for a Run's user-editable metadata.\n\nAll fields are optional; missing fields are left unchanged. `nid`\nwrites through to `Run.nid` (provenance table); the rest upsert a\n`RunAnnotation` row.\n\n`archived` is a bool at the API boundary and maps to the nullable\n`archived_at` timestamp column: ``true`` sets it to now, ``false``\nclears it.",
+        "properties": {
+          "archived": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archived"
+          },
+          "favorite": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Favorite"
+          },
+          "nid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nid"
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tags"
+          }
+        },
+        "title": "RunPatchRequest",
+        "type": "object"
+      },
+      "SampleRegisterRequest": {
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "registration_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "copy",
+            "title": "Registration Mode"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "source"
+        ],
+        "title": "SampleRegisterRequest",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "WfcConfig": {
+        "properties": {
+          "project_root": {
+            "title": "Project Root",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_root"
+        ],
+        "title": "WfcConfig",
+        "type": "object"
+      },
+      "WorkflowStatusResponse": {
+        "properties": {
+          "error": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "log": {
+            "title": "Log",
+            "type": "string"
+          },
+          "node_states": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/NodeRunState"
+            },
+            "title": "Node States",
+            "type": "object"
+          },
+          "overall_status": {
+            "title": "Overall Status",
+            "type": "string"
+          },
+          "steps": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Steps",
+            "type": "object"
+          },
+          "thread_alive": {
+            "title": "Thread Alive",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "job_id",
+          "overall_status",
+          "steps",
+          "node_states",
+          "thread_alive",
+          "log"
+        ],
+        "title": "WorkflowStatusResponse",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "Workflow Canvas",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/": {
+      "get": {
+        "description": "Serve the main SPA page.",
+        "operationId": "root__get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Root"
+      }
+    },
+    "/api/contracts/{method_full}/output_columns": {
+      "get": {
+        "description": "Resolve declared output columns for a method's slot.\n\nThe canvas inspector calls this for params declared with\n``column_of_input: <slot>`` to populate a dropdown of candidate column\nnames. Reuses ``wfc/contracts.py::resolve_columns`` against the upstream\nmethod's contract.\n\nArgs:\n    method_full: ``module.method`` (e.g. ``data_preprocessing.regionprops``).\n    slot: Output slot name to resolve columns for.\n    params: JSON-encoded dict of upstream node's current canvas params\n        (used by ``from_params`` expansion). Optional; missing/empty\n        falls back to ``{}``.\n    run_id: When the upstream is a ``run_reference`` node, pass the\n        referenced run id; the endpoint then uses Run.params from the\n        DB as the resolution context.\n\nReturns:\n    ``{strict, from_params, patterns, all}`` where ``all`` is the\n    union of resolved column names produced by ``resolve_columns``.\n    ``patterns`` are returned literally (resolution requires a CSV;\n    not done here per the no-introspection constraint).",
+        "operationId": "get_output_columns_api_contracts__method_full__output_columns_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "method_full",
+            "required": true,
+            "schema": {
+              "title": "Method Full",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "slot",
+            "required": true,
+            "schema": {
+              "title": "Slot",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "params",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Params"
+            }
+          },
+          {
+            "in": "query",
+            "name": "run_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Output Columns"
+      }
+    },
+    "/api/envs": {
+      "post": {
+        "description": "Register a container env via :func:`wfc.envs.register`.\n\nBody shape::\n\n    {\"name\": \"image-io\",\n     \"backend\": \"pixi\" | \"conda\" | \"inherit\" | \"byo\",\n     \"source\": {...},                  # per-backend payload\n     \"base_image\": \"...\" | null,       # optional, not valid for byo\n     \"force\": false}\n\nReturns the persisted :class:`EnvRecord` as JSON (the manifest record\ndict plus a ``name`` key so the caller doesn't have to track it).",
+        "operationId": "post_envs_api_envs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterEnvRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Post Envs"
+      }
+    },
+    "/api/fs/browse": {
+      "get": {
+        "description": "List directory contents under the project root.\n\n``path`` is relative to the project root. Defaults to the root itself.\nRejects any path that resolves outside the project root. Safe for a\nlocalhost single-user dev tool: the server is already scoped to the\nproject the user chose to launch it against.",
+        "operationId": "fs_browse_api_fs_browse_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "path",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Path",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Fs Browse"
+      }
+    },
+    "/api/modules": {
+      "get": {
+        "description": "Return modules as a nested dict keyed by module/method name for the builder UI.\n\nShape: {moduleName: {description, methods: {methodName: {inputs, outputs, ...}}}}\nThis matches what nodes.js / populateModulePalette() expect.",
+        "operationId": "get_modules_api_modules_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Modules"
+      }
+    },
+    "/api/pipelines/{pipeline_id}/document": {
+      "get": {
+        "description": "Return the literal ``pipeline.json`` written at submission time.\n\nReads ``<project_root>/.runs/pipelines/<pipeline_id>/pipeline.json`` \u2014\nthe same file ``WfcProvider._load_bundled_samples`` consumes for fan-in\nsample resolution. Returns the parsed JSON document as-is so the\ncanvas can hand it to ``loadPipeline()`` without transformation.\n\n404 when the file does not exist (the pipeline was authored but\nnever reached the snake-gen / run-generation stage).",
+        "operationId": "get_pipeline_document_api_pipelines__pipeline_id__document_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pipeline_id",
+            "required": true,
+            "schema": {
+              "title": "Pipeline Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Pipeline Document"
+      }
+    },
+    "/api/project/status": {
+      "get": {
+        "description": "Onboarding-shaped project status.\n\nSubset of ENDPOINTS.md \u00a71.1 \u2014 reports whether a project is loaded,\nits root, and quick counts. Always 200, never 404.",
+        "operationId": "get_project_status_api_project_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Project Status"
+      }
+    },
+    "/api/registry/envs": {
+      "get": {
+        "description": "List distinct env specs referenced by registered methods.\n\nOne row per ``Method.env`` value. Aggregates method names, distinct\nenv_fingerprint count, total run count, and most-recent run timestamp\n(``Run.started_at``) across all methods sharing that env.",
+        "operationId": "get_registry_envs_api_registry_envs_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Registry Envs"
+      }
+    },
+    "/api/registry/envs/blob/{md5}": {
+      "get": {
+        "description": "Read an env-content blob from the DVC content-addressed cache.\n\nReturns the raw blob as ``text/plain`` so the frontend can render it\ndirectly in a code panel or compute a client-side diff against another\nblob.",
+        "operationId": "get_registry_env_blob_api_registry_envs_blob__md5__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "md5",
+            "required": true,
+            "schema": {
+              "title": "Md5",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Registry Env Blob"
+      }
+    },
+    "/api/registry/envs/{spec}/fingerprints": {
+      "get": {
+        "description": "Per-env fingerprint history derived from Run.env_fingerprint rows.\n\nFor each distinct env_fingerprint observed in Runs of methods whose\n``env == spec``, return first-seen / last-seen timestamps and run count.\nA fingerprint only present in the DVC cache (e.g. from a manual\nsnapshot) is NOT returned here \u2014 the snapshot endpoint returns it\ndirectly; the frontend merges.",
+        "operationId": "get_registry_env_fingerprints_api_registry_envs__spec__fingerprints_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "spec",
+            "required": true,
+            "schema": {
+              "title": "Spec",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Registry Env Fingerprints"
+      }
+    },
+    "/api/registry/envs/{spec}/snapshot": {
+      "post": {
+        "description": "Capture env content on demand and store it in the DVC cache.\n\nRuns ``capture_env_content`` + ``store_env_content`` against the live\nenv and returns the resulting md5. No Run row is created; the only\nside effect is a (possibly no-op) write to the DVC content-addressed\ncache.\n\nResponse ``is_new`` is True when the md5 does not already appear in\nany ``Run.env_fingerprint`` for this spec (i.e. this fingerprint has\nnot been observed via an actual Run before).",
+        "operationId": "snapshot_registry_env_api_registry_envs__spec__snapshot_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "spec",
+            "required": true,
+            "schema": {
+              "title": "Spec",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Snapshot Registry Env"
+      }
+    },
+    "/api/registry/methods": {
+      "get": {
+        "description": "List registered methods for the Registry tab.\n\nShape (subset of ENDPOINTS.md \u00a72.2): `{methods: [{name, module, env,\nvalidated, runCount, source}]}`.\n\n`validated` replaces the handoff's `status: \"ok\"|\"stale\"|\"broken\"` with\na `bool | null` sourced from the dryRun cache (null = never checked).",
+        "operationId": "get_registry_methods_api_registry_methods_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Registry Methods"
+      },
+      "post": {
+        "description": "Wrap ``wfc.register.register_method`` with optional dry-run preflight.",
+        "operationId": "register_method_endpoint_api_registry_methods_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "dryRun",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Dryrun",
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MethodRegisterRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Register Method Endpoint"
+      }
+    },
+    "/api/registry/methods/validate": {
+      "post": {
+        "description": "Re-validate an existing method's env+import. Caches by fingerprint.",
+        "operationId": "validate_registry_method_api_registry_methods_validate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MethodValidateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Validate Registry Method"
+      }
+    },
+    "/api/registry/methods/{module_name}/{method_name}/detail": {
+      "get": {
+        "description": "Read-only view of a method's directory + its parsed contract.\n\nLists every file in the method dir (no recursion) with its content and a\nlanguage hint for syntax highlighting. Returns the DB-parsed contract\n(input_slots, output_slots, params_schema) alongside so the frontend can\nrender it as structured tables without re-parsing YAML.",
+        "operationId": "get_registry_method_detail_api_registry_methods__module_name___method_name__detail_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "module_name",
+            "required": true,
+            "schema": {
+              "title": "Module Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "method_name",
+            "required": true,
+            "schema": {
+              "title": "Method Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Registry Method Detail"
+      }
+    },
+    "/api/registry/modules": {
+      "get": {
+        "description": "List registered modules for the Registry tab.\n\nShape matches design_handoff_onboarding/ENDPOINTS.md \u00a72.1 (subset):\n`{modules: [{name, description, contracts[], methods, source}]}`.\n`color` is intentionally omitted -- the frontend assigns it from the\n`MOD_COLORS` cycle by registration order.",
+        "operationId": "get_registry_modules_api_registry_modules_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Registry Modules"
+      },
+      "post": {
+        "description": "Wrap ``wfc.register.register_module`` with optional dry-run preflight.",
+        "operationId": "register_module_endpoint_api_registry_modules_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "dryRun",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Dryrun",
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModuleRegisterRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Register Module Endpoint"
+      }
+    },
+    "/api/registry/samples": {
+      "get": {
+        "description": "List registered samples for the Registry tab.\n\nShape (subset of ENDPOINTS.md \u00a72.4): `{samples: [{name, source, size,\nhash, pushed, runCount, registered_at}]}`.\n\n`pushed` is `True` when a DVC content hash is present (indicates the sample\nis in the DVC cache and pushable to the remote); `False` otherwise.",
+        "operationId": "get_registry_samples_api_registry_samples_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Registry Samples"
+      },
+      "post": {
+        "description": "Wrap ``wfc.cli.register_sample`` behind an HTTP endpoint.",
+        "operationId": "register_sample_endpoint_api_registry_samples_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SampleRegisterRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Register Sample Endpoint"
+      }
+    },
+    "/api/runs/{run_id}/lineage-pipeline": {
+      "get": {
+        "description": "Return a synthesized literal-only lineage pipeline for ``run_id``.\n\nWalks ``parentRunIds`` from the clicked run back to roots \u2014 through\npipeline boundaries \u2014 and synthesizes a flat literal-only pipeline\nJSON suitable for the canvas's ``loadPipeline()``. See\n``wfc.canvas.lineage_synthesizer`` for the algorithm.\n\nStatus codes:\n  - 200 with synthesized JSON on success\n  - 404 if the run id is unknown\n  - 422 if synthesis fails (cycle defense, malformed ancestor chain)",
+        "operationId": "get_run_lineage_pipeline_api_runs__run_id__lineage_pipeline_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Run Lineage Pipeline"
+      }
+    },
+    "/api/types": {
+      "get": {
+        "description": "Return data-type metadata for canvas UI slot colouring.",
+        "operationId": "get_types_api_types_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Types"
+      }
+    },
+    "/api/wfc/completed-runs": {
+      "get": {
+        "description": "Return completed runs with output slots for Run Reference nodes.",
+        "operationId": "get_wfc_completed_runs_api_wfc_completed_runs_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Wfc Completed Runs"
+      }
+    },
+    "/api/wfc/experiments": {
+      "get": {
+        "operationId": "get_wfc_experiments_api_wfc_experiments_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Wfc Experiments"
+      }
+    },
+    "/api/wfc/export-artifacts": {
+      "post": {
+        "description": "Zip download of wfc run artifacts, optionally filtered by file type.",
+        "operationId": "export_wfc_artifacts_api_wfc_export_artifacts_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExportArtifactsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Export Wfc Artifacts"
+      }
+    },
+    "/api/wfc/export-csvs": {
+      "post": {
+        "description": "Zip download of CSV artifacts from wfc runs.",
+        "operationId": "export_wfc_csvs_api_wfc_export_csvs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExportCSVsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Export Wfc Csvs"
+      }
+    },
+    "/api/wfc/lineage/{run_id}": {
+      "get": {
+        "operationId": "get_wfc_lineage_api_wfc_lineage__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Wfc Lineage"
+      }
+    },
+    "/api/wfc/load": {
+      "post": {
+        "description": "Load (or reload) the wfc provider from a project path.\n\nAlso updates DATABASE_URL and resets the SQLAlchemy engine so that\nGET /api/modules queries this project's DB, not the server's launch-cwd DB.",
+        "operationId": "load_wfc_data_api_wfc_load_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WfcConfig"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Load Wfc Data"
+      }
+    },
+    "/api/wfc/methods": {
+      "get": {
+        "operationId": "get_wfc_methods_api_wfc_methods_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Wfc Methods"
+      }
+    },
+    "/api/wfc/modules": {
+      "get": {
+        "operationId": "get_wfc_modules_api_wfc_modules_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Wfc Modules"
+      }
+    },
+    "/api/wfc/preview-artifacts": {
+      "post": {
+        "description": "Preview what would be exported (all file types) without downloading.",
+        "operationId": "preview_wfc_artifacts_api_wfc_preview_artifacts_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExportArtifactsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Wfc Artifacts"
+      }
+    },
+    "/api/wfc/preview-csvs": {
+      "post": {
+        "description": "Preview CSV export (counts + sizes) without downloading.",
+        "operationId": "preview_wfc_csvs_api_wfc_preview_csvs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExportCSVsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Wfc Csvs"
+      }
+    },
+    "/api/wfc/refresh": {
+      "post": {
+        "description": "Reload wfc data from the current project root.",
+        "operationId": "refresh_wfc_data_api_wfc_refresh_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Refresh Wfc Data"
+      }
+    },
+    "/api/wfc/run/{run_id}": {
+      "get": {
+        "operationId": "get_wfc_run_api_wfc_run__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Wfc Run"
+      },
+      "patch": {
+        "description": "Partial-update a run's user-editable metadata.",
+        "operationId": "patch_wfc_run_api_wfc_run__run_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunPatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch Wfc Run"
+      }
+    },
+    "/api/wfc/run/{run_id}/artifact/{artifact_path}": {
+      "get": {
+        "operationId": "get_wfc_artifact_api_wfc_run__run_id__artifact__artifact_path__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "artifact_path",
+            "required": true,
+            "schema": {
+              "title": "Artifact Path",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Wfc Artifact"
+      }
+    },
+    "/api/wfc/run/{run_id}/artifacts": {
+      "get": {
+        "operationId": "list_wfc_artifacts_api_wfc_run__run_id__artifacts_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Wfc Artifacts"
+      }
+    },
+    "/api/wfc/run/{run_id}/cancelled-descendants": {
+      "get": {
+        "description": "Return runs cancelled because ``run_id`` (or its subtree) failed.",
+        "operationId": "get_wfc_cancelled_descendants_api_wfc_run__run_id__cancelled_descendants_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Wfc Cancelled Descendants"
+      }
+    },
+    "/api/wfc/run/{run_id}/stream-logs": {
+      "get": {
+        "description": "Stream a run's stdout/stderr as SSE events, ending with a `terminal` event.\n\n- Terminal runs (status in {completed, success, failed, cancelled}):\n  read the on-disk log files, emit each line as a `stdout`/`stderr`\n  event, then emit the `terminal` event and close. ``?full=1`` returns\n  the whole file; default tails the last ``tail`` lines (default 500).\n- Running runs: poll the log files every ~200 ms, emit new lines as they\n  appear, stop when the DB status transitions off ``running`` and emit a\n  final `terminal` event.",
+        "operationId": "stream_run_logs_api_wfc_run__run_id__stream_logs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "full",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "Full",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tail",
+            "required": false,
+            "schema": {
+              "default": 500,
+              "title": "Tail",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream Run Logs"
+      }
+    },
+    "/api/wfc/runs": {
+      "get": {
+        "operationId": "get_wfc_runs_api_wfc_runs_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Wfc Runs"
+      }
+    },
+    "/api/wfc/samples": {
+      "get": {
+        "description": "Return detailed info for all registered samples.",
+        "operationId": "get_wfc_samples_api_wfc_samples_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Wfc Samples"
+      }
+    },
+    "/api/wfc/status": {
+      "get": {
+        "operationId": "get_wfc_status_api_wfc_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Wfc Status"
+      }
+    },
+    "/api/wfc/tree/{run_id}": {
+      "get": {
+        "operationId": "get_wfc_run_tree_api_wfc_tree__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Wfc Run Tree"
+      }
+    },
+    "/api/workflow/cancel/{job_id}": {
+      "post": {
+        "description": "Cancel an in-flight pipeline (ADR-015 Phase D Pass 2).\n\nTerminates the live Snakemake subprocess (and its descendants) and\nflips any ``running`` rows for this pipeline to ``cancelled`` with\n``error_message=\"Cancelled by user\"``.  Idempotent: cancelling a\npipeline whose process has already exited returns 200 with a no-op\nindication.  Returns 404 for unknown job_ids.",
+        "operationId": "cancel_workflow_api_workflow_cancel__job_id__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Workflow"
+      }
+    },
+    "/api/workflow/run": {
+      "post": {
+        "description": "Submit a pipeline for execution via Snakemake.\n\nEnriches the PipelineJSON with script paths and slot_outputs from the DB,\nwrites it to a temp file, and spawns a background thread running\n``run_pipeline()``. Returns the pipeline_id as the job_id immediately.\n\nRejects empty pipelines with HTTP 400.  Multiple pipelines may run\nconcurrently \u2014 each gets its own pipeline_id-scoped workspace.",
+        "operationId": "run_workflow_api_workflow_run_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PipelineInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Workflow"
+      }
+    },
+    "/api/workflow/save": {
+      "post": {
+        "description": "Save a workflow definition.\n\nNote: ``Workflow`` was previously declared as the pydantic class for\nthis body, but the symbol was never defined in this module \u2014 this\nendpoint has been a runtime no-op behind that broken reference.  The\nuntyped ``Dict[str, Any]`` keeps the endpoint reachable and lets\nFastAPI's OpenAPI generation succeed, which in turn unblocks the\nADR-015 Phase D codegen pipeline.  Callers should treat the body as\nfree-form JSON until/unless this endpoint is properly typed.",
+        "operationId": "save_workflow_api_workflow_save_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "title": "Workflow",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Save Workflow"
+      }
+    },
+    "/api/workflow/status/{job_id}": {
+      "get": {
+        "description": "Return per-step and overall status for a running or completed pipeline.\n\nQueries the ``runs`` table by ``pipeline_id`` and derives overall status.\nAlso returns whether the background thread is still alive and any captured\nlog output.\n\nArgs:\n    job_id: The pipeline_id returned by the run endpoint.\n\nReturns:\n    JSON with ``job_id``, ``overall_status``, ``steps``, ``thread_alive``,\n    ``log``, and ``error`` fields.",
+        "operationId": "get_workflow_status_api_workflow_status__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowStatusResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Workflow Status"
+      }
+    },
+    "/api/workflow/validate": {
+      "post": {
+        "description": "Validate a pipeline graph against registered methods in the DB.",
+        "operationId": "validate_workflow_api_workflow_validate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PipelineInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Validate Workflow"
+      }
+    },
+    "/api/workflow/{pipeline_id}/editable": {
+      "get": {
+        "description": "Return the pre-substitution pipeline JSON (with variables + {$var}).\n\nFalls back to ``pipeline.json`` (post-substitution) for legacy runs that\nwere submitted before the editable sidecar existed.",
+        "operationId": "get_pipeline_editable_api_workflow__pipeline_id__editable_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pipeline_id",
+            "required": true,
+            "schema": {
+              "title": "Pipeline Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Pipeline Editable"
+      }
+    }
+  }
+}

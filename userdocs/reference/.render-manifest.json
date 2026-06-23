@@ -1,0 +1,10 @@
+{
+  "cli-reference.md": {
+    "doc_id": "pm_mvp::docs.consumer.cli-reference",
+    "hash": "59c40efce14d"
+  },
+  "reference/method-yaml-schema.md": {
+    "doc_id": "pm_mvp::docs.consumer.reference.method-yaml-schema",
+    "hash": "958c2aff2f90"
+  }
+}

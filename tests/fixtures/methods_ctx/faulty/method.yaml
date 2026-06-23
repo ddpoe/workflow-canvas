@@ -1,0 +1,23 @@
+# Configurable-failure fixture (RunContext form).
+# Same input/output contract as transform so it can be swapped in.
+inputs:
+  data:
+    type: csv
+    required: true
+    description: "Input CSV (unused for crash/missing_output modes)"
+
+outputs:
+  output:
+    type: csv
+    required: true
+    description: "Output CSV (produced only in 'succeed' mode)"
+
+params:
+  failure_mode:
+    type: str
+    required: false
+    default: "crash"
+    description: "'crash' raises an exception, 'missing_output' exits without writing output, 'succeed' behaves like transform"
+
+executor: python
+env: inherit
