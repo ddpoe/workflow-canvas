@@ -24,7 +24,11 @@ from pathlib import Path
 from typing import Dict, Mapping
 
 
-_DIRECTORY_TYPE_MARKERS = {"directory"}
+# A slot is a directory slot when its (case-insensitive) type is one of these
+# markers. ``_enrich_pipeline`` normalises both spellings to the canonical
+# ``directory`` before this is consulted; ``dir`` is accepted here too so
+# directory detection is robust to either spelling reaching this helper.
+_DIRECTORY_TYPE_MARKERS = {"dir", "directory"}
 
 
 def resolve_node_outputs(

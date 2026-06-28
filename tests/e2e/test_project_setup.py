@@ -6,7 +6,7 @@ Conservative core stories only:
 2) Config override for external database URL
 """
 
-from dflow.core.decorators import workflow, Step, AutoStep
+from axiom_annotations import workflow, Step, AutoStep
 
 from wfc.init import init_project, read_config
 

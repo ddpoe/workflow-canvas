@@ -28,7 +28,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from dflow.core.decorators import workflow
+from axiom_annotations import workflow
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent

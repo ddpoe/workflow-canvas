@@ -41,6 +41,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Sequence
 
+from axiom_annotations import task
+
 
 def _posix(p: str | Path) -> str:
     """Normalise *p* to an absolute POSIX-style path string.
@@ -52,6 +54,8 @@ def _posix(p: str | Path) -> str:
     return Path(p).resolve().as_posix()
 
 
+@task(purpose="Assemble the docker run argv — image ref, project + DVC-cache bind "
+              "mounts, --user uid:gid, forwarded env, optional --gpus")
 def build_docker_command(
     image_ref: str,
     project_root: str | Path,
@@ -116,6 +120,8 @@ def build_docker_command(
     return cmd
 
 
+@task(purpose="Assemble the apptainer exec argv for the cluster path — docker:// "
+              "image, binds, env")
 def build_apptainer_command(
     image_ref: str,
     project_root: str | Path,

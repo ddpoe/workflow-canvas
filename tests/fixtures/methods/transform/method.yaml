@@ -2,13 +2,13 @@
 # Reads a CSV, adds a computed column, writes the result.
 inputs:
   data:
-    type: csv
+    type: .csv
     required: true
     description: "Input CSV to transform"
 
 outputs:
   output:
-    type: csv
+    type: .csv
     required: true
     description: "Transformed CSV with added column"
 
@@ -20,4 +20,4 @@ params:
     description: "Suffix appended to new column name"
 
 executor: python
-env: inherit
+env: container:fixture-env

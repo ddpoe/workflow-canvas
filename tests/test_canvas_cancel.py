@@ -37,6 +37,8 @@ from sqlmodel import SQLModel, Session, create_engine, select
 from wfc.canvas.server import app, _active_jobs
 from wfc.cli import cancel_pipeline
 from wfc.models import Run
+from tests.conftest import requires_docker
+from tests.fixtures.conftest import _write_fixture_env_manifest
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +81,7 @@ def _seed_running_run(engine, pipeline_id: str) -> int:
             session.flush()
         meth = session.exec(select(Method)).first()
         if meth is None:
-            meth = Method(name="cancel_test_method", module_id=mod.id, script_path="x.py")
+            meth = Method(name="cancel_test_method", module_id=mod.id, script_path="x.py", env="container:demo")
             session.add(meth)
             session.flush()
         run = Run(
@@ -195,8 +197,10 @@ def test_cancel_endpoint_kills_live_subprocess_tree(client):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration
+@requires_docker
 def test_cancel_endpoint_kills_real_snakemake_subprocess_tree(
-    git_project, monkeypatch,
+    git_project, fixture_container_image, monkeypatch,
 ):
     """Spawn a real Snakemake pipeline via ``POST /api/workflow/run``,
     capture its live rule-executor children mid-run, then cancel and
@@ -228,6 +232,11 @@ def test_cancel_endpoint_kills_real_snakemake_subprocess_tree(
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
 
     init_project(project_dir)
+    # ADR-019 Cycle H: execution is container-only. The heartbeat fixture method
+    # declares ``env: container:fixture-env``; write the env manifest pointing at
+    # the session-built image so registration validates and run-step dispatches
+    # into the real container (whose subprocess tree this test then cancels).
+    _write_fixture_env_manifest(project_dir, fixture_container_image)
     reset_engine()
 
     register_module(name="test_pipeline", contracts=[])

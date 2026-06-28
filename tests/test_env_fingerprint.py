@@ -7,8 +7,6 @@ Covers:
   - pip_freeze raises cleanly on subprocess failure / missing binary
   - store_env_content cleans up its temp file on ALL paths,
     including when cache_file raises
-  - capture_env_content("inherit", ...) produces a blob containing
-    sys.executable, sys.version, and pip freeze in that order
   - build_cache_key is sensitive to env_fingerprint changes
   - env content blob is retrievable from the DVC cache under the
     returned md5
@@ -22,7 +20,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -30,7 +27,7 @@ import pytest
 import yaml
 from sqlmodel import select
 
-from dflow.core.decorators import workflow, Step
+from axiom_annotations import workflow, Step
 
 from wfc.database import get_session
 from wfc.env_introspect import (
@@ -303,6 +300,13 @@ def test_capture_env_content_pixi_three_segment_picks_named_env(tmp_path, monkey
         lambda *a, **k: Path("/fake/python"),
     )
     monkeypatch.setattr("wfc.env_introspect.pip_freeze", lambda _py: "")
+    # capture_env_content also calls pip_freeze_best_effort, which deliberately
+    # raises on a missing interpreter (a real env problem, per its docstring).
+    # The fake /fake/python path is just a test shortcut, so mock it too — this
+    # test exercises env *selection*, not pip-freeze behavior.
+    monkeypatch.setattr(
+        "wfc.env_introspect.pip_freeze_best_effort", lambda _py: ""
+    )
 
     blob = capture_env_content("pixi:myproject:envB", tmp_path)
 
@@ -385,66 +389,6 @@ def test_store_env_content_temp_cleanup_on_exception(tmp_path, monkeypatch):
 
 
 # =============================================================================
-# capture_env_content("inherit"): interpreter identity + pip freeze
-# =============================================================================
-
-@workflow(
-    purpose="capture_env_content('inherit', ...) produces a blob containing "
-            "sys.executable, sys.version, and pip freeze output in that order "
-            "— captures interpreter identity honestly, not just installed pkgs"
-)
-def test_capture_env_content_inherit_blob_shape(tmp_path, monkeypatch):
-    """Inherit path must NOT call resolve_python_for_env (which raises on
-    'inherit') and must include both interpreter identity and pip freeze."""
-    口 = Step(step_num=1, name="Stub pip_freeze",
-             purpose="Avoid the cost of a real pip freeze; pin the output")
-    stubbed_freeze = "numpy==1.26.0\npandas==2.1.0\n"
-    monkeypatch.setattr(
-        "wfc.env_introspect.pip_freeze",
-        lambda _py: stubbed_freeze,
-    )
-    # Also patch the re-exported name inside version.py's local import.
-    import wfc.version as _ver
-    monkeypatch.setattr(
-        _ver,
-        "capture_env_content",
-        _ver.capture_env_content,  # force binding; no-op if already there
-    )
-
-    口 = Step(step_num=2, name="Call capture_env_content with 'inherit'",
-             purpose="Confirm the blob has interpreter path, version, and pip freeze")
-    blob = capture_env_content("inherit", tmp_path)
-
-    assert sys.executable in blob, "blob must contain sys.executable"
-    # sys.version is multi-line; check the first token (e.g. '3.12.10')
-    assert sys.version.split()[0] in blob, "blob must contain sys.version"
-    assert stubbed_freeze.strip() in blob, "blob must contain pip freeze output"
-
-    口 = Step(step_num=3, name="Verify field order",
-             purpose="executable MUST come before version which MUST come "
-                     "before pip freeze; order is part of the determinism contract")
-    pos_exe = blob.index(sys.executable)
-    pos_ver = blob.index(sys.version.split()[0])
-    pos_freeze = blob.index("numpy==1.26.0")
-    assert pos_exe < pos_ver < pos_freeze
-
-
-@workflow(
-    purpose="capture_env_content('inherit', ...) is deterministic — two calls "
-            "with the same interpreter produce identical blobs"
-)
-def test_capture_env_content_inherit_deterministic(tmp_path, monkeypatch):
-    """Two back-to-back calls must return the same blob."""
-    monkeypatch.setattr(
-        "wfc.env_introspect.pip_freeze",
-        lambda _py: "numpy==1.26.0\n",
-    )
-    a = capture_env_content("inherit", tmp_path)
-    b = capture_env_content("inherit", tmp_path)
-    assert a == b
-
-
-# =============================================================================
 # store_env_content: blob retrievable from DVC cache
 # =============================================================================
 
@@ -510,7 +454,7 @@ def test_legacy_null_env_fingerprint_run_loads(tmp_project):
         session.add(mod)
         session.commit()
         session.refresh(mod)
-        method = Method(name="legacy_method", module_id=mod.id, env="inherit")
+        method = Method(name="legacy_method", module_id=mod.id, env="container:demo")
         session.add(method)
         session.commit()
         session.refresh(method)
@@ -540,14 +484,14 @@ def test_legacy_null_env_fingerprint_run_loads(tmp_project):
 # =============================================================================
 
 def _seed_env_method(module_name="envfp_mod", method_name="envfp_method"):
-    """Seed a minimal Module + Method (env='inherit') and return method.id."""
+    """Seed a minimal Module + Method (env='container:demo') and return method.id."""
     with get_session() as session:
         mod = Module(name=module_name, description="env fp test")
         session.add(mod)
         session.commit()
         session.refresh(mod)
         method = Method(
-            name=method_name, module_id=mod.id, env="inherit",
+            name=method_name, module_id=mod.id, env="container:demo",
             script_path=f"methods/{method_name}/run.py",
         )
         session.add(method)
@@ -574,7 +518,7 @@ def test_env_change_invalidates_cache(tmp_project, monkeypatch):
     from wfc.cli import pre_run
 
     口 = Step(step_num=1, name="Seed method and source",
-             purpose="Minimal method with env='inherit' so capture_env_content uses sys.executable")
+             purpose="Minimal method with env='container:demo'; capture_env_content is stubbed below")
     _seed_env_method()
     _ensure_method_source(tmp_project)
 

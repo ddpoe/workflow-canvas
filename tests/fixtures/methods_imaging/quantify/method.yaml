@@ -1,18 +1,18 @@
 # 2-slot fan-in: stitched is 2 hops upstream (skip); masks is immediate.
 inputs:
   stitched:
-    type: csv
+    type: .csv
     required: true
     description: "Stitched image data from stitch (2-hop skip)"
   masks:
-    type: csv
+    type: .csv
     required: true
     description: "Segmentation masks from segment (immediate)"
 
 outputs:
   measurements:
-    type: csv
+    type: .csv
     required: true
 
 executor: python
-env: inherit
+env: container:fixture-env

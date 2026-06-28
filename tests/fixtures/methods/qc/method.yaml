@@ -4,25 +4,25 @@
 # Emits a JSON report, the surviving rows, and the dropped rows.
 inputs:
   data:
-    type: csv
+    type: .csv
     required: true
     description: "Rows to QC"
   metadata:
-    type: csv
+    type: .csv
     required: false
     description: "Optional per-row annotations (joined by id)"
 
 outputs:
   report:
-    type: json
+    type: .json
     required: true
     description: "QC summary (kept/dropped counts, reasons)"
   clean:
-    type: csv
+    type: .csv
     required: true
     description: "Rows that passed QC"
   dropped:
-    type: csv
+    type: .csv
     required: true
     description: "Rows that failed QC"
 
@@ -34,4 +34,4 @@ params:
     description: "Fail QC if fewer than this many rows survive"
 
 executor: python
-env: inherit
+env: container:fixture-env

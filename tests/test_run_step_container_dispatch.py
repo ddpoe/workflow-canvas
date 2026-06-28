@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from dflow.core.decorators import workflow
+from axiom_annotations import workflow
 
 
 VALID_DIGEST = "a" * 64
@@ -79,8 +79,8 @@ def _patch_pre_run_and_subprocess(monkeypatch, tmp_path):
     # wfc.database.project_root() resolves from cwd or WFC_PROJECT_ROOT; we
     # point it at the tmp project so runs_dir() etc. don't blow up.
     monkeypatch.setenv("WFC_PROJECT_ROOT", str(tmp_path))
-    """Stub out pre_run, complete_run, get_project_root, get_session,
-    _ensure_wfc_shim, and _run_method_subprocess; capture the cmd argv."""
+    """Stub out pre_run, complete_run, get_project_root, get_session, and
+    _run_method_subprocess; capture the cmd argv."""
     import subprocess as _sp
     from wfc import cli as cli_mod
 
@@ -105,7 +105,6 @@ def _patch_pre_run_and_subprocess(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_mod, "complete_run", fake_complete_run)
     monkeypatch.setattr(cli_mod, "get_project_root", lambda: tmp_path)
     monkeypatch.setattr(cli_mod, "_run_method_subprocess", fake_run_method_subprocess)
-    monkeypatch.setattr(cli_mod, "_ensure_wfc_shim", lambda: tmp_path)
     monkeypatch.setattr(cli_mod, "resolve_input", lambda **kw: None)
 
     # Make get_session a no-op context manager so the RunOutput write path
@@ -245,44 +244,6 @@ def test_run_step_slurm_executor_carve_out_error(tmp_path, monkeypatch, capsys):
     assert rc == 1
     err = capsys.readouterr().err
     assert "out of scope for v1" in err
-
-
-def test_run_step_no_container_env_uses_direct_python(tmp_path, monkeypatch):
-    """Methods whose env has no ``container`` field fall through to the
-    existing direct-Python dispatch unchanged (no docker argv)."""
-    proj = tmp_path
-    (proj / ".wfc").mkdir()
-    (proj / ".wfc" / "wf-canvas.toml").write_text(
-        "[project]\nname=\"t\"\n[database]\nurl=\"sqlite:///:memory:\"\n"
-    )
-    # No envs.json -> envs.get returns None for any name.
-    method_dir = proj / "methods" / "ml_plain"
-    method_dir.mkdir(parents=True)
-    (method_dir / "ml_plain.py").write_text("# stub\n")
-    (method_dir / "method.yaml").write_text("executor: local\nenv: inherit\n")
-
-    pj = proj / "pipeline.json"
-    pj.write_text(json.dumps({
-        "nodes": [{
-            "id": "n1", "method": "ml_plain", "module": "test",
-            "env": "inherit", "script": str(method_dir / "ml_plain.py"),
-        }],
-        "links": [], "param_sets": {},
-    }))
-
-    captured = _patch_pre_run_and_subprocess(monkeypatch, proj)
-
-    from wfc.cli import run_step
-    rc = run_step(
-        node_id="n1", sample="s1", variant="default",
-        pipeline_json=str(pj), pipeline_id="p1",
-        ref_inputs=["data=" + str(proj / "ref.txt")],
-    )
-    assert "cmd" in captured, f"_run_method_subprocess was not called (rc={rc})"
-    cmd = captured["cmd"]
-    # Non-container path: cmd is [python_exe, script_path], NOT a docker argv.
-    assert cmd[0] != "docker"
-    assert str(method_dir / "ml_plain.py") in cmd
 
 
 def test_run_step_translates_wfc_paths_for_container(tmp_path, monkeypatch):

@@ -1,0 +1,41 @@
+{
+  "nodes": [
+    {
+      "id": 1,
+      "module": "data_preprocessing",
+      "method": "preprocess",
+      "script": "methods/preprocess/preprocess.py",
+      "params": {
+        "normalize": true,
+        "scale_factor": 1.0
+      },
+      "position": [
+        150,
+        200
+      ]
+    },
+    {
+      "id": 2,
+      "module": "data_labeling",
+      "method": "label",
+      "script": "methods/label/label.py",
+      "params": {
+        "threshold": 0.5,
+        "label_column": "label"
+      },
+      "position": [
+        450,
+        200
+      ]
+    }
+  ],
+  "links": [
+    {
+      "source": 1,
+      "target": 2
+    }
+  ],
+  "samples": [
+    "Pa16c"
+  ]
+}

@@ -13,7 +13,7 @@ All tests insert DB rows directly (no CLI scaffolding) using tmp_project +
 get_session(). This keeps setup minimal and focused on the models under test.
 """
 
-from dflow.core.decorators import workflow, Step
+from axiom_annotations import workflow, Step
 
 from wfc.database import get_session
 from wfc.lineage import get_lineage, get_all_runs
@@ -30,7 +30,7 @@ def _make_method(session, module_name: str = "lin_mod", method_name: str = "lin_
     session.add(mod)
     session.commit()
     session.refresh(mod)
-    method = Method(name=method_name, module_id=mod.id)
+    method = Method(name=method_name, module_id=mod.id, env="container:demo")
     session.add(method)
     session.commit()
     session.refresh(method)

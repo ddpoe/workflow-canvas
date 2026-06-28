@@ -15,15 +15,21 @@ from pathlib import Path
 import pytest
 from sqlmodel import select
 
-from dflow.core.decorators import workflow, Step
+from axiom_annotations import workflow, Step
 
 from wfc.cli import run_pipeline
 from wfc.database import get_session
 from wfc.models import Run, RunOutput
 from tests.fixtures.conftest import create_sample_csv as _create_sample_csv
+from tests.conftest import requires_docker
 
 # wfc package root -- needed so Snakemake subprocesses can find `python -m wfc`
 WFC_ROOT = Path(__file__).resolve().parent.parent.parent
+
+# ADR-019 Cycle H: these tests execute pipelines end-to-end through the
+# container dispatch path (register_fixture_methods builds a real image).
+# Deselected from the default suite (integration) and skipped without Docker.
+pytestmark = [pytest.mark.integration, requires_docker]
 
 
 def _find_run_output_path(

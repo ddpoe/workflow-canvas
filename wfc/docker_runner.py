@@ -32,7 +32,10 @@ import subprocess
 from pathlib import Path
 from typing import Union
 
+from axiom_annotations import task
 
+
+@task(purpose="Run docker build -t <tag> <dir> with BuildKit enabled")
 def build(dockerfile_dir: Union[str, Path], tag: str) -> None:
     """Run ``docker build -t <tag> <dockerfile_dir>`` with BuildKit on.
 

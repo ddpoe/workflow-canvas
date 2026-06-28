@@ -15,7 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import SQLModel, Session, create_engine
 
-from dflow.core.decorators import workflow, Step
+from axiom_annotations import workflow, Step
 
 from wfc.models import Module, Method, Run, Sample
 from wfc.canvas.wfc_provider import WfcProvider
@@ -51,6 +51,7 @@ def db_with_samples(tmp_path, monkeypatch):
         meth = Method(
             name="align_reads", module_id=mod.id,
             script_path="methods/align_reads/align_reads.py",
+            env="container:demo",
         )
         session.add(meth)
         session.flush()
@@ -193,7 +194,7 @@ class TestPipelineRoundTrip:
                     "source": "registered",
                 },
                 {
-                    "id": "method-1", "type": "method",
+                    "id": "method-1", "type": "method", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     "method": "align_reads", "module": "analysis",
                     "script": "methods/align_reads/align_reads.py",
                     "position": {"x": 400, "y": 200},
@@ -235,7 +236,7 @@ class TestPipelineRoundTrip:
             "nodes": [
                 {"id": "n1", "type": "input_selector", "method": "", "params": {},
                  "samples": ["s1"]},
-                {"id": "n2", "type": "method", "method": "foo", "module": "bar",
+                {"id": "n2", "type": "method", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "method": "foo", "module": "bar",
                  "params": {"x": 1}},
                 {"id": "n3", "type": "run_reference", "method": "", "params": {},
                  "run_id": "r1", "output_slot": "out"},
@@ -280,7 +281,7 @@ class TestSnakemakeSystemNodes:
                     "samples": ["sample_A", "sample_B"],
                 },
                 {
-                    "id": "method-1", "type": "method",
+                    "id": "method-1", "type": "method", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     "method": "preprocess", "module": "demo",
                     "script": "methods/preprocess/preprocess.py",
                     "params": {"normalize": True},
@@ -354,8 +355,6 @@ class TestValidateWorkflowMethodRoots:
         """Tier 2: Call validate_workflow directly with a pipeline dict
         containing a method node that has no incoming edges (is a root).
         Verify it returns the expected error structure."""
-        import asyncio
-
         pipeline = PipelineInput(
             nodes=[
                 PipelineNode(
@@ -369,7 +368,7 @@ class TestValidateWorkflowMethodRoots:
             samples=["sample_001"],
         )
 
-        result = asyncio.run(validate_workflow(pipeline))
+        result = validate_workflow(pipeline)
 
         assert result["valid"] is False
         assert len(result["errors"]) >= 1
@@ -396,9 +395,9 @@ class TestValidateWorkflowMethodRoots:
             "nodes": [
                 {"id": "input-1", "type": "input_selector",
                  "method": "", "module": ""},
-                {"id": "method-A", "type": "method",
+                {"id": "method-A", "type": "method", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                  "method": "align_reads", "module": "analysis"},
-                {"id": "method-B", "type": "method",
+                {"id": "method-B", "type": "method", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                  "method": "align_reads", "module": "analysis"},
             ],
             "links": [
@@ -447,13 +446,13 @@ class TestSnakemakeRejectsMethodRoots:
                     "samples": ["sample_A"],
                 },
                 {
-                    "id": "method-1", "type": "method",
+                    "id": "method-1", "type": "method", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     "method": "preprocess", "module": "demo",
                     "script": "methods/preprocess/preprocess.py",
                     "params": {},
                 },
                 {
-                    "id": "method-2", "type": "method",
+                    "id": "method-2", "type": "method", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     "method": "filter", "module": "demo",
                     "script": "methods/filter/filter.py",
                     "params": {},

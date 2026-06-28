@@ -171,3 +171,57 @@ def test_register_env_from_without_backend_errors(cli):
     result = cli("register-env", "my", "--from", "explicit.txt")
     assert result.returncode == 1
     assert "--backend" in result.stderr
+
+
+# =============================================================================
+# --from file-mode source_fingerprint capture (US-2)
+# =============================================================================
+
+_FROM_PIXI_LOCK = """\
+version: 5
+packages:
+- conda: https://conda.anaconda.org/conda-forge/linux-64/python-3.11.0-h.conda
+  name: python
+  version: 3.11.0
+- pypi: https://files.pythonhosted.org/packages/numpy-1.24.0-cp311.whl
+  name: numpy
+  version: 1.24.0
+"""
+
+
+@pytest.mark.parametrize("backend,source_key,lock_text", [
+    ("pixi", "pixi_lock_content", _FROM_PIXI_LOCK),
+    ("conda", "explicit_list_content",
+     "@EXPLICIT\nhttps://conda.anaconda.org/conda-forge/linux-64/python-3.11.0-h.conda#0a\n"),
+])
+def test_register_from_records_source_fingerprint_that_round_trips(
+    tmp_path, monkeypatch, backend, source_key, lock_text
+):
+    """A --from pixi/conda registration (no live env, empty pip-freeze) records
+    a non-null source_fingerprint whose cached blob round-trips through
+    parse_packages — the file-mode capture this cycle adds (US-2)."""
+    from wfc import envs as envs_mod
+    from wfc import docker_runner
+    from wfc.env_packages import parse_packages
+
+    (tmp_path / ".wfc").mkdir()
+    monkeypatch.setattr(docker_runner, "build", lambda d, t: None)
+    monkeypatch.setattr(docker_runner, "image_inspect", lambda r: "sha256:" + "c" * 64)
+
+    # Shape mirrors wfc.cli._stage_from_path: full lock/explicit-list content
+    # plus an empty pip-freeze section.
+    source = {source_key: lock_text, "pip_freeze_content": ""}
+    record = envs_mod.register(
+        name="demo", backend=backend, source=source, project_dir=tmp_path,
+    )
+
+    assert record.source_fingerprint is not None
+    assert len(record.source_fingerprint) == 32
+
+    md5 = record.source_fingerprint
+    blob_path = tmp_path / ".dvc" / "cache" / "files" / "md5" / md5[:2] / md5[2:]
+    blob = blob_path.read_text(encoding="utf-8")
+    pkgs = parse_packages(blob, backend)
+    names = {p["name"] for p in pkgs}
+    assert "python" in names
+    assert all(p["source"] == backend for p in pkgs)

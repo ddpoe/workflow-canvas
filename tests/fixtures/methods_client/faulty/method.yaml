@@ -1,0 +1,25 @@
+# Tier-1 fixture (wfc-client): configurable failure path.
+# Drives the non-zero-exit / boundary-error / missing-output branches of
+# the host collect-outputs step. `data` is optional so the crash/missing
+# modes can run without input data.
+inputs:
+  data:
+    type: .csv
+    required: false
+    description: "Input CSV (only read in the 'succeed' mode)"
+
+outputs:
+  output:
+    type: .csv
+    required: true
+    description: "Pass-through CSV (only produced in the 'succeed' mode)"
+
+params:
+  failure_mode:
+    type: str
+    required: false
+    default: crash
+    description: "crash | save_outside | missing_output | succeed"
+
+executor: local
+env: container:client-env

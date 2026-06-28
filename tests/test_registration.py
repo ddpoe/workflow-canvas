@@ -27,7 +27,7 @@ from pathlib import Path
 
 from sqlmodel import select
 
-from dflow.core.decorators import workflow, Step
+from axiom_annotations import workflow, Step
 
 from wfc.init import init_project
 from wfc.register import register_module, register_method
@@ -194,33 +194,39 @@ def test_ast_scanner_extracts_params(tmp_project):
     filter_dir = tmp_project / "methods" / "filter_data"
     filter_dir.mkdir(parents=True, exist_ok=True)
     (filter_dir / "method.yaml").write_text(
-        "inputs:\n  data:\n    type: csv\n"
-        "outputs:\n  result:\n    type: csv\n"
+        "env: container:docker://local/x@sha256:" + "a" * 64 + "\n"
+        "inputs:\n  data:\n    type: .csv\n"
+        "outputs:\n  result:\n    type: .csv\n"
     )
     (filter_dir / "filter_data.py").write_text(
-        "import pandas as pd\n"
-        "from wfc.method import wfc_method, wfc_method_main\n\n"
-        "@wfc_method\n"
-        "def filter_data(inputs, params):\n"
-        "    return {}, {}\n\n"
+        "import wfc_client as wfc\n\n"
+        "@wfc.method\n"
+        "def filter_data(ctx):\n"
+        "    out = ctx.run_dir / 'result.csv'\n"
+        "    out.write_text('x')\n"
+        "    ctx.save_artifact('result', out)\n"
+        "\n"
         "if __name__ == '__main__':\n"
-        "    wfc_method_main(filter_data)\n"
+        "    wfc.run()\n"
     )
 
     merge_dir = tmp_project / "methods" / "merge_data"
     merge_dir.mkdir(parents=True, exist_ok=True)
     (merge_dir / "method.yaml").write_text(
-        "inputs:\n  data:\n    type: csv\n"
-        "outputs:\n  result:\n    type: csv\n"
+        "env: container:docker://local/x@sha256:" + "a" * 64 + "\n"
+        "inputs:\n  data:\n    type: .csv\n"
+        "outputs:\n  result:\n    type: .csv\n"
     )
     (merge_dir / "merge_data.py").write_text(
-        "import pandas as pd\n"
-        "from wfc.method import wfc_method, wfc_method_main\n\n"
-        "@wfc_method\n"
-        "def merge_data(inputs, params):\n"
-        "    return {}, {}\n\n"
+        "import wfc_client as wfc\n\n"
+        "@wfc.method\n"
+        "def merge_data(ctx):\n"
+        "    out = ctx.run_dir / 'result.csv'\n"
+        "    out.write_text('x')\n"
+        "    ctx.save_artifact('result', out)\n"
+        "\n"
         "if __name__ == '__main__':\n"
-        "    wfc_method_main(merge_data)\n"
+        "    wfc.run()\n"
     )
 
     # filter_data(inputs, params) — both stripped by @wfc_method rule
@@ -332,17 +338,20 @@ def test_nested_method_script_path(tmp_project):
     nested_dir = tmp_project / "modules" / "nested_module" / "nested_method"
     nested_dir.mkdir(parents=True, exist_ok=True)
     (nested_dir / "method.yaml").write_text(
-        "inputs:\n  data:\n    type: csv\n"
-        "outputs:\n  result:\n    type: csv\n"
+        "env: container:docker://local/x@sha256:" + "a" * 64 + "\n"
+        "inputs:\n  data:\n    type: .csv\n"
+        "outputs:\n  result:\n    type: .csv\n"
     )
     (nested_dir / "nested_method.py").write_text(
-        "import pandas as pd\n"
-        "from wfc.method import wfc_method, wfc_method_main\n\n"
-        "@wfc_method\n"
-        "def nested_method(df, params):\n"
-        "    return {}, {}\n\n"
+        "import wfc_client as wfc\n\n"
+        "@wfc.method\n"
+        "def nested_method(ctx):\n"
+        "    out = ctx.run_dir / 'result.csv'\n"
+        "    out.write_text('x')\n"
+        "    ctx.save_artifact('result', out)\n"
+        "\n"
         "if __name__ == '__main__':\n"
-        "    wfc_method_main(nested_method)\n"
+        "    wfc.run()\n"
     )
 
     mid = register_method(
@@ -477,27 +486,30 @@ def test_individual_method_registration(
 # ============================================================================
 
 @workflow(
-    purpose="Registering a plain method directory stores 'inherit' as its "
-            "declared environment in the database")
+    purpose="ADR-019 Cycle H: registering a method stores its declared built "
+            "container env in the database")
 def test_register_method_stores_inherit_for_plain_dir(tmp_project):
-    """A method dir with no env key in method.yaml -> method.env == 'inherit' in DB."""
+    """The fixture transform method declares env: container:fixture-env ->
+    method.env stores that container env in the DB (no 'inherit' default)."""
     init_project(tmp_project)
 
     _ = Step(step_num=1, name="Register module and method",
-             purpose="Register a plain method directory that declares no specific environment")
+             purpose="Register the fixture transform method (env: container:fixture-env)")
     register_module(name="data_transform", contracts=[], description="Test")
     register_method(
         method_dir=tmp_project / "methods" / "transform",
         module_name="data_transform")
 
     _ = Step(step_num=2, name="Verify stored environment",
-             purpose="Confirm inherited environment is recorded in the method's database entry")
+             purpose="Confirm the container env is recorded in the method's database entry")
     with get_session() as session:
         method = session.exec(
             select(Method).where(Method.name == "transform")
         ).first()
         assert method is not None
-        assert method.env == "inherit"
+        # tmp_project's conftest writes a fixture-env record; the fixture
+        # method.yaml declares env: container:fixture-env.
+        assert method.env == "container:fixture-env"
 
 
 @workflow(
@@ -530,18 +542,20 @@ def test_register_method_stores_named_env(tmp_project):
     method_dir = tmp_project / "methods" / "env_method"
     method_dir.mkdir(parents=True)
     (method_dir / "method.yaml").write_text(
-        "env: pixi:image-io\n"
-        "inputs:\n  data:\n    type: csv\n"
-        "outputs:\n  result:\n    type: csv\n"
+        "env: container:docker://local/image-io@sha256:" + "a" * 64 + "\n"
+        "inputs:\n  data:\n    type: .csv\n"
+        "outputs:\n  result:\n    type: .csv\n"
     )
     (method_dir / "env_method.py").write_text(
-        "import pandas as pd\n"
-        "from wfc.method import wfc_method, wfc_method_main\n\n"
-        "@wfc_method\n"
-        "def env_method(inputs, params: dict):\n"
-        "    return {}, {}\n\n"
+        "import wfc_client as wfc\n\n"
+        "@wfc.method\n"
+        "def env_method(ctx):\n"
+        "    out = ctx.run_dir / 'result.csv'\n"
+        "    out.write_text('x')\n"
+        "    ctx.save_artifact('result', out)\n"
+        "\n"
         "if __name__ == '__main__':\n"
-        "    wfc_method_main(env_method)\n"
+        "    wfc.run()\n"
     )
 
     _ = Step(step_num=3, name="Register module and method",
@@ -558,7 +572,7 @@ def test_register_method_stores_named_env(tmp_project):
             select(Method).where(Method.name == "env_method")
         ).first()
         assert method is not None
-        assert method.env == "pixi:image-io"
+        assert method.env == "container:docker://local/image-io@sha256:" + "a" * 64
 
 
 # =============================================================================
@@ -603,17 +617,19 @@ def _make_container_method_dir(tmp_project: Path, env_value: str) -> Path:
     method_dir.mkdir(parents=True, exist_ok=True)
     (method_dir / "method.yaml").write_text(
         f"env: {env_value}\n"
-        "inputs:\n  data:\n    type: csv\n"
-        "outputs:\n  result:\n    type: csv\n"
+        "inputs:\n  data:\n    type: .csv\n"
+        "outputs:\n  result:\n    type: .csv\n"
     )
     (method_dir / "container_method.py").write_text(
-        "import pandas as pd\n"
-        "from wfc.method import wfc_method, wfc_method_main\n\n"
-        "@wfc_method\n"
-        "def container_method(inputs, params: dict):\n"
-        "    return {}, {}\n\n"
+        "import wfc_client as wfc\n\n"
+        "@wfc.method\n"
+        "def container_method(ctx):\n"
+        "    out = ctx.run_dir / 'result.csv'\n"
+        "    out.write_text('x')\n"
+        "    ctx.save_artifact('result', out)\n"
+        "\n"
         "if __name__ == '__main__':\n"
-        "    wfc_method_main(container_method)\n"
+        "    wfc.run()\n"
     )
     return method_dir
 
@@ -761,23 +777,23 @@ def test_register_method_missing_env_raises(tmp_project):
     method_dir = tmp_project / "methods" / "missing_env_method"
     method_dir.mkdir(parents=True)
     (method_dir / "method.yaml").write_text(
-        "env: pixi:nonexistent\n"
-        "inputs:\n  data:\n    type: csv\n"
+        "env: container:nonexistent\n"
+        "inputs:\n  data:\n    type: .csv\n"
     )
     (method_dir / "missing_env_method.py").write_text(
-        "import pandas as pd\n"
-        "from wfc.method import wfc_method, wfc_method_main\n\n"
-        "@wfc_method\n"
-        "def missing_env_method(inputs, params: dict):\n"
-        "    return {}, {}\n\n"
+        "import wfc_client as wfc\n\n"
+        "@wfc.method\n"
+        "def missing_env_method(ctx):\n"
+        "    pass\n"
+        "\n"
         "if __name__ == '__main__':\n"
-        "    wfc_method_main(missing_env_method)\n"
+        "    wfc.run()\n"
     )
 
     _ = Step(step_num=3, name="Attempt registration",
              purpose="Verify that registration fails with a clear error")
     register_module(name="missing_env_module", contracts=[], description="Test")
-    with pytest.raises(ValueError, match="No pixi environment found"):
+    with pytest.raises(ValueError, match="not found in .wfc/envs.json|wfc register-env"):
         register_method(
             method_dir=method_dir,
             module_name="missing_env_module")
@@ -791,17 +807,20 @@ def test_register_method_no_inputs_raises(tmp_project):
     method_dir = tmp_project / "methods" / "no_inputs"
     method_dir.mkdir(parents=True)
     (method_dir / "method.yaml").write_text(
+        "env: container:docker://local/x@sha256:" + "a" * 64 + "\n"
         "inputs: {}\n"
-        "outputs:\n  result:\n    type: csv\n"
+        "outputs:\n  result:\n    type: .csv\n"
     )
     (method_dir / "no_inputs.py").write_text(
-        "import pandas as pd\n"
-        "from wfc.method import wfc_method, wfc_method_main\n\n"
-        "@wfc_method\n"
-        "def no_inputs(inputs, params: dict):\n"
-        "    return {}, {}\n\n"
+        "import wfc_client as wfc\n\n"
+        "@wfc.method\n"
+        "def no_inputs(ctx):\n"
+        "    out = ctx.run_dir / 'result.csv'\n"
+        "    out.write_text('x')\n"
+        "    ctx.save_artifact('result', out)\n"
+        "\n"
         "if __name__ == '__main__':\n"
-        "    wfc_method_main(no_inputs)\n"
+        "    wfc.run()\n"
     )
 
     register_module(name="no_inputs_module", contracts=[], description="Test")
@@ -1009,17 +1028,20 @@ def test_register_method_validates_module_contract(tmp_project):
     method_dir = tmp_project / "methods" / "bad_method"
     method_dir.mkdir(parents=True)
     (method_dir / "method.yaml").write_text(
-        "inputs:\n  data:\n    type: csv\n"
-        "outputs:\n  wrong_output:\n    type: csv\n"
+        "env: container:docker://local/x@sha256:" + "a" * 64 + "\n"
+        "inputs:\n  data:\n    type: .csv\n"
+        "outputs:\n  wrong_output:\n    type: .csv\n"
     )
     (method_dir / "bad_method.py").write_text(
-        "import pandas as pd\n"
-        "from wfc.method import wfc_method, wfc_method_main\n\n"
-        "@wfc_method\n"
-        "def bad_method(inputs, params: dict):\n"
-        "    return {}, {}\n\n"
+        "import wfc_client as wfc\n\n"
+        "@wfc.method\n"
+        "def bad_method(ctx):\n"
+        "    out = ctx.run_dir / 'wrong_output.csv'\n"
+        "    out.write_text('x')\n"
+        "    ctx.save_artifact('wrong_output', out)\n"
+        "\n"
         "if __name__ == '__main__':\n"
-        "    wfc_method_main(bad_method)\n"
+        "    wfc.run()\n"
     )
 
     _ = Step(step_num=3, name="Attempt registration",

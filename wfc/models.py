@@ -11,7 +11,7 @@ from enum import Enum
 from typing import Optional, List
 
 from sqlmodel import SQLModel, Field, Relationship, Column
-from sqlalchemy import JSON, UniqueConstraint
+from sqlalchemy import JSON, UniqueConstraint, text
 
 
 # =============================================================================
@@ -62,8 +62,20 @@ class Method(SQLModel, table=True):
     module_id: int = Field(foreign_key="modules.id", index=True)
     name: str = Field(index=True, max_length=200)
     script_path: Optional[str] = Field(default=None, max_length=500)
-    env: str = Field(default="inherit", max_length=50)
-    # "inherit" | named shared env (e.g. "image-io")
+    # Required typed env spec or named shared env (e.g. "pixi:image-io",
+    # "conda:analysis", "container:<name>", "byo", or a bare manifest name).
+    # No Python-side default — a method must declare an env (enforced at
+    # registration parse, pre_run, and snakemake_gen). The DB-only
+    # ``server_default=''`` exists ONLY so ``ensure_schema`` can additively
+    # ADD this NOT-NULL column to a *legacy* methods table that predates it
+    # (SQLite needs a constant DEFAULT to backfill existing rows). Backfilled
+    # legacy rows get ``''`` — which the run-time guards reject loudly, exactly
+    # as a missing env should (it is NOT a silent working default like the old
+    # ``"inherit"``).
+    env: str = Field(
+        max_length=50,
+        sa_column_kwargs={"server_default": text("''")},
+    )
 
     # relationships
     module: Optional[Module] = Relationship(back_populates="methods")
@@ -162,8 +174,8 @@ class Run(SQLModel, table=True):
     cache_key: Optional[str] = Field(default=None, max_length=64, index=True)
     cache_source_run_id: Optional[int] = Field(default=None, foreign_key="runs.id")
     # env_fingerprint: 32-char MD5 hex of the DVC-cached env content blob
-    # captured at pre_run time (lock + pip freeze, or interpreter identity +
-    # pip freeze for inherit envs).  Folded into the cache key so env drift
+    # captured at pre_run time (lock + pip freeze, or a container env's
+    # image fingerprint).  Folded into the cache key so env drift
     # invalidates cache.  Nullable for backward compat with pre-env-fp runs.
     env_fingerprint: Optional[str] = Field(default=None, max_length=32)
     # cache_source_run_id is set when a run reused a previous run's outputs;

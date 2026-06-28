@@ -43,6 +43,7 @@ def db_engine(tmp_path, monkeypatch):
             name="tile_and_config",
             module_id=mod.id,
             script_path="methods/tile_and_config/tile_and_config.py",
+            env="container:demo",
         )
         session.add(meth)
         session.flush()
@@ -53,7 +54,7 @@ def db_engine(tmp_path, monkeypatch):
                 input_slots={},
                 output_slots={
                     "tiles_dir": {"type": "directory"},
-                    "config": {"type": "JSON"},
+                    "config": {"type": ".json"},
                 },
                 params_schema={},
             )
@@ -107,7 +108,7 @@ def test_enrich_pipeline_emits_slot_types_for_mixed_node(db_engine):
     )
     assert node["slot_types"] == {
         "tiles_dir": "directory",
-        "config": "JSON",
+        "config": ".json",
     }, (
         f"slot_types must mirror contract-declared types exactly; "
         f"got {node['slot_types']!r}"

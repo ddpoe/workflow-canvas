@@ -15,7 +15,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from dflow.core.decorators import workflow
+from axiom_annotations import workflow
 
 from wfc.cli import exec_method
 

@@ -20,7 +20,12 @@ from sqlmodel import SQLModel, Session, create_engine
 # Re-export pipeline-fixture infrastructure so tests at any depth can use
 # register_fixture_methods / pipeline_factory without having to live under
 # tests/e2e/.  The fixtures themselves live in tests/fixtures/conftest.py.
-from tests.fixtures.conftest import register_fixture_methods, pipeline_factory  # noqa: F401
+from tests.fixtures.conftest import (  # noqa: F401
+    register_fixture_methods,
+    pipeline_factory,
+    register_imaging_methods,
+    imaging_pipeline_factory,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -56,6 +61,38 @@ def _make_wfc_marker(project_dir: Path) -> None:
         marker.write_text('[project]\nname = "test"\n')
 
 
+def _write_fixture_env_record(project_dir: Path) -> None:
+    """Write a placeholder ``fixture-env`` container record into ``.wfc/envs.json``.
+
+    The fixture methods declare ``env: container:fixture-env``; registration
+    only validates the container ref SHAPE (no image pull), so a placeholder
+    digest lets Docker-free unit tests register fixture methods. Real
+    end-to-end execution (tests/e2e, tests/integration) overwrites this with
+    the session-built image digest via ``register_fixture_methods``.
+
+    Only called from ``tmp_project`` (which copies fixture methods) — NOT from
+    ``_make_wfc_marker``, so env-listing tests that expect a pristine empty
+    manifest are unaffected.
+    """
+    wfc_dir = project_dir / ".wfc"
+    wfc_dir.mkdir(parents=True, exist_ok=True)
+    envs_json = wfc_dir / "envs.json"
+    if not envs_json.exists():
+        envs_json.write_text(json.dumps({
+            "schema_version": 1,
+            "envs": {
+                "fixture-env": {
+                    "backend": "pixi",
+                    "source": "pixi.toml",
+                    "container": "docker://local/wfc-test-minimal@sha256:" + "a" * 64,
+                    "env_fingerprint": "a" * 64,
+                    "built_from_lock": "pixi.lock",
+                    "built_at": "2026-06-23T00:00:00Z",
+                }
+            },
+        }))
+
+
 @pytest.fixture
 def wfc_root(git_project, monkeypatch):
     """Real git-repo path to pass as wfc_module_path to generate_snakefile().
@@ -87,6 +124,9 @@ def tmp_project(git_project, monkeypatch):
     - method scripts copied from real methods/
     """
     _make_wfc_marker(git_project)
+    # Fixture methods declare env: container:fixture-env; write the placeholder
+    # env record so registration's container-env validation passes Docker-free.
+    _write_fixture_env_record(git_project)
     monkeypatch.chdir(git_project)
     monkeypatch.setenv("WFC_PROJECT_ROOT", str(git_project))
 
@@ -195,3 +235,59 @@ requires_docker = pytest.mark.skipif(
     not _docker_available(),
     reason="docker not reachable (required for container build/run tests)",
 )
+
+
+# =============================================================================
+# Fixture-method container image (ADR-019 Cycle H)
+# =============================================================================
+#
+# Execution is container-only: every method runs inside a built container
+# image. The lightweight fixture methods (transform/merge/faulty/...) need a
+# real image to execute end-to-end, so ``register_fixture_methods`` references
+# a session-scoped image built once from ``tests/fixtures/Dockerfile.minimal``
+# (the same image the tests/integration/ suite uses). The build only fires for
+# Docker-gated ``integration`` tests — the default suite deselects them via the
+# ``-m "not slow and not integration"`` addopts, so no build is triggered there.
+
+_FIXTURE_IMAGE_TAG = "local/wfc-test-minimal:latest"
+
+
+@pytest.fixture(scope="session")
+def fixture_container_image() -> str:
+    """Build the minimal wfc image once per session; return its sha256 digest.
+
+    Reuses ``tests/fixtures/Dockerfile.minimal`` (wfc + its runtime deps), the
+    same image the ``tests/integration/`` suite builds. The digest is captured
+    via ``docker image inspect`` so the env manifest can reference an immutable
+    ``image@sha256:...`` ref (the shape ``wfc.envs.validate_container_ref``
+    enforces).
+
+    Returns:
+        The image digest as a bare sha256 hex string (no ``sha256:`` prefix).
+    """
+    dockerfile = PROJECT_ROOT / "tests" / "fixtures" / "Dockerfile.minimal"
+    assert dockerfile.exists(), f"Missing fixture Dockerfile: {dockerfile}"
+
+    build = subprocess.run(
+        ["docker", "build", "-t", _FIXTURE_IMAGE_TAG,
+         "-f", str(dockerfile), str(PROJECT_ROOT)],
+        capture_output=True, text=True, timeout=600,
+    )
+    if build.returncode != 0:
+        pytest.fail(
+            "docker build of fixture image failed:\n"
+            f"STDOUT:\n{build.stdout}\nSTDERR:\n{build.stderr}"
+        )
+
+    inspect = subprocess.run(
+        ["docker", "image", "inspect", "--format", "{{.Id}}", _FIXTURE_IMAGE_TAG],
+        capture_output=True, text=True, timeout=30,
+    )
+    if inspect.returncode != 0:
+        pytest.fail(
+            "docker image inspect failed:\n"
+            f"STDOUT:\n{inspect.stdout}\nSTDERR:\n{inspect.stderr}"
+        )
+
+    image_id = inspect.stdout.strip()
+    return image_id[len("sha256:"):] if image_id.startswith("sha256:") else image_id

@@ -257,6 +257,8 @@ export interface PipelineError {
     | 'env_lock_missing'
     | 'env_name_missing'
     | 'not_found'
+    | 'not_runnable_docker'
+    | 'not_runnable_git'
     | 'unknown'
     | string;
   hint?: string;

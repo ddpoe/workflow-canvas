@@ -1,0 +1,56 @@
+{
+  "nodes": [
+    {
+      "id": "filter_a",
+      "method": "csv_filter",
+      "module": "csv_tools",
+      "script": "modules/_builtin/csv_filter/csv_filter.py",
+      "params": {
+        "column": "condition",
+        "values": [
+          "scr_50nM"
+        ]
+      },
+      "output_ext": ".csv",
+      "env": "container:demo"
+    },
+    {
+      "id": "filter_b",
+      "method": "csv_filter",
+      "module": "csv_tools",
+      "script": "modules/_builtin/csv_filter/csv_filter.py",
+      "params": {
+        "column": "condition",
+        "values": [
+          "CycD1_50nM"
+        ]
+      },
+      "output_ext": ".csv",
+      "env": "container:demo"
+    },
+    {
+      "id": "merge_ab",
+      "method": "csv_merge",
+      "module": "csv_tools",
+      "script": "modules/_builtin/csv_merge/csv_merge.py",
+      "params": {},
+      "output_ext": ".csv",
+      "env": "container:demo"
+    }
+  ],
+  "links": [
+    {
+      "source": "filter_a",
+      "target": "merge_ab",
+      "target_slot": "sources"
+    },
+    {
+      "source": "filter_b",
+      "target": "merge_ab",
+      "target_slot": "sources"
+    }
+  ],
+  "samples": [
+    "Rep2_siRNA"
+  ]
+}

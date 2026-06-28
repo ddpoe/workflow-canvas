@@ -1,0 +1,671 @@
+{
+  "nodes": [
+    {
+      "id": "scr50",
+      "method": "csv_filter",
+      "module": "csv_tools",
+      "script": "modules/_builtin/csv_filter/csv_filter.py",
+      "output_ext": ".csv",
+      "slot_outputs": {
+        "filtered": "filtered.csv"
+      },
+      "params": {
+        "column": "condition",
+        "values": [
+          "scr_50nM"
+        ]
+      }
+    },
+    {
+      "id": "scr75",
+      "method": "csv_filter",
+      "module": "csv_tools",
+      "script": "modules/_builtin/csv_filter/csv_filter.py",
+      "output_ext": ".csv",
+      "slot_outputs": {
+        "filtered": "filtered.csv"
+      },
+      "params": {
+        "column": "condition",
+        "values": [
+          "scr_75nM"
+        ]
+      }
+    },
+    {
+      "id": "scr125",
+      "method": "csv_filter",
+      "module": "csv_tools",
+      "script": "modules/_builtin/csv_filter/csv_filter.py",
+      "output_ext": ".csv",
+      "slot_outputs": {
+        "filtered": "filtered.csv"
+      },
+      "params": {
+        "column": "condition",
+        "values": [
+          "scr_125nM"
+        ]
+      }
+    },
+    {
+      "id": "cycD1",
+      "method": "csv_filter",
+      "module": "csv_tools",
+      "script": "modules/_builtin/csv_filter/csv_filter.py",
+      "output_ext": ".csv",
+      "slot_outputs": {
+        "filtered": "filtered.csv"
+      },
+      "params": {
+        "column": "condition",
+        "values": [
+          "CycD1_50nM"
+        ]
+      }
+    },
+    {
+      "id": "p27",
+      "method": "csv_filter",
+      "module": "csv_tools",
+      "script": "modules/_builtin/csv_filter/csv_filter.py",
+      "output_ext": ".csv",
+      "slot_outputs": {
+        "filtered": "filtered.csv"
+      },
+      "params": {
+        "column": "condition",
+        "values": [
+          "p27_75nM"
+        ]
+      }
+    },
+    {
+      "id": "dbl",
+      "method": "csv_filter",
+      "module": "csv_tools",
+      "script": "modules/_builtin/csv_filter/csv_filter.py",
+      "output_ext": ".csv",
+      "slot_outputs": {
+        "filtered": "filtered.csv"
+      },
+      "params": {
+        "column": "condition",
+        "values": [
+          "cycD1_50nM+p27_75nM"
+        ]
+      }
+    },
+    {
+      "id": "fqc_scr50",
+      "method": "feature_qc",
+      "module": "data_preprocessing",
+      "script": "methods/feature_qc/feature_qc.py",
+      "output_ext": ".csv",
+      "slot_outputs": {
+        "preprocessed": "preprocessed.csv"
+      },
+      "params": {
+        "filters": [
+          {
+            "column": "area",
+            "min": 3.0,
+            "transform": "log10"
+          },
+          {
+            "column": "R1_p27-AF488_nuc_mean",
+            "min": 2.5,
+            "transform": "log10"
+          },
+          {
+            "column": "R1_CycD1-AF555_nuc_mean",
+            "min": 2.25,
+            "transform": "log10"
+          }
+        ]
+      }
+    },
+    {
+      "id": "fqc_scr75",
+      "method": "feature_qc",
+      "module": "data_preprocessing",
+      "script": "methods/feature_qc/feature_qc.py",
+      "output_ext": ".csv",
+      "slot_outputs": {
+        "preprocessed": "preprocessed.csv"
+      },
+      "params": {
+        "filters": [
+          {
+            "column": "area",
+            "min": 3.0,
+            "transform": "log10"
+          },
+          {
+            "column": "R1_p27-AF488_nuc_mean",
+            "min": 2.5,
+            "transform": "log10"
+          },
+          {
+            "column": "R1_CycD1-AF555_nuc_mean",
+            "min": 2.25,
+            "transform": "log10"
+          }
+        ]
+      }
+    },
+    {
+      "id": "fqc_scr125",
+      "method": "feature_qc",
+      "module": "data_preprocessing",
+      "script": "methods/feature_qc/feature_qc.py",
+      "output_ext": ".csv",
+      "slot_outputs": {
+        "preprocessed": "preprocessed.csv"
+      },
+      "params": {
+        "filters": [
+          {
+            "column": "area",
+            "min": 3.0,
+            "transform": "log10"
+          },
+          {
+            "column": "R1_p27-AF488_nuc_mean",
+            "min": 2.5,
+            "transform": "log10"
+          },
+          {
+            "column": "R1_CycD1-AF555_nuc_mean",
+            "min": 2.25,
+            "transform": "log10"
+          }
+        ]
+      }
+    },
+    {
+      "id": "fqc_cycD1",
+      "method": "feature_qc",
+      "module": "data_preprocessing",
+      "script": "methods/feature_qc/feature_qc.py",
+      "output_ext": ".csv",
+      "slot_outputs": {
+        "preprocessed": "preprocessed.csv"
+      },
+      "params": {
+        "filters": [
+          {
+            "column": "area",
+            "min": 3.0,
+            "transform": "log10"
+          },
+          {
+            "column": "R1_p27-AF488_nuc_mean",
+            "min": 2.5,
+            "transform": "log10"
+          },
+          {
+            "column": "R1_CycD1-AF555_nuc_mean",
+            "min": 2.25,
+            "transform": "log10"
+          }
+        ]
+      }
+    },
+    {
+      "id": "fqc_p27",
+      "method": "feature_qc",
+      "module": "data_preprocessing",
+      "script": "methods/feature_qc/feature_qc.py",
+      "output_ext": ".csv",
+      "slot_outputs": {
+        "preprocessed": "preprocessed.csv"
+      },
+      "params": {
+        "filters": [
+          {
+            "column": "area",
+            "min": 3.0,
+            "transform": "log10"
+          },
+          {
+            "column": "R1_p27-AF488_nuc_mean",
+            "min": 2.5,
+            "transform": "log10"
+          },
+          {
+            "column": "R1_CycD1-AF555_nuc_mean",
+            "min": 2.25,
+            "transform": "log10"
+          }
+        ]
+      }
+    },
+    {
+      "id": "fqc_dbl",
+      "method": "feature_qc",
+      "module": "data_preprocessing",
+      "script": "methods/feature_qc/feature_qc.py",
+      "output_ext": ".csv",
+      "slot_outputs": {
+        "preprocessed": "preprocessed.csv"
+      },
+      "params": {
+        "filters": [
+          {
+            "column": "area",
+            "min": 3.0,
+            "transform": "log10"
+          },
+          {
+            "column": "R1_p27-AF488_nuc_mean",
+            "min": 2.5,
+            "transform": "log10"
+          },
+          {
+            "column": "R1_CycD1-AF555_nuc_mean",
+            "min": 2.25,
+            "transform": "log10"
+          }
+        ]
+      }
+    },
+    {
+      "id": "merge_cycD1",
+      "method": "csv_merge",
+      "module": "csv_tools",
+      "script": "modules/_builtin/csv_merge/csv_merge.py",
+      "output_ext": ".csv",
+      "slot_outputs": {
+        "merged": "merged.csv"
+      },
+      "params": {}
+    },
+    {
+      "id": "merge_p27",
+      "method": "csv_merge",
+      "module": "csv_tools",
+      "script": "modules/_builtin/csv_merge/csv_merge.py",
+      "output_ext": ".csv",
+      "slot_outputs": {
+        "merged": "merged.csv"
+      },
+      "params": {}
+    },
+    {
+      "id": "merge_dbl",
+      "method": "csv_merge",
+      "module": "csv_tools",
+      "script": "modules/_builtin/csv_merge/csv_merge.py",
+      "output_ext": ".csv",
+      "slot_outputs": {
+        "merged": "merged.csv"
+      },
+      "params": {}
+    },
+    {
+      "id": "label_cycD1",
+      "method": "binary_labeling",
+      "module": "data_labeling",
+      "script": "methods/binary_labeling/binary_labeling.py",
+      "output_ext": ".csv",
+      "slot_outputs": {
+        "labeled": "labeled.csv"
+      },
+      "params": {
+        "feature_column": "R1_pRb-AF647_nuc_median",
+        "log_transform": true,
+        "threshold_mode": "single",
+        "threshold_high": 2.95,
+        "label_column": "label"
+      }
+    },
+    {
+      "id": "label_p27",
+      "method": "binary_labeling",
+      "module": "data_labeling",
+      "script": "methods/binary_labeling/binary_labeling.py",
+      "output_ext": ".csv",
+      "slot_outputs": {
+        "labeled": "labeled.csv"
+      },
+      "params": {
+        "feature_column": "R1_pRb-AF647_nuc_median",
+        "log_transform": true,
+        "threshold_mode": "single",
+        "threshold_high": 2.95,
+        "label_column": "label"
+      }
+    },
+    {
+      "id": "label_dbl",
+      "method": "binary_labeling",
+      "module": "data_labeling",
+      "script": "methods/binary_labeling/binary_labeling.py",
+      "output_ext": ".csv",
+      "slot_outputs": {
+        "labeled": "labeled.csv"
+      },
+      "params": {
+        "feature_column": "R1_pRb-AF647_nuc_median",
+        "log_transform": true,
+        "threshold_mode": "single",
+        "threshold_high": 2.95,
+        "label_column": "label"
+      }
+    },
+    {
+      "id": "cls_cycD1",
+      "method": "train_classifier",
+      "module": "binary_label_classification",
+      "script": "modules/binary_label_classification/train_classifier/train_classifier.py",
+      "env_strategy": "pixi",
+      "slot_outputs": {
+        "predictions": "predictions.csv",
+        "model": "model.pkl",
+        "metrics": "metrics.csv"
+      },
+      "params": {
+        "control_condition": "scr_50nM",
+        "treatment_condition": "CycD1_50nM",
+        "label_column": "label",
+        "feature_pairs": [
+          [
+            "p27",
+            "cycD1"
+          ]
+        ],
+        "column_map": {
+          "p27": "R1_p27-AF488_nuc_mean",
+          "cycD1": "R1_CycD1-AF555_nuc_mean",
+          "p21": "R2_p21-AF555_nuc_mean",
+          "cycE1": "R2_CycE1-AF647_nuc_mean",
+          "cycE2": "R2_CycE2-AF488_nuc_mean"
+        },
+        "log_transform": true,
+        "z_score": true,
+        "use_calibrated_classifier": false,
+        "cv_folds": 2
+      }
+    },
+    {
+      "id": "cls_p27",
+      "method": "train_classifier",
+      "module": "binary_label_classification",
+      "script": "modules/binary_label_classification/train_classifier/train_classifier.py",
+      "env_strategy": "pixi",
+      "slot_outputs": {
+        "predictions": "predictions.csv",
+        "model": "model.pkl",
+        "metrics": "metrics.csv"
+      },
+      "params": {
+        "control_condition": "scr_75nM",
+        "treatment_condition": "p27_75nM",
+        "label_column": "label",
+        "feature_pairs": [
+          [
+            "p27",
+            "cycD1"
+          ]
+        ],
+        "column_map": {
+          "p27": "R1_p27-AF488_nuc_mean",
+          "cycD1": "R1_CycD1-AF555_nuc_mean",
+          "p21": "R2_p21-AF555_nuc_mean",
+          "cycE1": "R2_CycE1-AF647_nuc_mean",
+          "cycE2": "R2_CycE2-AF488_nuc_mean"
+        },
+        "log_transform": true,
+        "z_score": true,
+        "use_calibrated_classifier": false,
+        "cv_folds": 2
+      }
+    },
+    {
+      "id": "cls_dbl",
+      "method": "train_classifier",
+      "module": "binary_label_classification",
+      "script": "modules/binary_label_classification/train_classifier/train_classifier.py",
+      "env_strategy": "pixi",
+      "slot_outputs": {
+        "predictions": "predictions.csv",
+        "model": "model.pkl",
+        "metrics": "metrics.csv"
+      },
+      "params": {
+        "control_condition": "scr_125nM",
+        "treatment_condition": "cycD1_50nM+p27_75nM",
+        "label_column": "label",
+        "feature_pairs": [
+          [
+            "p27",
+            "cycD1"
+          ]
+        ],
+        "column_map": {
+          "p27": "R1_p27-AF488_nuc_mean",
+          "cycD1": "R1_CycD1-AF555_nuc_mean",
+          "p21": "R2_p21-AF555_nuc_mean",
+          "cycE1": "R2_CycE1-AF647_nuc_mean",
+          "cycE2": "R2_CycE2-AF488_nuc_mean"
+        },
+        "log_transform": true,
+        "z_score": true,
+        "use_calibrated_classifier": false,
+        "cv_folds": 2
+      }
+    },
+    {
+      "id": "plot_cycD1",
+      "method": "plot_decision_boundary",
+      "module": "data_visualization",
+      "script": "modules/data_visualization/plot_decision_boundary/plot_decision_boundary.py",
+      "env_strategy": "pixi",
+      "output_ext": ".png",
+      "slot_outputs": {
+        "figure": "figure.png"
+      },
+      "params": {
+        "feature_pairs": [
+          [
+            "p27",
+            "cycD1"
+          ]
+        ],
+        "column_map": {
+          "p27": "R1_p27-AF488_nuc_mean",
+          "cycD1": "R1_CycD1-AF555_nuc_mean",
+          "p21": "R2_p21-AF555_nuc_mean",
+          "cycE1": "R2_CycE1-AF647_nuc_mean",
+          "cycE2": "R2_CycE2-AF488_nuc_mean"
+        }
+      }
+    },
+    {
+      "id": "plot_p27",
+      "method": "plot_decision_boundary",
+      "module": "data_visualization",
+      "script": "modules/data_visualization/plot_decision_boundary/plot_decision_boundary.py",
+      "env_strategy": "pixi",
+      "output_ext": ".png",
+      "slot_outputs": {
+        "figure": "figure.png"
+      },
+      "params": {
+        "feature_pairs": [
+          [
+            "p27",
+            "cycD1"
+          ]
+        ],
+        "column_map": {
+          "p27": "R1_p27-AF488_nuc_mean",
+          "cycD1": "R1_CycD1-AF555_nuc_mean",
+          "p21": "R2_p21-AF555_nuc_mean",
+          "cycE1": "R2_CycE1-AF647_nuc_mean",
+          "cycE2": "R2_CycE2-AF488_nuc_mean"
+        }
+      }
+    },
+    {
+      "id": "plot_dbl",
+      "method": "plot_decision_boundary",
+      "module": "data_visualization",
+      "script": "modules/data_visualization/plot_decision_boundary/plot_decision_boundary.py",
+      "env_strategy": "pixi",
+      "output_ext": ".png",
+      "slot_outputs": {
+        "figure": "figure.png"
+      },
+      "params": {
+        "feature_pairs": [
+          [
+            "p27",
+            "cycD1"
+          ]
+        ],
+        "column_map": {
+          "p27": "R1_p27-AF488_nuc_mean",
+          "cycD1": "R1_CycD1-AF555_nuc_mean",
+          "p21": "R2_p21-AF555_nuc_mean",
+          "cycE1": "R2_CycE1-AF647_nuc_mean",
+          "cycE2": "R2_CycE2-AF488_nuc_mean"
+        }
+      }
+    }
+  ],
+  "links": [
+    {
+      "source": "scr50",
+      "target": "fqc_scr50",
+      "target_slot": "data"
+    },
+    {
+      "source": "scr75",
+      "target": "fqc_scr75",
+      "target_slot": "data"
+    },
+    {
+      "source": "scr125",
+      "target": "fqc_scr125",
+      "target_slot": "data"
+    },
+    {
+      "source": "cycD1",
+      "target": "fqc_cycD1",
+      "target_slot": "data"
+    },
+    {
+      "source": "p27",
+      "target": "fqc_p27",
+      "target_slot": "data"
+    },
+    {
+      "source": "dbl",
+      "target": "fqc_dbl",
+      "target_slot": "data"
+    },
+    {
+      "source": "fqc_scr50",
+      "target": "merge_cycD1",
+      "target_slot": "sources"
+    },
+    {
+      "source": "fqc_cycD1",
+      "target": "merge_cycD1",
+      "target_slot": "sources"
+    },
+    {
+      "source": "fqc_scr75",
+      "target": "merge_p27",
+      "target_slot": "sources"
+    },
+    {
+      "source": "fqc_p27",
+      "target": "merge_p27",
+      "target_slot": "sources"
+    },
+    {
+      "source": "fqc_scr125",
+      "target": "merge_dbl",
+      "target_slot": "sources"
+    },
+    {
+      "source": "fqc_dbl",
+      "target": "merge_dbl",
+      "target_slot": "sources"
+    },
+    {
+      "source": "merge_cycD1",
+      "target": "label_cycD1",
+      "target_slot": "data"
+    },
+    {
+      "source": "merge_p27",
+      "target": "label_p27",
+      "target_slot": "data"
+    },
+    {
+      "source": "merge_dbl",
+      "target": "label_dbl",
+      "target_slot": "data"
+    },
+    {
+      "source": "label_cycD1",
+      "target": "cls_cycD1",
+      "target_slot": "data"
+    },
+    {
+      "source": "label_p27",
+      "target": "cls_p27",
+      "target_slot": "data"
+    },
+    {
+      "source": "label_dbl",
+      "target": "cls_dbl",
+      "target_slot": "data"
+    },
+    {
+      "source": "cls_cycD1",
+      "target": "plot_cycD1",
+      "source_slot": "predictions",
+      "target_slot": "data"
+    },
+    {
+      "source": "cls_cycD1",
+      "target": "plot_cycD1",
+      "source_slot": "model",
+      "target_slot": "model"
+    },
+    {
+      "source": "cls_p27",
+      "target": "plot_p27",
+      "source_slot": "predictions",
+      "target_slot": "data"
+    },
+    {
+      "source": "cls_p27",
+      "target": "plot_p27",
+      "source_slot": "model",
+      "target_slot": "model"
+    },
+    {
+      "source": "cls_dbl",
+      "target": "plot_dbl",
+      "source_slot": "predictions",
+      "target_slot": "data"
+    },
+    {
+      "source": "cls_dbl",
+      "target": "plot_dbl",
+      "source_slot": "model",
+      "target_slot": "model"
+    }
+  ],
+  "samples": [
+    "Rep2_siRNA",
+    "Rep3_siRNA"
+  ],
+  "param_sets": {}
+}

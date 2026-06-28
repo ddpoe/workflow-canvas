@@ -146,11 +146,11 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
     (method_dir / "method.yaml").write_text(
         "inputs:\n"
         "  trigger:\n"
-        "    type: txt\n"
+        "    type: .txt\n"
         "    required: false\n"
         "outputs:\n"
         "  output:\n"
-        "    type: txt\n"
+        "    type: .txt\n"
         "    required: true\n"
         "params: {}\n"
         "executor: local\n"

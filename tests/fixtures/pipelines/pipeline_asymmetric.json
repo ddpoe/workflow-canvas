@@ -1,0 +1,83 @@
+{
+  "nodes": [
+    {
+      "id": 1,
+      "module": "demo_pipeline",
+      "method": "preprocess",
+      "script": "methods/preprocess/preprocess.py",
+      "params": {
+        "normalize": true,
+        "scale_factor": 1.0
+      },
+      "position": [
+        150,
+        200
+      ]
+    },
+    {
+      "id": 2,
+      "module": "demo_pipeline",
+      "method": "filter_cells",
+      "script": "methods/filter_cells/filter_cells.py",
+      "params": {
+        "min_quality": 0.5,
+        "remove_outliers": true
+      },
+      "position": [
+        450,
+        100
+      ]
+    },
+    {
+      "id": 3,
+      "module": "demo_pipeline",
+      "method": "label",
+      "script": "methods/label/label.py",
+      "params": {
+        "threshold": 0.5,
+        "label_column": "label"
+      },
+      "position": [
+        450,
+        300
+      ]
+    }
+  ],
+  "links": [
+    {
+      "source": 1,
+      "target": 2,
+      "source_slot": "output",
+      "target_slot": "input"
+    },
+    {
+      "source": 1,
+      "target": 3,
+      "source_slot": "output",
+      "target_slot": "input"
+    }
+  ],
+  "samples": [
+    "Pa16c"
+  ],
+  "param_sets": {
+    "preprocess": {
+      "default": {
+        "normalize": true,
+        "scale_factor": 1.0
+      }
+    },
+    "filter_cells": {
+      "default": {
+        "min_quality": 0.5,
+        "remove_outliers": true
+      }
+    },
+    "label": {
+      "default": {
+        "threshold": 0.5,
+        "label_column": "label"
+      }
+    }
+  }
+}

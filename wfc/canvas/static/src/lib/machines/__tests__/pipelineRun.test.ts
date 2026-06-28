@@ -247,6 +247,37 @@ describe('pipelineRunActor', () => {
     actor.stop();
   });
 
+  it('run-readiness rejection (Docker down) surfaces a kind-tagged pipelineError (D-6)', async () => {
+    // The submission gate rejects with a SubmitError carrying {kind, message,
+    // hint}. onError must preserve kind + hint so the pipeline-error card can
+    // render the Docker readiness affordance instead of a generic 'unknown'.
+    const submit = fromPromise(async () => {
+      throw {
+        message: 'Docker is installed but the daemon is not running.',
+        kind: 'not_runnable_docker',
+        hint: 'Start Docker Desktop and try again.',
+        status: 409,
+      };
+    });
+
+    const actor = startWith({
+      submit: submit as never,
+      pipeline: { nodes: [{ id: 'a' }] },
+    });
+
+    actor.send({ type: 'RUN_CLICKED' });
+    // Tick: awaitAllCommitted resolves → submitting; tick: submit rejects.
+    await new Promise(r => setTimeout(r, 0));
+    await new Promise(r => setTimeout(r, 0));
+
+    const snap = actor.getSnapshot();
+    expect(snap.value).toBe('idle');
+    expect(snap.context.pipelineError?.kind).toBe('not_runnable_docker');
+    expect(snap.context.pipelineError?.hint).toBe('Start Docker Desktop and try again.');
+    expect(snap.context.pipelineError?.message).toContain('daemon is not running');
+    actor.stop();
+  });
+
   it('re-run from `done` lands a second submission (RUN_CLICKED in done)', async () => {
     // Regression: after run #1 reached `done`, RUN_CLICKED was dropped
     // because preflight's entry called `.stop()` on the still-tracked

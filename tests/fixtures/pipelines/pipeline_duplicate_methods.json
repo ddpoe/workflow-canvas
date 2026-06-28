@@ -1,0 +1,63 @@
+{
+  "nodes": [
+    {
+      "id": "filter_rep2",
+      "method": "csv_filter",
+      "module": "image_analysis",
+      "script": "methods/csv_filter/csv_filter.py",
+      "params": {
+        "column": "replicate",
+        "value": "Rep2"
+      },
+      "output_ext": ".csv",
+      "env": "container:demo"
+    },
+    {
+      "id": "filter_rep3",
+      "method": "csv_filter",
+      "module": "image_analysis",
+      "script": "methods/csv_filter/csv_filter.py",
+      "params": {
+        "column": "replicate",
+        "value": "Rep3"
+      },
+      "output_ext": ".csv",
+      "env": "container:demo"
+    },
+    {
+      "id": "qc_rep2",
+      "method": "feature_qc",
+      "module": "image_analysis",
+      "script": "methods/feature_qc/feature_qc.py",
+      "params": {
+        "min_cells": 100
+      },
+      "output_ext": ".csv",
+      "env": "container:demo"
+    },
+    {
+      "id": "qc_rep3",
+      "method": "feature_qc",
+      "module": "image_analysis",
+      "script": "methods/feature_qc/feature_qc.py",
+      "params": {
+        "min_cells": 100
+      },
+      "output_ext": ".csv",
+      "env": "container:demo"
+    }
+  ],
+  "links": [
+    {
+      "source": "filter_rep2",
+      "target": "qc_rep2"
+    },
+    {
+      "source": "filter_rep3",
+      "target": "qc_rep3"
+    }
+  ],
+  "samples": [
+    "PDAC_Rep2_Rep3"
+  ]
+}

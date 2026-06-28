@@ -35,6 +35,12 @@ from pathlib import Path
 import pytest
 
 from tests.fixtures.conftest import register_test_method
+from wfc.canvas.server import (
+    PipelineInput,
+    PipelineLink,
+    PipelineNode,
+    _enrich_pipeline,
+)
 
 
 def _docker_available() -> bool:
@@ -143,11 +149,11 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
     (producer_dir / "method.yaml").write_text(
         "inputs:\n"
         "  trigger:\n"
-        "    type: txt\n"
+        "    type: .txt\n"
         "    required: false\n"
         "outputs:\n"
         "  output:\n"
-        "    type: txt\n"
+        "    type: .txt\n"
         "    required: true\n"
         "params: {}\n"
         "executor: local\n"
@@ -183,11 +189,11 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
     (consumer_dir / "method.yaml").write_text(
         "inputs:\n"
         "  data:\n"
-        "    type: txt\n"
+        "    type: .txt\n"
         "    required: true\n"
         "outputs:\n"
         "  transformed:\n"
-        "    type: txt\n"
+        "    type: .txt\n"
         "    required: true\n"
         "params: {}\n"
         "executor: local\n"
@@ -217,50 +223,30 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
     (sample_dir / "trigger.txt").write_text("trigger")
 
     # Pipeline: input_selector -> producer (p1) -> consumer (c1).
-    # The input_selector supplies the sample list to producer; producer's
-    # output feeds consumer through slot "data". Both method nodes carry
-    # env: smoke-env (bare name) so run-step's container-dispatch path
-    # resolves the manifest entry.
-    pipeline = {
-        "nodes": [
-            {
-                "id": "sel",
-                "type": "input_selector",
-                "method": "",
-                "module": "",
-                "samples": ["s1"],
-            },
-            {
-                "id": "p1",
-                "method": "producer",
-                "module": "pipe",
-                "env": "smoke-env",
-                "script": "methods/producer/producer.py",
-                "slot_outputs": {"output": "output.txt"},
-            },
-            {
-                "id": "c1",
-                "method": "consumer",
-                "module": "pipe",
-                "env": "smoke-env",
-                "script": "methods/consumer/consumer.py",
-                "slot_outputs": {"transformed": "transformed.txt"},
-            },
+    # Route the canvas-shaped PipelineInput through the SERVER ``_enrich_pipeline``
+    # path (the real GUI /run export) instead of hand-building the engine JSON.
+    # This exercises the seam the canvas exposes: node env, script_path, and
+    # slot_outputs are all derived from the registered method contracts in the
+    # DB -- so the method.yaml ``env: container:smoke-env`` flows through
+    # verbatim and must resolve at run-step container dispatch end-to-end.
+    pipeline_input = PipelineInput(
+        name="seam",
+        nodes=[
+            PipelineNode(id="sel", type="input_selector", samples=["s1"]),
+            PipelineNode(id="p1", type="method", method="producer", module="pipe"),
+            PipelineNode(id="c1", type="method", method="consumer", module="pipe"),
         ],
-        "links": [
-            {"source": "sel", "target": "p1", "target_slot": "trigger"},
-            {
-                "source": "p1",
-                "source_slot": "output",
-                "target": "c1",
-                "target_slot": "data",
-            },
+        links=[
+            PipelineLink(source="sel", target="p1", targetHandle="trigger"),
+            PipelineLink(
+                source="p1", target="c1", sourceHandle="output", targetHandle="data"
+            ),
         ],
-        "samples": ["s1"],
-        "param_sets": {},
-    }
+        samples=["s1"],
+    )
+    enriched = _enrich_pipeline(pipeline_input)
     pj = proj / "pipeline.json"
-    pj.write_text(json.dumps(pipeline))
+    pj.write_text(json.dumps(enriched))
 
     # Final commit so the working tree is clean and run-pipeline sees a
     # committed state (Snakefile generation records git SHAs).

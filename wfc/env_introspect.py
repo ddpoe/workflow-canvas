@@ -21,7 +21,6 @@ Design notes:
 - **Lock-vs-installed framing (by design, do not normalize):**
     - pixi fingerprint -> lock-based (intent) from pixi.lock
     - conda fingerprint -> install-based (actuality) from ``conda list --explicit --md5``
-    - inherit -> interpreter identity + installed packages, no lock
     - ``pip_freeze`` is appended on ALL backends as a common actuality check
       (handled by the caller in ``capture_env_content``).
 
@@ -367,9 +366,7 @@ def pip_freeze_best_effort(env_python: str | Path) -> str:
     Intended for pixi/conda backends where the lock (pixi.lock) or
     explicit install list (conda list --explicit) is already the
     authoritative fingerprint and pip freeze only catches pip-installed
-    drift on top. For the ``inherit`` backend, keep using :func:`pip_freeze`
-    directly — there pip freeze IS the fingerprint and a missing-pip env
-    cannot be honestly characterized without it.
+    drift on top.
     """
     env_python = Path(env_python)
     try:

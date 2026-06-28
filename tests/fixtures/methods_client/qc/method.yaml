@@ -1,0 +1,27 @@
+# Tier-1 fixture (wfc-client): multi-output + metrics.
+# One input (csv) -> three outputs (json + csv + csv). The method writes each
+# file and declares it with ctx.save_artifact(); metrics flow via ctx.log_metric.
+inputs:
+  data:
+    type: .csv
+    required: true
+    description: "Rows to QC"
+
+outputs:
+  report:
+    type: .json
+    required: true
+    description: "QC summary (kept/dropped counts)"
+  clean:
+    type: .csv
+    required: true
+    description: "Rows that passed QC"
+  dropped:
+    type: .csv
+    required: true
+    description: "Rows that failed QC"
+
+params: {}
+
+executor: local
+env: container:client-env

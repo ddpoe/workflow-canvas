@@ -31,7 +31,7 @@ from unittest.mock import MagicMock, patch, call
 import pytest
 from sqlmodel import select
 
-from dflow.core.decorators import workflow, Step
+from axiom_annotations import workflow, Step
 
 from wfc.database import get_session
 from wfc.init import init_project
@@ -58,7 +58,7 @@ def _seed_method(module_name: str = "versioning_mod", method_name: str = "v_meth
         session.add(mod)
         session.commit()
         session.refresh(mod)
-        method = Method(name=method_name, module_id=mod.id, script_path="methods/v_method/run.py")
+        method = Method(name=method_name, module_id=mod.id, script_path="methods/v_method/run.py", env="container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         session.add(method)
         session.commit()
         session.refresh(method)
@@ -864,6 +864,15 @@ def test_register_copies_source_files(tmp_project):
     sub_dir.mkdir()
     sub_script = sub_dir / "nested.py"
     sub_script.write_text("def nested():\n    return 99\n")
+    # ADR-019 Cycle H: a method must name a built container env. Use the direct
+    # digest-pinned escape hatch so _resolve_env validates by shape only (no
+    # manifest lookup, no Docker) — this test is about source copying, not envs.
+    (src_dir / "method.yaml").write_text(
+        "inputs:\n  data:\n    type: .csv\n"
+        "outputs:\n  output:\n    type: .csv\n"
+        "params: {}\nexecutor: python\n"
+        f"env: container:docker://local/x@sha256:{'a' * 64}\n"
+    )
 
     口 = Step(
         step_num=2,
@@ -909,6 +918,14 @@ def test_fingerprint_stable_after_original_modified(tmp_project):
     src_dir.mkdir(parents=True)
     script = src_dir / "fp_method.py"
     script.write_text("def main():\n    return 1\n")
+    # ADR-019 Cycle H: a method must name a built container env. Direct
+    # digest-pinned escape hatch -> shape-only validation, no Docker needed.
+    (src_dir / "method.yaml").write_text(
+        "inputs:\n  data:\n    type: .csv\n"
+        "outputs:\n  output:\n    type: .csv\n"
+        "params: {}\nexecutor: python\n"
+        f"env: container:docker://local/x@sha256:{'a' * 64}\n"
+    )
 
     口 = Step(
         step_num=2,

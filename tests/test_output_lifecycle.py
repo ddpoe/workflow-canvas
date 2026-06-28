@@ -19,7 +19,7 @@ from unittest.mock import patch
 import pytest
 from sqlmodel import select
 
-from dflow.core.decorators import workflow, Step
+from axiom_annotations import workflow, Step
 
 
 def test_resolve_input_fail_path(cli, tmp_project):
@@ -249,6 +249,26 @@ def _seed_module_method(cli, module="csv_tools", method="csv_merge"):
     if not os.path.exists(script_path):
         with open(script_path, "w") as f:
             f.write("def main(df, params): return df\n")
+    # ADR-019 Cycle H: execution is container-only, so every registered method
+    # must name a built container env. The tmp_project fixture writes a
+    # placeholder ``fixture-env`` record so this registration validates
+    # Docker-free (no image pull at registration time).
+    yaml_path = os.path.join(method_dir, "method.yaml")
+    if not os.path.exists(yaml_path):
+        with open(yaml_path, "w") as f:
+            f.write(
+                "inputs:\n"
+                "  data:\n"
+                "    type: .csv\n"
+                "    required: true\n"
+                "outputs:\n"
+                "  result:\n"
+                "    type: .csv\n"
+                "    required: true\n"
+                "params: {}\n"
+                "executor: python\n"
+                "env: container:fixture-env\n"
+            )
     result = cli("register-method", method_dir, "--module", module)
     assert result.returncode == 0, result.stderr
 

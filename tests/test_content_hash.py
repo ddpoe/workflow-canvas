@@ -260,7 +260,7 @@ class TestCompleteRunContentHash:
             session.commit()
             session.refresh(mod)
 
-            meth = Method(name="test_meth", module_id=mod.id)
+            meth = Method(name="test_meth", module_id=mod.id, env="container:demo")
             session.add(meth)
             session.commit()
             session.refresh(meth)
@@ -321,7 +321,7 @@ class TestFingerprintContentHash:
             session.commit()
             session.refresh(mod)
 
-            meth = Method(name="test_meth", module_id=mod.id)
+            meth = Method(name="test_meth", module_id=mod.id, env="container:demo")
             session.add(meth)
             session.commit()
             session.refresh(meth)
@@ -369,7 +369,7 @@ class TestFingerprintContentHash:
             session.commit()
             session.refresh(mod)
 
-            meth = Method(name="test_meth", module_id=mod.id)
+            meth = Method(name="test_meth", module_id=mod.id, env="container:demo")
             session.add(meth)
             session.commit()
             session.refresh(meth)

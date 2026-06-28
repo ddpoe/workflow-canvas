@@ -25,9 +25,90 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from dflow.core.decorators import task
+from axiom_annotations import task
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Output-slot type vocabulary
+# =============================================================================
+#
+# An output slot's ``type`` IS the file extension, declared verbatim (dotted,
+# e.g. ``.h5ad`` / ``.tar.gz``) and concatenated directly onto the slot name,
+# OR the directory marker ``dir`` / ``directory`` (normalised to the canonical
+# ``directory``).  There is no hidden semantic-type -> extension translation
+# and no silent default: a missing, blank, bare-undotted, or stale-semantic
+# value is rejected.
+
+# Canonical directory marker; ``dir`` is an accepted alias.
+_DIRECTORY_TYPE_MARKERS = {"dir", "directory"}
+_CANONICAL_DIRECTORY = "directory"
+
+
+def validate_output_slot_type(
+    slot_name: str,
+    slot_type: object,
+    *,
+    source: object = None,
+) -> str:
+    """Validate and normalise an output slot's declared ``type``.
+
+    A valid output ``type`` is either a leading-dot file extension (taken
+    verbatim, so compound extensions like ``.tar.gz`` work by concatenation)
+    or the directory marker ``dir`` / ``directory`` (case-insensitive,
+    normalised to the canonical ``directory``).
+
+    Args:
+        slot_name: Name of the output slot (used in the error message).
+        slot_type: The declared ``type`` value from the contract.
+        source: Optional context (e.g. the ``method.yaml`` path) prepended to
+            the error message so a rejected method is easy to locate.
+
+    Returns:
+        The canonical type string: a dotted extension verbatim, or
+        ``"directory"`` for a directory slot.
+
+    Raises:
+        ValueError: If ``slot_type`` is missing, blank, a bare un-dotted name,
+            or a stale semantic name.
+    """
+    if isinstance(slot_type, str):
+        candidate = slot_type.strip()
+        if candidate.lower() in _DIRECTORY_TYPE_MARKERS:
+            return _CANONICAL_DIRECTORY
+        if candidate.startswith(".") and len(candidate) > 1:
+            return candidate
+
+    prefix = f"{source}: " if source else ""
+    raise ValueError(
+        f"{prefix}output slot '{slot_name}' has an unusable type "
+        f"{slot_type!r}. An output slot's `type` is the file extension, "
+        f"declared verbatim with a leading dot (e.g. `type: .csv`, "
+        f"`type: .h5ad`, `type: .parquet`), OR the directory marker "
+        f"`type: dir` / `type: directory`. Bare names without a dot "
+        f"(`csv`), stale semantic names (`anndata`), and empty values are "
+        f"rejected — there is no type->extension translation and no silent "
+        f"`.csv` default."
+    )
+
+
+def output_slot_filename(slot_name: str, canonical_type: str) -> str:
+    """Build an output slot's filename from its canonical (validated) type.
+
+    A directory slot gets no extension (the bare slot name); a file slot gets
+    the dotted extension concatenated verbatim.
+
+    Args:
+        slot_name: The output slot name.
+        canonical_type: The value returned by :func:`validate_output_slot_type`.
+
+    Returns:
+        ``slot_name`` for a directory slot, else ``slot_name + canonical_type``.
+    """
+    if canonical_type == _CANONICAL_DIRECTORY:
+        return slot_name
+    return f"{slot_name}{canonical_type}"
 
 
 # =============================================================================
@@ -73,17 +154,58 @@ def parse_method_yaml(method_dir: Path) -> Optional[dict]:
     if not isinstance(raw, dict):
         raise ValueError(f"{yaml_path} must be a YAML mapping at the top level")
 
+    # ADR-019 Cycle H: execution is container-only. Every method must name a
+    # built container env -- there is no host-Python fallback and no
+    # ``inherit`` default. Reject a missing ``env`` and the removed
+    # ``env: inherit`` keyword at parse time so a non-runnable method is
+    # caught at registration rather than failing mid-pipeline.
+    env_value = raw.get("env")
+    if not env_value or (isinstance(env_value, str) and env_value.strip() == "inherit"):
+        raise ValueError(
+            f"{yaml_path}: method.yaml must name a built container env via "
+            f"`env: <name>` (build it with `wfc register-env <name>`) or a "
+            f"direct ref `env: container:docker://...@sha256:...`. "
+            f"Host execution and the `env: inherit` keyword were removed in "
+            f"ADR-019 Cycle H (execution is container-only)."
+        )
+
+    inputs = raw.get("inputs", {})
+    outputs = raw.get("outputs", {})
+
+    # Fail loud on an unusable OUTPUT slot type at registration. The `type`
+    # is the file extension (dotted, verbatim) or a `dir`/`directory` marker;
+    # a stale semantic name, bare un-dotted name, or empty value is rejected
+    # here rather than silently misnaming the produced file.
+    if isinstance(outputs, dict):
+        for slot_name, slot_spec in outputs.items():
+            slot_type = slot_spec.get("type") if isinstance(slot_spec, dict) else slot_spec
+            validate_output_slot_type(slot_name, slot_type, source=yaml_path)
+
+    # INPUT slot `type` is optional/advisory: validate to the same convention
+    # when present, but NON-FATALLY (warn, do not raise) so input wiring is
+    # not blocked by an advisory annotation.
+    if isinstance(inputs, dict):
+        for slot_name, slot_spec in inputs.items():
+            if isinstance(slot_spec, dict) and "type" in slot_spec:
+                try:
+                    validate_output_slot_type(slot_name, slot_spec.get("type"))
+                except ValueError as exc:
+                    logger.warning(
+                        "%s: input slot '%s' type is advisory but does not "
+                        "follow the extension/dir convention: %s",
+                        yaml_path, slot_name, exc,
+                    )
+
     return {
-        "inputs":   raw.get("inputs", {}),
-        "outputs":  raw.get("outputs", {}),
+        "inputs":   inputs,
+        "outputs":  outputs,
         "params":   raw.get("params", {}),
         "executor": raw.get("executor", "python"),
-        "env":      raw.get("env", "inherit"),
+        "env":      env_value,
         # ADR-019 Cycle D: GPU plumbing for containerized methods. The
         # boolean is read by wfc.cli.run_step and forwarded to
         # wfc.container_runner.build_docker_command as ``--gpus all`` when
-        # true. Default false: methods opt in explicitly. The field has
-        # no effect on non-container envs (host-Python dispatch ignores it).
+        # true. Default false: methods opt in explicitly.
         "gpus":     bool(raw.get("gpus", False)),
     }
 
@@ -325,7 +447,7 @@ def validate_input_columns(
     missing_patterns = check_patterns(patterns, available)
 
     if missing or missing_patterns:
-        from wfc.method import ContractViolation
+        from wfc_client import ContractViolation
 
         raise ContractViolation(
             method=method_name,

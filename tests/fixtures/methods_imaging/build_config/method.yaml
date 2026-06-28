@@ -2,15 +2,15 @@
 # Reads the sample CSV (through input_selector), tags rows, writes config.csv.
 inputs:
   manifest:
-    type: csv
+    type: .csv
     required: true
     description: "Sample manifest CSV (one per input_selector output)"
 
 outputs:
   config:
-    type: csv
+    type: .csv
     required: true
     description: "Stage-tagged config CSV"
 
 executor: python
-env: inherit
+env: container:fixture-env

@@ -48,6 +48,7 @@ def db_engine(tmp_path, monkeypatch):
             name="regionprops_quantification",
             module_id=mod.id,
             script_path="methods/regionprops_quantification/x.py",
+            env="container:demo",
         )
         session.add(meth)
         session.flush()
@@ -111,7 +112,7 @@ def test_run_reference_root_inherits_sample(tmp_path, db_engine):
                 "run_id": str(run_id),
             },
             {
-                "id": "method_1", "type": "method",
+                "id": "method_1", "type": "method", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "method": "binary_feature_labeling", "module": "analysis",
                 "script": "methods/binary_feature_labeling/x.py",
                 "params": {},
@@ -150,7 +151,7 @@ def test_load_pipeline_raises_when_pipeline_resolves_to_zero_samples(tmp_path):
                 "run_id": "999999",  # intentionally does not exist in DB
             },
             {
-                "id": "method_1", "type": "method",
+                "id": "method_1", "type": "method", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "method": "foo", "module": "analysis",
                 "script": "methods/foo/foo.py",
                 "params": {},
@@ -184,13 +185,13 @@ def test_multi_output_per_edge_source_slot(tmp_path, db_engine):
                 "run_id": str(run_id),
             },
             {
-                "id": "method_m", "type": "method",
+                "id": "method_m", "type": "method", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "method": "consume_measurements", "module": "analysis",
                 "script": "methods/consume_measurements/x.py",
                 "params": {},
             },
             {
-                "id": "method_l", "type": "method",
+                "id": "method_l", "type": "method", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "method": "consume_labels", "module": "analysis",
                 "script": "methods/consume_labels/x.py",
                 "params": {},
@@ -235,7 +236,7 @@ def test_legacy_output_slot_still_resolves(tmp_path, db_engine):
                 "output_slot": "measurements",
             },
             {
-                "id": "method_1", "type": "method",
+                "id": "method_1", "type": "method", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "method": "foo", "module": "analysis",
                 "script": "methods/foo/foo.py",
                 "params": {},

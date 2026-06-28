@@ -5,8 +5,6 @@ Covers (per Architect test plan):
   - US-3 Tier 2: pixi Dockerfile orders `pip install --no-deps` after
     `pixi install --locked` (discipline invariant from ADR-019
     §dockerfile-generation).
-  - US-2+3 Tier 2: inherit Dockerfile uses floating `python:X.Y-slim`
-    (parametrized over two host-version configurations); no `@sha256:`.
   - US-1+5 Tier 3: CLI `register-env --dry-run` writes the Dockerfile,
     prints the path, never invokes docker, and the manifest is unchanged.
     Non-dry-run path errors with the Cycle-C-deferred message.
@@ -21,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from dflow.core.decorators import workflow, Step
+from axiom_annotations import workflow, Step
 
 
 VALID_FREEZE = "numpy==1.26.4\npandas==2.2.1\n"
@@ -105,53 +103,6 @@ def test_pixi_dockerfile_no_deps_pip_layer_after_pixi_install():
 
 
 # ---------------------------------------------------------------------------
-# Tier 2: inherit generator — floating minor tag (US-2 + US-3)
-# ---------------------------------------------------------------------------
-
-@workflow(purpose="Inherit-backend Dockerfile uses a floating "
-                  "`python:X.Y-slim` minor tag (no digest, no patch level). "
-                  "X.Y is computed inline from `sys.version_info` at "
-                  "generate-time (ADR-019 decision #11 amendment).")
-@pytest.mark.parametrize(
-    "version_info, expected_tag",
-    [
-        ((3, 12, 7, "final", 0), "python:3.12-slim"),
-        ((3, 14, 0, "final", 0), "python:3.14-slim"),
-    ],
-)
-def test_inherit_dockerfile_uses_floating_minor_tag(
-    monkeypatch, version_info, expected_tag,
-):
-    from wfc.dockerfiles import inherit as inherit_mod
-
-    class _FakeVersionInfo:
-        def __init__(self, t):
-            self.major, self.minor, self.micro = t[0], t[1], t[2]
-            self.releaselevel, self.serial = t[3], t[4]
-
-    monkeypatch.setattr(
-        inherit_mod.sys, "version_info", _FakeVersionInfo(version_info),
-    )
-
-    dockerfile = inherit_mod.generate(
-        env_name="image-io",
-        pip_freeze_content=VALID_FREEZE,
-    )
-    # First FROM line — skip the `# syntax=docker/dockerfile:...` directive
-    # that precedes it (ADR-019 §dockerfile-generation 2026-05-17 amendment).
-    first = next(
-        ln for ln in dockerfile.splitlines() if ln.strip().startswith("FROM")
-    )
-    assert first == f"FROM {expected_tag}", first
-    # No digest pinning anywhere — inherit is the floating-minor exception.
-    assert "@sha256:" not in dockerfile
-
-    # BuildKit directive + at least one cache mount (ADR-019 layer-caching).
-    assert "# syntax=docker/dockerfile:" in dockerfile
-    assert "--mount=type=cache" in dockerfile
-
-
-# ---------------------------------------------------------------------------
 # Tier 3: CLI dry-run writes Dockerfile; non-dry-run errors (US-1 + US-5)
 # ---------------------------------------------------------------------------
 
@@ -224,3 +175,56 @@ def test_dry_run_writes_dockerfile_no_docker_invoked(
     # exercise it here — see tests/test_register_env_pixi_flow.py and
     # tests/test_register_env_byo_digest_resolve.py for the full path
     # with docker_runner mocked.
+
+
+@workflow(
+    purpose="register-env Docker-down pre-gate reframes ONLY the daemon-down "
+            "shape: with the daemon UP, a genuine docker build/run failure "
+            "surfaces its RAW error, never the friendly `wfc doctor` message.",
+)
+def test_register_env_genuine_build_error_surfaces_raw_not_reframed(
+    cli, tmp_project, monkeypatch,
+):
+    """Negative-boundary: the readiness reframe is shape-scoped, not a catch-all.
+
+    The Docker-down pre-gate only fires when ``check_docker`` reports ``fail``.
+    With the daemon healthy, the pre-gate passes through and a real build
+    failure deeper in registration must surface verbatim — proving the reframe
+    does not swallow unrelated Docker errors into the one-door message.
+    """
+    from wfc.init import init_project
+    monkeypatch.setattr("builtins.input", lambda *a, **kw: "")
+    init_project(tmp_project)
+
+    # Daemon UP: the pre-gate is a pass-through, so the build path runs.
+    from wfc import preflight
+    monkeypatch.setattr(
+        preflight, "check_docker",
+        lambda *a, **k: preflight.CheckResult("docker", "ok", "ok"),
+    )
+
+    # A genuine `docker build` failure deep in registration (NOT a daemon-down
+    # shape) — the kind of error the reframe must NOT swallow.
+    raw_error = "failed to build image: layer sha256:deadbeef not found"
+
+    import wfc.envs as envs_mod
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError(raw_error)
+
+    monkeypatch.setattr(envs_mod, "register", _boom)
+
+    result = cli(
+        "register-env", "foo",
+        "--backend", "byo",
+        "--image", "docker://example.com/foo@sha256:" + "a" * 64,
+    )
+
+    assert result.returncode == 1, result.stdout
+    # The RAW build error surfaces verbatim...
+    assert raw_error in result.stderr, result.stderr
+    # ...and is NOT reframed into the readiness one-door message.
+    assert "wfc doctor" not in result.stderr, (
+        "a genuine build error must not be swallowed by the run-readiness "
+        f"reframe; stderr was: {result.stderr!r}"
+    )

@@ -7,6 +7,7 @@ pipeline submissions return the expected response shape.
 Tier 2: @workflow(purpose=...) only (subsystem-level endpoint tests).
 """
 
+import os
 import time
 from pathlib import Path
 
@@ -14,7 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import SQLModel, Session, create_engine
 
-from dflow.core.decorators import workflow
+from axiom_annotations import workflow
 
 # Ensure static dist directory exists before importing the canvas server
 # (the server mounts it at import time via StaticFiles).
@@ -52,14 +53,15 @@ def canvas_db(tmp_path, monkeypatch):
         transform = Method(
             name="transform", module_id=mod.id,
             script_path="methods/transform/transform.py",
+            env="container:demo",
         )
         session.add(transform)
         session.flush()
 
         mc = MethodContract(
             method_id=transform.id,
-            input_slots={"data": {"type": "csv", "required": True}},
-            output_slots={"output": {"type": "csv"}},
+            input_slots={"data": {"type": ".csv", "required": True}},
+            output_slots={"output": {"type": ".csv"}},
             params_schema={"suffix": {"type": "str", "default": "_transformed"}},
         )
         session.add(mc)
@@ -69,10 +71,47 @@ def canvas_db(tmp_path, monkeypatch):
     reset_engine()
 
 
+def _git_init_committed(repo_dir: Path) -> None:
+    """Initialize ``repo_dir`` as a git repo with a clean, committed HEAD."""
+    import subprocess
+
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "test",
+        "GIT_AUTHOR_EMAIL": "test@example.com",
+        "GIT_COMMITTER_NAME": "test",
+        "GIT_COMMITTER_EMAIL": "test@example.com",
+    }
+    subprocess.run(["git", "init"], cwd=repo_dir, check=True,
+                   capture_output=True)
+    (repo_dir / ".gitkeep").write_text("", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo_dir, check=True,
+                   capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo_dir, check=True,
+                   capture_output=True, env=env)
+
+
 @pytest.fixture
 def canvas_client(canvas_db, tmp_path, monkeypatch):
-    """FastAPI test client for canvas endpoints."""
+    """FastAPI test client for canvas endpoints.
+
+    Makes ``tmp_path`` (the canvas project_root) a real git repo with a clean
+    HEAD so the D-6 run-readiness gate's ``check_git(project_root)`` probe
+    passes against the resolved project_root — this is the cross-check that the
+    gate scopes git to the canvas project, not the server process cwd.  Docker
+    is stubbed to ``ok`` because the lifecycle test must not depend on a live
+    daemon.
+    """
     monkeypatch.setenv("WFC_CANVAS_PROJECT_ROOT", str(tmp_path))
+
+    _git_init_committed(tmp_path)
+
+    from wfc import preflight
+    monkeypatch.setattr(
+        preflight, "check_docker",
+        lambda *a, **k: preflight.CheckResult("docker", "ok", "ok"),
+    )
+
     _active_jobs.clear()
     return TestClient(app, raise_server_exceptions=False)
 

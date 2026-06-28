@@ -208,7 +208,7 @@ class TestInputValidationGate:
     def test_validate_input_columns_missing_raises(self, tmp_path):
         """ContractViolation raised when required columns are missing."""
         from wfc.contracts import validate_input_columns
-        from wfc.method import ContractViolation
+        from wfc_client import ContractViolation
 
         csv_file = tmp_path / "test.csv"
         csv_file.write_text("label,area\n1,100\n")
@@ -223,7 +223,7 @@ class TestInputValidationGate:
     def test_validate_input_from_params_expansion(self, tmp_path):
         """from_params columns are expanded and validated."""
         from wfc.contracts import validate_input_columns
-        from wfc.method import ContractViolation
+        from wfc_client import ContractViolation
 
         csv_file = tmp_path / "test.csv"
         csv_file.write_text("label,DAPI_nuc_mean\n1,50\n")

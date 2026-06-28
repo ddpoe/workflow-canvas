@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from dflow.core.decorators import workflow
+from axiom_annotations import workflow
 
 
 @workflow(

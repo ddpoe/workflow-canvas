@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createActor, setup, type EventObject } from 'xstate';
 import {
   isTerminalOverallStatus,
+  pollNodeStatus,
   runStatusToNodeState,
   stateValueToRunStatus,
   subscribeSSE,
@@ -316,6 +317,174 @@ describe('subscribeSSE — transient-error grace window', () => {
     expect(errors).toHaveLength(1);
     expect(es.closed).toBe(true);
 
+    stop();
+  });
+});
+
+// ── pollNodeStatus — terminal gating on thread_alive ───────────────────
+//
+// A failure/partial run is only "done" once the backend run thread has
+// exited (`thread_alive === false`) — that is when the pipeline-end
+// cancelled-row walk has committed. Stopping the moment `overall_status`
+// first reads `failed` froze downstream nodes in `queued` → `pending`,
+// because their `cancelled` rows weren't written yet. These tests drive
+// the real `pollNodeStatus` callback through a mocked `fetch` + fake
+// timers and assert the loop keeps polling until the thread is dead.
+
+interface StatusFrame {
+  job_id: string;
+  overall_status: string;
+  steps: Record<string, unknown>;
+  node_states: Record<string, unknown>;
+  thread_alive: boolean;
+  log: string;
+  error: unknown;
+}
+
+function statusFrame(
+  overall: string,
+  nodeStates: Record<string, unknown>,
+  threadAlive: boolean,
+): StatusFrame {
+  return {
+    job_id: 'poll-job',
+    overall_status: overall,
+    steps: {},
+    node_states: nodeStates,
+    thread_alive: threadAlive,
+    log: '',
+    error: null,
+  };
+}
+
+// Install a fetch stub: the Nth GET to `/api/workflow/status/:id` returns
+// the Nth frame (the final frame sticks for later polls); every other
+// request (e.g. the terminal `/api/wfc/refresh` POST) resolves empty.
+function installFetchMock(frames: StatusFrame[]): { restore: () => void } {
+  const orig = globalThis.fetch;
+  let statusCalls = 0;
+  globalThis.fetch = vi.fn(async (url: unknown) => {
+    const u = String(url);
+    if (u.includes('/api/workflow/status/')) {
+      const idx = Math.min(statusCalls, frames.length - 1);
+      statusCalls += 1;
+      return { json: async () => frames[idx] } as unknown as Response;
+    }
+    return { json: async () => ({}) } as unknown as Response;
+  }) as unknown as typeof fetch;
+  return {
+    restore: () => {
+      globalThis.fetch = orig;
+    },
+  };
+}
+
+function startPollNodeStatus(
+  jobId: string,
+  nodeIds: string[],
+): { events: EventObject[]; stop: () => void } {
+  const events: EventObject[] = [];
+  const harness = setup({
+    types: { events: {} as EventObject },
+    actors: { pollNodeStatus: pollNodeStatus as never },
+  }).createMachine({
+    id: 'pollHarness',
+    initial: 'live',
+    states: {
+      live: {
+        invoke: { src: 'pollNodeStatus', input: { jobId, nodeIds } },
+        on: {
+          '*': {
+            actions: ({ event }) => {
+              events.push(event);
+            },
+          },
+        },
+      },
+    },
+  });
+  const actor = createActor(harness);
+  actor.start();
+  return { events, stop: () => actor.stop() };
+}
+
+describe('pollNodeStatus — terminal gating on thread_alive', () => {
+  let fetchMock: { restore: () => void } | undefined;
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    fetchMock?.restore();
+    fetchMock = undefined;
+    vi.useRealTimers();
+  });
+
+  it('overall=failed keeps polling while the thread is alive, then flips downstream to cancelled and fires PIPELINE_DONE once the thread is dead', async () => {
+    const frames = [
+      // First poll: the upstream already failed, but the run thread is
+      // still alive — the downstream node has no row yet (pending).
+      statusFrame(
+        'failed',
+        { mid: { status: 'failed', run_ids: ['10'] }, down: { status: 'pending' } },
+        true,
+      ),
+      // Later poll: thread has exited and the cancelled-row walk has run.
+      statusFrame(
+        'failed',
+        {
+          mid: { status: 'failed', run_ids: ['10'] },
+          down: { status: 'cancelled', run_ids: ['11'] },
+        },
+        false,
+      ),
+    ];
+    fetchMock = installFetchMock(frames);
+    const { events, stop } = startPollNodeStatus('poll-job', ['mid', 'down']);
+
+    // First tick: `overall` is already `failed`, but `thread_alive` is
+    // true → must NOT terminate, and the downstream node stays untouched.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(events.filter(e => e.type === 'PIPELINE_DONE')).toHaveLength(0);
+    expect(events.some(e => e.type === 'NODE_USER_STOP')).toBe(false);
+
+    // Next tick observes `thread_alive: false` + the downstream cancelled
+    // row → the poller emits the downstream cancel, still not yet done.
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(
+      events.some(
+        e => e.type === 'NODE_USER_STOP' && (e as { nodeId?: string }).nodeId === 'down',
+      ),
+    ).toBe(true);
+    expect(events.filter(e => e.type === 'PIPELINE_DONE')).toHaveLength(0);
+
+    // PIPELINE_DONE is deferred ~250ms after the terminal tick.
+    await vi.advanceTimersByTimeAsync(300);
+    expect(events.filter(e => e.type === 'PIPELINE_DONE')).toHaveLength(1);
+    stop();
+  });
+
+  it('overall=completed_with_failures (mixed) also waits for thread_alive=false before PIPELINE_DONE', async () => {
+    const mixedNode = {
+      status: 'mixed',
+      tally: { running: 0, completed: 3, failed: 1 },
+      run_ids: ['20'],
+    };
+    const frames = [
+      statusFrame('completed_with_failures', { node: mixedNode }, true),
+      statusFrame('completed_with_failures', { node: mixedNode }, false),
+    ];
+    fetchMock = installFetchMock(frames);
+    const { events, stop } = startPollNodeStatus('poll-job', ['node']);
+
+    // A partial-failure run is terminal-ish, but while the thread is alive
+    // the cancelled-row walk hasn't run — must keep polling.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(events.filter(e => e.type === 'PIPELINE_DONE')).toHaveLength(0);
+
+    // Thread dead on the next tick → now it may finish.
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(events.filter(e => e.type === 'PIPELINE_DONE')).toHaveLength(1);
     stop();
   });
 });

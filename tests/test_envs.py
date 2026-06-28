@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from dflow.core.decorators import workflow, Step
+from axiom_annotations import workflow, Step
 
 
 VALID_DIGEST = "a" * 64
@@ -211,6 +211,12 @@ def test_read_config_registry_block(tmp_path):
 def test_cli_list_envs_empty_then_populated(cli, tmp_project):
     口 = Step(step_num=1, name="Empty state",
              purpose="Fresh project -> friendly message, exit 0")
+    # ADR-019 Cycle H: tmp_project seeds a placeholder ``fixture-env`` so
+    # container-only method registration validates Docker-free. This test
+    # owns the manifest-empty-state assertion, so clear that seed first.
+    envs_json = tmp_project / ".wfc" / "envs.json"
+    if envs_json.exists():
+        envs_json.unlink()
     result = cli("list-envs")
     assert result.returncode == 0, result.stderr
     assert "No container envs registered" in result.stdout

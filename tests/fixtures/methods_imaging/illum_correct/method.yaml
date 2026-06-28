@@ -1,13 +1,13 @@
 # 2-hop from build_config: reads tiles, writes corrected.
 inputs:
   tiles:
-    type: csv
+    type: .csv
     required: true
 
 outputs:
   corrected:
-    type: csv
+    type: .csv
     required: true
 
 executor: python
-env: inherit
+env: container:fixture-env

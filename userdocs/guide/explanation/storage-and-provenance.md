@@ -1,19 +1,56 @@
-<!-- generated from pm_mvp::docs.consumer.explanation.storage-and-provenance @ 5f6783c3c90c; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.explanation.storage-and-provenance @ 20d8350d20d6; do not edit -->
 
 # Storage & Provenance
 
-## Outline — scaffold stub
+## Storage & Provenance
 
-_Phase-4 scaffold stub (2026-06-17 tutorial-restructure audit). Focus topic 4. NOTE for authoring: source from caching.design + ADR-018 + current source — NOT provenance.design, which is stale (pending dev-side reconciliation; see handoff)._
+When a pipeline runs, two very different kinds of records are produced: the **output bytes** your methods write, and the **provenance trail** that says which method, parameters, and inputs produced them. Workflow Canvas stores these in two separate places, and understanding the split makes everything else about results, caching, and sharing fall into place.
 
-## The DVC cache is the authoritative store
+The short version:
 
-_Stub._ Output bytes live ONLY in the DVC content-addressed cache (`.dvc/cache/files/md5/...`); Snakemake's per-step output is a zero-byte sentinel; `.runs/{run_id}/` is transient staging; outputs are reached by content-hash, never by a workspace path. **To absorb:** ADR-018; discovery adrs-3.
+- **Output bytes** live in one place only: a content-addressed cache keyed by the hash of the data itself. They are never referenced by a folder path you would browse.
+- **The provenance trail** lives in a SQLite database (`.wfc/wfc.db`). It records every run and maps each output to the content hash that holds its bytes.
+- **Git** tracks your *method source* (so a method's code is versioned), but it never records pipeline *runs*.
+
+This page explains why outputs are addressed by content instead of by path, what git does and does not capture, how the cache is shared across machines, and what you must back up to keep results recoverable. For the operational "how do I find a run's output" recipe, see [[run-and-inspect-results]]; for why a step re-runs or hits the cache, see [[caching-and-reproducibility]].
+
+## The content-addressed cache is the only authoritative store
+
+Output bytes live in exactly one place: the DVC content-addressed cache, on disk at `.dvc/cache/files/md5/XX/YYY...`, where the path is derived from the MD5 hash of the file's contents. Two runs that produce byte-identical output share a single cache entry; an output is located by its hash, never by a per-run folder you could navigate to.
+
+There is **no workspace tree**. A method writes its output into a transient staging directory under `.runs/{run_id}/` while it runs, and once the data is safe in the cache that staging copy is gone. The file Snakemake actually tracks as a step's output is a **zero-byte sentinel** under `.runs/sentinels/...` — it carries no data; it exists only so Snakemake can wire the dependency graph and know a step finished. The real bytes are in the cache, addressed by hash.
+
+This is why you should never go looking for outputs by browsing folders. A downstream step, the History view, and the Canvas all reach an output the same way: they read its `content_hash` from the database and resolve that hash to a cache path. Because the address is the content, an output is immutable and de-duplicated for free — the same result is stored once no matter how many runs reference it.
+
+This model was adopted in ADR-018, which eliminated the older copy-everything workspace in favor of the cache being the sole on-disk store and a move (not a copy) into it.
+
+## Archiving is deferred, and indexed by the database
+
+Hashing a file and moving it into the cache is called **archiving**, and it does not happen inline between pipeline steps. While a pipeline runs, each step records its output row with `content_hash = NULL` and leaves the bytes in staging. After the whole pipeline finishes, a single archive pass hashes every un-archived output and moves it into the cache in one batch. This keeps slow hashing I/O off the critical path between steps, which matters a lot for large-output pipelines.
+
+Archiving runs automatically when you pass the archive option to a pipeline run, and you can also trigger it on demand with `wfc cache archive`, which finds every output still carrying a `NULL` hash and archives it.
+
+The honest caveat to understand here: the cache is a flat pile of content-addressed blobs with no human-readable names. The **only** thing that maps a meaningful run and output back to the right blob is the SQLite database at `.wfc/wfc.db` — and that database is **not tracked in git**. If you delete or lose `.wfc/`, the blobs in the cache become anonymous and unrecoverable even though the bytes are still on disk. **Backing up `.wfc/` is required** to keep archived outputs usable. The cache pruning command refuses to remove blobs for runs whose outputs have not yet been archived, so you cannot accidentally prune away data that exists only in staging — but it cannot protect you from losing the database index itself.
 
 ## What git tracks (and what it doesn't)
 
-_Stub._ Git auto-commits method/script changes at register-method; pipeline RUNS never produce git commits — wfc's SQLite DB is the run/provenance record. **To absorb:** ADR-007; discovery adrs-4.
+Git's role here is narrow and deliberate. When you register a method, Workflow Canvas snapshots that method's source files into the project and **auto-commits** that snapshot to git. Your method code is therefore versioned, and the commit SHA is captured as audit metadata on the method version row. (Cache validity itself is driven by a content fingerprint of the source files, not by the commit, so an unrelated commit elsewhere in the repo does not invalidate cached results — see [[caching-and-reproducibility]].)
+
+What git does **not** do: pipeline runs never produce git commits. Running a pipeline does not stage, commit, or touch your working tree. There is intentionally no `--allow-dirty` style escape hatch layered on top of runs — the commit-then-run discipline applies to *registering methods*, not to executing pipelines.
+
+So the division of labor is: **git versions method source**, the **SQLite database (`.wfc/wfc.db`) is the run and provenance record**, and the **cache holds output bytes**. ADR-007 established this split — git for code, a database for provenance, content-addressed storage for data.
 
 ## Sharing results across machines
 
-_Stub._ A background worker pushes cache to the configured remote (PushStatus: pending/in_flight/pushed/failed/deferred); collaborators pull + use the DB to map runs → content hashes. Configure via `[dvc] url` in `.wfc/wf-canvas.toml`; you never run `dvc` directly. **To absorb:** ADR-018; discovery cycles-3, cycles-7, adrs-4; caching.design.
+Because outputs are addressed by content hash, sharing them is just a matter of getting the right blobs onto another machine — no paths to rewrite. When you configure a remote, a **background push worker** drains newly archived outputs to it asynchronously, so your runs are never blocked waiting on uploads. Each output row carries a `push_status` that walks `pending` → `in_flight` → `pushed` on the happy path, drops to `failed` (and retries with backoff) on error, and sits at `deferred` when no remote is configured.
+
+A collaborator who pulls your database can then reproduce your results: the database tells them which `content_hash` belongs to which run, and the cache resolver fetches any missing blob from the remote on demand. When something reads an output, resolution happens in tiers — **CACHE** if the hash is already in the local cache, otherwise **REMOTE-PULL** to fetch it from the configured remote, and only then **FAIL** if neither has it.
+
+You configure all of this through the `[dvc]` block in `.wfc/wf-canvas.toml` — set `url` to any DVC-native scheme (`file://`, `s3://`, `ssh://`, `gs://`, `azure://`, and so on). Workflow Canvas mirrors that config to DVC and dispatches on the URL scheme for you; you **never run `dvc` directly**. See [[project-anatomy]] for the full config block.
+
+## Where to go next
+
+- [[run-and-inspect-results]] — the operational recipe: find a run, read its outputs, and trace lineage.
+- [[caching-and-reproducibility]] — why a step re-runs versus hits the cache, and how the lineage chain is recorded.
+- [[project-anatomy]] — the `.wfc/` layout and the `wf-canvas.toml` config, including the `[dvc]` remote block.
+- [[registration]] — how registering a method snapshots and commits its source.

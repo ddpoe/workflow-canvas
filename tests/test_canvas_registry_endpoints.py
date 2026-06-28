@@ -58,10 +58,10 @@ def db_engine(tmp_path, monkeypatch):
 
         m1 = Method(name="tile_export", module_id=mod.id,
                     script_path="methods/tile_export/tile_export.py",
-                    env="inherit")
+                    env="container:demo")
         m2 = Method(name="normalize", module_id=mod.id,
                     script_path="methods/normalize/normalize.py",
-                    env="inherit")
+                    env="container:demo")
         session.add_all([m1, m2])
         session.flush()
 
@@ -133,7 +133,7 @@ def test_get_registry_methods_includes_validated_null(client):
     tile = by_name["tile_export"]
 
     assert tile["module"] == "preprocessing"
-    assert tile["env"] == "inherit"
+    assert tile["env"] == "container:demo"
     assert tile["validated"] is None
     assert tile["runCount"] == 0
     assert tile["source"] == "methods/tile_export/method.yaml"
@@ -409,66 +409,126 @@ def test_method_detail_rejects_path_traversal(client, db_engine, tmp_path, monke
 # Envs registry endpoints
 # ============================================================================
 
-def test_list_and_fingerprints_aggregate_from_runs(client, db_engine):
-    """List + fingerprints endpoints aggregate Run.env_fingerprint correctly."""
+_DEMO_PIXI_LOCK = """\
+version: 5
+packages:
+- conda: https://conda.anaconda.org/conda-forge/linux-64/python-3.11.0-h.conda
+  name: python
+  version: 3.11.0
+- pypi: https://files.pythonhosted.org/packages/numpy-1.24.0-cp311.whl
+  name: numpy
+  version: 1.24.0
+"""
+
+
+def _seed_env_manifest_and_blob(tmp_path):
+    """Write a .wfc/envs.json with a captured pixi env ('demo') + an
+    uncaptured byo env ('byo_box'), and stage the pixi source blob into the
+    DVC cache so the /packages and /envs endpoints can read it back.
+
+    Returns the demo env's source_fingerprint md5.
+    """
+    import hashlib
+    import json
+
+    from wfc.env_packages import PIP_FREEZE_DELIMITER
+
+    blob = _DEMO_PIXI_LOCK + PIP_FREEZE_DELIMITER + ""
+    md5 = hashlib.md5(blob.encode("utf-8")).hexdigest()
+    cache_dir = tmp_path / ".dvc" / "cache" / "files" / "md5" / md5[:2]
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / md5[2:]).write_bytes(blob.encode("utf-8"))
+
+    manifest = {
+        "schema_version": 1,
+        "envs": {
+            "demo": {
+                "backend": "pixi",
+                "source": "pixi.toml",
+                "container": "demo@sha256:" + "a" * 64,
+                "env_fingerprint": "e" * 32,
+                "built_at": "2026-06-27T00:00:00Z",
+                "built_from_lock": "pixi.lock",
+                "source_fingerprint": md5,
+            },
+            "byo_box": {
+                "backend": "byo",
+                "source": "docker://reg/img@sha256:" + "b" * 64,
+                "container": "docker://reg/img@sha256:" + "b" * 64,
+                "env_fingerprint": "f" * 32,
+                "built_at": "2026-06-27T00:00:00Z",
+                "built_from_lock": None,
+                "source_fingerprint": None,
+            },
+        },
+    }
+    (tmp_path / ".wfc").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".wfc" / "envs.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+    return md5
+
+
+def test_list_envs_reshaped_row_carries_backend_run_stats_and_has_packages(
+    client, db_engine, tmp_path, monkeypatch
+):
+    """List rows report backend + has_packages + run stats, sourced from the
+    env manifest and Run rows (the reshaped row, no fingerprint history)."""
     from datetime import datetime
     from wfc.models import Run
+
+    _seed_env_manifest_and_blob(tmp_path)
+    monkeypatch.setenv("WFC_CANVAS_PROJECT_ROOT", str(tmp_path))
+
     with Session(db_engine) as session:
         m1 = session.exec(select(Method).where(Method.name == "tile_export")).first()
         m2 = session.exec(select(Method).where(Method.name == "normalize")).first()
-        fp_a, fp_b = "a" * 32, "b" * 32
         session.add_all([
             Run(method_id=m1.id, status="completed",
-                started_at=datetime(2026, 4, 18, 10, 0, 0), env_fingerprint=fp_a),
+                started_at=datetime(2026, 4, 18, 10, 0, 0), env_fingerprint="a" * 32),
             Run(method_id=m1.id, status="completed",
-                started_at=datetime(2026, 4, 18, 12, 0, 0), env_fingerprint=fp_a),
+                started_at=datetime(2026, 4, 18, 12, 0, 0), env_fingerprint="a" * 32),
             Run(method_id=m2.id, status="completed",
-                started_at=datetime(2026, 4, 18, 14, 0, 0), env_fingerprint=fp_b),
+                started_at=datetime(2026, 4, 18, 14, 0, 0), env_fingerprint="b" * 32),
         ])
         session.commit()
 
     envs = client.get("/api/registry/envs").json()["envs"]
     assert len(envs) == 1
     row = envs[0]
-    assert row["spec"] == "inherit"
+    assert row["spec"] == "container:demo"
     assert set(row["methods"]) == {"preprocessing.tile_export", "preprocessing.normalize"}
-    assert row["fingerprint_count"] == 2
+    assert row["backend"] == "pixi"
+    assert row["has_packages"] is True
     assert row["run_count"] == 3
     assert row["last_run_at"] is not None
 
-    fps = client.get("/api/registry/envs/inherit/fingerprints").json()["fingerprints"]
-    by_md5 = {e["md5"]: e for e in fps}
-    assert by_md5[fp_a]["run_count"] == 2
-    assert by_md5[fp_b]["run_count"] == 1
 
+def test_env_packages_endpoint_captured_vs_byo_and_agrees_with_list(
+    client, db_engine, tmp_path, monkeypatch
+):
+    """/packages returns a parsed, source-tagged list for a captured pixi env
+    and an honest empty state for a byo env; has_packages on the list row
+    agrees with /packages captured for the same spec."""
+    _seed_env_manifest_and_blob(tmp_path)
+    monkeypatch.setenv("WFC_CANVAS_PROJECT_ROOT", str(tmp_path))
 
-def test_snapshot_computes_is_new_and_surfaces_errors(client, db_engine, monkeypatch):
-    """Snapshot returns is_new based on existing Runs and 400s on capture failure."""
-    from datetime import datetime
-    from wfc.models import Run
-    known_md5 = "a" * 32
-    with Session(db_engine) as session:
-        m1 = session.exec(select(Method).where(Method.name == "tile_export")).first()
-        session.add(Run(method_id=m1.id, status="completed",
-                        started_at=datetime(2026, 4, 18, 10, 0, 0),
-                        env_fingerprint=known_md5))
-        session.commit()
+    captured = client.get("/api/registry/envs/container:demo/packages").json()
+    assert captured["captured"] is True
+    assert captured["backend"] == "pixi"
+    names = {p["name"]: p for p in captured["packages"]}
+    assert set(names) == {"numpy", "python"}
+    assert names["numpy"] == {"name": "numpy", "version": "1.24.0", "source": "pixi"}
 
-    # is_new=False: md5 matches an existing Run.
-    monkeypatch.setattr("wfc.version.capture_env_content", lambda s, p: "content")
-    monkeypatch.setattr("wfc.version.store_env_content", lambda c, p: known_md5)
-    assert client.post("/api/registry/envs/inherit/snapshot").json()["is_new"] is False
+    byo = client.get("/api/registry/envs/container:byo_box/packages").json()
+    assert byo["captured"] is False
+    assert byo["packages"] == []
+    assert byo["backend"] == "byo"
 
-    # is_new=True: md5 is novel.
-    monkeypatch.setattr("wfc.version.store_env_content", lambda c, p: "c" * 32)
-    assert client.post("/api/registry/envs/inherit/snapshot").json()["is_new"] is True
-
-    # capture failure surfaces as 400 with the message (frontend shows in tooltip).
-    def boom(spec, project_dir):
-        raise ValueError("pixi.lock not found")
-    monkeypatch.setattr("wfc.version.capture_env_content", boom)
-    resp = client.post("/api/registry/envs/inherit/snapshot")
-    assert resp.status_code == 400 and "pixi.lock" in resp.json()["detail"]
+    # Agreement: the list row's has_packages matches /packages captured.
+    row = client.get("/api/registry/envs").json()["envs"][0]
+    assert row["spec"] == "container:demo"
+    assert row["has_packages"] == captured["captured"]
 
 
 def test_env_blob_serves_content_and_guards_md5(client, tmp_path, monkeypatch):

@@ -1,25 +1,19 @@
-"""Process Manager MVP — track pipeline runs with full lineage."""
+"""Workflow Canvas — track pipeline runs with full lineage.
 
-# NOTE: Only wfc.method is imported here.
-#
-# snakemake_gen, cli, and init all depend on dflow (or pull in modules that
-# do), which is only installed in the outer dev environment — NOT in the
-# isolated pixi envs used by train_classifier / plot_decision_boundary.
-#
-# Method scripts do:
-#   from wfc.method import wfc_method, wfc_method_main
-# That import resolves to this __init__ first. Keeping it dflow-free means
-# the pixi-isolated methods can import wfc without blowing up.
-#
-# Callers that need the orchestration layer should import directly:
-#   from wfc.snakemake_gen import load_pipeline, generate_snakefile
-#   from wfc.cli import register_sample, run_pipeline
-#   from wfc.init import init_project
+This is the host engine package: it owns the DB, the DVC cache, contracts,
+and the ``wfc run-step`` orchestration boundary. It deliberately keeps its
+top-level namespace empty of heavy imports so that lightweight callers can
+``import wfc`` without pulling in dflow or the rest of the orchestration
+layer.
 
-from .method import wfc_method, wfc_method_main, ContractViolation
+Tier-1 method authoring lives in the separate pure-stdlib distribution
+``wfc-client`` (``import wfc_client as wfc``), which runs inside the user
+container and never imports this package. Callers that need the host
+orchestration layer import the submodules directly::
 
-__all__ = [
-    "wfc_method",
-    "wfc_method_main",
-    "ContractViolation",
-]
+    from wfc.snakemake_gen import load_pipeline, generate_snakefile
+    from wfc.cli import register_sample, run_pipeline
+    from wfc.init import init_project
+"""
+
+__all__: list[str] = []

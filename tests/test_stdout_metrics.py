@@ -19,7 +19,7 @@ Test 4 uses the ``cli`` fixture (DB-backed).
 import json
 import os
 
-from dflow.core.decorators import workflow, Step
+from axiom_annotations import workflow, Step
 
 from wfc.snakemake_gen import StepDef, PipelineDef, generate_snakefile
 
@@ -63,6 +63,26 @@ def _seed_module_method(cli, module="data_preprocessing", method="feature_qc"):
     os.makedirs(method_dir, exist_ok=True)
     with open(os.path.join(method_dir, f"{method}.py"), "w") as f:
         f.write("def main(df, params): return df\n")
+    # ADR-019 Cycle H: execution is container-only, so every registered method
+    # must name a built container env. The tmp_project fixture writes a
+    # placeholder ``fixture-env`` record so this registration validates
+    # Docker-free (no image pull at registration time).
+    yaml_path = os.path.join(method_dir, "method.yaml")
+    if not os.path.exists(yaml_path):
+        with open(yaml_path, "w") as f:
+            f.write(
+                "inputs:\n"
+                "  data:\n"
+                "    type: .csv\n"
+                "    required: true\n"
+                "outputs:\n"
+                "  result:\n"
+                "    type: .csv\n"
+                "    required: true\n"
+                "params: {}\n"
+                "executor: python\n"
+                "env: container:fixture-env\n"
+            )
     result = cli("register-method", method_dir, "--module", module)
     assert result.returncode == 0, result.stderr
 

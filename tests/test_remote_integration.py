@@ -14,7 +14,9 @@ from pathlib import Path
 import pytest
 from sqlmodel import select
 
-from dflow.core.decorators import workflow, Step
+from axiom_annotations import workflow, Step
+
+from tests.conftest import requires_docker
 
 
 # =============================================================================
@@ -174,6 +176,8 @@ def test_remote_push_pull_round_trip(tmp_path):
 _WFC_ROOT = Path(__file__).resolve().parent.parent
 
 
+@pytest.mark.integration
+@requires_docker
 @workflow(
     purpose=(
         "ADR-018 US-1: async push lets DAG advance before step 1's push completes"
@@ -200,7 +204,11 @@ def test_async_push_does_not_block_dag_advance(
     remote_dir = project_dir / "remote_storage"
     remote_dir.mkdir()
     from dvc.repo import Repo
-    Repo.init(str(project_dir), no_scm=True)
+    # register_fixture_methods runs init_project(), which now auto-initializes
+    # .dvc/. Re-running Repo.init would raise InitError ('.dvc' exists), so only
+    # init when the fixture hasn't already done so.
+    if not (project_dir / ".dvc").exists():
+        Repo.init(str(project_dir), no_scm=True)
     cfg = project_dir / ".dvc" / "config"
     parser = configparser.ConfigParser()
     parser.read(cfg)

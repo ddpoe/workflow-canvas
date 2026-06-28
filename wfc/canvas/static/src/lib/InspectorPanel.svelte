@@ -7,7 +7,7 @@
   import ValueList from './ValueList.svelte';
   import { pipelineRunActor, paramEditorAggregator,
            awaitAllCommitted, nodeHasDirtyEditors } from './machines/root.js';
-  import { onDestroy } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
 
   // Subscribe to the pipelineRunActor so we re-render when a child's
   // snapshot changes. We don't read context.nodeRefs[id] reactively —
@@ -877,19 +877,29 @@
     // and closes. Guarded by historicalLoadedForRunId so we don't
     // re-fetch on every parent-actor tick after the run completes.
     if (!lastRunId) return;
-    if (historicalLoadedForRunId === lastRunId) return;
+    // Read this fallback's own bookkeeping ($state it also writes below)
+    // through `untrack` so the effect does NOT depend on it. Otherwise the
+    // `logPhase = 'connecting'` and guard writes re-queue the effect, whose
+    // cleanup `es.close()` then tears down the EventSource before an
+    // output-less run's single terminal frame arrives — stranding the badge
+    // on "Connecting…".
+    if (untrack(() => historicalLoadedForRunId) === lastRunId) return;
     // If the live streaming child already captured a full log (it
     // reached a final state AND we have lines), the historical fetch
     // would be redundant — and worse, it'd briefly flash the badge
     // back to "Connecting…" while replaying.  Skip in that case.
+    const phaseNow = untrack(() => logPhase);
     if (
-      (logPhase === 'succeeded' || logPhase === 'failed' || logPhase === 'cancelled') &&
-      logLines.length > 0
+      (phaseNow === 'succeeded' || phaseNow === 'failed' || phaseNow === 'cancelled') &&
+      untrack(() => logLines.length) > 0
     ) {
       historicalLoadedForRunId = lastRunId;
       return;
     }
-    historicalLoadedForRunId = lastRunId;
+    // `historicalLoadedForRunId` is set only once the stream reaches a
+    // terminal/error frame (in the handlers below), not here. If a
+    // reschedule still tears the stream down early, the guard stays unset
+    // and the next tick refetches — self-healing rather than stuck.
 
     logPhase = 'connecting';
     const url = `/api/wfc/run/${encodeURIComponent(lastRunId)}/stream-logs?full=1`;
@@ -920,6 +930,8 @@
           logTerminalStatus = p.status ?? null;
           logTerminalError = p.error_message ?? null;
           logTerminalTraceback = p.error_traceback ?? null;
+          // Mark loaded only now that the terminal frame has landed.
+          historicalLoadedForRunId = lastRunId;
           es.close();
         }
       } catch {
@@ -938,6 +950,9 @@
         logTerminalError = 'Connection lost';
         logTerminalTraceback = null;
       }
+      // Wire failure is a definitive outcome — mark loaded so we don't
+      // refetch in a loop on a genuinely broken stream.
+      historicalLoadedForRunId = lastRunId;
       es.close();
     };
     return () => es.close();

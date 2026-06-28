@@ -1,0 +1,20 @@
+# Tier-1 fixture (wfc-client): multi-input fan-in.
+# One `sources` slot resolves to multiple CSV paths; the method concatenates
+# them vertically into a single declared `merged` output.
+inputs:
+  sources:
+    type: .csv
+    required: true
+    multiple: true
+    description: "Two or more CSVs to concatenate"
+
+outputs:
+  merged:
+    type: .csv
+    required: true
+    description: "Concatenated CSV with all rows from all sources"
+
+params: {}
+
+executor: local
+env: container:client-env

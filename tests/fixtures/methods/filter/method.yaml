@@ -2,13 +2,13 @@
 # Filter rows by numeric threshold on the 'value' column.
 inputs:
   data:
-    type: csv
+    type: .csv
     required: true
     description: "Input CSV with a numeric 'value' column"
 
 outputs:
   output:
-    type: csv
+    type: .csv
     required: true
     description: "Rows where value >= threshold"
 
@@ -24,4 +24,4 @@ params:
     description: "Drop rows whose value is missing/non-numeric"
 
 executor: python
-env: inherit
+env: container:fixture-env

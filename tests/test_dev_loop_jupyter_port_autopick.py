@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from dflow.core.decorators import workflow
+from axiom_annotations import workflow
 
 
 VALID_DIGEST = "a" * 64

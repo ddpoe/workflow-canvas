@@ -3,6 +3,7 @@
   import type { CanvasNodeData, RunStatus } from './types.js';
   import { deleteNodes, samples as samplesStore, updateNodeData } from './stores.js';
   import { pushState } from './history.js';
+  import { slotColor, truncateSlotType } from './slotColor.js';
 
   let { data, id, selected }: { data: CanvasNodeData; id: string; selected?: boolean } = $props();
 
@@ -277,11 +278,11 @@
           {#each data.inputs as input}
             <div class="slot-row-side">
               <Handle type="target" position={Position.Left} id={input.name}
-                style="background: {input.type === 'csv' ? '#F39C12' : input.type === 'label' ? '#E9A847' : '#F39C12'}; width: 8px; height: 8px; border: none;" />
+                style="background: {slotColor(input.type)}; width: 8px; height: 8px; border: none;" />
               <div class="slot-stack slot-stack-left">
                 <span class="slot-name">{input.name}</span>
                 <span class="chip-row">
-                  <span class="type-chip type-chip-sm">{input.type}</span>
+                  <span class="type-chip type-chip-sm" title={input.type}>{truncateSlotType(input.type)}</span>
                   {#if input.description}
                     <span class="info-icon" title={input.description}>
                       <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">
@@ -309,11 +310,11 @@
                       </svg>
                     </span>
                   {/if}
-                  <span class="type-chip type-chip-sm">{output.type}</span>
+                  <span class="type-chip type-chip-sm" title={output.type}>{truncateSlotType(output.type)}</span>
                 </span>
               </div>
               <Handle type="source" position={Position.Right} id={output.name}
-                style="background: {output.type === 'csv' ? '#F39C12' : output.type === 'label' ? '#E9A847' : '#F39C12'}; width: 8px; height: 8px; border: none;" />
+                style="background: {slotColor(output.type)}; width: 8px; height: 8px; border: none;" />
             </div>
           {/each}
         </div>

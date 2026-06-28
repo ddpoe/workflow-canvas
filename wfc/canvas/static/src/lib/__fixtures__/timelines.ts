@@ -157,6 +157,42 @@ export const cacheHitTimeline: Timeline = [
   },
 ];
 
+// Silent fast-completed run: `completed` (NOT cache-hit) lands on the
+// very first poll tick, so RUN_OK arrives before a streaming child ever
+// connects. The Inspector therefore takes the historical-fetch fallback
+// (no live streaming actor). Paired with `silentTerminalSSE` below — a
+// stream that carries a single `terminal` frame and no stdout/stderr —
+// this is the exact "silent + fast" combination that stranded the
+// Output tab on "Connecting…".
+export const silentFastCompletedTimeline: Timeline = [
+  {
+    delayMs: 0,
+    payload: frame('completed', {
+      method_a: {
+        status: 'completed',
+        run_ids: ['run-silent-1'],
+        tally: { running: 0, completed: 1, failed: 0 },
+      },
+    }),
+  },
+];
+
+// Output-less historical stream: one `terminal` frame, no stdout/stderr.
+// The `delayMs` is load-bearing — the frame must arrive on a macrotask
+// *after* the fallback effect's microtask self-reschedule would fire
+// `es.close()`, so a regressed build drops it and strands on
+// "Connecting…". `status: 'success'` matches the backend's
+// `_log_map_terminal_status` (it emits `success`, not `completed`).
+export const silentTerminalSSE: SSEStreamFixture = {
+  events: [
+    {
+      delayMs: 50,
+      eventType: 'terminal',
+      data: { status: 'success', error_message: null, error_traceback: null },
+    },
+  ],
+};
+
 // US-3 (Bug 1): two method nodes with different cadence so a single
 // observable tick shows them in distinct statuses (one running, one
 // still pending), then both reach distinct terminal states.

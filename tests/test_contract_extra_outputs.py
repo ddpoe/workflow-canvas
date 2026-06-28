@@ -1,35 +1,31 @@
 """
-Unit tests: ContractViolation.extra_outputs field and the strict-raise behaviour
-when a @wfc_method returns a key not declared in the module contract.
+ContractViolation message shape + save_artifact boundary (ADR-020).
 
-Story: Before the fix, returning an undeclared output key (e.g. "ghost") would
-silently call ctx.save(), writing an untracked side-file with no error.
+``ContractViolation`` is the host-side error type for ADR-005 column/contract
+validation. It now lives in the pure-stdlib ``wfc_client`` package (lifted
+from the deleted in-tree ``wfc.method``); its message shape is unchanged so
+existing error-message assertions stay stable.
 
-After the fix:
-  - ContractViolation has an ``extra_outputs`` field populated with the offending key.
-  - The dispatcher raises immediately, before any file is written.
-  - The error message includes an "Undeclared outputs returned" section.
-  - ctx.save() remains available as the explicit escape hatch for true free-form
-    side-files — the dispatcher no longer reaches for it silently.
+Under the single-results-channel model there is no return-value parsing and
+no silent free-form ``ctx.save()`` fallback. A method declares each output by
+writing a file and calling ``ctx.save_artifact(name, path)``. The client's
+only guard is that the path resolves inside ``WFC_RUN_DIR`` — extension/type
+correctness is validated host-side after the run.
 """
 
-import json
-
-import pandas as pd
 import pytest
 
-from dflow.core.decorators import task, Step
+from axiom_annotations import task, Step
 
-from wfc.init import init_project
-from wfc.method import ContractViolation
+from wfc_client import ContractViolation, RunContext
 
 
-@task(purpose="ContractViolation.extra_outputs field and strict-raise on undeclared return keys")
-class TestExtraOutputsContractViolation:
-    """ContractViolation.extra_outputs field and strict-raise on undeclared return keys."""
+@task(purpose="ContractViolation message shape + save_artifact path-boundary guard")
+class TestContractViolationAndBoundary:
+    """ContractViolation message shape and the save_artifact path boundary."""
 
     # ------------------------------------------------------------------
-    # ContractViolation constructor tests (no I/O required)
+    # ContractViolation constructor / message-shape (no I/O)
     # ------------------------------------------------------------------
 
     def test_extra_outputs_field_stored(self):
@@ -38,10 +34,7 @@ class TestExtraOutputsContractViolation:
             step_num=1,
             name="Construct with extra_outputs",
             purpose="Verify the field is initialised and accessible")
-        exc = ContractViolation(
-            method="sirna_filter",
-            extra_outputs=["ghost"])
-
+        exc = ContractViolation(method="sirna_filter", extra_outputs=["ghost"])
         assert exc.extra_outputs == ["ghost"]
 
     def test_extra_outputs_in_error_message(self):
@@ -54,11 +47,6 @@ class TestExtraOutputsContractViolation:
             method="sirna_filter",
             module="data_preprocessing",
             extra_outputs=["ghost"])
-
-        口 = Step(
-            step_num=2,
-            name="Assert message content",
-            purpose="Confirm the undeclared-outputs section and key name appear in str(exc)")
         msg = str(exc)
         assert "Undeclared outputs returned" in msg
         assert "ghost" in msg
@@ -68,102 +56,55 @@ class TestExtraOutputsContractViolation:
         口 = Step(
             step_num=1,
             name="Construct with no extras",
-            purpose="Build a missing-outputs violation (no extra_outputs) and inspect message")
+            purpose="Build a missing-outputs violation and inspect message")
         exc = ContractViolation(
             method="sirna_filter",
             missing_outputs=["filtered"],
             available_outputs=[])
-
         assert "Undeclared outputs returned" not in str(exc)
 
-    def test_ctx_save_hint_in_message(self):
-        """Error message mentions ctx.save() as the explicit escape hatch."""
-        口 = Step(
-            step_num=1,
-            name="Construct with extra_outputs",
-            purpose="Verify the hint pointing developers to ctx.save() is present")
-        exc = ContractViolation(method="sirna_filter", extra_outputs=["ghost"])
-
-        assert "ctx.save()" in str(exc)
-
     # ------------------------------------------------------------------
-    # Dispatcher integration tests (require tmp_project + env wiring)
+    # save_artifact path boundary (US-2): path-inside-WFC_RUN_DIR only
     # ------------------------------------------------------------------
 
-    def test_execute_raises_on_undeclared_output(self, tmp_project, monkeypatch):
-        """_execute_wfc_method raises ContractViolation when the function returns
-        a key not present in the slot_outputs contract."""
+    def test_save_artifact_rejects_path_outside_run_dir(self, tmp_path, monkeypatch):
+        """A source path outside WFC_RUN_DIR raises an immediate, clear error."""
         口 = Step(
             step_num=1,
-            name="Write _run_context.json",
-            purpose="Declare one contracted output ('filtered') so the dispatcher has a contract",
-            inputs="_run_context.json with slot_outputs mapping one name → filename")
-        init_project(tmp_project)
-        ctx_json = {
-            "method_name": "sirna_filter",
-            "module_name": "data_preprocessing",
-            "slot_outputs": {"filtered": "filtered.csv"},
-        }
-        (tmp_project / "_run_context.json").write_text(json.dumps(ctx_json))
-
-        monkeypatch.setenv("WFC_RUN_ID", "1")
-        monkeypatch.setenv("WFC_RUN_DIR", str(tmp_project))
-        monkeypatch.setenv("WFC_PARAMS", "{}")
+            name="Build a RunContext bound to a run dir",
+            purpose="Set WFC_RUN_DIR so the client's path-boundary guard is active")
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        monkeypatch.setenv("WFC_RUN_DIR", str(run_dir))
+        ctx = RunContext()
 
         口 = Step(
             step_num=2,
-            name="Run dispatcher with undeclared key",
-            purpose="Return both the contracted 'filtered' key and an undeclared 'ghost' key",
-            critical="Must raise before any file is written for 'ghost'")
-        from wfc.method import _execute_wfc_method
+            name="Save a path outside the run dir",
+            purpose="A /tmp-style write outside WFC_RUN_DIR is rejected",
+            critical="Must raise before recording the output")
+        outside = tmp_path / "elsewhere.csv"
+        outside.write_text("x")
+        with pytest.raises(ValueError) as exc_info:
+            ctx.save_artifact("filtered", outside)
+        assert "WFC_RUN_DIR" in str(exc_info.value)
 
-        def fake_method(input_data, params):
-            df = pd.DataFrame({"gene": ["KRAS"]})
-            return {"filtered": df, "ghost": df}, {}
+    def test_save_artifact_does_not_validate_extension(self, tmp_path, monkeypatch):
+        """The client records the path without checking extension/type.
 
-        with pytest.raises(ContractViolation) as exc_info:
-            _execute_wfc_method(fake_method)
-
-        口 = Step(
-            step_num=3,
-            name="Assert violation fields",
-            purpose="Confirm extra_outputs is populated with 'ghost'")
-        assert "ghost" in exc_info.value.extra_outputs
-
-    def test_execute_no_free_form_fallback_file(self, tmp_project, monkeypatch):
-        """No file is written for the undeclared key — the old silent ctx.save() path is gone."""
+        Type/extension correctness surfaces host-side via wfc/contracts.py
+        after the run, not in the client.
+        """
         口 = Step(
             step_num=1,
-            name="Write _run_context.json",
-            purpose="Declare one contracted output so the dispatcher has a known contract")
-        init_project(tmp_project)
-        ctx_json = {
-            "method_name": "sirna_filter",
-            "module_name": "data_preprocessing",
-            "slot_outputs": {"filtered": "filtered.csv"},
-        }
-        (tmp_project / "_run_context.json").write_text(json.dumps(ctx_json))
+            name="Save a mismatched-extension file inside the run dir",
+            purpose="Confirm the client accepts any extension as long as the path is in-bounds")
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        monkeypatch.setenv("WFC_RUN_DIR", str(run_dir))
+        ctx = RunContext()
 
-        monkeypatch.setenv("WFC_RUN_ID", "1")
-        monkeypatch.setenv("WFC_RUN_DIR", str(tmp_project))
-        monkeypatch.setenv("WFC_PARAMS", "{}")
-
-        口 = Step(
-            step_num=2,
-            name="Run dispatcher and catch violation",
-            purpose="Trigger the raise for the undeclared 'ghost' key")
-        from wfc.method import _execute_wfc_method
-
-        def fake_method(input_data, params):
-            df = pd.DataFrame({"gene": ["KRAS"]})
-            return {"filtered": df, "ghost": df}, {}
-
-        with pytest.raises(ContractViolation):
-            _execute_wfc_method(fake_method)
-
-        口 = Step(
-            step_num=3,
-            name="Assert no ghost file written",
-            purpose="Confirm no file with 'ghost' in its name was created in the run dir")
-        ghost_files = list(tmp_project.glob("ghost*"))
-        assert ghost_files == [], f"Unexpected ghost files: {ghost_files}"
+        weird = run_dir / "predictions.bin"
+        weird.write_text("x")
+        # No raise: extension is not the client's concern.
+        ctx.save_artifact("predictions", weird)

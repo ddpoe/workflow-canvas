@@ -23,6 +23,7 @@ def _ensure_method(session, module_name="mod", method_name="meth"):
     m = Method(
         module_id=mod.id,
         name=method_name,
+        env="container:demo",
     )
     session.add(m)
     session.commit()

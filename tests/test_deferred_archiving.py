@@ -12,7 +12,7 @@ import json
 import pytest
 from sqlmodel import select
 
-from dflow.core.decorators import workflow
+from axiom_annotations import workflow
 
 
 # =============================================================================
@@ -33,7 +33,7 @@ def test_input_fingerprint_uses_cache_key(tmp_project):
         session.commit()
         session.refresh(mod)
 
-        meth = Method(name="fp_meth", module_id=mod.id)
+        meth = Method(name="fp_meth", module_id=mod.id, env="container:demo")
         session.add(meth)
         session.commit()
         session.refresh(meth)
@@ -77,7 +77,7 @@ def test_fingerprint_determinism(tmp_project):
         session.commit()
         session.refresh(mod)
 
-        meth = Method(name="det_meth", module_id=mod.id)
+        meth = Method(name="det_meth", module_id=mod.id, env="container:demo")
         session.add(meth)
         session.commit()
         session.refresh(meth)
@@ -114,7 +114,7 @@ def test_complete_run_no_inline_archiving(tmp_project):
         session.commit()
         session.refresh(mod)
 
-        meth = Method(name="noarch_meth", module_id=mod.id)
+        meth = Method(name="noarch_meth", module_id=mod.id, env="container:demo")
         session.add(meth)
         session.commit()
         session.refresh(meth)
@@ -168,7 +168,7 @@ def test_archive_outputs_basic(tmp_project):
         session.commit()
         session.refresh(mod)
 
-        meth = Method(name="arch_meth", module_id=mod.id)
+        meth = Method(name="arch_meth", module_id=mod.id, env="container:demo")
         session.add(meth)
         session.commit()
         session.refresh(meth)
@@ -232,7 +232,7 @@ def test_archive_progress_callbacks(tmp_project):
         session.commit()
         session.refresh(mod)
 
-        meth = Method(name="prog_meth", module_id=mod.id)
+        meth = Method(name="prog_meth", module_id=mod.id, env="container:demo")
         session.add(meth)
         session.commit()
         session.refresh(meth)
@@ -288,7 +288,7 @@ def test_archive_directory_output(tmp_project):
         session.commit()
         session.refresh(mod)
 
-        meth = Method(name="dir_meth", module_id=mod.id)
+        meth = Method(name="dir_meth", module_id=mod.id, env="container:demo")
         session.add(meth)
         session.commit()
         session.refresh(meth)
@@ -338,7 +338,7 @@ def test_prune_guard_unarchived(tmp_project, capsys):
         session.commit()
         session.refresh(mod)
 
-        meth = Method(name="prune_meth", module_id=mod.id)
+        meth = Method(name="prune_meth", module_id=mod.id, env="container:demo")
         session.add(meth)
         session.commit()
         session.refresh(meth)
@@ -403,7 +403,7 @@ def test_cache_archive_cli(tmp_project, cli):
         session.commit()
         session.refresh(mod)
 
-        meth = Method(name="cli_meth", module_id=mod.id)
+        meth = Method(name="cli_meth", module_id=mod.id, env="container:demo")
         session.add(meth)
         session.commit()
         session.refresh(meth)
@@ -456,7 +456,7 @@ def test_run_pipeline_auto_archive(tmp_project):
         session.commit()
         session.refresh(mod)
 
-        meth = Method(name="auto_meth", module_id=mod.id)
+        meth = Method(name="auto_meth", module_id=mod.id, env="container:demo")
         session.add(meth)
         session.commit()
         session.refresh(meth)

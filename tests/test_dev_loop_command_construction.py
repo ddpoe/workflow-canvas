@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 import pytest
 
-from dflow.core.decorators import workflow
+from axiom_annotations import workflow
 
 
 VALID_DIGEST = "a" * 64
@@ -228,6 +228,10 @@ def test_dev_loop_errors_when_env_not_registered(tmp_path, monkeypatch, capsys):
 def test_dev_loop_errors_when_no_wfc_project(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)  # no .wfc/
     from wfc import dev_loop
+    # _find_project_root walks up to the filesystem root, so a stray .wfc/
+    # above tmp_path (e.g. one in the user's home dir) would mask the
+    # no-project case. Force the no-project condition deterministically.
+    monkeypatch.setattr(dev_loop, "_find_project_root", lambda: None)
     rc = dev_loop.shell("image-io")
     assert rc == 1
     err = capsys.readouterr().err

@@ -37,7 +37,7 @@ def _rmtree_force(path: Path) -> None:
             pass
     shutil.rmtree(path, onexc=_onexc)
 
-from dflow.core.decorators import workflow, Step
+from axiom_annotations import workflow, Step
 
 from wfc.database import get_session
 from wfc.models import Sample

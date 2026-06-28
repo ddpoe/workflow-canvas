@@ -2,13 +2,13 @@
 # Multiply 'value' column by factor, round to `precision` decimals.
 inputs:
   data:
-    type: csv
+    type: .csv
     required: true
     description: "Input CSV with a numeric 'value' column"
 
 outputs:
   output:
-    type: csv
+    type: .csv
     required: true
     description: "Scaled CSV"
 
@@ -25,4 +25,4 @@ params:
     description: "Decimal places to round the scaled value to"
 
 executor: python
-env: inherit
+env: container:fixture-env

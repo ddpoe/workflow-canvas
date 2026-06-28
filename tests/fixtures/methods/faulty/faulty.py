@@ -67,6 +67,14 @@ def main():
         print("faulty: exiting without producing output (missing_output mode)")
         sys.exit(0)
 
+    elif failure_mode == "nonzero_exit":
+        # Exit with a non-zero status WITHOUT raising a Python exception —
+        # exercises the runtime's "method process returned non-zero" detection
+        # path, distinct from the in-Python crash (RuntimeError) path.
+        code = int(params.get("exit_code", 3))
+        print(f"faulty: exiting with non-zero status {code} (nonzero_exit mode)", file=sys.stderr)
+        sys.exit(code)
+
     elif failure_mode == "succeed":
         # Behave like transform
         slot_paths = json.loads(os.environ.get("WFC_INPUT_PATHS", "{}"))

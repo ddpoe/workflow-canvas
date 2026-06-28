@@ -37,7 +37,7 @@ class TestRunModelErrorFields:
             mod = Module(name="test_mod")
             session.add(mod)
             session.flush()
-            meth = Method(name="test_meth", module_id=mod.id, script_path="run.py")
+            meth = Method(name="test_meth", module_id=mod.id, script_path="run.py", env="container:demo")
             session.add(meth)
             session.flush()
 
@@ -64,7 +64,7 @@ class TestRunModelErrorFields:
             mod = Module(name="test_mod2")
             session.add(mod)
             session.flush()
-            meth = Method(name="test_meth2", module_id=mod.id, script_path="run.py")
+            meth = Method(name="test_meth2", module_id=mod.id, script_path="run.py", env="container:demo")
             session.add(meth)
             session.flush()
 
@@ -338,7 +338,7 @@ class TestFailPipelineSafetyNet:
             mod = Module(name="test_mod3")
             session.add(mod)
             session.flush()
-            meth = Method(name="test_meth3", module_id=mod.id, script_path="run.py")
+            meth = Method(name="test_meth3", module_id=mod.id, script_path="run.py", env="container:demo")
             session.add(meth)
             session.flush()
 

@@ -119,7 +119,12 @@ def _extract_function(node: ast.FunctionDef) -> FunctionInfo:
     """Extract function info from an AST FunctionDef node."""
     params: list[ParamInfo] = []
     uses_ctx = False
-    uses_wfc = _has_decorator(node, "wfc_method")
+    # ADR-020: the Tier-1 decorator is `@wfc.method` / `@method`. The legacy
+    # `@wfc_method` name is also recognized for backward AST-detection.
+    uses_wfc = (
+        _has_decorator(node, "method")
+        or _has_decorator(node, "wfc_method")
+    )
 
     args = node.args
 

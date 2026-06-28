@@ -1,0 +1,30 @@
+{
+  "nodes": [
+    {
+      "id": 1,
+      "module": "demo_pipeline",
+      "method": "preprocess",
+      "script": "methods/preprocess/preprocess.py",
+      "params": {
+        "normalize": true,
+        "scale_factor": 1.0
+      },
+      "position": [
+        150,
+        200
+      ]
+    }
+  ],
+  "links": [],
+  "samples": [
+    "Pa16c"
+  ],
+  "param_sets": {
+    "preprocess": {
+      "0": {
+        "normalize": true,
+        "scale_factor": 1.0
+      }
+    }
+  }
+}

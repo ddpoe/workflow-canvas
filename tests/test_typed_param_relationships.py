@@ -110,12 +110,14 @@ def test_parse_method_yaml_passes_through_columns_unchanged(tmp_path):
     method_dir = tmp_path / "my_method"
     method_dir.mkdir()
     (method_dir / "method.yaml").write_text(
+        # ADR-019 Cycle H: every method.yaml must name a built container env.
+        "env: image-io\n"
         "inputs:\n"
         "  data:\n"
-        "    type: csv\n"
+        "    type: .csv\n"
         "outputs:\n"
         "  measurements:\n"
-        "    type: csv\n"
+        "    type: .csv\n"
         "    columns:\n"
         "      strict: [a, b, c]\n"
         "params: {}\n",

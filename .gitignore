@@ -57,3 +57,6 @@ test-results/
 
 # Generated mkdocs site
 site/
+
+# axiom-graph -> Sphinx HTML build (regenerable from DocJSON; see userdocs/_sphinx/conf.py)
+userdocs/guide-html/

@@ -34,6 +34,7 @@ from typing import Sequence
 
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
+from axiom_annotations import task
 
 from .database import get_session, project_root
 from .models import MethodVersion, Run, RunOutput, Sample
@@ -218,6 +219,7 @@ def get_or_create_version(method_id: int, code_fingerprint: str, git_commit: str
             return existing.id  # type: ignore[return-value]
 
 
+@task(purpose="Build a SHA256 input fingerprint from upstream run cache keys and root sample hashes")
 def build_input_fingerprint(
     upstream_run_ids: Sequence[int],
     sample_ids: Sequence[int] | None = None,
@@ -304,7 +306,7 @@ def build_cache_key(
         input_fingerprint: Output of build_input_fingerprint().
         env_fingerprint: 32-char MD5 hex digest from ``store_env_content()``,
             identifying the resolved environment content (lock + pip freeze,
-            or interpreter identity + pip freeze for ``inherit``).  Folding
+            or a container env's image fingerprint).  Folding
             env into the cache key means that installing a different numpy
             version between runs invalidates the cache — no more silent
             stale-env hits.
@@ -338,11 +340,6 @@ def capture_env_content(env_spec: str, project_dir: Path | str) -> str:
       - ``conda:<name>`` — install-based actuality from
         ``conda list --explicit --md5`` plus ``pip freeze``.
 
-      - ``inherit`` — interpreter identity (``sys.executable`` +
-        ``sys.version``) plus ``pip freeze`` of the current interpreter.
-        Does NOT call :func:`resolve_python_for_env` (which raises on
-        ``inherit``).
-
       - ``container:<image>@sha256:<hex>`` — canonical JSON blob naming
         the container image and its digest. This is the **precompute
         write path** used by :func:`wfc.envs.register` to populate
@@ -356,7 +353,7 @@ def capture_env_content(env_spec: str, project_dir: Path | str) -> str:
 
     Args:
         env_spec: Typed env string from ``Method.env`` (e.g.
-            ``"pixi:image-io"``, ``"conda:analysis"``, ``"inherit"``,
+            ``"pixi:image-io"``, ``"conda:analysis"``,
             ``"container:<image>@sha256:<hex>"``).
         project_dir: Root directory of the wfc project (used to resolve
             ``[pixi]`` / ``[conda]`` roots from ``wf-canvas.toml`` for the
@@ -366,10 +363,8 @@ def capture_env_content(env_spec: str, project_dir: Path | str) -> str:
         A newline-delimited blob whose content varies by backend but is
         deterministic for a given env state.
     """
-    import sys
     from .env_introspect import (
         conda_list_explicit,
-        pip_freeze,
         pip_freeze_best_effort,
         pixi_lock_section,
     )
@@ -384,10 +379,10 @@ def capture_env_content(env_spec: str, project_dir: Path | str) -> str:
     # container backend (US-4).
     #
     # Only fires for bare names (no backend prefix). Typed specs (pixi:,
-    # conda:, container:, inherit) fall through to their existing branches
+    # conda:, container:) fall through to their existing branches
     # below. A manifest entry with container="" is treated as non-container
     # and falls through.
-    if ":" not in env_spec and env_spec != "inherit":
+    if ":" not in env_spec:
         try:
             from .envs import get as _envs_get
             record = _envs_get(env_spec, project_dir)
@@ -426,16 +421,6 @@ def capture_env_content(env_spec: str, project_dir: Path | str) -> str:
             separators=(",", ":"),
         )
         return blob
-
-    if env_spec == "inherit":
-        # No lock, no env resolution — interpreter identity + installed
-        # packages is the honest fingerprint.  Order is load-bearing:
-        # interpreter path, interpreter version, then pip freeze.
-        return (
-            f"executable={sys.executable}\n"
-            f"version={sys.version}\n"
-            f"{pip_freeze(sys.executable)}"
-        )
 
     parts = env_spec.split(":")
     backend = parts[0]
@@ -508,7 +493,7 @@ def capture_env_content(env_spec: str, project_dir: Path | str) -> str:
 
     raise ValueError(
         f"Unknown env backend in spec '{env_spec}'. "
-        f"Expected 'pixi:...', 'conda:...', or 'inherit'."
+        f"Expected 'pixi:...' or 'conda:...'."
     )
 
 

@@ -39,6 +39,10 @@ export interface SubmitError {
   message: string;
   validationErrors?: string[];
   status?: number;
+  // Run-readiness rejections (D-6) carry a kind-tagged payload so the
+  // pipeline-error card can render a Docker/git readiness affordance.
+  kind?: string;
+  hint?: string;
 }
 
 // Output state shape pulled from the JSON returned by `/api/workflow/status`.
@@ -108,13 +112,25 @@ export const submitPipeline = fromPromise<SubmitOutput, SubmitInput>(
     });
     const result = await resp.json();
     if (!resp.ok) {
-      const err: SubmitError = {
-        message:
-          typeof result?.detail === 'string'
-            ? result.detail
-            : `Run request failed (HTTP ${resp.status})`,
-        status: resp.status,
-      };
+      // Run-readiness rejections (D-6) send detail = {kind, message, hint};
+      // other failures send a plain string detail. Preserve the kind/hint so
+      // the pipeline-error card renders the Docker/git readiness affordance.
+      const detail = result?.detail;
+      const err: SubmitError =
+        detail && typeof detail === 'object'
+          ? {
+              message: detail.message ?? `Run request failed (HTTP ${resp.status})`,
+              kind: detail.kind,
+              hint: detail.hint,
+              status: resp.status,
+            }
+          : {
+              message:
+                typeof detail === 'string'
+                  ? detail
+                  : `Run request failed (HTTP ${resp.status})`,
+              status: resp.status,
+            };
       throw err;
     }
     return { jobId: result.job_id };
@@ -433,7 +449,18 @@ export const pollNodeStatus = fromCallback<{ type: string }, PollInput>(
         }
 
         const overall = result.overall_status;
-        if (isTerminalOverallStatus(overall)) {
+        // A clean `completed` run is done immediately. A failure/partial
+        // run (`failed` / `cancelled` / `completed_with_failures`) is only
+        // "done" once the backend run thread has exited (`thread_alive ===
+        // false`) — that is exactly when the pipeline-end cancelled-row
+        // walk has committed. Stopping earlier (the moment `overall` first
+        // reads `failed`) freezes downstream nodes in `queued` → `pending`,
+        // because their `cancelled` rows aren't written yet. Waiting lets
+        // the next tick observe them and flip the nodes to `cancelled`.
+        if (
+          isTerminalOverallStatus(overall) &&
+          (overall === 'completed' || result.thread_alive === false)
+        ) {
           // Fire-and-forget /api/wfc/refresh so we don't await — awaiting
           // would let `stopped` get set before the deferred per-node
           // setTimeouts fire.

@@ -47,6 +47,7 @@ def db_engine(tmp_path, monkeypatch):
         session.add(Method(
             name="preprocess", module_id=mod.id,
             script_path="methods/preprocess/preprocess.py",
+            env="container:demo",
         ))
         session.commit()
 

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from dflow.core.decorators import workflow, Step
+from axiom_annotations import workflow, Step
 
 
 @workflow(

@@ -3,18 +3,18 @@
 # exercise — RunDetailPanel should show both parent chips.
 inputs:
   config:
-    type: csv
+    type: .csv
     required: true
     description: "Config from build_config (3-hop skip)"
   corrected:
-    type: csv
+    type: .csv
     required: true
     description: "Corrected tiles from illum_correct (immediate)"
 
 outputs:
   stitched:
-    type: csv
+    type: .csv
     required: true
 
 executor: python
-env: inherit
+env: container:fixture-env

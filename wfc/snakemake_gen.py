@@ -26,7 +26,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from dflow.core.decorators import workflow, task, Step, AutoStep
+from axiom_annotations import workflow, task, Step, AutoStep
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,9 @@ class StepDef:
     output_ext: str = ".parquet"  # output file extension (e.g. .csv, .parquet)
     node_id: str = ""             # unique node identity (defaults to method_name)
     inputs: dict[str, list[str]] = field(default_factory=dict)  # slot → [upstream node_ids]
-    env: str = "inherit"  # "inherit" | named shared env (e.g. "image-io")
+    env: str = ""  # required typed env spec / named shared env; "" is an
+    # unset sentinel — load_pipeline always sets this explicitly and raises
+    # when a node declares no env.
     slot_outputs: dict[str, str] = field(default_factory=dict)
     # named output slots → filename, e.g. {"predictions": "predictions.csv", "model": "model.pkl"}
     # empty dict means single-output method (uses output{ext} path)
@@ -357,6 +359,17 @@ def load_pipeline(path: Path) -> PipelineDef:
                 source_slot_map.get(raw_id, {}).get(slot, [None] * len(src_raw_ids))
             )
 
+        # env is required (missing-value guard, not a backend allow-list):
+        # prefer an explicit ``env``, fall back to the legacy ``env_strategy``
+        # alias, and raise when NEITHER is present/non-empty. A truthy
+        # ``container:<name>`` / bare manifest name passes through untouched.
+        step_env = n.get("env") or n.get("env_strategy")
+        if not step_env:
+            raise ValueError(
+                f"env required (pixi/conda/byo): node '{raw_id}' "
+                f"(method={method}) declares no env"
+            )
+
         steps.append(StepDef(
             method_name=method,
             module_name=module,
@@ -366,7 +379,7 @@ def load_pipeline(path: Path) -> PipelineDef:
             output_ext=n.get("output_ext", ".parquet"),
             node_id=nid,
             inputs=inputs,
-            env=n.get("env", n.get("env_strategy", "inherit")),
+            env=step_env,
             slot_outputs=n.get("slot_outputs", {}),
             slot_types=n.get("slot_types", {}),
             input_source_slots=input_source_slots_for_step,
@@ -1054,6 +1067,11 @@ def generate_snakefile(
     """
     import uuid as _uuid
 
+    口 = Step(step_num=1, name="Resolve variants and params",
+             purpose="Build the param/variant model: resolve each node's param_sets "
+                     "(by node_id, falling back to method_name), compute the global "
+                     "variant axis, and pad every node to cover every variant name")
+
     # Ensure pipeline_id is always concrete — workspace paths are scoped by it
     _pipeline_id = pipeline_id if pipeline_id is not None else str(_uuid.uuid4())
 
@@ -1083,6 +1101,11 @@ def generate_snakefile(
 
     lines: list[str] = []
     leaf_ids = _find_leaf_nodes(step_map)
+
+    口 = Step(step_num=2, name="Emit Snakefile preamble",
+             purpose="Append the header, imports, config constants (SAMPLES, "
+                     "VARIANT_NAMES, paths), per-node ENV_NAMES and PARAMS, the "
+                     "pipeline logger, and run-step env vars")
 
     # ── Header ──────────────────────────────────────────────────────────────
     variant_counts = {m: len(vs) for m, vs in resolved_params.items()}
@@ -1137,23 +1160,12 @@ def generate_snakefile(
     # Anchor Snakemake itself to the project root so its own relative-path
     # resolution matches the WFC_PROJECT_ROOT contract.
     lines.append('workdir: PROJECT_ROOT')
+    # ADR-019 Cycle H: execution is container-only. The generator no longer
+    # resolves host pixi/conda python paths to bake into the Snakefile —
+    # ``wfc run-step`` dispatches each method into its built container image
+    # and ignores any baked host interpreter path. The symbol is kept (empty)
+    # so the generated shell template, which still references it, stays valid.
     env_python_paths: dict[str, str] = {}
-    config_path = _project_root / ".wfc" / "wf-canvas.toml"
-    if config_path.exists():
-        from .init import read_config as _read_config
-        _cfg = _read_config(_project_root)
-        _pixi_root = _cfg.get("pixi_root", "")
-        _conda_root = _cfg.get("conda_root", "")
-        from .register import resolve_python_for_env as _resolve_py
-        for step in pipeline.steps:
-            if step.env != "inherit" and step.env not in env_python_paths:
-                try:
-                    python_path = _resolve_py(
-                        step.env, pixi_root=_pixi_root, conda_root=_conda_root,
-                    )
-                    env_python_paths[step.env] = str(python_path).replace("\\", "/")
-                except ValueError:
-                    pass  # env not found — will fall back to sys.executable
     lines.append("ENV_PYTHON_PATHS = {")
     for name, python_path in env_python_paths.items():
         lines.append(f"    {repr(name)}: r{repr(python_path)},")
@@ -1212,17 +1224,23 @@ def generate_snakefile(
         os.environ["WFC_PIPELINE_ID"] = PIPELINE_ID
         # PYTHONPATH is deliberately NOT set here.  The shell rule invokes
         # the run-step verb (``{sys.executable} -m wfc``) against the host
-        # venv Python, which already has wfc in its own site-packages — and
-        # run-step itself builds a narrow shim (wfc._ensure_wfc_shim) before spawning
-        # the pixi-env method subprocess.  Prepending WFC_ROOT to PYTHONPATH
-        # here used to leak the host venv's site-packages (pandas/numpy at
-        # the wrong ABI) into every Snakemake-spawned child process.
+        # venv Python, which already has wfc in its own site-packages.
+        # run-step itself dispatches the method into its built container image
+        # (ADR-019 Cycle H: execution is container-only; the in-container wfc
+        # comes from the image, not from a host PYTHONPATH).  Prepending
+        # WFC_ROOT to PYTHONPATH here used to leak the host venv's
+        # site-packages (pandas/numpy at the wrong ABI) into every
+        # Snakemake-spawned child process.
         # Forward DATABASE_URL for test isolation
         if os.environ.get("DATABASE_URL"):
             pass  # already in environment
     '''))
 
     # ── Rule all (target declaration) ──────────────────────────────────────
+    口 = Step(step_num=3, name="Emit rule all (targets)",
+             purpose="Declare top-level targets — expand() over leaf nodes × "
+                     "samples × variants (unified), or a comprehension over "
+                     "explicit RUNS (selective)")
     lines.append("rule all:")
     lines.append("    input:")
 
@@ -1256,6 +1274,10 @@ def generate_snakefile(
     lines.append("")
 
     # ── ADR-009: restore_sample rules for root steps ─────────────────────
+    口 = Step(step_num=4, name="Emit restore_sample rules",
+             purpose="For root steps, emit one restore_sample rule per sample that "
+                     "materializes the file from the DVC cache by content_hash "
+                     "(looked up at generation time) and writes a readiness sentinel")
     # Root steps (no depends_on) need samples restored from DVC cache before
     # execution. Generate one restore_sample rule per sample that materializes
     # the sample file and writes a sentinel. Root step rules depend on the
@@ -1299,6 +1321,10 @@ def generate_snakefile(
             lines.append("")
 
     # ── Rules (one per node) ─────────────────────────────────────────────
+    口 = Step(step_num=5, name="Emit per-node method rules",
+             purpose="Emit one Snakemake rule per pipeline node via _generate_rule, "
+                     "wiring sentinel inputs/outputs and the sample-restore "
+                     "dependency for roots")
     for step in pipeline.steps:
         lines.extend(_generate_rule(
             step, step_map,
@@ -1307,6 +1333,9 @@ def generate_snakefile(
         ))
 
     # ── onsuccess / onerror handlers (ADR 008: delegate to pipeline-summary) ──
+    口 = Step(step_num=6, name="Emit lifecycle handlers",
+             purpose="Append onsuccess/onerror handlers delegating to wfc "
+                     "pipeline-summary / fail_pipeline; return the joined Snakefile")
     lines.append("onsuccess:")
     lines.append('    _pipeline_logger.info("Pipeline %s completed successfully", PIPELINE_ID)')
     lines.append('    shell(f"wfc pipeline-summary --pipeline-id {PIPELINE_ID}")')

@@ -2,7 +2,7 @@
 Tests for ADR 008: run-step execution layer.
 
 Covers:
-  - RunContext refactor (finalize writes metrics.json, no DB imports)
+  - Single results channel (run-step reads _wfc_results.json)
   - run-step command (success, cache hit, error capture, inline fallback)
   - pipeline-summary aggregation
   - Simplified _generate_rule output
@@ -17,116 +17,82 @@ from pathlib import Path
 
 import pytest
 
-from dflow.core.decorators import workflow, Step
+from tests.conftest import requires_docker
+
+from axiom_annotations import workflow, Step
 
 
 # =============================================================================
-# RunContext tests (Task 1 — US-6)
+# Single results channel (ADR-020) — metrics + outputs flow through
+# `_wfc_results.json`; the legacy `metrics.json` read is gone.
 # =============================================================================
 
-class TestRunContextMetrics:
-    """RunContext.finalize() writes metrics.json to WFC_RUN_DIR."""
+class TestSingleResultsChannel:
+    """`run_step` collects results solely from `_wfc_results.json`.
 
-    def test_finalize_writes_metrics_json(self, tmp_path, monkeypatch):
-        """finalize() writes metrics.json to run_dir with logged metrics."""
-        run_dir = tmp_path / "00000001"
+    The client-side `RunContext` surface (env parsing, `save_artifact`,
+    `log_metric`, `_finalize`) is covered by `wfc_client/tests/`. These
+    tests pin the *host* contract: metrics arrive through the manifest and
+    no `metrics.json` is read (so metrics cannot double-count).
+    """
+
+    def test_manifest_is_the_metrics_channel(self, tmp_path):
+        """Host reads metrics from `_wfc_results.json`, not `metrics.json`."""
+        from wfc.manifest import read_results_manifest
+
+        run_dir = tmp_path / "run"
         run_dir.mkdir()
-        monkeypatch.setenv("WFC_RUN_ID", "1")
-        monkeypatch.setenv("WFC_RUN_DIR", str(run_dir))
-        monkeypatch.setenv("WFC_SAMPLE", "S1")
+        # A stray legacy metrics.json must be ignored entirely.
+        (run_dir / "metrics.json").write_text(json.dumps({"n_cells": 999}))
+        (run_dir / "_wfc_results.json").write_text(
+            json.dumps({"outputs": {}, "metrics": {"n_cells": 42}})
+        )
 
-        from wfc.wfc_context import RunContext
-        ctx = RunContext()
-        ctx.log_metrics({"n_cells": 42, "accuracy": 0.95})
-        ctx.finalize()
+        result = read_results_manifest(run_dir)
+        assert result is not None
+        assert result.metrics == {"n_cells": 42}, \
+            "metrics must come from _wfc_results.json, not metrics.json"
 
-        metrics_path = run_dir / "metrics.json"
-        assert metrics_path.exists(), "metrics.json should be written by finalize()"
-        data = json.loads(metrics_path.read_text())
-        assert data == {"n_cells": 42, "accuracy": 0.95}
+    def test_no_manifest_yields_no_metrics(self, tmp_path):
+        """A pure outputs-only Tier-2 run (no manifest) yields no metrics."""
+        from wfc.manifest import read_results_manifest
 
-    def test_finalize_no_metrics(self, tmp_path, monkeypatch):
-        """finalize() writes empty dict when no metrics logged."""
-        run_dir = tmp_path / "00000002"
+        run_dir = tmp_path / "run"
         run_dir.mkdir()
-        monkeypatch.setenv("WFC_RUN_ID", "2")
-        monkeypatch.setenv("WFC_RUN_DIR", str(run_dir))
-        monkeypatch.setenv("WFC_SAMPLE", "S1")
-
-        from wfc.wfc_context import RunContext
-        ctx = RunContext()
-        ctx.finalize()
-
-        metrics_path = run_dir / "metrics.json"
-        assert metrics_path.exists()
-        data = json.loads(metrics_path.read_text())
-        assert data == {}
-
-    def test_finalize_does_not_write_run_results_json(self, tmp_path, monkeypatch):
-        """finalize() should NOT write _run_results.json anymore."""
-        run_dir = tmp_path / "00000003"
-        run_dir.mkdir()
-        monkeypatch.setenv("WFC_RUN_ID", "3")
-        monkeypatch.setenv("WFC_RUN_DIR", str(run_dir))
-        monkeypatch.setenv("WFC_SAMPLE", "S1")
-
-        from wfc.wfc_context import RunContext
-        ctx = RunContext()
-        ctx.finalize()
-
-        assert not (run_dir / "_run_results.json").exists(), \
-            "_run_results.json should no longer be written"
-
-    def test_wfc_context_no_db_imports(self):
-        """wfc_context.py should not import database, models, or sqlmodel at module level."""
-        import importlib
-        import wfc.wfc_context as mod
-        source = Path(mod.__file__).read_text()
-        # Module-level imports should only be json, os, pathlib
-        assert "from .database" not in source
-        assert "from .models" not in source
-        assert "from sqlmodel" not in source
-        assert "import sqlmodel" not in source
-
-    def test_save_module_still_writes_file(self, tmp_path, monkeypatch):
-        """save_module() writes the file to disk even without DB coupling."""
-        run_dir = tmp_path / "00000004"
-        run_dir.mkdir()
-        monkeypatch.setenv("WFC_RUN_ID", "4")
-        monkeypatch.setenv("WFC_RUN_DIR", str(run_dir))
-        monkeypatch.setenv("WFC_SAMPLE", "S1")
-
-        from wfc.wfc_context import RunContext
-        ctx = RunContext()
-        ctx.save_module("test_output", "hello world", ext=".txt")
-
-        output_path = run_dir / "test_output.txt"
-        assert output_path.exists()
-        assert output_path.read_text() == "hello world"
-
-    def test_save_still_writes_file(self, tmp_path, monkeypatch):
-        """save() writes the file to disk even without DB coupling."""
-        run_dir = tmp_path / "00000005"
-        run_dir.mkdir()
-        monkeypatch.setenv("WFC_RUN_ID", "5")
-        monkeypatch.setenv("WFC_RUN_DIR", str(run_dir))
-        monkeypatch.setenv("WFC_SAMPLE", "S1")
-
-        from wfc.wfc_context import RunContext
-        ctx = RunContext()
-        ctx.save("notes.txt", "some notes")
-
-        output_path = run_dir / "notes.txt"
-        assert output_path.exists()
-        assert output_path.read_text() == "some notes"
+        (run_dir / "output.parquet").write_text("fake")
+        # No _wfc_results.json — outputs are located by the run_dir scan,
+        # metrics default to empty. There is no metrics.json fallback.
+        assert read_results_manifest(run_dir) is None
 
 
 # =============================================================================
 # Helpers for run-step tests
 # =============================================================================
 
-def _seed_module_method(cli, module="test_mod", method="test_method"):
-    """Register a module and method via CLI so pre_run can reference them."""
+def _seed_module_method(cli, module="test_mod", method="test_method",
+                        image_digest=None):
+    """Register a module and method via CLI so pre_run can reference them.
+
+    Args:
+        cli: In-process CLI runner fixture.
+        module: Module name to register.
+        method: Method name to register.
+        image_digest: Optional bare sha256 hex of a real, locally-built
+            container image (from the ``fixture_container_image`` session
+            fixture). When provided, the method's env is the direct
+            digest-pinned escape hatch
+            ``container:docker://local/wfc-test-minimal@sha256:<digest>`` — the
+            ONE env form ``run_step`` resolves for an inline-args (no
+            ``--pipeline-json``) invocation, so a subsequent ``run-step``
+            genuinely dispatches ``docker run`` against a runnable image (the
+            integration-tier path). When omitted, the method uses the same
+            escape-hatch shape but a fake ``local/x`` digest which
+            ``_resolve_env`` validates by SHAPE only (no manifest lookup, no
+            Docker) — for non-execution registration/error-path unit tests.
+
+    Returns:
+        The relative path to the registered method script.
+    """
     import subprocess
     result = cli("register-module", "--name", module, "--description", "test module", "--contracts", "[]")
     assert result.returncode == 0, result.stderr
@@ -137,6 +103,24 @@ def _seed_module_method(cli, module="test_mod", method="test_method"):
     if not os.path.exists(script_path):
         with open(script_path, "w") as f:
             f.write("def main(df, params): return df\n")
+    # ADR-019 Cycle H: a method must name a built container env. These tests
+    # invoke run-step with INLINE args (no --pipeline-json), so the only env
+    # form run_step resolves is the per-method direct digest-pinned escape
+    # hatch (container:docker://...@sha256:...). For the integration tier we
+    # substitute the REAL session-built image digest so docker run launches a
+    # runnable image; for unit tests a fake local/x digest validates by shape.
+    digest = image_digest if image_digest is not None else "a" * 64
+    repo = "local/wfc-test-minimal" if image_digest is not None else "local/x"
+    env_field = f"container:docker://{repo}@sha256:{digest}"
+    yaml_path = os.path.join(method_dir, "method.yaml")
+    if not os.path.exists(yaml_path):
+        with open(yaml_path, "w") as f:
+            f.write(
+                "inputs:\n  data:\n    type: .csv\n"
+                "outputs:\n  output:\n    type: .parquet\n"
+                "params: {}\nexecutor: python\n"
+                f"env: {env_field}\n"
+            )
     result = cli("register-method", method_dir, "--module", module)
     assert result.returncode == 0, result.stderr
     # Commit so git is clean for pre_run's dirty check
@@ -146,7 +130,7 @@ def _seed_module_method(cli, module="test_mod", method="test_method"):
 
 
 def _make_method_script(tmp_path, name="test_method", content=None):
-    """Create a simple method script that writes metrics.json."""
+    """Create a simple method script that writes the `_wfc_results.json` manifest."""
     if content is None:
         content = textwrap.dedent("""\
             import json, os
@@ -155,9 +139,9 @@ def _make_method_script(tmp_path, name="test_method", content=None):
             # Write a simple output file
             out = run_dir / "output.parquet"
             out.write_text("fake parquet data")
-            # Write metrics.json (the new protocol)
-            metrics = {"n_cells": 42}
-            (run_dir / "metrics.json").write_text(json.dumps(metrics))
+            # Write the single results channel (ADR-020): outputs + metrics.
+            results = {"outputs": {}, "metrics": {"n_cells": 42}}
+            (run_dir / "_wfc_results.json").write_text(json.dumps(results))
         """)
     script_path = tmp_path / "methods" / name / f"{name}.py"
     script_path.parent.mkdir(parents=True, exist_ok=True)
@@ -172,11 +156,13 @@ def _make_method_script(tmp_path, name="test_method", content=None):
 class TestRunStep:
     """Tests for the wfc run-step command."""
 
-    def test_run_step_inline_success(self, cli, tmp_project):
+    @pytest.mark.integration
+    @requires_docker
+    def test_run_step_inline_success(self, cli, tmp_project, fixture_container_image):
         """run-step with inline args executes a method and exits 0."""
-        _seed_module_method(cli)
+        _seed_module_method(cli, image_digest=fixture_container_image)
 
-        # Create a method script that writes metrics.json
+        # Create a method script that writes _wfc_results.json
         script = _make_method_script(tmp_project)
 
         # Create a sample input file for --ref-input
@@ -279,9 +265,11 @@ class TestRunStep:
         )
         assert r2.returncode == 0, f"Cache hit run failed: {r2.stderr}"
 
-    def test_run_step_reads_metrics_json(self, cli, tmp_project):
-        """run-step reads metrics.json written by the method and passes to complete_run."""
-        _seed_module_method(cli)
+    @pytest.mark.integration
+    @requires_docker
+    def test_run_step_reads_results_manifest(self, cli, tmp_project, fixture_container_image):
+        """run-step reads metrics from `_wfc_results.json` and passes to complete_run."""
+        _seed_module_method(cli, image_digest=fixture_container_image)
 
         script = _make_method_script(tmp_project)
 
@@ -316,9 +304,11 @@ class TestRunStep:
             assert len(completed_with_metrics) >= 1, \
                 f"Expected a run with n_cells=42 in metrics, got: {[r.metrics for r in runs]}"
 
-    def test_run_step_tees_stdout_to_per_run_log(self, cli, tmp_project):
+    @pytest.mark.integration
+    @requires_docker
+    def test_run_step_tees_stdout_to_per_run_log(self, cli, tmp_project, fixture_container_image):
         """run-step writes the method's stdout to .runs/<run_id>/stdout.log."""
-        _seed_module_method(cli)
+        _seed_module_method(cli, image_digest=fixture_container_image)
 
         _make_method_script(
             tmp_project,
@@ -329,7 +319,7 @@ class TestRunStep:
                 print("hello from stdout line 2")
                 run_dir = Path(os.environ["WFC_RUN_DIR"])
                 (run_dir / "output.parquet").write_text("fake")
-                (run_dir / "metrics.json").write_text(json.dumps({"n_cells": 1}))
+                (run_dir / "_wfc_results.json").write_text(json.dumps({"outputs": {}, "metrics": {"n_cells": 1}}))
             """),
         )
 
@@ -367,9 +357,11 @@ class TestRunStep:
         assert "hello from stdout line 1" in content
         assert "hello from stdout line 2" in content
 
-    def test_run_step_tees_stderr_across_crash(self, cli, tmp_project):
+    @pytest.mark.integration
+    @requires_docker
+    def test_run_step_tees_stderr_across_crash(self, cli, tmp_project, fixture_container_image):
         """run-step captures stderr up to and including the crash traceback."""
-        _seed_module_method(cli)
+        _seed_module_method(cli, image_digest=fixture_container_image)
 
         _make_method_script(
             tmp_project,
@@ -475,7 +467,7 @@ def _write_pipeline_json(
             "params": {},
             "slot_outputs": slot_outputs,
             "slot_types": slot_types,
-            "env": "inherit",
+            "env": "container:demo",
         }],
         "links": [],
         "samples": ["S1"],
@@ -489,17 +481,19 @@ class TestADR010SlotShapes:
     """End-to-end tests for ADR-010 — run-step honors contract-declared
     output slots as the single source of truth for workspace paths."""
 
-    def test_non_parquet_file_slot_published(self, cli, tmp_project):
+    @pytest.mark.integration
+    @requires_docker
+    def test_non_parquet_file_slot_published(self, cli, tmp_project, fixture_container_image):
         """US-1: a method with a single .json slot runs end-to-end and
         the workspace contains the file under the slot-declared name."""
-        _seed_module_method(cli)
+        _seed_module_method(cli, image_digest=fixture_container_image)
 
         script_content = textwrap.dedent("""\
             import json, os
             from pathlib import Path
             run_dir = Path(os.environ["WFC_RUN_DIR"])
             (run_dir / "extraction_config.json").write_text('{"k": 1}')
-            (run_dir / "metrics.json").write_text(json.dumps({"ok": True}))
+            (run_dir / "_wfc_results.json").write_text(json.dumps({"outputs": {}, "metrics": {"ok": True}}))
         """)
         script = _make_method_script(tmp_project, content=script_content)
 
@@ -543,10 +537,12 @@ class TestADR010SlotShapes:
             ro = session.exec(select(RunOutput).where(RunOutput.output_name == "extraction_config.json")).first()
             assert ro is not None and Path(ro.artifact_path).read_text() == '{"k": 1}'
 
-    def test_directory_slot_published(self, cli, tmp_project):
+    @pytest.mark.integration
+    @requires_docker
+    def test_directory_slot_published(self, cli, tmp_project, fixture_container_image):
         """US-2: a directory slot — every child in run_dir/<slot> lands
         in the workspace under the slot-declared name."""
-        _seed_module_method(cli)
+        _seed_module_method(cli, image_digest=fixture_container_image)
 
         script_content = textwrap.dedent("""\
             import json, os
@@ -556,7 +552,7 @@ class TestADR010SlotShapes:
             tiles.mkdir()
             (tiles / "tile_000.png").write_text("img0")
             (tiles / "tile_001.png").write_text("img1")
-            (run_dir / "metrics.json").write_text(json.dumps({"n_tiles": 2}))
+            (run_dir / "_wfc_results.json").write_text(json.dumps({"outputs": {}, "metrics": {"n_tiles": 2}}))
         """)
         script = _make_method_script(tmp_project, content=script_content)
 
@@ -603,10 +599,12 @@ class TestADR010SlotShapes:
             assert (ws_dir / "tile_000.png").exists()
             assert (ws_dir / "tile_001.png").exists()
 
-    def test_multi_slot_mixed_file_and_dir(self, cli, tmp_project):
+    @pytest.mark.integration
+    @requires_docker
+    def test_multi_slot_mixed_file_and_dir(self, cli, tmp_project, fixture_container_image):
         """US-3: a multi-slot method (file + directory) publishes every
         declared slot to the workspace under the declared name."""
-        _seed_module_method(cli)
+        _seed_module_method(cli, image_digest=fixture_container_image)
 
         script_content = textwrap.dedent("""\
             import json, os
@@ -616,7 +614,7 @@ class TestADR010SlotShapes:
             tiles = run_dir / "tiles_dir"
             tiles.mkdir()
             (tiles / "tile_000.png").write_text("t0")
-            (run_dir / "metrics.json").write_text(json.dumps({"ok": True}))
+            (run_dir / "_wfc_results.json").write_text(json.dumps({"outputs": {}, "metrics": {"ok": True}}))
         """)
         script = _make_method_script(tmp_project, content=script_content)
 
@@ -664,11 +662,13 @@ class TestADR010SlotShapes:
             assert cfg_ro is not None and Path(cfg_ro.artifact_path).read_text() == '{"version": 2}'
             assert tiles_ro is not None and (Path(tiles_ro.artifact_path) / "tile_000.png").exists()
 
-    def test_missing_slot_raises(self, cli, tmp_project):
+    @pytest.mark.integration
+    @requires_docker
+    def test_missing_slot_raises(self, cli, tmp_project, fixture_container_image):
         """Negative test: a method that declares a slot but fails to
         produce it fails the run with a clear RuntimeError-style message
         naming the method and slot."""
-        _seed_module_method(cli)
+        _seed_module_method(cli, image_digest=fixture_container_image)
 
         # Method produces extraction_config.json but NOT the declared
         # "labels" slot — should fail with a clear error.
@@ -677,7 +677,7 @@ class TestADR010SlotShapes:
             from pathlib import Path
             run_dir = Path(os.environ["WFC_RUN_DIR"])
             (run_dir / "extraction_config.json").write_text('{}')
-            (run_dir / "metrics.json").write_text('{}')
+            (run_dir / "_wfc_results.json").write_text('{"outputs": {}, "metrics": {}}')
         """)
         script = _make_method_script(tmp_project, content=script_content)
 
@@ -717,10 +717,12 @@ class TestADR010SlotShapes:
         assert "test_method" in combined, \
             f"Error message should name the method 'test_method': {combined!r}"
 
-    def test_cached_branch_restores_every_slot(self, cli, tmp_project):
+    @pytest.mark.integration
+    @requires_docker
+    def test_cached_branch_restores_every_slot(self, cli, tmp_project, fixture_container_image):
         """US-4: re-running the same multi-slot method takes the CACHED
         branch and restores every declared slot byte-identical."""
-        _seed_module_method(cli)
+        _seed_module_method(cli, image_digest=fixture_container_image)
 
         script_content = textwrap.dedent("""\
             import json, os
@@ -728,7 +730,7 @@ class TestADR010SlotShapes:
             run_dir = Path(os.environ["WFC_RUN_DIR"])
             (run_dir / "extraction_config.json").write_text('{"v": 7}')
             (run_dir / "labels.csv").write_text("id,label\\n1,A\\n")
-            (run_dir / "metrics.json").write_text('{}')
+            (run_dir / "_wfc_results.json").write_text('{"outputs": {}, "metrics": {}}')
         """)
         script = _make_method_script(tmp_project, content=script_content)
 
@@ -794,6 +796,140 @@ class TestADR010SlotShapes:
             assert labels_ro is not None and Path(labels_ro.artifact_path).read_text() == "id,label\n1,A\n"
 
 
+class TestCanonicalWorkdirOutput:
+    """ADR-020 canonical ``ctx.workdir`` -> ``ctx.save_artifact`` round-trip.
+
+    The recommended Tier-1 pattern writes a declared output UNDER
+    ``WFC_RUN_DIR/_workdir/`` and records its run-dir-relative path in
+    ``_wfc_results.json``. The whole reason the manifest matters over a plain
+    ``run_dir`` scan is this branch: a file nested in ``_workdir/`` is invisible
+    to a top-level scan, so the host MUST resolve the manifest-recorded path to
+    archive it.
+
+    This drives the REAL ``run_step`` collect-outputs path host-side (no
+    Docker): ``_run_method_subprocess`` is monkeypatched to simulate the
+    container — it writes ``_workdir/clean.csv`` plus the manifest recording
+    ``clean: _workdir/clean.csv`` (save_artifact name == declared slot name).
+    """
+
+    def test_run_step_archives_workdir_nested_output_from_manifest(
+        self, cli, tmp_project, monkeypatch
+    ):
+        """The declared output lives under ``_workdir/``; the host resolves it
+        from ``_wfc_results.json`` into a ``RunOutput`` row, and
+        ``archive_outputs`` hashes + DVC-caches THAT nested file.
+
+        Fails under a bare ``run_dir`` scan: ``run_dir/clean.csv`` never
+        exists, so the missing-slot guard would abort the run before any
+        ``RunOutput`` row is written.
+        """
+        import hashlib
+
+        # Shape-validated escape-hatch env (no real image; subprocess is mocked).
+        _seed_module_method(cli)
+        _make_method_script(tmp_project)
+
+        src_file = tmp_project / "_src_input.csv"
+        src_file.write_text("col\n1\n")
+        cli("register-sample", "--name", "S1", "--source", str(src_file))
+
+        # The single declared slot's name ("clean") == the save_artifact name
+        # the method records in the manifest. The file is nested in _workdir/.
+        clean_bytes = b"id,value\n1,10\n2,20\n"
+
+        def _fake_subprocess(cmd, *, cwd, env, stdout_log, stderr_log):
+            """Stand in for the container: write the _workdir-nested output and
+            the manifest recording its run-dir-relative path, then succeed."""
+            import subprocess as _sp
+
+            run_dir = Path(env["WFC_RUN_DIR"])
+            workdir = run_dir / "_workdir"
+            workdir.mkdir(parents=True, exist_ok=True)
+            (workdir / "clean.csv").write_bytes(clean_bytes)
+            results = {
+                "outputs": {"clean": "_workdir/clean.csv"},
+                "metrics": {"kept_rows": 2},
+            }
+            (run_dir / "_wfc_results.json").write_text(json.dumps(results))
+            stdout_log.parent.mkdir(parents=True, exist_ok=True)
+            stdout_log.write_text("")
+            stderr_log.write_text("")
+            return _sp.CompletedProcess(args=cmd, returncode=0, stdout=None, stderr=None)
+
+        monkeypatch.setattr("wfc.cli._run_method_subprocess", _fake_subprocess)
+
+        pj = _write_pipeline_json(
+            tmp_project,
+            node_id="test_method",
+            method="test_method",
+            module="test_mod",
+            script_path=str(tmp_project / "methods" / "test_method" / "test_method.py"),
+            slot_outputs={"clean": "clean.csv"},
+            slot_types={"clean": "CSV"},
+        )
+
+        result = cli(
+            "run-step",
+            "--node-id", "test_method",
+            "--sample", "S1",
+            "--variant", "default",
+            "--pipeline-id", "adr020-workdir-001",
+            "--pipeline-json", str(pj),
+            "--git-commit", "abc123",
+            "--ref-input", f"data={src_file}",
+        )
+        assert result.returncode == 0, (
+            "run-step must succeed by resolving the _workdir-nested output from "
+            f"the manifest (a bare run_dir scan would fail).\nstderr={result.stderr}"
+            f"\nstdout={result.stdout}"
+        )
+
+        from wfc.database import get_session
+        from wfc.models import Run, RunOutput
+        from wfc.provenance import archive_outputs
+        from sqlmodel import select
+
+        # The RunOutput row must point at the _workdir-nested file — proving the
+        # host consulted the manifest, not a top-level run_dir scan.
+        with get_session() as session:
+            run = session.exec(
+                select(Run).where(Run.status == "completed")
+            ).first()
+            assert run is not None, "no completed Run row"
+            run_id = run.id
+            assert run.metrics == {"kept_rows": 2}, run.metrics
+            ro = session.exec(
+                select(RunOutput).where(RunOutput.run_id == run_id)
+            ).first()
+            assert ro is not None, "no RunOutput row written"
+            artifact = Path(ro.artifact_path)
+            assert artifact.parent.name == "_workdir", (
+                f"RunOutput must point at the _workdir-nested file, got "
+                f"{artifact} — a run_dir scan would have used a top-level path"
+            )
+            assert artifact.read_bytes() == clean_bytes
+            assert ro.content_hash is None, "deferred archiving: hash is NULL pre-sweep"
+
+        # The existing archive sweep hashes + DVC-caches the _workdir file.
+        archive_outputs(project_dir=tmp_project, run_id=run_id)
+        expected_hash = hashlib.md5(clean_bytes).hexdigest()
+        with get_session() as session:
+            ro = session.exec(
+                select(RunOutput).where(RunOutput.run_id == run_id)
+            ).first()
+            assert ro.content_hash == expected_hash, (
+                f"archive must hash the _workdir file bytes: "
+                f"{ro.content_hash} != {expected_hash}"
+            )
+            cache_path = (
+                tmp_project / ".dvc" / "cache" / "files" / "md5"
+                / expected_hash[:2] / expected_hash[2:]
+            )
+            assert cache_path.exists(), (
+                f"_workdir output not DVC-cached at {cache_path}"
+            )
+
+
 class TestParentLookupPipelineScoped:
     """Regression: parent run_id sidecar lookup must be pipeline-scoped.
 
@@ -806,13 +942,15 @@ class TestParentLookupPipelineScoped:
     ``WFC_INPUT_PATHS`` pointing at the wrong file or empty.
     """
 
-    def test_downstream_receives_upstream_output(self, cli, tmp_project):
+    @pytest.mark.integration
+    @requires_docker
+    def test_downstream_receives_upstream_output(self, cli, tmp_project, fixture_container_image):
         """A two-node pipeline linked by slot: after running node_1 and
         then node_2 under the same pipeline_id, node_2's _run_context.json
         must carry an input_path inside the pipeline-scoped workspace, and
         the method must be able to read node_1's actual output from it."""
-        _seed_module_method(cli, module="upstream_mod", method="upstream")
-        _seed_module_method(cli, module="downstream_mod", method="downstream")
+        _seed_module_method(cli, module="upstream_mod", method="upstream", image_digest=fixture_container_image)
+        _seed_module_method(cli, module="downstream_mod", method="downstream", image_digest=fixture_container_image)
 
         upstream_script = _make_method_script(
             tmp_project,
@@ -822,7 +960,7 @@ class TestParentLookupPipelineScoped:
                 from pathlib import Path
                 run_dir = Path(os.environ["WFC_RUN_DIR"])
                 (run_dir / "data.json").write_text('{"upstream": "ok"}')
-                (run_dir / "metrics.json").write_text("{}")
+                (run_dir / "_wfc_results.json").write_text('{"outputs": {}, "metrics": {}}')
             """),
         )
         downstream_script = _make_method_script(
@@ -839,7 +977,7 @@ class TestParentLookupPipelineScoped:
                     sys.exit(2)
                 content = Path(data_paths[0]).read_text()
                 (run_dir / "echo.json").write_text(content)
-                (run_dir / "metrics.json").write_text("{}")
+                (run_dir / "_wfc_results.json").write_text('{"outputs": {}, "metrics": {}}')
             """),
         )
 
@@ -858,7 +996,7 @@ class TestParentLookupPipelineScoped:
                     "params": {},
                     "slot_outputs": {"data": "data.json"},
                     "slot_types": {"data": "JSON"},
-                    "env": "inherit",
+                    "env": "container:demo",
                 },
                 {
                     "id": "node_2",
@@ -868,7 +1006,7 @@ class TestParentLookupPipelineScoped:
                     "params": {},
                     "slot_outputs": {"echo": "echo.json"},
                     "slot_types": {"echo": "JSON"},
-                    "env": "inherit",
+                    "env": "container:demo",
                 },
             ],
             "links": [

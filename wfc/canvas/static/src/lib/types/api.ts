@@ -24,6 +24,78 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/contracts/{method_full}/output_columns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Output Columns
+         * @description Resolve declared output columns for a method's slot.
+         *
+         *     The canvas inspector calls this for params declared with
+         *     ``column_of_input: <slot>`` to populate a dropdown of candidate column
+         *     names. Reuses ``wfc/contracts.py::resolve_columns`` against the upstream
+         *     method's contract.
+         *
+         *     Args:
+         *         method_full: ``module.method`` (e.g. ``data_preprocessing.regionprops``).
+         *         slot: Output slot name to resolve columns for.
+         *         params: JSON-encoded dict of upstream node's current canvas params
+         *             (used by ``from_params`` expansion). Optional; missing/empty
+         *             falls back to ``{}``.
+         *         run_id: When the upstream is a ``run_reference`` node, pass the
+         *             referenced run id; the endpoint then uses Run.params from the
+         *             DB as the resolution context.
+         *
+         *     Returns:
+         *         ``{strict, from_params, patterns, all}`` where ``all`` is the
+         *         union of resolved column names produced by ``resolve_columns``.
+         *         ``patterns`` are returned literally (resolution requires a CSV;
+         *         not done here per the no-introspection constraint).
+         */
+        get: operations["get_output_columns_api_contracts__method_full__output_columns_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/envs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Envs
+         * @description Register a container env via :func:`wfc.envs.register`.
+         *
+         *     Body shape::
+         *
+         *         {"name": "image-io",
+         *          "backend": "pixi" | "conda" | "byo",
+         *          "source": {...},                  # per-backend payload
+         *          "base_image": "..." | null,       # optional, not valid for byo
+         *          "force": false}
+         *
+         *     Returns the persisted :class:`EnvRecord` as JSON (the manifest record
+         *     dict plus a ``name`` key so the caller doesn't have to track it).
+         */
+        post: operations["post_envs_api_envs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/fs/browse": {
         parameters: {
             query?: never;
@@ -64,6 +136,310 @@ export interface paths {
          *     This matches what nodes.js / populateModulePalette() expect.
          */
         get: operations["get_modules_api_modules_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/pipelines/{pipeline_id}/document": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Pipeline Document
+         * @description Return the literal ``pipeline.json`` written at submission time.
+         *
+         *     Reads ``<project_root>/.runs/pipelines/<pipeline_id>/pipeline.json`` —
+         *     the same file ``WfcProvider._load_bundled_samples`` consumes for fan-in
+         *     sample resolution. Returns the parsed JSON document as-is so the
+         *     canvas can hand it to ``loadPipeline()`` without transformation.
+         *
+         *     404 when the file does not exist (the pipeline was authored but
+         *     never reached the snake-gen / run-generation stage).
+         */
+        get: operations["get_pipeline_document_api_pipelines__pipeline_id__document_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/project/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Project Status
+         * @description Onboarding-shaped project status.
+         *
+         *     Subset of ENDPOINTS.md §1.1 — reports whether a project is loaded,
+         *     its root, and quick counts. Always 200, never 404.
+         */
+        get: operations["get_project_status_api_project_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/registry/envs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Registry Envs
+         * @description List distinct env specs referenced by registered methods.
+         *
+         *     One row per ``Method.env`` value. Aggregates method names, total run
+         *     count, and most-recent run timestamp (``Run.started_at``) across all
+         *     methods sharing that env, and resolves the registered env's ``backend``
+         *     plus a ``has_packages`` flag (True when a ``source_fingerprint`` was
+         *     captured at registration — i.e. a package list is available to attempt).
+         *     It does not guarantee a non-empty result: ``GET .../packages`` parses that
+         *     blob and may return an empty list if the captured blob carries no
+         *     recognizable packages (e.g. an older capture).
+         */
+        get: operations["get_registry_envs_api_registry_envs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/registry/envs/blob/{md5}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Registry Env Blob
+         * @description Read an env-content blob from the DVC content-addressed cache.
+         *
+         *     Returns the raw blob as ``text/plain`` so the frontend can render it
+         *     directly in a code panel. Shares its read path (and path-traversal
+         *     guard) with ``GET .../packages`` via :func:`_read_env_blob_text`.
+         */
+        get: operations["get_registry_env_blob_api_registry_envs_blob__md5__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/registry/envs/{spec}/packages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Registry Env Packages
+         * @description Installed-package list for a registered pixi/conda env.
+         *
+         *     Resolves *spec* to its :class:`wfc.envs.EnvRecord`, reads the captured
+         *     ``source_fingerprint`` blob from the DVC cache, and parses it into a
+         *     sorted, de-duplicated, source-tagged package list via
+         *     :func:`wfc.env_packages.parse_packages`.
+         *
+         *     Honest empty state: a byo env, an env that never staged source content,
+         *     or an unmatched spec returns ``captured: false`` with ``packages: []`` —
+         *     never a fabricated list.
+         *
+         *     Response::
+         *
+         *         {"spec": "container:demo",
+         *          "backend": "pixi" | "conda" | "byo" | null,
+         *          "captured": true,
+         *          "packages": [{"name": ..., "version": ..., "source": "pixi"}, ...]}
+         */
+        get: operations["get_registry_env_packages_api_registry_envs__spec__packages_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/registry/methods": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Registry Methods
+         * @description List registered methods for the Registry tab.
+         *
+         *     Shape (subset of ENDPOINTS.md §2.2): `{methods: [{name, module, env,
+         *     validated, runCount, source}]}`.
+         *
+         *     `validated` replaces the handoff's `status: "ok"|"stale"|"broken"` with
+         *     a `bool | null` sourced from the dryRun cache (null = never checked).
+         */
+        get: operations["get_registry_methods_api_registry_methods_get"];
+        put?: never;
+        /**
+         * Register Method Endpoint
+         * @description Wrap ``wfc.register.register_method`` with optional dry-run preflight.
+         */
+        post: operations["register_method_endpoint_api_registry_methods_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/registry/methods/validate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Validate Registry Method
+         * @description Re-validate an existing method's env+import. Caches by fingerprint.
+         */
+        post: operations["validate_registry_method_api_registry_methods_validate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/registry/methods/{module_name}/{method_name}/detail": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Registry Method Detail
+         * @description Read-only view of a method's directory + its parsed contract.
+         *
+         *     Lists every file in the method dir (no recursion) with its content and a
+         *     language hint for syntax highlighting. Returns the DB-parsed contract
+         *     (input_slots, output_slots, params_schema) alongside so the frontend can
+         *     render it as structured tables without re-parsing YAML.
+         */
+        get: operations["get_registry_method_detail_api_registry_methods__module_name___method_name__detail_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/registry/modules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Registry Modules
+         * @description List registered modules for the Registry tab.
+         *
+         *     Shape matches design_handoff_onboarding/ENDPOINTS.md §2.1 (subset):
+         *     `{modules: [{name, description, contracts[], methods, source}]}`.
+         *     `color` is intentionally omitted -- the frontend assigns it from the
+         *     `MOD_COLORS` cycle by registration order.
+         */
+        get: operations["get_registry_modules_api_registry_modules_get"];
+        put?: never;
+        /**
+         * Register Module Endpoint
+         * @description Wrap ``wfc.register.register_module`` with optional dry-run preflight.
+         */
+        post: operations["register_module_endpoint_api_registry_modules_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/registry/samples": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Registry Samples
+         * @description List registered samples for the Registry tab.
+         *
+         *     Shape (subset of ENDPOINTS.md §2.4): `{samples: [{name, source, size,
+         *     hash, pushed, runCount, registered_at}]}`.
+         *
+         *     `pushed` is `True` when a DVC content hash is present (indicates the sample
+         *     is in the DVC cache and pushable to the remote); `False` otherwise.
+         */
+        get: operations["get_registry_samples_api_registry_samples_get"];
+        put?: never;
+        /**
+         * Register Sample Endpoint
+         * @description Wrap ``wfc.cli.register_sample`` behind an HTTP endpoint.
+         */
+        post: operations["register_sample_endpoint_api_registry_samples_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/lineage-pipeline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Run Lineage Pipeline
+         * @description Return a synthesized literal-only lineage pipeline for ``run_id``.
+         *
+         *     Walks ``parentRunIds`` from the clicked run back to roots — through
+         *     pipeline boundaries — and synthesizes a flat literal-only pipeline
+         *     JSON suitable for the canvas's ``loadPipeline()``. See
+         *     ``wfc.canvas.lineage_synthesizer`` for the algorithm.
+         *
+         *     Status codes:
+         *       - 200 with synthesized JSON on success
+         *       - 404 if the run id is unknown
+         *       - 422 if synthesis fails (cycle defense, malformed ancestor chain)
+         */
+        get: operations["get_run_lineage_pipeline_api_runs__run_id__lineage_pipeline_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -457,104 +833,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/project/status": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Project Status
-         * @description Onboarding-shaped project status.
-         *
-         *     Subset of ENDPOINTS.md §1.1 — reports whether a project is loaded,
-         *     its root, and quick counts. Always 200, never 404.
-         */
-        get: operations["get_project_status_api_project_status_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/registry/envs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Registry Envs
-         * @description List distinct env specs referenced by registered methods.
-         *
-         *     One row per ``Method.env`` value. Aggregates method names, distinct
-         *     env_fingerprint count, total run count, and most-recent run timestamp
-         *     (``Run.started_at``) across all methods sharing that env.
-         */
-        get: operations["get_registry_envs_api_registry_envs_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/registry/envs/blob/{md5}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Registry Env Blob
-         * @description Read an env-content blob from the DVC content-addressed cache.
-         *
-         *     Returns the raw blob as ``text/plain`` so the frontend can render it
-         *     directly in a code panel or compute a client-side diff against another
-         *     blob.
-         */
-        get: operations["get_registry_env_blob_api_registry_envs_blob__md5__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/registry/envs/{spec}/fingerprints": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Registry Env Fingerprints
-         * @description Per-env fingerprint history derived from Run.env_fingerprint rows.
-         *
-         *     For each distinct env_fingerprint observed in Runs of methods whose
-         *     ``env == spec``, return first-seen / last-seen timestamps and run count.
-         *     A fingerprint only present in the DVC cache (e.g. from a manual
-         *     snapshot) is NOT returned here — the snapshot endpoint returns it
-         *     directly; the frontend merges.
-         */
-        get: operations["get_registry_env_fingerprints_api_registry_envs__spec__fingerprints_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/registry/envs/{spec}/snapshot": {
+    "/api/workflow/cancel/{job_id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -564,173 +843,16 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Snapshot Registry Env
-         * @description Capture env content on demand and store it in the DVC cache.
+         * Cancel Workflow
+         * @description Cancel an in-flight pipeline (ADR-015 Phase D Pass 2).
          *
-         *     Runs ``capture_env_content`` + ``store_env_content`` against the live
-         *     env and returns the resulting md5. No Run row is created; the only
-         *     side effect is a (possibly no-op) write to the DVC content-addressed
-         *     cache.
-         *
-         *     Response ``is_new`` is True when the md5 does not already appear in
-         *     any ``Run.env_fingerprint`` for this spec (i.e. this fingerprint has
-         *     not been observed via an actual Run before).
+         *     Terminates the live Snakemake subprocess (and its descendants) and
+         *     flips any ``running`` rows for this pipeline to ``cancelled`` with
+         *     ``error_message="Cancelled by user"``.  Idempotent: cancelling a
+         *     pipeline whose process has already exited returns 200 with a no-op
+         *     indication.  Returns 404 for unknown job_ids.
          */
-        post: operations["snapshot_registry_env_api_registry_envs__spec__snapshot_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/registry/methods": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Registry Methods
-         * @description List registered methods for the Registry tab.
-         *
-         *     Shape (subset of ENDPOINTS.md §2.2): `{methods: [{name, module, env,
-         *     validated, runCount, source}]}`.
-         *
-         *     `validated` replaces the handoff's `status: "ok"|"stale"|"broken"` with
-         *     a `bool | null` sourced from the dryRun cache (null = never checked).
-         */
-        get: operations["get_registry_methods_api_registry_methods_get"];
-        put?: never;
-        /**
-         * Register Method Endpoint
-         * @description Wrap ``wfc.register.register_method`` with optional dry-run preflight.
-         */
-        post: operations["register_method_endpoint_api_registry_methods_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/registry/methods/validate": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Validate Registry Method
-         * @description Re-validate an existing method's env+import. Caches by fingerprint.
-         */
-        post: operations["validate_registry_method_api_registry_methods_validate_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/registry/methods/{module_name}/{method_name}/detail": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Registry Method Detail
-         * @description Read-only view of a method's directory + its parsed contract.
-         *
-         *     Lists every file in the method dir (no recursion) with its content and a
-         *     language hint for syntax highlighting. Returns the DB-parsed contract
-         *     (input_slots, output_slots, params_schema) alongside so the frontend can
-         *     render it as structured tables without re-parsing YAML.
-         */
-        get: operations["get_registry_method_detail_api_registry_methods__module_name___method_name__detail_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/registry/modules": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Registry Modules
-         * @description List registered modules for the Registry tab.
-         *
-         *     Shape matches design_handoff_onboarding/ENDPOINTS.md §2.1 (subset):
-         *     `{modules: [{name, description, contracts[], methods, source}]}`.
-         *     `color` is intentionally omitted -- the frontend assigns it from the
-         *     `MOD_COLORS` cycle by registration order.
-         */
-        get: operations["get_registry_modules_api_registry_modules_get"];
-        put?: never;
-        /**
-         * Register Module Endpoint
-         * @description Wrap ``wfc.register.register_module`` with optional dry-run preflight.
-         */
-        post: operations["register_module_endpoint_api_registry_modules_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/registry/samples": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Registry Samples
-         * @description List registered samples for the Registry tab.
-         *
-         *     Shape (subset of ENDPOINTS.md §2.4): `{samples: [{name, source, size,
-         *     hash, pushed, runCount, registered_at}]}`.
-         *
-         *     `pushed` is `True` when a DVC content hash is present (indicates the sample
-         *     is in the DVC cache and pushable to the remote); `False` otherwise.
-         */
-        get: operations["get_registry_samples_api_registry_samples_get"];
-        put?: never;
-        /**
-         * Register Sample Endpoint
-         * @description Wrap ``wfc.cli.register_sample`` behind an HTTP endpoint.
-         */
-        post: operations["register_sample_endpoint_api_registry_samples_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/types": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Types
-         * @description Return data-type metadata for canvas UI slot colouring.
-         */
-        get: operations["get_types_api_types_get"];
-        put?: never;
-        post?: never;
+        post: operations["cancel_workflow_api_workflow_cancel__job_id__post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -754,7 +876,11 @@ export interface paths {
          *     writes it to a temp file, and spawns a background thread running
          *     ``run_pipeline()``. Returns the pipeline_id as the job_id immediately.
          *
-         *     Rejects empty pipelines with HTTP 400.  Multiple pipelines may run
+         *     Rejects empty pipelines with HTTP 400.  Before spawning the run thread it
+         *     pre-flights Docker and git (cycle decision D-6, 3-lite): a not-ready
+         *     environment is rejected with HTTP 409 carrying a kind-tagged
+         *     ``{kind, message, hint}`` payload (the same shape the frontend renders for
+         *     pre-run errors), so no orphan run is started.  Multiple pipelines may run
          *     concurrently — each gets its own pipeline_id-scoped workspace.
          */
         post: operations["run_workflow_api_workflow_run_post"];
@@ -843,6 +969,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workflow/{pipeline_id}/editable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Pipeline Editable
+         * @description Return the pre-substitution pipeline JSON (with variables + {$var}).
+         *
+         *     Falls back to ``pipeline.json`` (post-substitution) for legacy runs that
+         *     were submitted before the editable sidecar existed.
+         */
+        get: operations["get_pipeline_editable_api_workflow__pipeline_id__editable_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -882,11 +1031,6 @@ export interface components {
         MethodRegisterRequest: {
             /** Directory */
             directory: string;
-            /**
-             * Env
-             * @default inherit
-             */
-            env: string | null;
             /** Method Name */
             method_name?: string | null;
             /** Module */
@@ -929,6 +1073,21 @@ export interface components {
             error_sample?: string | null;
             /** Original Run Id */
             original_run_id?: string | null;
+            /**
+             * Push Failed Count
+             * @default 0
+             */
+            push_failed_count: number;
+            /**
+             * Push Pending Count
+             * @default 0
+             */
+            push_pending_count: number;
+            /**
+             * Push State
+             * @default deferred
+             */
+            push_state: string;
             /** Run Ids */
             run_ids?: string[] | null;
             /** Status */
@@ -975,6 +1134,10 @@ export interface components {
              * @default []
              */
             samples: string[];
+            /** Variables */
+            variables?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** PipelineLink */
         PipelineLink: {
@@ -1027,10 +1190,32 @@ export interface components {
              */
             type: string | null;
         };
-        /** WfcConfig */
-        WfcConfig: {
-            /** Project Root */
-            project_root: string;
+        /**
+         * RegisterEnvRequest
+         * @description Body for ``POST /api/envs``. See :func:`wfc.envs.register`.
+         *
+         *     No ``push`` field — ADR-019's 2026-05-17 amendment defers
+         *     registry push to v1.x. The canvas surface mirrors the CLI flags.
+         */
+        RegisterEnvRequest: {
+            /** Backend */
+            backend: string;
+            /** Base Image */
+            base_image?: string | null;
+            /**
+             * Force
+             * @default false
+             */
+            force: boolean;
+            /** Name */
+            name: string;
+            /**
+             * Source
+             * @default {}
+             */
+            source: {
+                [key: string]: unknown;
+            };
         };
         /**
          * RunPatchRequest
@@ -1078,6 +1263,11 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+        };
+        /** WfcConfig */
+        WfcConfig: {
+            /** Project Root */
+            project_root: string;
         };
         /** WorkflowStatusResponse */
         WorkflowStatusResponse: {
@@ -1129,6 +1319,74 @@ export interface operations {
             };
         };
     };
+    get_output_columns_api_contracts__method_full__output_columns_get: {
+        parameters: {
+            query: {
+                slot: string;
+                params?: string | null;
+                run_id?: string | null;
+            };
+            header?: never;
+            path: {
+                method_full: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_envs_api_envs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterEnvRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     fs_browse_api_fs_browse_get: {
         parameters: {
             query?: {
@@ -1176,6 +1434,398 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    get_pipeline_document_api_pipelines__pipeline_id__document_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pipeline_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_project_status_api_project_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    get_registry_envs_api_registry_envs_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    get_registry_env_blob_api_registry_envs_blob__md5__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                md5: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_registry_env_packages_api_registry_envs__spec__packages_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                spec: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_registry_methods_api_registry_methods_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    register_method_endpoint_api_registry_methods_post: {
+        parameters: {
+            query?: {
+                dryRun?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MethodRegisterRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    validate_registry_method_api_registry_methods_validate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MethodValidateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_registry_method_detail_api_registry_methods__module_name___method_name__detail_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                module_name: string;
+                method_name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_registry_modules_api_registry_modules_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    register_module_endpoint_api_registry_modules_post: {
+        parameters: {
+            query?: {
+                dryRun?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModuleRegisterRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_registry_samples_api_registry_samples_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    register_sample_endpoint_api_registry_samples_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SampleRegisterRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_run_lineage_pipeline_api_runs__run_id__lineage_pipeline_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -1761,52 +2411,12 @@ export interface operations {
             };
         };
     };
-    get_project_status_api_project_status_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
-    get_registry_envs_api_registry_envs_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
-    get_registry_env_blob_api_registry_envs_blob__md5__get: {
+    cancel_workflow_api_workflow_cancel__job_id__post: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                md5: string;
+                job_id: string;
             };
             cookie?: never;
         };
@@ -1828,316 +2438,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_registry_env_fingerprints_api_registry_envs__spec__fingerprints_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                spec: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    snapshot_registry_env_api_registry_envs__spec__snapshot_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                spec: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_registry_methods_api_registry_methods_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
-    register_method_endpoint_api_registry_methods_post: {
-        parameters: {
-            query?: {
-                dryRun?: boolean;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["MethodRegisterRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    validate_registry_method_api_registry_methods_validate_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["MethodValidateRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_registry_method_detail_api_registry_methods__module_name___method_name__detail_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                module_name: string;
-                method_name: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_registry_modules_api_registry_modules_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
-    register_module_endpoint_api_registry_modules_post: {
-        parameters: {
-            query?: {
-                dryRun?: boolean;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ModuleRegisterRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_registry_samples_api_registry_samples_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
-    register_sample_endpoint_api_registry_samples_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SampleRegisterRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_types_api_types_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
                 };
             };
         };
@@ -2253,6 +2553,37 @@ export interface operations {
                 "application/json": components["schemas"]["PipelineInput"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_pipeline_editable_api_workflow__pipeline_id__editable_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pipeline_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {

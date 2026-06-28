@@ -3,13 +3,13 @@
 # visible, incremental log output during execution, not any transformation.
 inputs:
   data:
-    type: csv
+    type: .csv
     required: true
     description: "Input CSV (passed through to output unchanged)"
 
 outputs:
   output:
-    type: csv
+    type: .csv
     required: true
     description: "Unchanged copy of the input CSV"
 
@@ -31,4 +31,4 @@ params:
     description: "Emit a matching [heartbeat warn] stderr line every Nth tick (0 = none)"
 
 executor: python
-env: inherit
+env: container:fixture-env

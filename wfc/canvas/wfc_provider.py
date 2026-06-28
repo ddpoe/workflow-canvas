@@ -15,11 +15,17 @@ Structure mapping:
 
 import os
 import json
-import sqlite3
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
+
+from sqlmodel import Session, select
+
+from wfc.database import build_engine, make_sqlite_url, ensure_schema
+from wfc.models import (
+    Module, Method, Run, RunInput, RunOutput, RunAnnotation, Sample,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -234,11 +240,34 @@ class WfcProvider:
         self._methods: Dict[int, Dict[str, Any]] = {}  # id → {name, module_id, script_path}
         self._loaded = False
 
-    def _get_connection(self) -> sqlite3.Connection:
-        """Open a read-only SQLite connection."""
-        conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
-        conn.row_factory = sqlite3.Row
-        return conn
+    def _build_engine(self):
+        """Build a ``db_path``-bound SQLAlchemy engine and additively backfill it.
+
+        The provider reads through its own per-load engine (not the global
+        ``get_engine()``) so it can be pointed at any ``project_root`` across
+        ``/api/wfc/load`` calls without coupling to global-engine ordering. The
+        engine is built through ``wfc.database.build_engine`` (the centralized
+        factory) and run through ``ensure_schema`` so an older on-disk schema is
+        upgraded to the current models before any ORM read. Callers must
+        ``dispose()`` the returned engine.
+
+        Note: ``ensure_schema`` needs write access, so the provider can no
+        longer open the DB strictly ``mode=ro`` (the canvas already writes the
+        same DB, so this is acceptable).
+
+        Returns:
+            A backfilled SQLAlchemy ``Engine`` bound to ``self.db_path``.
+        """
+        from sqlmodel import SQLModel
+
+        engine = build_engine(make_sqlite_url(self.db_path))
+        # Same two-step guarantee as wfc.database.get_engine: ensure_schema adds
+        # newly-introduced columns to existing tables; create_all then builds any
+        # wholly-missing tables (e.g. ``run_annotations`` / ``samples`` on an old
+        # DB) so every ORM ``select`` below has a table to read.
+        ensure_schema(engine)
+        SQLModel.metadata.create_all(engine)
+        return engine
 
     def _load_bundled_samples(self, pipeline_id: str) -> List[str]:
         """Return the sample list bundled into a fan-in collapsed pipeline.
@@ -295,225 +324,207 @@ class WfcProvider:
         except Exception:
             return 0
 
+    @staticmethod
+    def _coerce_json_obj(value: Any) -> Any:
+        """Normalise a JSON column value to the shape the canvas expects.
+
+        The ORM deserializes JSON columns, so ``value`` is usually already a
+        Python object (``dict`` / ``list`` / ``None``). This mirrors the raw
+        reader's tolerance: a populated object passes through unchanged; a
+        ``None`` (stored JSON ``null`` or unset column) stays ``None``; a stray
+        JSON string is parsed; anything unparseable degrades to ``{}`` rather
+        than raising.
+
+        Args:
+            value: The deserialized (or raw) JSON column value.
+
+        Returns:
+            The object as-is when it is a dict/list/None, the parsed value when
+            it is a JSON string, or ``{}`` on a parse failure.
+        """
+        if value is None or isinstance(value, (dict, list)):
+            return value
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                return {}
+        return value
+
+    def _to_epoch_ms(self, value: Any) -> float:
+        """Convert a timestamp to Unix epoch milliseconds, accepting either shape.
+
+        The raw sqlite3 reader received timestamps as ISO **strings** and ran
+        them through :meth:`_iso_to_epoch_ms`. The SQLModel ORM hands back the
+        same columns as Python ``datetime`` objects. This helper accepts both so
+        ``timestamp`` / ``duration`` / ``archivedAt`` produce identical epoch-ms
+        regardless of which read path supplied the value — a naive ``datetime``
+        is treated as UTC, exactly as :meth:`_iso_to_epoch_ms` does for a naive
+        ISO string.
+
+        Args:
+            value: A ``datetime``, an ISO datetime string, or ``None``.
+
+        Returns:
+            Epoch milliseconds as a float; ``0`` for ``None`` / unparseable input.
+        """
+        if value is None:
+            return 0
+        if isinstance(value, datetime):
+            dt = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+            return dt.timestamp() * 1000
+        return self._iso_to_epoch_ms(value)
+
     def load(self) -> None:
         """Load all runs from the wfc database."""
         self._runs = {}
         self._modules = {}
         self._methods = {}
 
-        conn = self._get_connection()
+        engine = self._build_engine()
         try:
-            # Load modules
-            for row in conn.execute("SELECT id, name FROM modules"):
-                self._modules[row["id"]] = row["name"]
+            with Session(engine) as session:
+                # Load modules
+                for module in session.exec(select(Module)):
+                    self._modules[module.id] = module.name
 
-            # Load methods — detect whether the column is 'env' (new) or 'env_strategy' (legacy)
-            method_cols = {r["name"] for r in conn.execute("PRAGMA table_info(methods)")}
-            env_col = "env" if "env" in method_cols else "env_strategy"
-            for row in conn.execute(f"SELECT id, name, module_id, script_path, {env_col} FROM methods"):
-                self._methods[row["id"]] = {
-                    "name": row["name"],
-                    "module_id": row["module_id"],
-                    "script_path": row["script_path"],
-                    "env": row[env_col],
-                }
+                # Load methods. Columns come straight from the model — no
+                # env/env_strategy probing; ``ensure_schema`` guarantees the
+                # ``env`` column exists on the on-disk schema.
+                for method in session.exec(select(Method)):
+                    self._methods[method.id] = {
+                        "name": method.name,
+                        "module_id": method.module_id,
+                        "script_path": method.script_path,
+                        "env": method.env,
+                    }
 
-            # Load runs with lineage and outputs
-            # Detect optional columns (added in later schema versions)
-            cursor = conn.execute("PRAGMA table_info(runs)")
-            run_columns = {row["name"] for row in cursor}
-            has_metrics = "metrics" in run_columns
-            has_error_message = "error_message" in run_columns
-            has_error_traceback = "error_traceback" in run_columns
-            has_cancelled_due = "cancelled_due_to_run_id" in run_columns
-            has_cache_source = "cache_source_run_id" in run_columns
+                # Aggregate every ``run_inputs`` row up front so a run with
+                # multiple input slots (fan-in) carries all its parents, not
+                # just the "last one wins" result of a LEFT JOIN. ``input_name``
+                # is the slot the parent filled — the frontend uses it to
+                # label per-slot parent chips in RunDetailPanel. Ordered by id
+                # to keep the full parent list in stable slot order.
+                parents_by_run: Dict[str, List[Dict[str, str]]] = {}
+                for ri in session.exec(select(RunInput).order_by(RunInput.id)):
+                    if ri.source_run_id is None:
+                        continue
+                    rid = str(ri.run_id)
+                    parents_by_run.setdefault(rid, []).append({
+                        "slot": ri.input_name or "upstream",
+                        "sourceRunId": str(ri.source_run_id),
+                    })
 
-            metrics_col = ", r.metrics" if has_metrics else ""
-            err_msg_col = ", r.error_message" if has_error_message else ""
-            err_tb_col = ", r.error_traceback" if has_error_traceback else ""
-            cancelled_due_col = (
-                ", r.cancelled_due_to_run_id" if has_cancelled_due else ""
-            )
-            cache_source_col = (
-                ", r.cache_source_run_id" if has_cache_source else ""
-            )
-            # Aggregate every ``run_inputs`` row up front so a run with
-            # multiple input slots (fan-in) carries all its parents, not
-            # just the "last one wins" result of a LEFT JOIN. ``input_name``
-            # is the slot the parent filled — the frontend uses it to
-            # label per-slot parent chips in RunDetailPanel.
-            parents_by_run: Dict[str, List[Dict[str, str]]] = {}
-            for ri_row in conn.execute(
-                "SELECT run_id, source_run_id, input_name FROM run_inputs "
-                "ORDER BY id"
-            ):
-                if ri_row["source_run_id"] is None:
-                    continue
-                rid = str(ri_row["run_id"])
-                parents_by_run.setdefault(rid, []).append({
-                    "slot": ri_row["input_name"] or "upstream",
-                    "sourceRunId": str(ri_row["source_run_id"]),
-                })
+                for run_row in session.exec(select(Run)):
+                    method_info = self._methods.get(run_row.method_id, {})
+                    module_name = self._modules.get(
+                        method_info.get("module_id", -1), "unknown"
+                    )
+                    method_name = method_info.get("name", "unknown")
 
-            runs_sql = f"""
-                SELECT
-                    r.id,
-                    r.method_id,
-                    r.params,
-                    r.sample,
-                    r.status,
-                    r.pipeline_id,
-                    r.nf_process_name,
-                    r.started_at,
-                    r.finished_at
-                    {metrics_col}
-                    {err_msg_col}
-                    {err_tb_col}
-                    {cancelled_due_col}
-                    {cache_source_col},
-                    r.nid
-                FROM runs r
-            """
-            for row in conn.execute(runs_sql):
-                method_info = self._methods.get(row["method_id"], {})
-                module_name = self._modules.get(
-                    method_info.get("module_id", -1), "unknown"
-                )
-                method_name = method_info.get("name", "unknown")
+                    # JSON columns are deserialized by the ORM. They may be a
+                    # dict (populated), None (stored JSON null / unset), or a
+                    # malformed value; tolerate non-dicts exactly as the raw
+                    # reader did (it returned the parsed value as-is).
+                    params = self._coerce_json_obj(run_row.params)
+                    metrics = self._coerce_json_obj(run_row.metrics)
 
-                # Parse JSON fields
-                params = {}
-                if row["params"]:
-                    try:
-                        params = json.loads(row["params"]) if isinstance(row["params"], str) else row["params"]
-                    except (json.JSONDecodeError, TypeError):
-                        params = {}
+                    # Calculate timing (datetime objects from the ORM; the
+                    # helper also accepts ISO strings from a legacy/raw shape).
+                    started_ms = self._to_epoch_ms(run_row.started_at)
+                    finished_ms = self._to_epoch_ms(run_row.finished_at)
+                    duration = (
+                        (finished_ms - started_ms) / 1000.0
+                        if finished_ms > started_ms else 0
+                    )
 
-                metrics = {}
-                if has_metrics and row["metrics"]:
-                    try:
-                        raw = row["metrics"]
-                        metrics = json.loads(raw) if isinstance(raw, str) else raw
-                    except (json.JSONDecodeError, TypeError):
-                        metrics = {}
+                    # Map status
+                    status = run_row.status or "unknown"
+                    if status == "completed":
+                        status = "success"
 
-                # Calculate timing
-                started_ms = self._iso_to_epoch_ms(row["started_at"])
-                finished_ms = self._iso_to_epoch_ms(row["finished_at"])
-                duration = (finished_ms - started_ms) / 1000.0 if finished_ms > started_ms else 0
+                    # Full parent list assembled above from run_inputs.
+                    run_id_str = str(run_row.id)
+                    parents_list = parents_by_run.get(run_id_str, [])
+                    parent_run_ids = [p["sourceRunId"] for p in parents_list]
 
-                # Map status
-                status = row["status"] or "unknown"
-                if status == "completed":
-                    status = "success"
+                    # Build run name: method/sample for readability
+                    sample = run_row.sample or ""
+                    run_name = f"{method_name}/{sample}" if sample else method_name
 
-                # Full parent list assembled above from run_inputs.
-                run_id_str = str(row["id"])
-                parents_list = parents_by_run.get(run_id_str, [])
-                parent_run_ids = [p["sourceRunId"] for p in parents_list]
+                    # Normalise causality/audit FKs to string so frontend
+                    # consumers never see a mixed int/str union (parentRunId is
+                    # string; these mirror that).
+                    cancelled_due = (
+                        str(run_row.cancelled_due_to_run_id)
+                        if run_row.cancelled_due_to_run_id is not None else None
+                    )
+                    cache_source = (
+                        str(run_row.cache_source_run_id)
+                        if run_row.cache_source_run_id is not None else None
+                    )
 
-                # Build run name: method/sample for readability
-                sample = row["sample"] or ""
-                run_name = f"{method_name}/{sample}" if sample else method_name
+                    run = WfcRun(
+                        id=str(run_row.id),
+                        module=module_name,
+                        method=method_name,
+                        version="1.0.0",
+                        timestamp=started_ms,
+                        duration=duration,
+                        status=status,
+                        inputs=params,
+                        outputs={},
+                        metrics=metrics,
+                        dataSource=sample,
+                        parentRunIds=parent_run_ids,
+                        parents=parents_list,
+                        experimentId=run_row.pipeline_id or "",
+                        runName=run_name,
+                        user="",
+                        favorite=False,
+                        nid=run_row.nid or "",  # placeholder; computed below
+                        pipelineId=run_row.pipeline_id,
+                        scriptPath=method_info.get("script_path"),
+                        error_message=run_row.error_message,
+                        error_traceback=run_row.error_traceback,
+                        cancelledDueToRunId=cancelled_due,
+                        cacheSourceRunId=cache_source,
+                    )
 
-                # Read raw nid from DB (None if value is NULL)
-                raw_nid = row["nid"]
+                    self._runs[run.id] = run
 
-                err_msg = row["error_message"] if has_error_message else None
-                err_tb = row["error_traceback"] if has_error_traceback else None
-                cancelled_due_raw = (
-                    row["cancelled_due_to_run_id"] if has_cancelled_due else None
-                )
-                # Normalise to string so frontend consumers never have to
-                # deal with a mixed int/str union (parentRunId is string;
-                # cancelledDueToRunId mirrors that).
-                cancelled_due = (
-                    str(cancelled_due_raw) if cancelled_due_raw is not None else None
-                )
-                cache_source_raw = (
-                    row["cache_source_run_id"] if has_cache_source else None
-                )
-                cache_source = (
-                    str(cache_source_raw) if cache_source_raw is not None else None
-                )
+                # Load outputs for each run
+                for out in session.exec(select(RunOutput)):
+                    run_id = str(out.run_id)
+                    if run_id in self._runs:
+                        run = self._runs[run_id]
+                        name = out.output_name or "output"
+                        run.outputs[name] = out.artifact_path or ""
 
-                run = WfcRun(
-                    id=str(row["id"]),
-                    module=module_name,
-                    method=method_name,
-                    version="1.0.0",
-                    timestamp=started_ms,
-                    duration=duration,
-                    status=status,
-                    inputs=params,
-                    outputs={},
-                    metrics=metrics,
-                    dataSource=sample,
-                    parentRunIds=parent_run_ids,
-                    parents=parents_list,
-                    experimentId=row["pipeline_id"] or "",
-                    runName=run_name,
-                    user="",
-                    favorite=False,
-                    nid=raw_nid or "",  # placeholder; computed below
-                    pipelineId=row["pipeline_id"],
-                    scriptPath=method_info.get("script_path"),
-                    error_message=err_msg,
-                    error_traceback=err_tb,
-                    cancelledDueToRunId=cancelled_due,
-                    cacheSourceRunId=cache_source,
-                )
-
-                self._runs[run.id] = run
-
-            # Load outputs for each run
-            for row in conn.execute(
-                "SELECT run_id, output_name, artifact_path, artifact_type FROM run_outputs"
-            ):
-                run_id = str(row["run_id"])
-                if run_id in self._runs:
-                    run = self._runs[run_id]
-                    name = row["output_name"] or "output"
-                    run.outputs[name] = row["artifact_path"] or ""
-
-            # Load user annotations (favorite / tags). Table may not exist
-            # on databases that predate the RunAnnotation migration; skip
-            # gracefully in that case.
-            ann_tables = {
-                r["name"] for r in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                )
-            }
-            if "run_annotations" in ann_tables:
-                # archived_at is nullable and may be absent on older DBs that
-                # predate the archive migration; detect the column before
-                # selecting it.
-                ann_cols = {
-                    r["name"] for r in conn.execute("PRAGMA table_info(run_annotations)")
-                }
-                has_archived = "archived_at" in ann_cols
-                archived_sel = ", archived_at" if has_archived else ""
-                for row in conn.execute(
-                    f"SELECT run_id, favorite, tags{archived_sel} FROM run_annotations"
-                ):
-                    rid = str(row["run_id"])
+                # Load user annotations (favorite / tags / archived). The
+                # ``run_annotations`` table and its ``archived_at`` column are
+                # guaranteed present by ``ensure_schema`` + ``create_all`` — no
+                # table-exists or column probing needed.
+                for ann in session.exec(select(RunAnnotation)):
+                    rid = str(ann.run_id)
                     if rid not in self._runs:
                         continue
                     run = self._runs[rid]
-                    run.favorite = bool(row["favorite"])
-                    raw_tags = row["tags"]
+                    run.favorite = bool(ann.favorite)
+                    raw_tags = ann.tags
                     if raw_tags:
                         try:
-                            parsed = json.loads(raw_tags) if isinstance(raw_tags, str) else raw_tags
+                            parsed = (
+                                json.loads(raw_tags)
+                                if isinstance(raw_tags, str) else raw_tags
+                            )
                             if isinstance(parsed, list):
                                 run.tags = [str(t) for t in parsed]
                         except (json.JSONDecodeError, TypeError):
                             pass
-                    if has_archived:
-                        run.archivedAt = self._iso_to_epoch_ms(row["archived_at"]) or None
-
+                    run.archivedAt = self._to_epoch_ms(ann.archived_at) or None
         finally:
-            conn.close()
+            engine.dispose()
 
         # Resolve bundled sample lists for collapsed fan-in runs. A run with
         # sample="__all__" was produced by a step downstream of an
@@ -700,24 +711,46 @@ class WfcProvider:
         if not self._loaded:
             self.load()
         try:
-            conn = self._get_connection()
-            rows = conn.execute(
-                "SELECT name, file_type, registered_path, file_size, registered_at "
-                "FROM samples ORDER BY name"
-            ).fetchall()
-            conn.close()
-            return [
-                {
-                    "name": row["name"],
-                    "file_type": row["file_type"],
-                    "registered_path": row["registered_path"],
-                    "file_size": row["file_size"],
-                    "registered_at": row["registered_at"],
-                }
-                for row in rows
-            ]
+            engine = self._build_engine()
+            try:
+                with Session(engine) as session:
+                    samples = session.exec(
+                        select(Sample).order_by(Sample.name)
+                    ).all()
+                    return [
+                        {
+                            "name": s.name,
+                            "file_type": s.file_type,
+                            "registered_path": s.registered_path,
+                            "file_size": s.file_size,
+                            "registered_at": self._registered_at_str(s.registered_at),
+                        }
+                        for s in samples
+                    ]
+            finally:
+                engine.dispose()
         except Exception:
             return []
+
+    @staticmethod
+    def _registered_at_str(value: Any) -> Any:
+        """Render ``registered_at`` as the SQLite text shape the raw reader emitted.
+
+        The raw sqlite3 reader returned ``registered_at`` as the literal text
+        SQLite stored (``"YYYY-MM-DD HH:MM:SS.ffffff"``). The ORM hands back a
+        ``datetime``; format it identically so the samples-detail payload is
+        unchanged. Non-datetime values (already a string, or ``None``) pass
+        through.
+
+        Args:
+            value: A ``datetime``, an ISO string, or ``None``.
+
+        Returns:
+            The microsecond-precision SQLite text form, or ``value`` unchanged.
+        """
+        if isinstance(value, datetime):
+            return value.strftime("%Y-%m-%d %H:%M:%S.%f")
+        return value
 
     def get_completed_runs(self) -> List[Dict[str, Any]]:
         """Get completed runs with their output slots.
@@ -754,7 +787,7 @@ class WfcProvider:
                 "name": m["name"],
                 "module": self._modules.get(m["module_id"], "unknown"),
                 "script_path": m.get("script_path"),
-                "env": m.get("env", "inherit"),
+                "env": m.get("env"),
             }
             for m in self._methods.values()
         ]

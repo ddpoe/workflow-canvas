@@ -144,45 +144,165 @@ def _default_db_url() -> str:
     return f"sqlite:///{db_dir / 'wfc.db'}"
 
 
-def _migrate_add_cancelled_due_to_run_id(engine) -> None:
-    """Idempotent ALTER TABLE to add ``runs.cancelled_due_to_run_id`` on
-    databases that predate the cancelled-runs feature.
+def make_sqlite_url(db_path) -> str:
+    """Return a SQLite SQLAlchemy URL for a filesystem database path.
 
-    Mirrors the ADR-004 ``error_message`` / ``error_traceback`` migration
-    pattern: probe ``PRAGMA table_info(runs)`` and only issue the ALTER
-    when the column is missing. Safe to call on fresh DBs -- SQLModel's
-    ``create_all`` has already created the column, so the probe sees it
-    and the ALTER is skipped.
+    Args:
+        db_path: Path (str or ``pathlib.Path``) to the ``.db`` file.
 
-    No-op on non-SQLite backends (production uses SQLite today).
+    Returns:
+        A ``sqlite:///<abs-path>`` URL string suitable for ``build_engine``.
+    """
+    return f"sqlite:///{Path(db_path)}"
+
+
+def build_engine(url: str):
+    """Construct a SQLAlchemy engine for ``url`` with the project's SQLite settings.
+
+    This is the single chokepoint for engine construction: the SQLite
+    ``check_same_thread=False`` handling (needed for multi-thread use under the
+    canvas server and Snakemake-spawned subprocesses) lives here instead of being
+    inlined at every call site. Both :func:`get_engine` (global engine) and the
+    canvas history provider (per-load ``db_path``-bound engine) build through it.
+
+    Unlike :func:`get_engine`, this performs **no** schema work — it neither runs
+    ``ensure_schema`` nor ``create_all``. Callers decide whether to migrate.
+
+    Args:
+        url: SQLAlchemy database URL (e.g. ``sqlite:///…/wfc.db``).
+
+    Returns:
+        A fresh, un-migrated SQLAlchemy ``Engine``.
+    """
+    connect_args = {}
+    if url.startswith("sqlite"):
+        connect_args["check_same_thread"] = False
+    return create_engine(url, connect_args=connect_args)
+
+
+def _add_column_ddl(table_name: str, column, dialect) -> str | None:
+    """Build the ``ALTER TABLE … ADD COLUMN`` statement for one missing column.
+
+    The column type and NULL/NOT-NULL clause are compiled exactly as
+    ``create_all`` would for the given dialect (so the ADDed column matches the
+    model). Foreign-key and primary-key clauses are dropped by ``CreateColumn``
+    for ADD COLUMN, which is what SQLite's ``ALTER … ADD COLUMN`` accepts.
+
+    For a NOT-NULL column SQLite refuses ``ADD COLUMN`` on a populated table
+    unless a constant ``DEFAULT`` is supplied. When the model carries a scalar
+    Python-side default (e.g. ``env="inherit"``, ``push_status="deferred"``) and
+    no SQL ``server_default``, that default is rendered as a literal ``DEFAULT``
+    so existing rows backfill cleanly. A NOT-NULL column with no constant default
+    (and no server_default) cannot be added additively and returns ``None``.
+
+    Args:
+        table_name: Name of the table to alter.
+        column: The SQLAlchemy ``Column`` to add.
+        dialect: The SQLAlchemy dialect to compile against (SQLite).
+
+    Returns:
+        The full ``ALTER TABLE …`` SQL string, or ``None`` if the column is not
+        additively safe.
+    """
+    from sqlalchemy.schema import CreateColumn
+
+    col_spec = CreateColumn(column).compile(dialect=dialect).string
+
+    if not column.nullable and column.server_default is None:
+        default = column.default
+        literal = getattr(default, "arg", None) if default is not None else None
+        # Only scalar constants are usable as a SQL DEFAULT; callables (e.g.
+        # datetime.now factories) are Python-side only.
+        if literal is None or callable(literal):
+            # No constant default for a NOT-NULL column -- not additively safe
+            # under SQLite on a populated table.
+            return None
+        if isinstance(literal, bool):
+            default_sql = "1" if literal else "0"
+        elif isinstance(literal, (int, float)):
+            default_sql = str(literal)
+        else:
+            escaped = str(literal).replace("'", "''")
+            default_sql = f"'{escaped}'"
+        col_spec = f"{col_spec} DEFAULT {default_sql}"
+
+    return f"ALTER TABLE {table_name} ADD COLUMN {col_spec}"
+
+
+def ensure_schema(engine) -> None:
+    """Additively backfill an existing SQLite DB to match the current models.
+
+    The project has no migration system: ``create_all`` builds wholly-missing
+    tables but never adds a newly-introduced column to a table that already
+    exists. This function closes that gap model-driven: for every table in
+    ``SQLModel.metadata`` that ALREADY EXISTS in the database, it diffs
+    ``PRAGMA table_info`` against the model's declared columns and issues
+    ``ALTER TABLE <t> ADD COLUMN <c>`` for each missing one (column type and
+    nullability/default derived from the model definition).
+
+    Run this BEFORE ``create_all`` so that:
+
+    * existing tables gain their missing columns here, and
+    * wholly-missing tables (e.g. ``run_annotations`` on an old DB) are built by
+      the subsequent ``create_all``.
+
+    Contract / guard rails:
+
+    * **SQLite-only.** No-op on any other dialect (production is SQLite today;
+      the additive-``ADD COLUMN`` mechanics below are SQLite-specific).
+    * **Additive only.** Renames, drops, type changes are out of scope. A NOT-NULL
+      column is added only when it carries a constant Python default (emitted as a
+      SQL ``DEFAULT`` literal so existing rows backfill); a NOT-NULL column with no
+      constant default cannot be added to a populated table under SQLite and is
+      skipped (best-effort) — this matches the schema, where every drifted column
+      is either nullable or constant-defaulted.
+    * **Per-column resilient.** One column's ALTER failing does not abort the rest.
+    * **Best-effort.** Never raises; probe/ALTER errors are logged to stderr and
+      swallowed so engine init / provider load is never blocked.
+
+    Args:
+        engine: SQLAlchemy engine bound to the database to upgrade.
     """
     from sqlalchemy import text
     try:
+        if engine.dialect.name != "sqlite":
+            return
+        dialect = engine.dialect
         with engine.connect() as conn:
-            dialect = engine.dialect.name
-            if dialect != "sqlite":
-                return
-            rows = conn.execute(text("PRAGMA table_info(runs)")).fetchall()
-            cols = {row[1] for row in rows}
-            if not cols:
-                # ``runs`` table doesn't exist yet -- create_all will build
-                # it with the column present; nothing to migrate.
-                return
-            if "cancelled_due_to_run_id" not in cols:
-                conn.execute(text(
-                    "ALTER TABLE runs ADD COLUMN cancelled_due_to_run_id "
-                    "INTEGER REFERENCES runs(id)"
-                ))
-                conn.commit()
+            for table in SQLModel.metadata.sorted_tables:
+                rows = conn.execute(
+                    text(f"PRAGMA table_info({table.name})")
+                ).fetchall()
+                existing = {row[1] for row in rows}
+                if not existing:
+                    # Table doesn't exist yet -- create_all will build it whole.
+                    continue
+                for column in table.columns:
+                    if column.name in existing:
+                        continue
+                    ddl = _add_column_ddl(table.name, column, dialect)
+                    if ddl is None:
+                        continue
+                    try:
+                        conn.execute(text(ddl))
+                    except Exception as col_exc:
+                        # One un-addable column must not abort the rest of the
+                        # backfill. Log and continue.
+                        import sys as _sys
+                        print(
+                            f"[wfc.database] ensure_schema: could not add "
+                            f"{table.name}.{column.name}: {col_exc}",
+                            file=_sys.stderr,
+                        )
+            conn.commit()
     except Exception as exc:
-        # Migration must be best-effort -- never block engine init on a
-        # probe error. A missing column surfaces as a runtime error on
-        # cancelled-row write, which is more informative than a boot hang.
-        # Do log to stderr so the warning is visible in captured output
-        # (tests, server logs) rather than silently swallowed.
+        # Backfill is best-effort -- never block engine init / provider load on
+        # a probe error. A genuinely missing column surfaces later as a clear
+        # runtime error, which is more informative than a boot hang. Log to
+        # stderr so the warning is visible in captured output.
         import sys as _sys
         print(
-            f"[wfc.database] cancelled_due_to_run_id migration warning: {exc}",
+            f"[wfc.database] ensure_schema backfill warning: {exc}",
             file=_sys.stderr,
         )
 
@@ -192,16 +312,12 @@ def get_engine():
     global _engine
     if _engine is None:
         url = os.environ.get("DATABASE_URL") or _default_db_url()
-        # SQLite needs check_same_thread=False for multi-thread use
-        connect_args = {}
-        if url.startswith("sqlite"):
-            connect_args["check_same_thread"] = False
-        _engine = create_engine(url, connect_args=connect_args)
-        # Idempotent migration BEFORE create_all: on legacy DBs the ``runs``
-        # table already exists without the new column, and create_all won't
-        # add it. Running the probe first ensures the column is present
-        # whether the DB is fresh or pre-existing.
-        _migrate_add_cancelled_due_to_run_id(_engine)
+        _engine = build_engine(url)
+        # Additive backfill BEFORE create_all: on legacy DBs an existing table
+        # (e.g. ``runs``) may be missing newly-introduced columns, and
+        # create_all won't add them. ensure_schema closes that gap; create_all
+        # then builds any wholly-missing tables.
+        ensure_schema(_engine)
         SQLModel.metadata.create_all(_engine)
     return _engine
 

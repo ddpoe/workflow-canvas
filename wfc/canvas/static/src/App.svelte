@@ -527,7 +527,7 @@
   {#if $runState.pipelineError}
     <div class="pipeline-error-banner" role="alert" data-testid="pipeline-error-banner">
       <div class="pe-icon" aria-hidden="true">
-        {#if $runState.pipelineError.kind === 'dirty_repo'}⚠{:else}✖{/if}
+        {#if $runState.pipelineError.kind === 'dirty_repo'}⚠{:else if $runState.pipelineError.kind === 'not_runnable_docker'}🐳{:else if $runState.pipelineError.kind === 'not_runnable_git'}🔧{:else}✖{/if}
       </div>
       <div class="pe-body">
         <div class="pe-message">{$runState.pipelineError.message}</div>

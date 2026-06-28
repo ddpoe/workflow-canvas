@@ -12,7 +12,7 @@ Each skeleton follows the full production path in its body:
 """
 
 import pytest
-from dflow.core.decorators import workflow, Step, AutoStep
+from axiom_annotations import workflow, Step, AutoStep
 
 from wfc.init import init_project
 from wfc.register import register_module, register_method
@@ -172,7 +172,7 @@ def test_contract_validation_story(wfc_project):
     口 = Step(step_num=6, name="Validate input CSV with missing column raises",
              purpose="Input gate blocks execution when required column is missing",
              critical="Must raise ContractViolation naming the missing column")
-    from wfc.method import ContractViolation
+    from wfc_client import ContractViolation
     bad_csv = tmp / "bad_input.csv"
     bad_csv.write_text("area,centroid-0\n100,50\n")
 

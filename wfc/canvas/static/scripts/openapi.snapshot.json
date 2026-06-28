@@ -108,18 +108,6 @@
             "title": "Directory",
             "type": "string"
           },
-          "env": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": "inherit",
-            "title": "Env"
-          },
           "method_name": {
             "anyOf": [
               {
@@ -959,7 +947,7 @@
     },
     "/api/envs": {
       "post": {
-        "description": "Register a container env via :func:`wfc.envs.register`.\n\nBody shape::\n\n    {\"name\": \"image-io\",\n     \"backend\": \"pixi\" | \"conda\" | \"inherit\" | \"byo\",\n     \"source\": {...},                  # per-backend payload\n     \"base_image\": \"...\" | null,       # optional, not valid for byo\n     \"force\": false}\n\nReturns the persisted :class:`EnvRecord` as JSON (the manifest record\ndict plus a ``name`` key so the caller doesn't have to track it).",
+        "description": "Register a container env via :func:`wfc.envs.register`.\n\nBody shape::\n\n    {\"name\": \"image-io\",\n     \"backend\": \"pixi\" | \"conda\" | \"byo\",\n     \"source\": {...},                  # per-backend payload\n     \"base_image\": \"...\" | null,       # optional, not valid for byo\n     \"force\": false}\n\nReturns the persisted :class:`EnvRecord` as JSON (the manifest record\ndict plus a ``name`` key so the caller doesn't have to track it).",
         "operationId": "post_envs_api_envs_post",
         "requestBody": {
           "content": {
@@ -1107,7 +1095,7 @@
     },
     "/api/registry/envs": {
       "get": {
-        "description": "List distinct env specs referenced by registered methods.\n\nOne row per ``Method.env`` value. Aggregates method names, distinct\nenv_fingerprint count, total run count, and most-recent run timestamp\n(``Run.started_at``) across all methods sharing that env.",
+        "description": "List distinct env specs referenced by registered methods.\n\nOne row per ``Method.env`` value. Aggregates method names, total run\ncount, and most-recent run timestamp (``Run.started_at``) across all\nmethods sharing that env, and resolves the registered env's ``backend``\nplus a ``has_packages`` flag (True when a ``source_fingerprint`` was\ncaptured at registration \u2014 i.e. a package list is available to attempt).\nIt does not guarantee a non-empty result: ``GET .../packages`` parses that\nblob and may return an empty list if the captured blob carries no\nrecognizable packages (e.g. an older capture).",
         "operationId": "get_registry_envs_api_registry_envs_get",
         "responses": {
           "200": {
@@ -1124,7 +1112,7 @@
     },
     "/api/registry/envs/blob/{md5}": {
       "get": {
-        "description": "Read an env-content blob from the DVC content-addressed cache.\n\nReturns the raw blob as ``text/plain`` so the frontend can render it\ndirectly in a code panel or compute a client-side diff against another\nblob.",
+        "description": "Read an env-content blob from the DVC content-addressed cache.\n\nReturns the raw blob as ``text/plain`` so the frontend can render it\ndirectly in a code panel. Shares its read path (and path-traversal\nguard) with ``GET .../packages`` via :func:`_read_env_blob_text`.",
         "operationId": "get_registry_env_blob_api_registry_envs_blob__md5__get",
         "parameters": [
           {
@@ -1160,10 +1148,10 @@
         "summary": "Get Registry Env Blob"
       }
     },
-    "/api/registry/envs/{spec}/fingerprints": {
+    "/api/registry/envs/{spec}/packages": {
       "get": {
-        "description": "Per-env fingerprint history derived from Run.env_fingerprint rows.\n\nFor each distinct env_fingerprint observed in Runs of methods whose\n``env == spec``, return first-seen / last-seen timestamps and run count.\nA fingerprint only present in the DVC cache (e.g. from a manual\nsnapshot) is NOT returned here \u2014 the snapshot endpoint returns it\ndirectly; the frontend merges.",
-        "operationId": "get_registry_env_fingerprints_api_registry_envs__spec__fingerprints_get",
+        "description": "Installed-package list for a registered pixi/conda env.\n\nResolves *spec* to its :class:`wfc.envs.EnvRecord`, reads the captured\n``source_fingerprint`` blob from the DVC cache, and parses it into a\nsorted, de-duplicated, source-tagged package list via\n:func:`wfc.env_packages.parse_packages`.\n\nHonest empty state: a byo env, an env that never staged source content,\nor an unmatched spec returns ``captured: false`` with ``packages: []`` \u2014\nnever a fabricated list.\n\nResponse::\n\n    {\"spec\": \"container:demo\",\n     \"backend\": \"pixi\" | \"conda\" | \"byo\" | null,\n     \"captured\": true,\n     \"packages\": [{\"name\": ..., \"version\": ..., \"source\": \"pixi\"}, ...]}",
+        "operationId": "get_registry_env_packages_api_registry_envs__spec__packages_get",
         "parameters": [
           {
             "in": "path",
@@ -1195,45 +1183,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Get Registry Env Fingerprints"
-      }
-    },
-    "/api/registry/envs/{spec}/snapshot": {
-      "post": {
-        "description": "Capture env content on demand and store it in the DVC cache.\n\nRuns ``capture_env_content`` + ``store_env_content`` against the live\nenv and returns the resulting md5. No Run row is created; the only\nside effect is a (possibly no-op) write to the DVC content-addressed\ncache.\n\nResponse ``is_new`` is True when the md5 does not already appear in\nany ``Run.env_fingerprint`` for this spec (i.e. this fingerprint has\nnot been observed via an actual Run before).",
-        "operationId": "snapshot_registry_env_api_registry_envs__spec__snapshot_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "spec",
-            "required": true,
-            "schema": {
-              "title": "Spec",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Snapshot Registry Env"
+        "summary": "Get Registry Env Packages"
       }
     },
     "/api/registry/methods": {
@@ -1536,23 +1486,6 @@
           }
         },
         "summary": "Get Run Lineage Pipeline"
-      }
-    },
-    "/api/types": {
-      "get": {
-        "description": "Return data-type metadata for canvas UI slot colouring.",
-        "operationId": "get_types_api_types_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Get Types"
       }
     },
     "/api/wfc/completed-runs": {
@@ -2247,7 +2180,7 @@
     },
     "/api/workflow/run": {
       "post": {
-        "description": "Submit a pipeline for execution via Snakemake.\n\nEnriches the PipelineJSON with script paths and slot_outputs from the DB,\nwrites it to a temp file, and spawns a background thread running\n``run_pipeline()``. Returns the pipeline_id as the job_id immediately.\n\nRejects empty pipelines with HTTP 400.  Multiple pipelines may run\nconcurrently \u2014 each gets its own pipeline_id-scoped workspace.",
+        "description": "Submit a pipeline for execution via Snakemake.\n\nEnriches the PipelineJSON with script paths and slot_outputs from the DB,\nwrites it to a temp file, and spawns a background thread running\n``run_pipeline()``. Returns the pipeline_id as the job_id immediately.\n\nRejects empty pipelines with HTTP 400.  Before spawning the run thread it\npre-flights Docker and git (cycle decision D-6, 3-lite): a not-ready\nenvironment is rejected with HTTP 409 carrying a kind-tagged\n``{kind, message, hint}`` payload (the same shape the frontend renders for\npre-run errors), so no orphan run is started.  Multiple pipelines may run\nconcurrently \u2014 each gets its own pipeline_id-scoped workspace.",
         "operationId": "run_workflow_api_workflow_run_post",
         "requestBody": {
           "content": {

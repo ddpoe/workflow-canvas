@@ -15,7 +15,6 @@ Validates that a pipeline with a fan_mode="in" Input Selector:
 
 from __future__ import annotations
 
-import asyncio
 import csv
 import json
 import os
@@ -26,7 +25,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from dflow.core.decorators import workflow, Step
+from axiom_annotations import workflow, Step
 
 from wfc.canvas.server import validate_workflow, PipelineInput, PipelineNode, PipelineLink, _enrich_pipeline
 from wfc.snakemake_gen import (
@@ -41,6 +40,7 @@ from tests.fixtures.conftest import (  # noqa: F401
     register_fixture_methods,
     pipeline_factory,
 )
+from tests.conftest import requires_docker
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -68,7 +68,7 @@ def _minimal_fan_in_pipeline(samples: list[str]) -> dict:
             {"id": "merge-1", "type": "method",
              "method": "csv_merge", "module": "csv_tools",
              "script": "modules/_builtin/csv_merge/csv_merge.py",
-             "params": {}},
+             "params": {}, "env": "container:demo"},
         ],
         "links": [
             {"source": "sel-1", "target": "merge-1", "target_slot": "sources"},
@@ -149,11 +149,11 @@ def test_collapse_propagates_through_chain(tmp_path):
              "method": "", "module": "",
              "samples": ["a", "b", "c"], "fan_mode": "in"},
             {"id": "merge", "method": "csv_merge", "module": "csv_tools",
-             "script": "modules/_builtin/csv_merge/csv_merge.py", "params": {}},
+             "script": "modules/_builtin/csv_merge/csv_merge.py", "params": {}, "env": "container:demo"},
             {"id": "filter", "method": "csv_filter", "module": "csv_tools",
-             "script": "modules/_builtin/csv_filter/csv_filter.py", "params": {}},
+             "script": "modules/_builtin/csv_filter/csv_filter.py", "params": {}, "env": "container:demo"},
             {"id": "qc", "method": "feature_qc", "module": "demo",
-             "script": "methods/feature_qc/feature_qc.py", "params": {}},
+             "script": "methods/feature_qc/feature_qc.py", "params": {}, "env": "container:demo"},
         ],
         "links": [
             {"source": "sel", "target": "merge", "target_slot": "sources"},
@@ -259,8 +259,26 @@ def test_expand_variant_combos_collapsed_one_per_variant():
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def validate_db(tmp_path, monkeypatch):
+    """Empty SQLite DB so ``validate_workflow``'s ``get_session()`` resolves
+    deterministically in isolation.
+
+    These tests assert validation *errors* (fan-in shape rejection), not DB
+    contents, so an empty schema is sufficient. Without this the tests only
+    pass via engine state leaked from earlier tests in the module.
+    """
+    db_path = tmp_path / ".wfc" / "wfc.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    from wfc.database import reset_engine
+    reset_engine()
+    yield
+    reset_engine()
+
+
 @workflow(purpose="validate_workflow rejects a method node with multiple upstreams when any upstream is a fan-in selector")
-def test_validate_rejects_multi_upstream_with_fan_in():
+def test_validate_rejects_multi_upstream_with_fan_in(validate_db):
     pipeline = PipelineInput(
         nodes=[
             PipelineNode(id="sel-a", type="input_selector",
@@ -276,7 +294,7 @@ def test_validate_rejects_multi_upstream_with_fan_in():
         ],
         samples=["s1", "s2"],
     )
-    result = asyncio.run(validate_workflow(pipeline))
+    result = validate_workflow(pipeline)
     assert result["valid"] is False
     # The error should name both the selector and the consumer.
     joined = " | ".join(result["errors"])
@@ -285,7 +303,7 @@ def test_validate_rejects_multi_upstream_with_fan_in():
 
 
 @workflow(purpose="validate_workflow rejects an input_selector with fan_mode='in' and an empty sample list")
-def test_validate_rejects_fan_in_empty_samples():
+def test_validate_rejects_fan_in_empty_samples(validate_db):
     pipeline = PipelineInput(
         nodes=[
             PipelineNode(id="sel", type="input_selector",
@@ -296,7 +314,7 @@ def test_validate_rejects_fan_in_empty_samples():
         links=[PipelineLink(source="sel", target="m")],
         samples=[],
     )
-    result = asyncio.run(validate_workflow(pipeline))
+    result = validate_workflow(pipeline)
     assert result["valid"] is False
     assert any("sel" in e for e in result["errors"])
 
@@ -317,10 +335,10 @@ def test_end_to_end_fan_in_snakefile(tmp_path, wfc_root):
              "samples": ["s1", "s2", "s3"], "fan_mode": "in"},
             {"id": "merge", "method": "csv_merge", "module": "csv_tools",
              "script": "modules/_builtin/csv_merge/csv_merge.py",
-             "params": {}, "output_ext": ".csv"},
+             "params": {}, "output_ext": ".csv", "env": "container:demo"},
             {"id": "filter", "method": "csv_filter", "module": "csv_tools",
              "script": "modules/_builtin/csv_filter/csv_filter.py",
-             "params": {}, "output_ext": ".csv"},
+             "params": {}, "output_ext": ".csv", "env": "container:demo"},
         ],
         "links": [
             {"source": "sel", "target": "merge", "target_slot": "sources"},
@@ -425,31 +443,19 @@ def test_nid_all_sample_group_sequential(tmp_path):
 
     db_path = tmp_path / ".wfc" / "wfc.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
+    # Build the schema from the ORM models (single source of truth) so it
+    # tracks wfc/models.py -- the provider reads run_inputs.input_name, which
+    # the old hand-rolled DDL omitted.
+    import wfc.models  # noqa: F401  -- register tables on SQLModel.metadata
+    from sqlmodel import SQLModel, create_engine
+    engine = create_engine(f"sqlite:///{db_path}")
+    SQLModel.metadata.create_all(engine)
+    engine.dispose()
     conn = sqlite3.connect(str(db_path))
-    conn.execute("CREATE TABLE modules (id INTEGER PRIMARY KEY, name TEXT)")
-    conn.execute(
-        "CREATE TABLE methods "
-        "(id INTEGER PRIMARY KEY, name TEXT, module_id INTEGER, script_path TEXT, env TEXT)"
-    )
-    conn.execute(
-        "CREATE TABLE runs "
-        "(id INTEGER PRIMARY KEY, method_id INTEGER, params TEXT, sample TEXT, "
-        "status TEXT, pipeline_id TEXT, nf_process_name TEXT, "
-        "started_at TEXT, finished_at TEXT, metrics TEXT, nid TEXT)"
-    )
-    conn.execute(
-        "CREATE TABLE run_inputs "
-        "(id INTEGER PRIMARY KEY, run_id INTEGER, source_run_id INTEGER)"
-    )
-    conn.execute(
-        "CREATE TABLE run_outputs "
-        "(id INTEGER PRIMARY KEY, run_id INTEGER, output_name TEXT, "
-        "artifact_path TEXT, artifact_type TEXT)"
-    )
     conn.execute("INSERT INTO modules (id, name) VALUES (1, 'csv_tools')")
     conn.execute(
         "INSERT INTO methods (id, name, module_id, script_path, env) "
-        "VALUES (1, 'csv_merge', 1, 'methods/csv_merge/csv_merge.py', 'inherit')"
+        "VALUES (1, 'csv_merge', 1, 'methods/csv_merge/csv_merge.py', 'container:demo')"
     )
     for rid, ts in [(1, "2026-01-01T10:00"), (2, "2026-01-01T11:00"), (3, "2026-01-01T12:00")]:
         conn.execute(
@@ -679,8 +685,31 @@ def test_run_step_collapsed_sample_fallback_resolves_per_sample_dirs(
         (sd / "data.csv").write_text(f"sample,{s}\n")
 
     # Author a fan-in pipeline JSON that the runtime can introspect.
+    # ADR-019 Cycle H: run_step is container-only and resolves the node's
+    # env to a built container image BEFORE the input-resolution branch this
+    # test exercises. Give merge-1 a manifest-backed container env and write a
+    # placeholder ``fixture-env`` record so resolution passes without a Docker
+    # build (the actual ``docker run`` is short-circuited by the
+    # ``_run_method_subprocess`` monkeypatch below).
+    pipeline_dict = _minimal_fan_in_pipeline(["s1", "s2", "s3"])
+    for n in pipeline_dict["nodes"]:
+        if n["id"] == "merge-1":
+            n["env"] = "fixture-env"
+    (project_root / ".wfc" / "envs.json").write_text(json.dumps({
+        "schema_version": 1,
+        "envs": {
+            "fixture-env": {
+                "backend": "pixi",
+                "source": "pixi.toml",
+                "container": "docker://local/wfc-test-minimal@sha256:" + "a" * 64,
+                "env_fingerprint": "a" * 64,
+                "built_from_lock": "pixi.lock",
+                "built_at": "2026-06-23T00:00:00Z",
+            }
+        },
+    }))
     pipeline_path = tmp_path / "pipe.json"
-    pipeline_path.write_text(json.dumps(_minimal_fan_in_pipeline(["s1", "s2", "s3"])))
+    pipeline_path.write_text(json.dumps(pipeline_dict))
 
     # Patch the slow/heavy pieces of run_step. We only care about the
     # input resolution branch -- short-circuit pre_run, the subprocess,
@@ -833,6 +862,8 @@ def _extract_wfc_run_step_argv(snakefile: str, rule_name: str) -> list[str]:
         "slot-name mismatches) the in-process Tier 2 tests skip."
     )
 )
+@pytest.mark.integration
+@requires_docker
 def test_run_step_subprocess_collapsed_fanin_end_to_end(
     pipeline_factory, register_fixture_methods
 ):
@@ -867,7 +898,7 @@ def test_run_step_subprocess_collapsed_fanin_end_to_end(
             {"id": "selector_1", "type": "input_selector",
              "samples": ["s1", "s2", "s3"], "fan_mode": "in"},
             {"id": "merge_1", "method": "merge", "module": "test_pipeline",
-             "params": {}},
+             "params": {}, "env": "container:fixture-env"},
         ],
         links=[
             {"source": "selector_1", "target": "merge_1",

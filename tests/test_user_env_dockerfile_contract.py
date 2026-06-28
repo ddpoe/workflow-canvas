@@ -12,20 +12,15 @@ What is asserted here (negatives + the non-root-readable chmod):
   - No `pip install wfc` / `pip install workflow-canvas`.
   - No `COPY wfc/` / `COPY pyproject.toml` (the project source is never copied
     into a user-env image).
-  - The recipe ends with `RUN chmod -R a+rX <env_dir>` at the *backend-native*
-    env prefix (inherit `/opt/envs/{name}`, pixi `/{name}/envs/default`,
-    conda `/opt/conda/envs/{name}`) — this is the non-root-readable target that
-    pairs with the runtime `--user` fix (ADR-019 #9).
+  - For pixi/conda, the recipe ends with `RUN chmod -R a+rX <env_dir>` at the
+    *backend-native* env prefix (pixi `/{name}/envs/default`, conda
+    `/opt/conda/envs/{name}`) — the non-root-readable target that pairs with
+    the runtime `--user` fix (ADR-019 #9).
 
 Deliberately NOT re-asserted here (already covered by
-`tests/test_dockerfile_generation.py`): pixi/conda base digest pinning, the
-inherit floating `python:X.Y-slim` minor-tag computation, and the
+`tests/test_dockerfile_generation.py`): pixi/conda base digest pinning and the
 `pip --no-deps`-after-`pixi install` ordering. This module only owns the no-wfc
 negatives + the per-backend chmod target.
-
-The inherit backend legitimately uses a *floating* `python:X.Y-slim` tag (the
-ADR-019 #11 exception); that is accepted here — only `:latest` and
-`local/wfc-base` are rejected.
 """
 
 from __future__ import annotations
@@ -42,15 +37,9 @@ VALID_FREEZE = "numpy==1.26.4\npandas==2.2.1\n"
 
 # Per-backend: the minimal kwargs that drive generate_for_backend, plus the
 # backend-native env_dir the chmod must target. Parameterized so the single
-# set of no-wfc assertions runs against all three image-building backends
-# without three near-duplicate test bodies.
+# set of no-wfc assertions runs against both image-building backends
+# without near-duplicate test bodies.
 _BACKEND_CASES = [
-    pytest.param(
-        "inherit",
-        {"env_name": "demo", "pip_freeze_content": VALID_FREEZE},
-        "/opt/envs/demo",
-        id="inherit",
-    ),
     pytest.param(
         "pixi",
         {
@@ -79,7 +68,8 @@ def test_user_env_dockerfile_is_wfc_free_single_upstream(
     backend, kwargs, expected_env_dir
 ):
     """A generated user-env Dockerfile installs no wfc and builds on a single
-    upstream base, ending with a non-root-readable chmod of the env dir."""
+    upstream base. For pixi/conda it ends with a non-root-readable chmod of
+    the backend-native env dir."""
     dockerfile = generate_for_backend(backend, **kwargs)
     assert dockerfile is not None, f"{backend} should produce a Dockerfile"
     lower = dockerfile.lower()
@@ -115,7 +105,8 @@ def test_user_env_dockerfile_is_wfc_free_single_upstream(
     assert "copy wfc " not in lower
     assert "copy pyproject.toml" not in lower
 
-    # Ends with the non-root-readable chmod at the backend-native env dir.
+    # The backend-native chmod target (non-root-readable, pairs with --user).
+    # pixi/conda chmod a dir their pixi/micromamba step creates.
     assert f"RUN chmod -R a+rX {expected_env_dir}" in dockerfile, (
         f"{backend}: expected `RUN chmod -R a+rX {expected_env_dir}` "
         f"(non-root-readable env dir, pairs with --user); got:\n{dockerfile}"

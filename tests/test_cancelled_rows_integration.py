@@ -22,7 +22,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from dflow.core.decorators import workflow, Step
+from axiom_annotations import workflow, Step
 
 from wfc.canvas.server import app, _active_jobs
 from wfc.database import get_session, reset_engine
@@ -65,6 +65,7 @@ def _seed_methods(names):
             m = Method(
                 name=name, module_id=mod.id,
                 script_path=f"methods/{name}/{name}.py",
+                env="container:demo",
             )
             s.add(m)
             s.commit()
@@ -134,9 +135,9 @@ def test_keep_going_partial_prune_writes_cancelled_rows_for_failed_sample_only(
     _write_pipeline_json(
         tmp_wfc_project, pid,
         nodes=[
-            {"id": "a", "method": "method_a", "module": "mod"},
-            {"id": "b", "method": "method_b", "module": "mod"},
-            {"id": "c", "method": "method_c", "module": "mod"},
+            {"id": "a", "method": "method_a", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+            {"id": "b", "method": "method_b", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+            {"id": "c", "method": "method_c", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
         ],
         links=[
             {"source": "a", "target": "b"},
@@ -231,8 +232,8 @@ def test_hard_abort_writes_cancelled_rows_for_all_sample_descendants(
     _write_pipeline_json(
         tmp_wfc_project, pid,
         nodes=[
-            {"id": "a", "method": "method_a", "module": "mod"},
-            {"id": "b", "method": "method_b", "module": "mod"},
+            {"id": "a", "method": "method_a", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+            {"id": "b", "method": "method_b", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
         ],
         links=[{"source": "a", "target": "b"}],
         samples=["S1", "S2"],

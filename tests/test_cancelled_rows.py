@@ -33,7 +33,7 @@ from typing import Any
 import pytest
 from sqlmodel import select
 
-from dflow.core.decorators import workflow, Step
+from axiom_annotations import workflow, Step
 
 from wfc.database import get_engine, get_session, reset_engine
 from wfc.models import Method, Module, Run
@@ -53,7 +53,7 @@ def _make_module(session, name: str) -> int:
 
 
 def _make_method(session, module_id: int, name: str) -> int:
-    m = Method(name=name, module_id=module_id, script_path=f"methods/{name}/{name}.py")
+    m = Method(name=name, module_id=module_id, script_path=f"methods/{name}/{name}.py", env="container:demo")
     session.add(m)
     session.commit()
     session.refresh(m)
@@ -200,9 +200,9 @@ def test_walk_linear_chain_one_failure(tmp_project):
         tmp_project,
         pid,
         nodes=[
-            {"id": "a", "method": "method_a", "module": "mod"},
-            {"id": "b", "method": "method_b", "module": "mod"},
-            {"id": "c", "method": "method_c", "module": "mod"},
+            {"id": "a", "method": "method_a", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+            {"id": "b", "method": "method_b", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+            {"id": "c", "method": "method_c", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
         ],
         links=[
             {"source": "a", "target": "b"},
@@ -246,10 +246,10 @@ def test_walk_branching_root_failure(tmp_project):
         tmp_project,
         pid,
         nodes=[
-            {"id": "a", "method": "method_a", "module": "mod"},
-            {"id": "b", "method": "method_b", "module": "mod"},
-            {"id": "c", "method": "method_c", "module": "mod"},
-            {"id": "d", "method": "method_d", "module": "mod"},
+            {"id": "a", "method": "method_a", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+            {"id": "b", "method": "method_b", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+            {"id": "c", "method": "method_c", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+            {"id": "d", "method": "method_d", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
         ],
         links=[
             {"source": "a", "target": "b"},
@@ -291,8 +291,8 @@ def test_walk_cartesian_two_samples_one_failure(tmp_project):
         tmp_project,
         pid,
         nodes=[
-            {"id": "a", "method": "method_a", "module": "mod"},
-            {"id": "b", "method": "method_b", "module": "mod"},
+            {"id": "a", "method": "method_a", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+            {"id": "b", "method": "method_b", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
         ],
         links=[{"source": "a", "target": "b"}],
         samples=["S1", "S2"],
@@ -336,8 +336,8 @@ def test_walk_variant_sweep_isolated_failure(tmp_project):
         tmp_project,
         pid,
         nodes=[
-            {"id": "a", "method": "method_a", "module": "mod"},
-            {"id": "b", "method": "method_b", "module": "mod"},
+            {"id": "a", "method": "method_a", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+            {"id": "b", "method": "method_b", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
         ],
         links=[{"source": "a", "target": "b"}],
         samples=["S1"],
@@ -380,8 +380,8 @@ def test_walk_fan_in_collapsed_failure(tmp_project):
         pid,
         nodes=[
             {"id": "sel", "type": "input_selector", "fan_mode": "in", "samples": ["S1", "S2"]},
-            {"id": "merge", "method": "csv_merge", "module": "mod"},
-            {"id": "down", "method": "downstream", "module": "mod"},
+            {"id": "merge", "method": "csv_merge", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+            {"id": "down", "method": "downstream", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
         ],
         links=[
             {"source": "sel", "target": "merge"},
@@ -416,8 +416,8 @@ def test_walk_is_idempotent(tmp_project):
         tmp_project,
         pid,
         nodes=[
-            {"id": "a", "method": "method_a", "module": "mod"},
-            {"id": "b", "method": "method_b", "module": "mod"},
+            {"id": "a", "method": "method_a", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+            {"id": "b", "method": "method_b", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
         ],
         links=[{"source": "a", "target": "b"}],
         samples=["S1"],
@@ -480,10 +480,10 @@ def test_walk_prefers_nid_keying_when_labels_distinguish_branches(tmp_project):
         tmp_project,
         pid,
         nodes=[
-            {"id": "al", "method": "method_a", "module": "mod", "label": "branchL"},
-            {"id": "ar", "method": "method_a", "module": "mod", "label": "branchR"},
-            {"id": "dl", "method": "method_b", "module": "mod", "label": "downstreamL"},
-            {"id": "dr", "method": "method_b", "module": "mod", "label": "downstreamR"},
+            {"id": "al", "method": "method_a", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "label": "branchL"},
+            {"id": "ar", "method": "method_a", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "label": "branchR"},
+            {"id": "dl", "method": "method_b", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "label": "downstreamL"},
+            {"id": "dr", "method": "method_b", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "label": "downstreamR"},
         ],
         links=[
             {"source": "al", "target": "dl"},
@@ -526,8 +526,8 @@ def test_walk_success_path_writes_nothing(tmp_project):
         tmp_project,
         pid,
         nodes=[
-            {"id": "a", "method": "method_a", "module": "mod"},
-            {"id": "b", "method": "method_b", "module": "mod"},
+            {"id": "a", "method": "method_a", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+            {"id": "b", "method": "method_b", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
         ],
         links=[{"source": "a", "target": "b"}],
         samples=["S1"],
@@ -583,10 +583,21 @@ def test_wfc_provider_surfaces_cancelled_due_to_run_id(tmp_project):
 
 
 def test_wfc_provider_legacy_db_without_column_still_loads(tmp_path, monkeypatch):
-    """A DB written before the migration (no cancelled_due_to_run_id column)
-    loads via WfcProvider without exception."""
+    """A DB written before recent migrations (runs missing cancelled_due_to_run_id
+    and other newer columns; no run_annotations table) loads via WfcProvider
+    without exception.
+
+    Under the ORM read path the provider opens its own db_path-bound engine and
+    runs ``ensure_schema`` + ``create_all`` on load, so the old on-disk schema is
+    upgraded (missing nullable columns added, missing tables built) BEFORE any
+    ORM ``select`` runs. The load then reads the upgraded schema normally.
+    """
     from wfc.canvas.wfc_provider import WfcProvider
 
+    # LEGACY-SHAPE FIXTURE (frozen on purpose): hand-rolled DDL recreates an
+    # *old* schema (columns/tables intentionally missing) to exercise the
+    # back-compat ``ensure_schema`` backfill. This is the one case the
+    # test-policy permits raw CREATE TABLE; do not switch it to create_all.
     # Build a minimal legacy DB by hand
     wfc_dir = tmp_path / ".wfc"
     wfc_dir.mkdir()
@@ -598,7 +609,7 @@ def test_wfc_provider_legacy_db_without_column_still_loads(tmp_path, monkeypatch
         CREATE TABLE modules (id INTEGER PRIMARY KEY, name TEXT, description TEXT);
         CREATE TABLE methods (
             id INTEGER PRIMARY KEY, module_id INTEGER, name TEXT,
-            script_path TEXT, env TEXT DEFAULT 'inherit'
+            script_path TEXT, env TEXT DEFAULT 'container:demo'
         );
         CREATE TABLE runs (
             id INTEGER PRIMARY KEY,
@@ -622,7 +633,7 @@ def test_wfc_provider_legacy_db_without_column_still_loads(tmp_path, monkeypatch
             artifact_path TEXT, artifact_type TEXT
         );
         INSERT INTO modules (id, name) VALUES (1, 'mod');
-        INSERT INTO methods (id, module_id, name) VALUES (1, 1, 'method_a');
+        INSERT INTO methods (id, module_id, name, env) VALUES (1, 1, 'method_a', 'container:demo');
         INSERT INTO runs (id, method_id, sample, status) VALUES (1, 1, 'S1', 'completed');
         """
     )

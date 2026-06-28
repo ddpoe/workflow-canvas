@@ -1,0 +1,10 @@
+# Documentation build dependencies for Read the Docs.
+# Mirror the [tool.poetry.group.docs] constraints used to build the consumer
+# Guide + Reference Sphinx sites (see userdocs/_sphinx/conf.py for the
+# extensions actually loaded). axiom-graph is NOT needed here: the MyST pages
+# under userdocs/guide and userdocs/reference are committed, so RTD only runs
+# Sphinx.
+sphinx>=8.0,<9.0
+sphinx-rtd-theme>=2.0
+myst-parser>=5.1,<6.0
+sphinxcontrib-mermaid>=1.0

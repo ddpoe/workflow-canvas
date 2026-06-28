@@ -13,7 +13,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-from dflow.core.decorators import workflow
+from axiom_annotations import workflow
 
 
 # ---------------------------------------------------------------------------
@@ -21,36 +21,26 @@ from dflow.core.decorators import workflow
 # ---------------------------------------------------------------------------
 
 def _create_test_db(db_path: Path):
-    """Create a minimal wfc.db with modules, methods, and runs tables.
+    """Create a wfc.db whose schema is built from the ORM models.
+
+    Building from ``SQLModel.metadata`` (the single source of truth in
+    ``wfc/models.py``) rather than hand-rolled ``CREATE TABLE`` strings means
+    this fixture follows schema changes automatically -- e.g. the provider's
+    ``run_inputs.input_name`` column, which the old hand-rolled DDL omitted.
+    The raw ``INSERT`` helpers below populate only the columns each test needs;
+    the rest take their model defaults / NULL.
 
     Args:
         db_path: Path to the SQLite database file.
     """
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("CREATE TABLE modules (id INTEGER PRIMARY KEY, name TEXT)")
-    conn.execute(
-        "CREATE TABLE methods "
-        "(id INTEGER PRIMARY KEY, name TEXT, module_id INTEGER, script_path TEXT, env TEXT)"
-    )
+    import wfc.models  # noqa: F401  -- register tables on SQLModel.metadata
+    from sqlmodel import SQLModel, create_engine
 
-    conn.execute(
-        "CREATE TABLE runs "
-        "(id INTEGER PRIMARY KEY, method_id INTEGER, params TEXT, sample TEXT, "
-        "status TEXT, pipeline_id TEXT, nf_process_name TEXT, "
-        "started_at TEXT, finished_at TEXT, metrics TEXT, nid TEXT)"
-    )
-    conn.execute(
-        "CREATE TABLE run_inputs "
-        "(id INTEGER PRIMARY KEY, run_id INTEGER, source_run_id INTEGER)"
-    )
-    conn.execute(
-        "CREATE TABLE run_outputs "
-        "(id INTEGER PRIMARY KEY, run_id INTEGER, output_name TEXT, "
-        "artifact_path TEXT, artifact_type TEXT)"
-    )
-    conn.commit()
-    return conn
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    engine = create_engine(f"sqlite:///{db_path}")
+    SQLModel.metadata.create_all(engine)
+    engine.dispose()
+    return sqlite3.connect(str(db_path))
 
 
 def _insert_module(conn, mod_id: int, name: str):
@@ -63,7 +53,7 @@ def _insert_method(conn, method_id: int, name: str, module_id: int):
     """Insert a method row."""
     conn.execute(
         "INSERT INTO methods (id, name, module_id, script_path, env) VALUES (?, ?, ?, ?, ?)",
-        (method_id, name, module_id, f"methods/{name}/{name}.py", "inherit"),
+        (method_id, name, module_id, f"methods/{name}/{name}.py", "container:demo"),
     )
     conn.commit()
 

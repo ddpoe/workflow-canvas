@@ -7,14 +7,6 @@ Asymmetric pinning per ADR-019 decision #11 (amended 2026-05-16):
   run inside these base images, so the tool version is load-bearing for
   build determinism. Two users on the same wfc version building the same
   env must invoke the same tool binaries.
-- **The inherit backend uses a floating ``python:X.Y-slim`` tag** computed
-  inline from ``sys.version_info`` at register-env time. The inherit base
-  is passive (just an interpreter + pip running ``pip install --no-deps``
-  against a fully-pinned freeze); CPython ABI is stable at the minor level
-  (``cp312`` wheels load on any 3.12.x patch). Reproducibility for the
-  inherit backend is anchored by the post-build image digest stored in
-  ``.wfc/envs.json``, not by the base ref. The inherit generator does NOT
-  call into this module.
 
 Bumping the pinned digests is a manual maintainer step on each wfc release —
 no Renovate config, no ``wfc refresh-bases`` command. Hand-edit the constant

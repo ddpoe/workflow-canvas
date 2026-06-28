@@ -15,10 +15,10 @@ Schema (``schema_version == 1``)::
       "schema_version": 1,
       "envs": {
         "<env_name>": {
-          "backend": "pixi" | "conda" | "inherit",
+          "backend": "pixi" | "conda" | "byo",
           "source": "pixi.toml" | "environment.yml" | null,
           "container": "docker://<host>/<path>@sha256:<hex>",
-          "env_fingerprint": "<sha256 of source-file content or inherit fingerprint>",
+          "env_fingerprint": "<sha256 of source-file content / image fingerprint>",
           "built_from_lock": "pixi.lock" | "conda-lock.yml" | null,
           "built_at": "<ISO-8601 timestamp>"
         }
@@ -43,6 +43,8 @@ import tempfile
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Optional
+
+from axiom_annotations import workflow, Step, AutoStep
 
 
 MANIFEST_SCHEMA_VERSION = 1
@@ -78,6 +80,12 @@ class EnvRecord:
     env_fingerprint: str
     built_at: str
     built_from_lock: Optional[str] = None
+    # md5 of the captured package-list blob (lock/explicit-list + an explicit
+    # delimiter + pip-freeze), recorded for EVERY pixi/conda registration that
+    # stages source content — both live-spec capture and ``--from`` file mode.
+    # ``None`` for byo and for legacy/no-source registrations. Retrievable via
+    # ``GET /api/registry/envs/blob/<md5>`` and parsed by
+    # :func:`wfc.env_packages.parse_packages`.
     source_fingerprint: Optional[str] = None
 
     def to_dict(self) -> dict:
@@ -331,6 +339,8 @@ def _parse_byo_ref(ref: str) -> tuple[str, str | None, str | None]:
     return image_prefix, tag, digest
 
 
+@workflow(purpose="Register a container env: build the image, resolve its digest, "
+                  "and write the manifest entry")
 def register(
     name: str,
     backend: str,
@@ -346,7 +356,7 @@ def register(
 
     Orchestration entry point for ``wfc register-env``. Dispatch by backend:
 
-      - **pixi / conda / inherit:** assemble per-backend generator kwargs
+      - **pixi / conda:** assemble per-backend generator kwargs
         from *source*, render the Dockerfile via
         :func:`wfc.dockerfiles.generate_for_backend`, write it to
         ``.wfc/build/<name>/Dockerfile``, stage any source-content blobs
@@ -364,19 +374,22 @@ def register(
     ``container:<image>@sha256:<hex>`` spec through
     :func:`wfc.version.capture_env_content` and :func:`wfc.version.store_env_content`.
 
-    When ``live_spec`` is provided (e.g. ``"conda:cell_pose"`` or
-    ``"pixi:wcia:hello"``), the captured package-list blob is also
-    stored as ``source_fingerprint`` on the returned :class:`EnvRecord`,
-    pointing at content retrievable via the canvas
-    ``GET /api/registry/envs/blob/<md5>`` endpoint.
+    For every pixi/conda registration that stages source content (both
+    live-spec capture and ``--from`` file mode), a package-list blob is
+    assembled from *source* — the FULL lock / explicit-list content plus
+    pip-freeze — and stored as ``source_fingerprint`` on the returned
+    :class:`EnvRecord`, retrievable via the canvas
+    ``GET /api/registry/envs/blob/<md5>`` endpoint and the ``/packages``
+    parser. This is a separate blob from ``env_fingerprint`` (the container
+    image-digest fingerprint) and does not affect it.
 
     Args:
         name: Env name (KEY in ``.wfc/envs.json::envs``; not stored inside the
             record).
-        backend: One of ``"pixi"``, ``"conda"``, ``"inherit"``, ``"byo"``.
+        backend: One of ``"pixi"``, ``"conda"``, ``"byo"``.
         source: Per-backend payload dict. Supported keys (all optional):
             * ``"pip_freeze_content"``: verbatim pip freeze output, fed to
-              the pixi/conda/inherit Dockerfile generators and staged as
+              the pixi/conda Dockerfile generators and staged as
               ``pip-freeze.txt`` in the build context.
             * ``"explicit_list_content"``: conda explicit-list contents
               (output of ``conda list --explicit --md5``). Staged as
@@ -389,7 +402,7 @@ def register(
               Byo backend only.
             Legacy keys ``"pixi_env"`` and ``"conda_env"`` are accepted but
             ignored — the live-spec ``live_spec`` kwarg supersedes them.
-        base_image: Optional base-image override (pixi/conda/inherit only).
+        base_image: Optional base-image override (pixi/conda only).
             Rejected for byo because there is no Dockerfile to override.
         force: When ``True``, overwrite an existing entry for *name*.
             When ``False`` (default), an existing entry raises
@@ -397,14 +410,11 @@ def register(
         project_dir: Project root (containing ``.wfc/``). When ``None``,
             the cwd is used.
         live_spec: Optional typed env spec (``"conda:<env>"`` or
-            ``"pixi:<proj>:<env>"``) that names the live local env this
-            registration mirrors. When set, a content-addressed blob of the
-            env's captured package list is stored in the DVC cache and
-            its md5 is persisted as :attr:`EnvRecord.source_fingerprint`,
-            so the canvas can render the package contents via the
-            existing ``GET /api/registry/envs/blob/<md5>`` endpoint.
-            Stays ``None`` for ``--from`` file-mode, ``inherit``, and
-            ``byo``.
+            ``"pixi:<proj>:<env>"``) naming the live local env this
+            registration mirrors. Retained for call-site compatibility but
+            no longer gates ``source_fingerprint`` capture — capture now
+            keys off the staged *source* content for both live-spec and
+            ``--from`` modes (see the source_fingerprint note below).
 
     Returns:
         The persisted :class:`EnvRecord`.
@@ -420,6 +430,9 @@ def register(
     from . import docker_runner
     from .version import capture_env_content, store_env_content
 
+    口 = Step(step_num=1, name="Validate request and select backend",
+             purpose="Resolve project_dir, reject a duplicate env name without force, "
+                     "and reject base_image on the byo backend")
     if project_dir is None:
         project_dir = Path.cwd()
     project_dir = Path(project_dir).resolve()
@@ -450,7 +463,10 @@ def register(
     source_field: Optional[str]
     built_from_lock: Optional[str]
 
-    if backend in ("pixi", "conda", "inherit"):
+    if backend in ("pixi", "conda"):
+        口 = Step(step_num=2, name="Render Dockerfile",
+                 purpose="Assemble the per-backend generator kwargs and render the "
+                         "Dockerfile via dockerfiles.generate_for_backend")
         gen_kwargs: dict = {"env_name": name}
         if base_image is not None:
             gen_kwargs["base_image"] = base_image
@@ -471,12 +487,6 @@ def register(
             )
             source_field = "environment.yml"
             built_from_lock = "conda-lock.yml"
-        else:  # inherit
-            gen_kwargs["pip_freeze_content"] = source.get(
-                "pip_freeze_content", ""
-            )
-            source_field = None
-            built_from_lock = None
 
         dockerfile = df_pkg.generate_for_backend(backend, **gen_kwargs)
         if dockerfile is None:  # defensive — only byo returns None
@@ -484,6 +494,9 @@ def register(
                 f"Generator for backend {backend!r} returned no Dockerfile."
             )
 
+        口 = Step(step_num=3, name="Write Dockerfile and stage build context",
+                 purpose="Write the Dockerfile to .wfc/build/<name>/ and stage the "
+                         "pip-freeze, pixi, and conda source blobs into the build context")
         build_dir = project_dir / ".wfc" / "build" / name
         build_dir.mkdir(parents=True, exist_ok=True)
         (build_dir / "Dockerfile").write_text(dockerfile, encoding="utf-8")
@@ -493,7 +506,7 @@ def register(
         # are pure (string in, string out); register() is the one place
         # that knows about disk, so file staging lives here.
         pip_freeze_text = source.get("pip_freeze_content", "")
-        if backend in ("pixi", "conda", "inherit"):
+        if backend in ("pixi", "conda"):
             (build_dir / "pip-freeze.txt").write_text(
                 pip_freeze_text, encoding="utf-8"
             )
@@ -517,7 +530,11 @@ def register(
 
         # Local-only build tag; manifest stores the digest-pinned form.
         build_tag = f"{name}:_wfc-build"
+        口 = AutoStep(step_num=4, name="Build the image")
         docker_runner.build(build_dir, build_tag)
+        口 = Step(step_num=5, name="Resolve the image digest",
+                 purpose="Inspect the built image, strip the sha256: prefix, and form "
+                         "the local-only digest-pinned ref")
         raw_digest = docker_runner.image_inspect(build_tag)
         digest_hex = raw_digest.removeprefix("sha256:").strip()
         if not digest_hex:
@@ -573,9 +590,13 @@ def register(
     else:
         raise ValueError(
             f"Unknown backend {backend!r}. "
-            f"Supported: 'pixi', 'conda', 'inherit', 'byo'."
+            f"Supported: 'pixi', 'conda', 'byo'."
         )
 
+    口 = Step(step_num=6, name="Write the manifest record",
+             purpose="Precompute env_fingerprint (and source_fingerprint for any "
+                     "pixi/conda registration that staged source content) and write "
+                     "the EnvRecord into .wfc/envs.json")
     # -------------------------------------------------------------------------
     # env_fingerprint precompute (Cycle C write side; runtime read = Cycle D).
     # -------------------------------------------------------------------------
@@ -584,20 +605,34 @@ def register(
     env_fingerprint = store_env_content(blob, project_dir)
 
     # -------------------------------------------------------------------------
-    # source_fingerprint: package-list md5 (live-spec registrations only).
+    # source_fingerprint: package-list md5 for EVERY pixi/conda registration
+    # that staged source content (live-spec capture AND --from file mode).
     #
-    # Lets the canvas point its existing
-    # ``GET /api/registry/envs/blob/<md5>`` endpoint at the captured
-    # package list (conda explicit list + pip freeze, or pixi.lock
-    # semantic slice + pip freeze) so a reviewer can see what packages
-    # actually went into the image. Stays None for --from file-mode
-    # (no live env to introspect) and for inherit/byo (no separate
-    # env to capture distinct from env_fingerprint).
+    # The blob is assembled directly from the *source* dict that was already
+    # staged into the build context above — the FULL lock / explicit-list
+    # content, an explicit delimiter, then the pip-freeze content. This is a
+    # DISTINCT path from env_fingerprint (the container image-digest blob from
+    # capture_env_content): we deliberately do NOT call capture_env_content
+    # here, so env_fingerprint / build_cache_key stay byte-for-byte unchanged.
+    #
+    # The md5 lets the canvas point its existing
+    # ``GET /api/registry/envs/blob/<md5>`` endpoint (and the /packages parser
+    # in wfc.env_packages) at exactly what went into the image. Stays None for
+    # legacy mode (no source blob staged) and for byo.
     # -------------------------------------------------------------------------
     source_fingerprint: Optional[str] = None
-    if live_spec is not None:
-        sf_blob = capture_env_content(live_spec, project_dir)
-        source_fingerprint = store_env_content(sf_blob, project_dir)
+    if backend in ("pixi", "conda"):
+        from .env_packages import PIP_FREEZE_DELIMITER
+
+        lock_content = (
+            source.get("pixi_lock_content")
+            if backend == "pixi"
+            else source.get("explicit_list_content")
+        )
+        if lock_content is not None:
+            pip_freeze_content = source.get("pip_freeze_content", "")
+            sf_blob = f"{lock_content}{PIP_FREEZE_DELIMITER}{pip_freeze_content}"
+            source_fingerprint = store_env_content(sf_blob, project_dir)
 
     # -------------------------------------------------------------------------
     # Manifest write

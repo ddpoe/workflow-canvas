@@ -16,7 +16,7 @@ from datetime import datetime
 
 from sqlmodel import select, text
 
-from dflow.core.decorators import task, Step
+from axiom_annotations import task, Step
 
 from .database import get_session
 from .models import Run, RunInput, RunOutput, Method, MethodVersion

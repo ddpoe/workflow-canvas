@@ -19,7 +19,7 @@ import json
 from pathlib import Path
 
 import pytest
-from dflow.core.decorators import workflow
+from axiom_annotations import workflow
 
 from wfc.snakemake_gen import (
     StepDef, PipelineDef, generate_snakefile,
@@ -43,7 +43,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 def test_fan_in_no_variants_uses_default(wfc_root):
     """Fan-in DAG with no param sweeps. Every path includes /default/."""
 
-    src = PROJECT_ROOT / "pipeline_fan_in.json"
+    src = PROJECT_ROOT / "tests" / "fixtures" / "pipelines" / "pipeline_fan_in.json"
     pipeline = load_pipeline(src)
     snakefile = generate_snakefile(pipeline, wfc_root, pipeline_id="test-pid")
 
@@ -324,7 +324,7 @@ def test_differential_qc_scenario(wfc_root):
 # (pev-2026-04-17-parameter-sweeps-chip-ux, Tier 3)
 # =============================================================================
 
-from dflow.core.decorators import Step
+from axiom_annotations import Step
 
 
 @workflow(
@@ -347,11 +347,11 @@ def test_canvas_sweep_compile_e2e(wfc_root, tmp_path):
             {"id": "preprocess_1",
              "method": "preprocess", "module": "demo",
              "script": "methods/preprocess/preprocess.py",
-             "params": {"normalize": True}},
+             "params": {"normalize": True}, "env": "container:demo"},
             {"id": "filter_1",
              "method": "filter_cells", "module": "demo",
              "script": "methods/filter_cells/filter_cells.py",
-             "params": {"min_quality": 0.5}},
+             "params": {"min_quality": 0.5}, "env": "container:demo"},
         ],
         "links": [{"source": "preprocess_1", "target": "filter_1"}],
         "samples": ["SampleA", "SampleB"],

@@ -30,7 +30,7 @@
 
   // Per-kind form state (kept alive across kind-switches within the modal).
   let moduleForm = $state({ name: '', description: '' });
-  let methodForm = $state({ directory: '', module: '', method_name: '', env: 'inherit' });
+  let methodForm = $state({ directory: '', module: '', method_name: '' });
   let sampleForm = $state({ name: '', source: '' });
 
   let preChecks = $state<PreCheck[]>([]);
@@ -114,7 +114,6 @@
         directory: methodForm.directory,
         module: methodForm.module,
         method_name: methodForm.method_name || null,
-        env: methodForm.env || 'inherit',
       };
     }
     return { name: sampleForm.name, source: sampleForm.source, registration_mode: 'copy' };
@@ -210,10 +209,6 @@
           <span class="label-text">Method name <span class="dim">(optional)</span></span>
           <input class="input mono" type="text" bind:value={methodForm.method_name}
             placeholder="auto-derived from directory name" />
-        </label>
-        <label class="field">
-          <span class="label-text">Env</span>
-          <input class="input mono" type="text" bind:value={methodForm.env} placeholder="inherit" />
         </label>
 
       {:else}

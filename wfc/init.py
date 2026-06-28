@@ -20,7 +20,7 @@ import subprocess
 import textwrap
 from pathlib import Path
 
-from dflow.core.decorators import workflow, task, Step
+from axiom_annotations import workflow, task, Step
 
 # Default config template (TOML)
 _DEFAULT_CONFIG = textwrap.dedent("""\
@@ -39,12 +39,14 @@ _DEFAULT_CONFIG = textwrap.dedent("""\
     [pixi]
     root = ".pixi"
 
-    # DVC provenance storage (ADR-007).
-    # Uncomment to enable artifact tracking via DVC.
-    # [dvc]
-    # remote_type = "local"
-    # remote_path = "/path/to/dvc-storage"
-    # auto_init = true
+    # DVC provenance storage (ADR-007, ADR-018).
+    # `url` is the artifact archive location (any DVC-supported scheme).
+    # The default is a durable per-project directory outside this repo;
+    # blobs there are indexed by `.wfc/wfc.db`, so back up `.wfc/` to keep
+    # provenance recoverable (the archive itself is not tracked in git).
+    [dvc]
+    url = "{dvc_url}"
+    auto_init = true
 """)
 
 # Lines to add to .gitignore (only if not already present)
@@ -133,18 +135,158 @@ def _initial_commit(project_dir: Path) -> None:
         raise RuntimeError(f"Initial git commit failed: {result.stderr.strip()}")
 
 
+def _has_head_commit(directory: Path) -> bool:
+    """Return True if the repo at *directory* has at least one commit (HEAD)."""
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=str(directory), capture_output=True, text=True,
+    )
+    return result.returncode == 0
+
+
+def _has_global_git_identity() -> bool:
+    """Return True if both global user.name and user.email are configured."""
+    name = subprocess.run(
+        ["git", "config", "--global", "user.name"],
+        capture_output=True, text=True,
+    )
+    email = subprocess.run(
+        ["git", "config", "--global", "user.email"],
+        capture_output=True, text=True,
+    )
+    return bool(name.stdout.strip()) and bool(email.stdout.strip())
+
+
+def _default_archive_url(project_dir: Path) -> str:
+    """Return the default DVC archive URL for a project.
+
+    The default is a durable per-project directory under the user's home —
+    ``~/.wfc/archives/<project>`` — expressed as an absolute ``file://`` URL
+    so it lives outside the project repo and survives across re-clones.
+
+    Args:
+        project_dir: The project root (its name is used as the archive
+            subdirectory name).
+
+    Returns:
+        A ``file://<absolute-path>`` URL string.
+    """
+    archive_dir = (Path.home() / ".wfc" / "archives" / project_dir.name).resolve()
+    return f"file://{archive_dir.as_posix()}"
+
+
+def _resolve_archive_url(
+    project_dir: Path,
+    archive: str | None = None,
+    assume_yes: bool = False,
+) -> str:
+    """Resolve the DVC archive location for a fresh ``wfc init``.
+
+    Resolution order:
+      1. An explicit ``archive`` value (from ``--archive PATH``) — used as-is
+         (a bare path is normalized to a ``file://`` URL).
+      2. Otherwise, in non-interactive mode (``assume_yes``) or when stdin is
+         not a TTY, the default.
+      3. Otherwise, an interactive prompt that leads with what the archive is
+         and lets the user press Enter to accept the default.
+
+    Args:
+        project_dir: The project root.
+        archive: Explicit archive location, or ``None`` to use the default /
+            prompt.
+        assume_yes: When ``True``, skip the prompt and use the default.
+
+    Returns:
+        A DVC archive URL string.
+    """
+    default = _default_archive_url(project_dir)
+
+    if archive:
+        return _normalize_archive(archive, project_dir)
+
+    if assume_yes or not _stdin_is_interactive():
+        return default
+
+    print(
+        "\nDVC archive (provenance storage)\n"
+        "  wfc stores every run's outputs here, content-addressed and indexed\n"
+        "  by .wfc/wfc.db. The default is a durable folder outside this repo.\n"
+    )
+    try:
+        answer = input(f"  Archive location [{default}]: ").strip()
+    except EOFError:
+        answer = ""
+    if not answer:
+        return default
+    return _normalize_archive(answer, project_dir)
+
+
+def _normalize_archive(value: str, project_dir: Path) -> str:
+    """Normalize a user-supplied archive location to a DVC URL.
+
+    A value that already carries a scheme (``file://``, ``s3://``, ``ssh://``,
+    ...) is returned unchanged.  A bare filesystem path is expanded
+    (``~``), resolved to an absolute path relative to *project_dir* when
+    needed, and prefixed with ``file://``.
+
+    Args:
+        value: The user-supplied archive location.
+        project_dir: The project root (for resolving relative paths).
+
+    Returns:
+        A DVC archive URL string.
+    """
+    value = value.strip()
+    if "://" in value:
+        return value
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = (project_dir / path).resolve()
+    else:
+        path = path.resolve()
+    return f"file://{path.as_posix()}"
+
+
+def _stdin_is_interactive() -> bool:
+    """Return True if stdin is an interactive TTY (safe to prompt)."""
+    import sys
+    try:
+        return sys.stdin is not None and sys.stdin.isatty()
+    except (ValueError, AttributeError):
+        return False
+
+
 @workflow(purpose="Scaffold a new wfc project directory with database, config, and artifact store")
-def init_project(project_dir: Path, init_git: bool = False) -> dict[str, bool]:
-    """Scaffold a wfc project directory.
+def init_project(
+    project_dir: Path,
+    init_git: bool = False,
+    archive: str | None = None,
+    assume_yes: bool = False,
+) -> dict[str, bool]:
+    """Scaffold a wfc project directory and wire it up to be runnable.
 
     Creates the directory structure and config files needed for a new wfc
-    project.  Safe to run in a non-empty directory — existing files are
-    never overwritten.
+    project, then attempts to bring the project to a runnable state: a live
+    DVC archive, a git repo with a clean HEAD, and a Docker pre-flight check.
+    Safe to run in a non-empty directory — existing files are never
+    overwritten, and re-running fills only previously-missing pieces
+    (idempotent).
+
+    git and Docker are hard run-requirements that init detects and surfaces
+    but never installs.  A missing/failing git or Docker does NOT abort init:
+    the scaffold still completes, the gap is shown loudly in the closing
+    health summary, and init still exits 0 (cycle decision D-3/D-4).
 
     Args:
         project_dir: Root directory for the project (created if needed).
-        init_git: If ``True``, run ``git init`` in *project_dir* when no git
-            repo is detected.  If ``False`` (default), only print a warning.
+        init_git: Accepted no-op alias — git is now initialized by default.
+            Retained for backward compatibility with scripts/docs.
+        archive: Explicit DVC archive location (any DVC URL or path).  When
+            provided, the wizard does not prompt for it.  Defaults to
+            ``file://~/.wfc/archives/<project>`` (expanded to an absolute
+            path outside the repo).
+        assume_yes: When ``True``, run fully non-interactively (accept all
+            defaults, never call ``input()``).  Set by ``wfc init --yes``.
 
     Returns:
         Dict mapping each created resource name to ``True`` if created
@@ -198,18 +340,30 @@ def init_project(project_dir: Path, init_git: bool = False) -> dict[str, bool]:
     runs_dir.mkdir(exist_ok=True)
 
     口 = Step(step_num=2, name="Write config file",
-             purpose="Generate wf-canvas.toml with SQLite database path if it does not already exist")
+             purpose="Generate wf-canvas.toml with SQLite database path and a live "
+                     "[dvc] archive location if it does not already exist")
 
     config_path = wfc_dir / "wf-canvas.toml"
     if not config_path.exists():
         db_path = (wfc_dir / "wfc.db").as_posix()
         project_name = project_dir.name
+        # Resolve the DVC archive location: explicit --archive, else the
+        # interactive wizard prompt (Enter-past default), else the default.
+        dvc_url = _resolve_archive_url(
+            project_dir, archive=archive, assume_yes=assume_yes
+        )
         config_path.write_text(
-            _DEFAULT_CONFIG.format(db_path=db_path, project_name=project_name),
+            _DEFAULT_CONFIG.format(
+                db_path=db_path,
+                project_name=project_name,
+                dvc_url=dvc_url,
+            ),
             encoding="utf-8",
         )
         created["wf-canvas.toml"] = True
     else:
+        # Idempotent: an existing config is reused verbatim — never
+        # re-prompted, never clobbered.
         created["wf-canvas.toml"] = False
 
     口 = Step(step_num=3, name="Initialize database",
@@ -256,26 +410,48 @@ def init_project(project_dir: Path, init_git: bool = False) -> dict[str, bool]:
         if ".gitignore" not in created:
             created[".gitignore"] = False  # nothing new added
 
-    口 = Step(step_num=5, name="Check git repository",
-             purpose="Warn if project directory is not inside a git repo; run git init if --git flag set")
+    口 = Step(step_num=5, name="Initialize git repository",
+             purpose="git is a hard run-requirement: always attempt git init + an "
+                     "initial commit; continue-on-fail (never abort init) — a "
+                     "missing binary or failed commit is surfaced in the health "
+                     "summary, not raised (D-3)")
 
-    in_repo = _is_git_repo(project_dir)
-    if not in_repo:
-        if init_git:
-            subprocess.run(["git", "init", str(project_dir)], check=True)
-            created[".git/"] = True
-            print("Initialized git repository.")
-            # Initial commit — stages config and ignore file only (not the DB)
-            _initial_commit(project_dir)
-        else:
-            print(
-                "\n  WARNING: No git repository detected at"
-                f" {project_dir}\n"
-                "  wfc run uses git commits to version pipeline runs.\n"
-                "  Run `git init && git add . && git commit -m 'init'`\n"
-                "  before using `wfc run`, or re-run `wfc init --git` to\n"
-                "  initialize the repository now."
+    # git default-on, continue-on-fail (symmetric with Docker, D-3). A
+    # missing git binary or a failed commit must NOT abort the scaffold — it
+    # is caught and downgraded to a health-summary FAIL.
+    created[".git/"] = False
+    try:
+        in_repo = _is_git_repo(project_dir)
+        if not in_repo:
+            init_res = subprocess.run(
+                ["git", "init", str(project_dir)],
+                capture_output=True, text=True,
             )
+            if init_res.returncode != 0:
+                raise RuntimeError(init_res.stderr.strip() or "git init failed")
+            created[".git/"] = True
+            print("  + Initialized git repository.")
+            # Initial commit — stages config and ignore file only (not the DB).
+            # Uses an inline fallback identity so no global git config is
+            # required; print a note that it can be overridden via `git config`.
+            _initial_commit(project_dir)
+            if not _has_global_git_identity():
+                print(
+                    "    (committed with a fallback identity 'wfc <wfc@wfc>';\n"
+                    "     set your own with `git config user.name/user.email`)"
+                )
+        else:
+            # Existing repo: only commit if there is no HEAD yet AND the
+            # tracked config/ignore files are not already committed. A clean
+            # HEAD is left untouched (idempotent — no re-commit).
+            if not _has_head_commit(project_dir):
+                _initial_commit(project_dir)
+                print("  + Created initial git commit.")
+    except FileNotFoundError:
+        # git binary missing entirely.
+        print("\n  WARNING: git is not installed — see the health summary below.")
+    except Exception as exc:  # noqa: BLE001 — continue-on-fail by design
+        print(f"\n  WARNING: git setup did not complete: {exc}")
 
     口 = Step(step_num=6, name="Initialize DVC provenance",
              purpose="Auto-init DVC when [dvc] section is present in wf-canvas.toml (ADR-007)")
@@ -304,6 +480,23 @@ def init_project(project_dir: Path, init_git: bool = False) -> dict[str, bool]:
             created["dvc"] = False
     except FileNotFoundError:
         created["dvc"] = False
+
+    口 = Step(step_num=7, name="Run-readiness health summary",
+             purpose="Pre-flight git/DVC/Docker (Docker is a hard run-requirement "
+                     "init can detect but not install) and print the closing health "
+                     "table + honest archive note; init exits 0 regardless (D-4)")
+
+    # Pre-flight all three run-requirements through the shared engine so the
+    # summary matches `wfc doctor` exactly. None of these abort init.
+    from .preflight import run_all_checks, render_health_table
+    results = run_all_checks(project_dir)
+    print()
+    print(render_health_table(results))
+    print(
+        "\n  Note: your DVC archive holds run outputs indexed by .wfc/wfc.db.\n"
+        "  The archive is NOT tracked in git — back up .wfc/ to keep provenance\n"
+        "  recoverable."
+    )
 
     return created
 

@@ -6,9 +6,7 @@ authors = ["Dante <dantepoe@noboundssolutions.com>"]
 license = "BSD-3-Clause"
 packages = [{include = "wfc"}]
 include = [
-  { path = "wfc/canvas/static/dist/**/*", format = ["sdist", "wheel"] },
-  { path = "wfc/AGENTS.md", format = ["sdist", "wheel"] },
-  { path = "wfc/agent_docs/**/*.md", format = ["sdist", "wheel"] }
+  { path = "wfc/canvas/static/dist/**/*", format = ["sdist", "wheel"] }
 ]
 
 [tool.poetry.dependencies]
@@ -19,11 +17,11 @@ snakemake = ">=8.0"
 pandas = ">=2.0"
 numpy = ">=1.24"
 pyarrow = ">=14.0"
-document-workflow = "==0.1.0"
-axiom-graph = {version = "^2.1.1", extras = ["viz", "js"]}
+axiom-annotations = "^0.1.0"
 dvc = "^3.67.1"
 
 [tool.poetry.group.dev.dependencies]
+axiom-graph = {version = "^2.1.1", extras = ["viz", "js"]}
 pytest = ">=9.0.2,<10"
 pytest-html = ">=4.0"
 mkdocs = "^1.6.1"
@@ -36,10 +34,11 @@ uvicorn = {version = ">=0.27", extras = ["standard"]}
 psutil = ">=5.9"
 
 [tool.poetry.group.docs.dependencies]
-sphinx = ">=7.0"
+sphinx = ">=8.0,<9.0"
 sphinx-rtd-theme = ">=2.0"
 sphinx-design = ">=0.6"
 sphinxcontrib-mermaid = ">=1.0"
+myst-parser = "^5.1.0"
 
 [tool.poetry.scripts]
 workflow-canvas = "wfc.__main__:main"

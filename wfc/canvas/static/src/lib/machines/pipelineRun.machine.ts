@@ -381,7 +381,13 @@ export function makePipelineRunMachine() {
                   typeof (err as { message: unknown }).message === 'string'
                     ? (err as { message: string }).message
                     : String(err ?? 'submit failed');
-                return { message, kind: 'unknown' };
+                // Preserve the kind/hint from a run-readiness rejection (D-6)
+                // so the card renders the Docker/git affordance; fall back to
+                // 'unknown' for plain submit/validate errors.
+                const eo = (err && typeof err === 'object') ? err as Record<string, unknown> : {};
+                const kind = typeof eo.kind === 'string' ? eo.kind : 'unknown';
+                const hint = typeof eo.hint === 'string' ? eo.hint : undefined;
+                return { message, kind, hint };
               },
             }),
           },

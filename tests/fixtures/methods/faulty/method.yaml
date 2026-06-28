@@ -3,13 +3,13 @@
 # Same input/output contract as transform so it can be swapped in.
 inputs:
   data:
-    type: csv
+    type: .csv
     required: true
     description: "Input CSV (may not be used depending on failure mode)"
 
 outputs:
   output:
-    type: csv
+    type: .csv
     required: true
     description: "Output CSV (may not be produced depending on failure mode)"
 
@@ -20,4 +20,4 @@ params:
     description: "'crash' raises an exception, 'missing_output' exits without writing output, 'succeed' behaves like transform"
 
 executor: python
-env: inherit
+env: container:fixture-env

@@ -54,10 +54,12 @@ def db_engine(tmp_path, monkeypatch):
         m1 = Method(
             name="preprocess", module_id=mod.id,
             script_path="methods/preprocess/preprocess.py",
+            env="container:demo",
         )
         m2 = Method(
             name="filter_cells", module_id=mod.id,
             script_path="methods/filter_cells/filter_cells.py",
+            env="container:demo",
         )
         session.add_all([m1, m2])
         session.flush()
@@ -66,19 +68,39 @@ def db_engine(tmp_path, monkeypatch):
         mc1 = MethodContract(
             method_id=m1.id,
             input_slots={},
-            output_slots={"data": {"type": "CSV"}},
+            output_slots={"data": {"type": ".csv"}},
             params_schema={},
         )
         mc2 = MethodContract(
             method_id=m2.id,
-            input_slots={"data": {"type": "CSV", "required": True}},
-            output_slots={"filtered": {"type": "ANNDATA"}},
+            input_slots={"data": {"type": ".csv", "required": True}},
+            output_slots={"filtered": {"type": ".h5ad"}},
             params_schema={},
         )
         session.add_all([mc1, mc2])
         session.commit()
 
     yield engine
+
+
+@pytest.fixture(autouse=True)
+def _ready_preflight(monkeypatch):
+    """Default the run-readiness pre-flight (D-6 gate) to healthy.
+
+    The submission gate in ``run_workflow`` calls ``check_docker``/``check_git``
+    before spawning the run thread.  The test tmp project has no git repo and
+    Docker may be down, so happy-path run tests stub both to ``ok``.  The
+    readiness-gate test overrides these to drive the reject path.
+    """
+    from wfc import preflight
+    monkeypatch.setattr(
+        preflight, "check_docker",
+        lambda *a, **k: preflight.CheckResult("docker", "ok", "ok"),
+    )
+    monkeypatch.setattr(
+        preflight, "check_git",
+        lambda *a, **k: preflight.CheckResult("git", "ok", "ok"),
+    )
 
 
 @pytest.fixture
@@ -163,7 +185,7 @@ class TestEnrichPipeline:
         )
         result = _enrich_pipeline(pipeline)
         node = result["nodes"][0]
-        # preprocess has output_slots: {"data": {"type": "CSV"}}
+        # preprocess has output_slots: {"data": {"type": ".csv"}}
         assert "data" in node["slot_outputs"]
         assert node["slot_outputs"]["data"] == "data.csv"
 
@@ -228,6 +250,56 @@ class TestRunEndpoint:
             json=_make_pipeline_input(nodes=[], links=[]),
         )
         assert resp.status_code == 400
+
+
+class TestRunReadinessGate:
+    """D-6 3-lite: submission is gated on Docker/git readiness."""
+
+    def test_docker_down_rejects_with_kind_tag_no_thread(self, client, monkeypatch):
+        """Docker down → 409 {kind,message,hint}; no thread/orphan row spawned."""
+        from wfc import preflight
+        monkeypatch.setattr(
+            preflight, "check_docker",
+            lambda *a, **k: preflight.CheckResult(
+                "docker", "fail",
+                "Docker is installed but the daemon is not running.",
+                "Start Docker Desktop and try again.",
+            ),
+        )
+        # If the gate failed to short-circuit, run_pipeline_fn would be called.
+        called = {"ran": False}
+
+        def _should_not_run(**kwargs):
+            called["ran"] = True
+            return 0
+
+        _active_jobs.clear()
+        with patch("wfc.canvas.server.run_pipeline_fn", return_value=_should_not_run):
+            resp = client.post("/api/workflow/run", json=_make_pipeline_input())
+
+        assert resp.status_code == 409
+        detail = resp.json()["detail"]
+        assert detail["kind"] == "not_runnable_docker"
+        assert "daemon is not running" in detail["message"]
+        assert detail["hint"]
+        assert called["ran"] is False
+        assert _active_jobs == {}
+
+    def test_git_not_ready_rejects_with_kind_tag(self, client, monkeypatch):
+        """git not ready (and Docker ok) → 409 not_runnable_git."""
+        from wfc import preflight
+        monkeypatch.setattr(
+            preflight, "check_git",
+            lambda *a, **k: preflight.CheckResult(
+                "git", "fail", "No git repository here.", "Run `wfc init`.",
+            ),
+        )
+        _active_jobs.clear()
+        with patch("wfc.canvas.server.run_pipeline_fn", return_value=lambda **k: 0):
+            resp = client.post("/api/workflow/run", json=_make_pipeline_input())
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["kind"] == "not_runnable_git"
+        assert _active_jobs == {}
 
 
 # =============================================================================
@@ -494,7 +566,15 @@ class TestStatusEndpoint:
 
         resp = client.get("/api/workflow/status/mix-cancel-fail-job")
         assert resp.status_code == 200
-        assert resp.json()["overall_status"] == "failed"
+        data = resp.json()
+        assert data["overall_status"] == "failed"
+        # Lock the joint signal the canvas poller depends on: the downstream
+        # node reads 'cancelled' AND the run thread is dead in the SAME
+        # response. The frontend waits for thread_alive=False before treating
+        # a failed run as done, which is what lets downstream nodes flip from
+        # 'pending' to 'cancelled' (see services.ts::pollNodeStatus).
+        assert data["node_states"]["filter_cells_1"]["status"] == "cancelled"
+        assert data["thread_alive"] is False
 
         _active_jobs.clear()
 
@@ -720,7 +800,7 @@ class TestCaptureOutputParam:
 # Parameter sweep pass-through (pev-2026-04-17-parameter-sweeps-chip-ux)
 # =============================================================================
 
-from dflow.core.decorators import workflow as _workflow
+from axiom_annotations import workflow as _workflow
 
 
 @_workflow(purpose="Verify _enrich_pipeline passes param_sets and "

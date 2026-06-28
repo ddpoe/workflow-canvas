@@ -33,6 +33,7 @@ def seed():
             module_id=mod.id,
             name="preprocess",
             script_path="methods/preprocess/preprocess.py",
+            env="container:demo",
         )
         session.add(m1)
         session.commit()
@@ -57,6 +58,7 @@ def seed():
             module_id=mod.id,
             name="filter_cells",
             script_path="methods/filter_cells/filter_cells.py",
+            env="container:demo",
         )
         session.add(m2)
         session.commit()
@@ -81,6 +83,7 @@ def seed():
             module_id=mod.id,
             name="label",
             script_path="methods/label/label.py",
+            env="container:demo",
         )
         session.add(m3)
         session.commit()
@@ -105,6 +108,7 @@ def seed():
             module_id=mod.id,
             name="aggregate",
             script_path="methods/aggregate/aggregate.py",
+            env="container:demo",
         )
         session.add(m4)
         session.commit()

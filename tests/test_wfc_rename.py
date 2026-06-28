@@ -6,7 +6,7 @@ introduced by the rename. The rest of the suite proves the unchanged logic
 still works.
 """
 
-from dflow.core.decorators import workflow, Step
+from axiom_annotations import workflow, Step
 
 
 @workflow(purpose="A legacy .pm/ project is backed up then migrated to .wfc/; re-run is a no-op")

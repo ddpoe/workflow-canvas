@@ -32,7 +32,7 @@ import pandas as pd
 import pytest
 from sqlmodel import select
 
-from dflow.core.decorators import workflow, Step, AutoStep
+from axiom_annotations import workflow, Step, AutoStep
 
 from wfc.init import init_project
 from wfc.register import register_module, register_method
@@ -243,7 +243,7 @@ def test_l2_sirna_pipeline(wfc_project):
 
     口 = AutoStep(step_num=6, name="Execute L2 siRNA pipeline")
     run_pipeline(
-        pipeline_path=str(tmp / "pipeline_l2_sirna.json"),
+        pipeline_path=str(PROJECT_ROOT / "tests" / "fixtures" / "pipelines" / "pipeline_l2_sirna.json"),
         project_root=str(tmp),
         wfc_root=str(PROJECT_ROOT),
         cores=4)

@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest
-from dflow.core.decorators import workflow, task, Step
+from axiom_annotations import workflow, task, Step
 from sqlmodel import select
 
 from wfc.database import get_session
@@ -98,7 +98,7 @@ def _make_run(tmp_project):
             session.add(module)
             session.commit()
             session.refresh(module)
-            method = Method(name="m1", module_id=module.id)
+            method = Method(name="m1", module_id=module.id, env="container:demo")
             session.add(method)
             session.commit()
             session.refresh(method)

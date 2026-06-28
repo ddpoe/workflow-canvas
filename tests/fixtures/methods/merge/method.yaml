@@ -2,18 +2,18 @@
 # Fan-in: concatenates multiple CSVs vertically.
 inputs:
   sources:
-    type: csv
+    type: .csv
     required: true
     multiple: true
     description: "Two or more CSVs to concatenate"
 
 outputs:
   merged:
-    type: csv
+    type: .csv
     required: true
     description: "Concatenated CSV with all rows from all sources"
 
 params: {}
 
 executor: python
-env: inherit
+env: container:fixture-env

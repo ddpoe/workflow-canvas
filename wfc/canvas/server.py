@@ -7,7 +7,6 @@ Endpoints
 ---------
 GET  /                            Serve the canvas SPA
 GET  /api/modules                 All modules + methods + slot contracts (live DB)
-GET  /api/types                   Data-type metadata for slot colouring
 POST /api/workflow/validate       Validate a workflow graph against the DB
 POST /api/workflow/run            Submit a workflow for execution
 POST /api/workflow/save           Save a workflow definition
@@ -55,6 +54,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlmodel import select
 
+from ..contracts import output_slot_filename, validate_output_slot_type
 from ..database import get_session
 from ..models import Method, MethodContract, Module, Run, RunOutput
 from .wfc_provider import WfcProvider
@@ -117,25 +117,6 @@ def _import_fail_pipeline():
 # Callable references -- overridden in tests via mock
 run_pipeline_fn = _import_run_pipeline
 fail_pipeline_fn = _import_fail_pipeline
-
-# Extension mapping for slot_outputs (type -> file extension)
-_TYPE_EXT_MAP: Dict[str, str] = {
-    "CSV": ".csv",
-    "csv": ".csv",
-    "ANNDATA": ".h5ad",
-    "PNG": ".png",
-    "png": ".png",
-    "MODEL": ".pkl",
-    "model": ".pkl",
-    "FIGURE": ".png",
-    "LABELS": ".csv",
-    "FEATURE_SET": ".csv",
-    "JSON": ".json",
-    "json": ".json",
-    "directory": "",
-    "DIRECTORY": "",
-}
-
 
 def _enrich_pipeline(pipeline: "PipelineInput") -> Dict[str, Any]:
     """Enrich a PipelineJSON payload with script paths and slot_outputs from the DB.
@@ -202,13 +183,17 @@ def _enrich_pipeline(pipeline: "PipelineInput") -> Dict[str, Any]:
         slot_outputs: Dict[str, str] = {}
         slot_types: Dict[str, str] = {}
         for slot_name, slot_spec in output_slots.items():
-            slot_type = slot_spec.get("type", "CSV") if isinstance(slot_spec, dict) else "CSV"
-            ext = _TYPE_EXT_MAP.get(slot_type, ".csv")
-            slot_outputs[slot_name] = f"{slot_name}{ext}"
+            raw_type = slot_spec.get("type") if isinstance(slot_spec, dict) else slot_spec
+            # Defensive backstop: a DB contract that predates registration-time
+            # validation still fails loud here rather than misnaming its file.
+            # The slot `type` IS the file extension (verbatim, dotted) or a
+            # `dir`/`directory` marker normalised to canonical `directory`.
+            canonical_type = validate_output_slot_type(slot_name, raw_type)
+            slot_outputs[slot_name] = output_slot_filename(slot_name, canonical_type)
             # ADR-010: emit parallel slot_types so both snakemake_gen and
             # run_step can consult the contract-declared type as the single
             # source of truth for directory-slot detection.
-            slot_types[slot_name] = slot_type
+            slot_types[slot_name] = canonical_type
 
         node_dict = {
             "id": node.id,
@@ -218,7 +203,7 @@ def _enrich_pipeline(pipeline: "PipelineInput") -> Dict[str, Any]:
             "params": node.params,
             "slot_outputs": slot_outputs,
             "slot_types": slot_types,
-            "env": info.get("env", "inherit"),
+            "env": info.get("env"),
         }
         # Pass custom NID label through to pipeline JSON if set
         if node.label:
@@ -304,23 +289,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Workflow Canvas", lifespan=lifespan)
-
-
-# =============================================================================
-# Data-type metadata  (slot colouring in the canvas UI)
-# =============================================================================
-
-DATA_TYPES = {
-    "anndata":     {"color": "#4A90D9", "label": "AnnData"},
-    "labels":      {"color": "#E9A847", "label": "Labels"},
-    "feature_set": {"color": "#50C878", "label": "FeatureSet"},
-    "array":       {"color": "#9B59B6", "label": "Array"},
-    "figure":      {"color": "#E74C3C", "label": "Figure"},
-    "dataframe":   {"color": "#F39C12", "label": "DataFrame"},
-    "path":        {"color": "#1ABC9C", "label": "Path"},
-    "string":      {"color": "#95A5A6", "label": "String"},
-    "number":      {"color": "#95A5A6", "label": "Number"},
-}
 
 
 # =============================================================================
@@ -475,12 +443,6 @@ def get_modules():
     return result
 
 
-@app.get("/api/types")
-def get_types():
-    """Return data-type metadata for canvas UI slot colouring."""
-    return DATA_TYPES
-
-
 # =============================================================================
 # Registry endpoints -- onboarding/registry UI (design_handoff_onboarding)
 # =============================================================================
@@ -542,7 +504,7 @@ def get_registry_methods():
                 out.append({
                     "name": meth.name,
                     "module": mod.name,
-                    "env": meth.env or "inherit",
+                    "env": meth.env,
                     "validated": None,
                     "runCount": run_counts.get(meth.id, 0),
                     "source": f"methods/{meth.name}/method.yaml",
@@ -692,7 +654,7 @@ def validate_registry_method(req: MethodValidateRequest):
             )
         method_id = meth.id
         script_rel = meth.script_path or f"methods/{meth.name}/{meth.name}.py"
-        env_spec = meth.env or "inherit"
+        env_spec = meth.env
 
     script_path = _project_root() / script_rel
     fingerprint = _script_fingerprint(script_path)
@@ -710,7 +672,7 @@ def validate_registry_method(req: MethodValidateRequest):
     if cache_key in _method_validate_cache:
         return _method_validate_cache[cache_key]
 
-    python_bin = sys.executable if env_spec == "inherit" else sys.executable
+    python_bin = sys.executable
     rc, stdout, stderr = _run_import_check_fn(python_bin, str(script_path))
 
     validated = rc == 0
@@ -860,14 +822,97 @@ def _valid_md5(md5: str) -> bool:
     return len(md5) == 32 and all(c in _HEX32 for c in md5)
 
 
+def _env_record_for_spec(spec: str, project_dir: Optional[Path] = None):
+    """Resolve a ``Method.env`` spec to its registered ``EnvRecord``.
+
+    Normalizes the spec to the bare manifest name — strips a ``container:``
+    prefix, a ``docker://`` scheme, and a trailing ``@sha256:<hex>`` digest —
+    then looks it up in ``.wfc/envs.json``. Typed (``pixi:``/``conda:``) or
+    otherwise-unmatched specs that have no manifest entry resolve to
+    ``(None, None)`` gracefully, so callers can surface an honest "not
+    captured" state rather than erroring.
+
+    Args:
+        project_dir: Project root containing ``.wfc/``. Defaults to the
+            canvas project root.
+        spec: The ``Method.env`` value (e.g. ``container:demo``).
+
+    Returns:
+        ``(record, backend)`` — the :class:`wfc.envs.EnvRecord` and its
+        ``backend`` string, or ``(None, None)`` when no manifest entry
+        matches.
+    """
+    from .. import envs as envs_mod
+
+    if project_dir is None:
+        project_dir = _project_root()
+
+    name = spec
+    if name.startswith("container:"):
+        name = name[len("container:"):]
+    if name.startswith("docker://"):
+        name = name[len("docker://"):]
+    idx = name.rfind("@sha256:")
+    if idx >= 0:
+        name = name[:idx]
+
+    try:
+        record = envs_mod.get(name, project_dir)
+    except Exception:
+        record = None
+    if record is None:
+        return None, None
+    return record, record.backend
+
+
+def _read_env_blob_text(md5: str, project_root: Path) -> str:
+    """Read a DVC-cached env-content blob by md5, with a path-traversal guard.
+
+    Shared read path for ``GET .../blob/<md5>`` and ``GET .../packages``.
+
+    Args:
+        md5: 32-char lowercase hex content hash.
+        project_root: Canvas project root (containing ``.dvc/``).
+
+    Returns:
+        The decoded blob text.
+
+    Raises:
+        HTTPException: 400 on malformed md5 or attempted path traversal,
+            404 when the blob is absent from the local cache.
+    """
+    if not _valid_md5(md5):
+        raise HTTPException(status_code=400, detail="malformed md5 (expect 32 lowercase hex)")
+
+    cache_root = (project_root.resolve() / ".dvc" / "cache" / "files" / "md5").resolve()
+    blob_path = (cache_root / md5[:2] / md5[2:]).resolve()
+
+    # Path-traversal guard: the resolved path must stay under cache_root.
+    try:
+        blob_path.relative_to(cache_root)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="path traversal rejected")
+
+    if not blob_path.is_file():
+        raise HTTPException(status_code=404, detail=f"blob not found: {md5}")
+
+    return blob_path.read_text(encoding="utf-8")
+
+
 @app.get("/api/registry/envs")
 def get_registry_envs():
     """List distinct env specs referenced by registered methods.
 
-    One row per ``Method.env`` value. Aggregates method names, distinct
-    env_fingerprint count, total run count, and most-recent run timestamp
-    (``Run.started_at``) across all methods sharing that env.
+    One row per ``Method.env`` value. Aggregates method names, total run
+    count, and most-recent run timestamp (``Run.started_at``) across all
+    methods sharing that env, and resolves the registered env's ``backend``
+    plus a ``has_packages`` flag (True when a ``source_fingerprint`` was
+    captured at registration — i.e. a package list is available to attempt).
+    It does not guarantee a non-empty result: ``GET .../packages`` parses that
+    blob and may return an empty list if the captured blob carries no
+    recognizable packages (e.g. an older capture).
     """
+    project_root = _project_root()
     with get_session() as session:
         # Methods grouped by env spec.
         methods = session.exec(select(Method)).all()
@@ -878,13 +923,14 @@ def get_registry_envs():
         by_env: Dict[str, Dict[str, Any]] = {}
         method_ids_by_env: Dict[str, List[int]] = {}
         for meth in methods:
-            spec = meth.env or "inherit"
+            spec = meth.env
             row = by_env.setdefault(
                 spec,
                 {
                     "spec": spec,
                     "methods": [],
-                    "fingerprint_count": 0,
+                    "backend": None,
+                    "has_packages": False,
                     "last_run_at": None,
                     "run_count": 0,
                 },
@@ -900,11 +946,15 @@ def get_registry_envs():
             ).all()
             row = by_env[spec]
             row["run_count"] = len(runs)
-            distinct_fps = {r.env_fingerprint for r in runs if r.env_fingerprint}
-            row["fingerprint_count"] = len(distinct_fps)
             started = [r.started_at for r in runs if r.started_at is not None]
             if started:
                 row["last_run_at"] = max(started).isoformat()
+
+        # Resolve backend + package-capture state from the env manifest.
+        for spec, row in by_env.items():
+            record, backend = _env_record_for_spec(spec, project_root)
+            row["backend"] = backend
+            row["has_packages"] = bool(record and record.source_fingerprint)
 
         # Sorted: most-recently-run first, then alphabetical for ties.
         envs = sorted(
@@ -914,65 +964,37 @@ def get_registry_envs():
     return {"envs": envs}
 
 
-@app.get("/api/registry/envs/{spec:path}/fingerprints")
-def get_registry_env_fingerprints(spec: str):
-    """Per-env fingerprint history derived from Run.env_fingerprint rows.
+@app.get("/api/registry/envs/{spec:path}/packages")
+def get_registry_env_packages(spec: str):
+    """Installed-package list for a registered pixi/conda env.
 
-    For each distinct env_fingerprint observed in Runs of methods whose
-    ``env == spec``, return first-seen / last-seen timestamps and run count.
-    A fingerprint only present in the DVC cache (e.g. from a manual
-    snapshot) is NOT returned here — the snapshot endpoint returns it
-    directly; the frontend merges.
+    Resolves *spec* to its :class:`wfc.envs.EnvRecord`, reads the captured
+    ``source_fingerprint`` blob from the DVC cache, and parses it into a
+    sorted, de-duplicated, source-tagged package list via
+    :func:`wfc.env_packages.parse_packages`.
+
+    Honest empty state: a byo env, an env that never staged source content,
+    or an unmatched spec returns ``captured: false`` with ``packages: []`` —
+    never a fabricated list.
+
+    Response::
+
+        {"spec": "container:demo",
+         "backend": "pixi" | "conda" | "byo" | null,
+         "captured": true,
+         "packages": [{"name": ..., "version": ..., "source": "pixi"}, ...]}
     """
-    with get_session() as session:
-        methods = session.exec(
-            select(Method).where(Method.env == spec)
-        ).all()
-        if not methods and spec != "inherit":
-            raise HTTPException(
-                status_code=404,
-                detail=f"No methods registered with env '{spec}'",
-            )
-        method_ids = [m.id for m in methods]
-        runs = (
-            session.exec(select(Run).where(Run.method_id.in_(method_ids))).all()
-            if method_ids
-            else []
-        )
+    from ..env_packages import parse_packages
 
-        by_fp: Dict[str, Dict[str, Any]] = {}
-        for r in runs:
-            if not r.env_fingerprint:
-                continue
-            entry = by_fp.setdefault(
-                r.env_fingerprint,
-                {
-                    "md5": r.env_fingerprint,
-                    "first_seen": None,
-                    "last_seen": None,
-                    "run_count": 0,
-                    "source": "run",
-                },
-            )
-            entry["run_count"] += 1
-            if r.started_at is not None:
-                ts = r.started_at
-                if entry["first_seen"] is None or ts < entry["first_seen"]:
-                    entry["first_seen"] = ts
-                if entry["last_seen"] is None or ts > entry["last_seen"]:
-                    entry["last_seen"] = ts
+    project_root = _project_root()
+    record, backend = _env_record_for_spec(spec, project_root)
 
-        # Serialize datetimes.
-        fps = []
-        for e in by_fp.values():
-            fps.append({
-                **e,
-                "first_seen": e["first_seen"].isoformat() if e["first_seen"] else None,
-                "last_seen": e["last_seen"].isoformat() if e["last_seen"] else None,
-            })
-        # Most-recent first.
-        fps.sort(key=lambda e: (e["last_seen"] is None, e["last_seen"]), reverse=True)
-    return {"spec": spec, "fingerprints": fps}
+    if record is None or not record.source_fingerprint:
+        return {"spec": spec, "backend": backend, "captured": False, "packages": []}
+
+    blob = _read_env_blob_text(record.source_fingerprint, project_root)
+    packages = parse_packages(blob, backend)
+    return {"spec": spec, "backend": backend, "captured": True, "packages": packages}
 
 
 class RegisterEnvRequest(BaseModel):
@@ -996,7 +1018,7 @@ def post_envs(req: RegisterEnvRequest):
     Body shape::
 
         {"name": "image-io",
-         "backend": "pixi" | "conda" | "inherit" | "byo",
+         "backend": "pixi" | "conda" | "byo",
          "source": {...},                  # per-backend payload
          "base_image": "..." | null,       # optional, not valid for byo
          "force": false}
@@ -1026,7 +1048,16 @@ def post_envs(req: RegisterEnvRequest):
         # 400: bad input (unknown backend, missing image, invalid ref).
         raise HTTPException(status_code=400, detail=str(exc))
     except RuntimeError as exc:
-        # 500: docker subprocess failure (build / pull / inspect).
+        # docker subprocess failure (build / pull / inspect). When the daemon
+        # is simply down, reframe into the friendly kind-tagged payload (D-6)
+        # so the canvas shows a clean readiness card instead of a raw 500.
+        from ..preflight import check_docker
+        docker_check = check_docker()
+        if docker_check.status == "fail":
+            raise HTTPException(
+                status_code=409, detail=_readiness_payload(docker_check)
+            )
+        # Genuine build/pull failure with a live daemon — keep the raw 500.
         raise HTTPException(status_code=500, detail=str(exc))
 
     payload = record.to_dict()
@@ -1034,78 +1065,17 @@ def post_envs(req: RegisterEnvRequest):
     return payload
 
 
-@app.post("/api/registry/envs/{spec:path}/snapshot")
-def snapshot_registry_env(spec: str):
-    """Capture env content on demand and store it in the DVC cache.
-
-    Runs ``capture_env_content`` + ``store_env_content`` against the live
-    env and returns the resulting md5. No Run row is created; the only
-    side effect is a (possibly no-op) write to the DVC content-addressed
-    cache.
-
-    Response ``is_new`` is True when the md5 does not already appear in
-    any ``Run.env_fingerprint`` for this spec (i.e. this fingerprint has
-    not been observed via an actual Run before).
-    """
-    from ..version import capture_env_content, store_env_content
-
-    project_root = _project_root()
-    try:
-        content = capture_env_content(spec, project_root)
-        md5 = store_env_content(content, project_root)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
-    observed_at = datetime.now(timezone.utc).isoformat()
-    with get_session() as session:
-        methods = session.exec(
-            select(Method).where(Method.env == spec)
-        ).all()
-        method_ids = [m.id for m in methods]
-        is_new = True
-        if method_ids:
-            existing = session.exec(
-                select(Run).where(Run.method_id.in_(method_ids)).where(
-                    Run.env_fingerprint == md5
-                )
-            ).first()
-            is_new = existing is None
-
-    return {
-        "spec": spec,
-        "md5": md5,
-        "is_new": is_new,
-        "observed_at": observed_at,
-    }
-
-
 @app.get("/api/registry/envs/blob/{md5}")
 def get_registry_env_blob(md5: str):
     """Read an env-content blob from the DVC content-addressed cache.
 
     Returns the raw blob as ``text/plain`` so the frontend can render it
-    directly in a code panel or compute a client-side diff against another
-    blob.
+    directly in a code panel. Shares its read path (and path-traversal
+    guard) with ``GET .../packages`` via :func:`_read_env_blob_text`.
     """
     from fastapi.responses import PlainTextResponse
 
-    if not _valid_md5(md5):
-        raise HTTPException(status_code=400, detail="malformed md5 (expect 32 lowercase hex)")
-
-    project_root = _project_root().resolve()
-    cache_root = (project_root / ".dvc" / "cache" / "files" / "md5").resolve()
-    blob_path = (cache_root / md5[:2] / md5[2:]).resolve()
-
-    # Path-traversal guard: the resolved path must stay under cache_root.
-    try:
-        blob_path.relative_to(cache_root)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="path traversal rejected")
-
-    if not blob_path.is_file():
-        raise HTTPException(status_code=404, detail=f"blob not found: {md5}")
-
-    return PlainTextResponse(blob_path.read_text(encoding="utf-8"))
+    return PlainTextResponse(_read_env_blob_text(md5, _project_root()))
 
 
 def _default_register_method(*args, **kwargs):
@@ -1119,7 +1089,6 @@ _register_method_fn = _default_register_method
 class MethodRegisterRequest(BaseModel):
     directory: str
     module: str
-    env: Optional[str] = "inherit"
     method_name: Optional[str] = None
 
 
@@ -1477,6 +1446,27 @@ def _classify_pipeline_error(exc: Exception) -> Dict[str, Any]:
     return {"kind": "unknown", "message": message}
 
 
+def _readiness_payload(check) -> Dict[str, Any]:
+    """Build a kind-tagged payload from a not-ready preflight CheckResult.
+
+    Maps a failing ``check_docker`` / ``check_git`` result to the same
+    ``{kind, message, hint}`` shape the frontend already renders for pre-run
+    errors (cycle decision D-6). The new kinds are ``not_runnable_docker`` and
+    ``not_runnable_git``.
+
+    Args:
+        check: A :class:`wfc.preflight.CheckResult` with a non-``ok`` status.
+
+    Returns:
+        ``{"kind": ..., "message": ..., "hint": ...}``.
+    """
+    return {
+        "kind": f"not_runnable_{check.name}",
+        "message": check.message,
+        "hint": check.fix_hint,
+    }
+
+
 @app.post("/api/workflow/run")
 def run_workflow(pipeline: PipelineInput):
     """Submit a pipeline for execution via Snakemake.
@@ -1485,11 +1475,39 @@ def run_workflow(pipeline: PipelineInput):
     writes it to a temp file, and spawns a background thread running
     ``run_pipeline()``. Returns the pipeline_id as the job_id immediately.
 
-    Rejects empty pipelines with HTTP 400.  Multiple pipelines may run
+    Rejects empty pipelines with HTTP 400.  Before spawning the run thread it
+    pre-flights Docker and git (cycle decision D-6, 3-lite): a not-ready
+    environment is rejected with HTTP 409 carrying a kind-tagged
+    ``{kind, message, hint}`` payload (the same shape the frontend renders for
+    pre-run errors), so no orphan run is started.  Multiple pipelines may run
     concurrently — each gets its own pipeline_id-scoped workspace.
     """
     if not pipeline.nodes:
         raise HTTPException(status_code=400, detail="Pipeline has no nodes")
+
+    # Resolve the canvas project_root BEFORE the readiness gate so git readiness
+    # is probed against the canvas project, not the server process cwd.
+    from ..database import project_root as _resolve_project_root
+    env_root = os.environ.get("WFC_CANVAS_PROJECT_ROOT")
+    if env_root:
+        project_root = env_root
+    else:
+        try:
+            project_root = str(_resolve_project_root())
+        except RuntimeError:
+            project_root = str(Path.cwd())
+
+    # 3-lite run-readiness gate (D-6): reject at submission BEFORE spawning the
+    # run thread when Docker is down or git is not ready. Reuses wfc/preflight.py
+    # so the canvas gate and `wfc doctor` share one readiness definition.
+    # git readiness is scoped to the resolved project_root (NOT the process cwd).
+    from ..preflight import check_docker, check_git
+    docker_check = check_docker()
+    if docker_check.status == "fail":
+        raise HTTPException(status_code=409, detail=_readiness_payload(docker_check))
+    git_check = check_git(project_root)
+    if git_check.status == "fail":
+        raise HTTPException(status_code=409, detail=_readiness_payload(git_check))
 
     # Track 2: substitute pipeline variables BEFORE _enrich_pipeline so the
     # executor (snakemake_gen) sees only literal values. Build a dict shape
@@ -1533,15 +1551,6 @@ def run_workflow(pipeline: PipelineInput):
     pipeline_json = _enrich_pipeline(pipeline)
     pipeline_id = str(uuid.uuid4())
 
-    from ..database import project_root as _resolve_project_root
-    env_root = os.environ.get("WFC_CANVAS_PROJECT_ROOT")
-    if env_root:
-        project_root = env_root
-    else:
-        try:
-            project_root = str(_resolve_project_root())
-        except RuntimeError:
-            project_root = str(Path.cwd())
     pipeline_dir = Path(project_root) / ".runs" / "pipelines" / pipeline_id
     pipeline_dir.mkdir(parents=True, exist_ok=True)
 

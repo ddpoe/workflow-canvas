@@ -1,13 +1,13 @@
 # 1-hop from stitch: reads stitched, writes masks.
 inputs:
   stitched:
-    type: csv
+    type: .csv
     required: true
 
 outputs:
   masks:
-    type: csv
+    type: .csv
     required: true
 
 executor: python
-env: inherit
+env: container:fixture-env

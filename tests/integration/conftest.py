@@ -35,54 +35,63 @@ def repo_root() -> Path:
 
 
 @pytest.fixture(scope="session")
-def minimal_image(repo_root: Path) -> str:
-    """Build the minimal wfc image once per session; return its digest.
+def minimal_image(fixture_container_image: str) -> str:
+    """Digest of the minimal wfc image (sha256 hex, no ``sha256:`` prefix).
 
-    Digest is captured via ``docker image inspect`` so the env manifest
-    can reference an immutable ``image@sha256:...`` ref (matches the
-    contract enforced by ``capture_env_content``).
+    Delegates to the single session-scoped builder
+    ``tests.conftest.fixture_container_image``. Both fixtures build the same
+    ``local/wfc-test-minimal:latest`` tag from ``tests/fixtures/Dockerfile.minimal``;
+    sharing one builder avoids a second ``docker build`` that would retag the
+    image and leave the first build's captured ``.Id`` digest dangling (Docker
+    then can't resolve ``local/wfc-test-minimal@sha256:<stale-id>`` and
+    ``docker run`` fails with "Unable to find image" mid-session).
     """
-    dockerfile = repo_root / "tests" / "fixtures" / "Dockerfile.minimal"
-    assert dockerfile.exists(), f"Missing fixture Dockerfile: {dockerfile}"
+    return fixture_container_image
+
+
+# Tier-1 image: host wfc + the pure-stdlib wfc-client (ADR-020). Built from
+# tests/fixtures/Dockerfile.client. Used by the Tier-1 end-to-end test, where
+# a user method does `import wfc_client as wfc`. The Tier-2 parity test
+# deliberately uses minimal_image (no wfc-client) instead.
+CLIENT_IMAGE_TAG = "local/wfc-test-client:latest"
+
+
+@pytest.fixture(scope="session")
+def client_image(repo_root: Path) -> str:
+    """Build the Tier-1 wfc-client image once per session; return its digest.
+
+    Builds ``tests/fixtures/Dockerfile.client`` (host ``wfc`` + the
+    standalone ``wfc-client`` package) so a Tier-1 ``@wfc.method`` user
+    script can ``import wfc_client as wfc`` inside the container. The digest
+    is captured via ``docker image inspect`` so the env manifest can pin an
+    immutable ``image@sha256:...`` ref.
+
+    Returns:
+        The image digest as a bare sha256 hex string (no ``sha256:`` prefix).
+    """
+    dockerfile = repo_root / "tests" / "fixtures" / "Dockerfile.client"
+    assert dockerfile.exists(), f"Missing Tier-1 client Dockerfile: {dockerfile}"
 
     build = subprocess.run(
-        [
-            "docker", "build",
-            "-t", IMAGE_TAG,
-            "-f", str(dockerfile),
-            str(repo_root),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=600,
+        ["docker", "build", "-t", CLIENT_IMAGE_TAG,
+         "-f", str(dockerfile), str(repo_root)],
+        capture_output=True, text=True, timeout=600,
     )
     if build.returncode != 0:
         pytest.fail(
-            "docker build failed:\n"
+            "docker build of Tier-1 client image failed:\n"
             f"STDOUT:\n{build.stdout}\nSTDERR:\n{build.stderr}"
         )
 
     inspect = subprocess.run(
-        [
-            "docker", "image", "inspect",
-            "--format", "{{.Id}}",
-            IMAGE_TAG,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
+        ["docker", "image", "inspect", "--format", "{{.Id}}", CLIENT_IMAGE_TAG],
+        capture_output=True, text=True, timeout=30,
     )
     if inspect.returncode != 0:
         pytest.fail(
-            "docker image inspect failed:\n"
+            "docker image inspect failed for Tier-1 client image:\n"
             f"STDOUT:\n{inspect.stdout}\nSTDERR:\n{inspect.stderr}"
         )
 
-    # Image ID is "sha256:<digest>" — strip the prefix for our ref shape.
     image_id = inspect.stdout.strip()
-    if image_id.startswith("sha256:"):
-        digest = image_id[len("sha256:"):]
-    else:
-        digest = image_id
-
-    return digest
+    return image_id[len("sha256:"):] if image_id.startswith("sha256:") else image_id

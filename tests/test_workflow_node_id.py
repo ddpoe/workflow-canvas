@@ -18,7 +18,7 @@ import json
 from pathlib import Path
 
 import pytest
-from dflow.core.decorators import workflow
+from axiom_annotations import workflow
 
 from wfc.snakemake_gen import load_pipeline, topo_sort_steps, expand_variant_combos
 from wfc.snakemake_gen import generate_snakefile
@@ -34,7 +34,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 @pytest.fixture
 def dup_pipeline_path(tmp_path):
     """Copy the duplicate-methods pipeline JSON into a temp directory."""
-    src = PROJECT_ROOT / "pipeline_duplicate_methods.json"
+    src = PROJECT_ROOT / "tests" / "fixtures" / "pipelines" / "pipeline_duplicate_methods.json"
     dst = tmp_path / "pipeline_duplicate_methods.json"
     dst.write_text(src.read_text())
     return dst

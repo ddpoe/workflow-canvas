@@ -17,7 +17,7 @@ from pathlib import Path
 
 from sqlmodel import select
 
-from dflow.core.decorators import workflow, task, Step
+from axiom_annotations import workflow, task, Step
 
 from .ast_scanner import scan_script, ScriptInfo
 from .contracts import parse_method_yaml, parse_module_yaml
@@ -286,36 +286,35 @@ def _resolve_env(env_spec: str, project_dir: Path) -> str:
         ValueError: If the env cannot be found, is ambiguous, or references
             a container that isn't digest-pinned.
     """
-    from .init import read_config
+    # ADR-019 Cycle H: execution is container-only. A method env is either the
+    # direct digest-pinned escape hatch or a built container env named in the
+    # manifest. Strip an optional ``container:`` prefix; bare names and
+    # ``container:<name>`` both resolve to a manifest-backed container env.
+    value = (
+        env_spec[len("container:"):]
+        if env_spec.startswith("container:")
+        else env_spec
+    )
 
-    if env_spec.startswith("container:"):
-        value = env_spec[len("container:"):]
-        if value.startswith("docker://"):
-            # Direct digest-pinned ref — shape check only, no manifest lookup
-            # and no image pull (ADR-019 #8, #12).
-            from .envs import validate_container_ref
-            validate_container_ref(value)
-            return env_spec
-
-        # Manifest-backed ref: <envname> must exist in .wfc/envs.json and its
-        # container field must itself be digest-pinned.
-        from .envs import get as _env_get, validate_container_ref
-        env_record = _env_get(value, project_dir)
-        if env_record is None:
-            raise ValueError(
-                f"Container env '{value}' not found in .wfc/envs.json. "
-                f"Register it with `wfc register-env {value}` first, or "
-                f"declare a direct ref as `env: container:docker://...@sha256:...`."
-            )
-        validate_container_ref(env_record.container)
+    if value.startswith("docker://"):
+        # Direct digest-pinned ref — shape check only, no manifest lookup
+        # and no image pull (ADR-019 #8, #12).
+        from .envs import validate_container_ref
+        validate_container_ref(value)
         return env_spec
 
-    config = read_config(project_dir)
-    pixi_root = config.get("pixi_root", "")
-    conda_root = config.get("conda_root", "")
-
-    resolve_python_for_env(env_spec, pixi_root=pixi_root, conda_root=conda_root)
-
+    # Manifest-backed ref: <name> must exist in .wfc/envs.json and its
+    # container field must itself be digest-pinned.
+    from .envs import get as _env_get, validate_container_ref
+    env_record = _env_get(value, project_dir)
+    if env_record is None:
+        raise ValueError(
+            f"Container env '{value}' not found in .wfc/envs.json. "
+            f"Build it with `wfc register-env {value}` first, or declare a "
+            f"direct ref as `env: container:docker://...@sha256:...`. "
+            f"Host execution was removed in ADR-019 Cycle H."
+        )
+    validate_container_ref(env_record.container)
     return env_spec
 
 
@@ -572,15 +571,25 @@ def register_method(
             )
         ).first()
 
-        # Resolve env from method.yaml contract (or default to "inherit")
+        # Resolve env from method.yaml contract. ADR-019 Cycle H: execution is
+        # container-only, so a method must name a built container env. A method
+        # with no method.yaml (hence no env) is rejected here.
+        # ``parse_method_yaml`` already rejects a present-but-missing/`inherit`
+        # env, so any contract that parses carries a usable env value.
         contract_data = parse_method_yaml(method_dir)
-        env_name = contract_data["env"] if contract_data else "inherit"
+        if contract_data is None:
+            raise ValueError(
+                f"Method '{method_name}' has no method.yaml, so it does not "
+                f"name a built container env. Add a method.yaml with "
+                f"`env: <name>` (build it with `wfc register-env <name>`). Host "
+                f"execution was removed in ADR-019 Cycle H."
+            )
+        env_name = contract_data["env"]
 
-        if env_name != "inherit":
-            # Validate the named env against project config
-            project_dir = Path.cwd()
-            _resolve_env(env_name, project_dir)
-            print(f"  Env: {env_name} (validated)")
+        # Validate the named env against the project manifest.
+        project_dir = Path.cwd()
+        _resolve_env(env_name, project_dir)
+        print(f"  Env: {env_name} (validated)")
 
         if method is None:
             method = Method(
@@ -686,6 +695,24 @@ def register_method(
             out_names = list(contract_data["outputs"].keys())
             print(f"  contract: {len(contract_data['inputs'])} input(s), "
                   f"{len(out_names)} output(s): {out_names}")
+
+            # ADR-020: Tier-1 only — when the script uses the @wfc.method
+            # decorator, statically validate ctx.save_artifact() literal names
+            # against declared outputs. Tier-2 (no decorator) methods are
+            # validated against method.yaml only (no AST save scan needed).
+            if script_info.uses_wfc_method:
+                from .method_ast import validate_save_artifacts
+                required = [
+                    name for name, spec in contract_data["outputs"].items()
+                    if (spec or {}).get("required", True)
+                ]
+                save_warnings = validate_save_artifacts(
+                    script_path,
+                    declared_outputs=out_names,
+                    required_outputs=required,
+                )
+                for w in save_warnings:
+                    print(f"  WARNING: {w}")
         else:
             print("  contract: no method.yaml found — skipped")
 
