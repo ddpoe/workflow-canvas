@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.tutorials.authoring-a-method-script @ 03b33e9a9e43; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.tutorials.authoring-a-method-script @ 1b9b079b9426; do not edit -->
 
 # Tutorial: Authoring a Method Script
 
@@ -17,12 +17,12 @@ If you haven't set up a project yet, start with [[getting-started]] first — it
 
 ## Step 1 — Lay out the method directory
 
-A method is a self-contained directory built from one required file and one strongly-recommended file:
+A method is a self-contained directory built from two required files (plus any number of optional helper Python modules):
 
 | File | Purpose |
 |---|---|
 | `{method_name}.py` | Python script containing the implementation (required) |
-| `method.yaml` | Contract file declaring inputs, outputs, params, and env (recommended — without it the method registers but has no slot-level metadata in the database or canvas widgets) |
+| `method.yaml` | Contract file declaring inputs, outputs, params, and env (**required** — registration fails without it, since every method must name a built container env via `env:`) |
 
 The script filename must match the directory name. A method called `filter_data` lives in a directory named `filter_data/` and its script is `filter_data.py`.
 
@@ -50,7 +50,11 @@ wfc register-method modules/my_analysis/preprocess --module my_analysis
 wfc register-method methods/feature_qc --module data_tools
 ```
 
-At registration, `wfc` scans the script, reads `method.yaml`, and snapshots the whole method directory into `methods/{method_name}/` for code fingerprinting — regardless of where the source lives. That snapshot is what the cache keys against, so the same code always resolves to the same cached results.
+At registration, `wfc` scans the script, reads `method.yaml`, and snapshots the method's Python files and `method.yaml` into `methods/{method_name}/` for code fingerprinting — regardless of where the source lives. That snapshot is what the cache keys against, so the same code always resolves to the same cached results.
+
+### Helper modules
+
+A method directory may hold extra `.py` files beside the main script — split shared utilities into their own modules and `import` them as usual. Helper modules travel with the method: they are snapshotted alongside `{method_name}.py` and folded into the code fingerprint, so editing one invalidates the cache exactly like editing the main script. Only the main script is scanned for tracked functions and parameters, though — functions defined in helper modules do **not** appear as method functions in the database or canvas. Non-Python sibling files (data files, shell scripts) are committed to git but are *not* part of the snapshot or fingerprint, so a method should not depend on them at run time.
 
 ## Step 2 — Write the script with the wfc-client decorator
 
