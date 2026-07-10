@@ -1,6 +1,13 @@
 # Workflow Canvas — Guide
 
 ```{toctree}
+:caption: Overview
+:maxdepth: 2
+
+overview/what-is-workflow-canvas
+```
+
+```{toctree}
 :caption: Tutorials
 :maxdepth: 2
 

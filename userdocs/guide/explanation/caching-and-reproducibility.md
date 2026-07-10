@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.explanation.caching-and-reproducibility @ babad95db23e; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.explanation.caching-and-reproducibility @ 83bd97494008; do not edit -->
 
 # Caching & Reproducibility
 
@@ -10,7 +10,7 @@ The first is the **cache key**. Every step records a fingerprint of everything t
 
 The second is **lineage**: the recorded chain of parent-child links that connects a result back through every upstream step to the original registered samples. Lineage is what lets you answer "which inputs, which code version, and which parameters produced this file?" months after the fact.
 
-If you just want to *find and read* a run's outputs, see [[run-and-inspect-results]]. This page is the conceptual reference behind that workflow.
+If you just want to *find and read* a run's outputs, see [Run & Inspect Results](../how-to/run-and-inspect-results.md). This page is the conceptual reference behind that workflow.
 
 ## Why a step re-runs (the cache key)
 
@@ -25,7 +25,7 @@ When you re-run a pipeline, each step recomputes its cache key. If the key match
 
 A practical consequence: the *first* re-run after the environment fingerprint was introduced (or after the code-fingerprint change) misses the cache once, because the key formula itself changed. That one-time miss is expected and needs no migration; subsequent runs cache normally. Legacy runs from before these changes keep an empty environment fingerprint and still load fine.
 
-For the deeper rationale and the exact formula, see the caching design spec; for how reused outputs are physically stored and retrieved, see [[storage-and-provenance]].
+For the deeper rationale and the exact formula, see the caching design spec; for how reused outputs are physically stored and retrieved, see [Storage & Provenance](../explanation/storage-and-provenance.md).
 
 ## Lineage: tracing how a result was produced
 
@@ -65,7 +65,7 @@ This returns every ancestor run in the DAG, from the target run back to the orig
 
 ## Next steps
 
-- To actually find a run and read its outputs in practice, see [[run-and-inspect-results]].
-- To understand *where* output bytes live on disk and how they are retrieved (the content-addressed cache, the zero-byte sentinels, remote pulls, and what to back up), see [[storage-and-provenance]].
-- For an end-to-end picture of how a single run is scheduled and executed, see [[how-a-run-executes]].
-- New here? Start with [[getting-started]] and build [[first-pipeline]].
+- To actually find a run and read its outputs in practice, see [Run & Inspect Results](../how-to/run-and-inspect-results.md).
+- To understand *where* output bytes live on disk and how they are retrieved (the content-addressed cache, the zero-byte sentinels, remote pulls, and what to back up), see [Storage & Provenance](../explanation/storage-and-provenance.md).
+- For an end-to-end picture of how a single run is scheduled and executed, see [How a Run Executes](../explanation/how-a-run-executes.md).
+- New here? Start with [Getting Started](../tutorials/getting-started.md) and build [your first pipeline](../tutorials/getting-started.md#your-first-pipeline).

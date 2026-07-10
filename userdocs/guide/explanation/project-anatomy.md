@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.explanation.project-anatomy @ 73a47a6f0671; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.explanation.project-anatomy @ 34363c5fad11; do not edit -->
 
 # Project Anatomy
 
@@ -46,7 +46,7 @@ Key points:
 - **`data/samples/`** is NOT a permanent storage location. Files are restored here lazily by the Snakemake `restore_sample` rule at pipeline execution time. The actual data lives in the DVC archive.
 - **`.runs/sentinels/`** holds zero-byte Snakemake DAG-wiring sentinels (no output bytes). **`.runs/{run_id}/`** is a transient *staging* directory — methods write outputs there, then the archive pass moves them to the DVC archive, which is the sole permanent store. There is no `.runs/workspace/` tree.
 - **`.dvc/`** is always created by `wfc init`. It holds the local DVC cache. The long-term archive lives at the `url` configured in `wf-canvas.toml` (default: `~/.wfc/archives/<project>`), which is outside the repo so outputs survive repo re-creation.
-- **`.wfc/envs.json` IS tracked in git.** It is the manifest of your registered container environments — each env's backend, build spec, and resolved image content digest. Committing it makes your environments part of the project's reproducible record (a lockfile for environments): a collaborator who checks out the repo gets the exact image digests your methods were validated against. See [[registering-an-environment]].
+- **`.wfc/envs.json` IS tracked in git.** It is the manifest of your registered container environments — each env's backend, build spec, and resolved image content digest. Committing it makes your environments part of the project's reproducible record (a lockfile for environments): a collaborator who checks out the repo gets the exact image digests your methods were validated against. See [Registering an Environment](../tutorials/registering-an-environment.md).
 - **`.wfc/wfc.db` is NOT tracked in git** (listed in `.gitignore`). It is the index that maps every output to its content hash. Back up the `.wfc/` directory along with your archive folder to keep results recoverable.
 
 ## The Database
@@ -61,11 +61,11 @@ You do not interact with the database directly. The wfc CLI manages all reads an
 
 Every run is recorded here with its method, parameters, sample, status, cache key, and metrics. Lineage is traced through `run_inputs.source_run_id` relationships. Cache hits create audit rows (`cache_source_run_id` set) that appear in lineage like normal runs.
 
-The database is the provenance record: it is the index that maps each output to the content hash holding its bytes. Because it is state rather than source, `wfc init` lists `.wfc/wfc.db` in `.gitignore` — git versions your method *code*, not your run history. That also means the database is part of what you must back up to keep results recoverable; see [[storage-and-provenance]].
+The database is the provenance record: it is the index that maps each output to the content hash holding its bytes. Because it is state rather than source, `wfc init` lists `.wfc/wfc.db` in `.gitignore` — git versions your method *code*, not your run history. That also means the database is part of what you must back up to keep results recoverable; see [Storage & Provenance](../explanation/storage-and-provenance.md).
 
 ## Configuration
 
-Project settings live in `.wfc/wf-canvas.toml` — the database connection, the environment root, a `[dvc]` block (always written by `wfc init`; only the archive URL location is configurable), and an optional registry block. This file is committed to git as project source. For the full field-by-field reference, see [[wf-canvas-toml]].
+Project settings live in `.wfc/wf-canvas.toml` — the database connection, the environment root, a `[dvc]` block (always written by `wfc init`; only the archive URL location is configurable), and an optional registry block. This file is committed to git as project source. For the full field-by-field reference, see <a href="../reference/reference/wf-canvas-toml.html">wf-canvas.toml</a>.
 
 ## Modules vs. Methods
 
@@ -95,7 +95,7 @@ When you register a method, wfc:
 5. Validates method outputs satisfy the module's required output contracts
 6. Git-commits the method directory
 
-For the full walkthrough of authoring a method, declaring its contracts, and building its environment, see [[authoring-a-method-script]] and [[registering-an-environment]].
+For the full walkthrough of authoring a method, declaring its contracts, and building its environment, see [Authoring a Method Script](../tutorials/authoring-a-method-script.md) and [Registering an Environment](../tutorials/registering-an-environment.md).
 
 ## The Run Workspace (.runs/)
 
@@ -110,8 +110,8 @@ Because `.runs/` is staging and sentinels rather than durable data, `wfc init` a
 
 The key idea is that **output bytes never live under `.runs/`** for long. They are hashed and moved into the content-addressed cache, and the database records which hash holds each output. Whether a step re-runs or reuses a prior result is decided by a cache key computed from the method's code, its parameters, its inputs, and its environment. Both of these — the storage model and the cache-key model — have their own pages:
 
-- [[storage-and-provenance]] explains the content-addressed cache, what git does and does not track, how the cache is shared across machines, and what to back up.
-- [[caching-and-reproducibility]] explains how the cache key is computed and why a given step re-runs or hits the cache.
+- [Storage & Provenance](../explanation/storage-and-provenance.md) explains the content-addressed cache, what git does and does not track, how the cache is shared across machines, and what to back up.
+- [Caching & Reproducibility](../explanation/caching-and-reproducibility.md) explains how the cache key is computed and why a given step re-runs or hits the cache.
 
 This page stays focused on the *layout*: `.wfc/` for config and the database, `modules/` and `methods/` for your code, `data/samples/` for restored inputs, and `.runs/` plus the DVC cache for execution.
 
@@ -119,7 +119,7 @@ This page stays focused on the *layout*: `.wfc/` for config and the database, `m
 
 With an understanding of the project structure, continue to:
 
-- **[[wf-canvas-toml]]** — The full reference for every section of `.wfc/wf-canvas.toml`.
-- **[[authoring-a-method-script]]** — How to write method scripts using `wfc-client` (`@wfc.method` + `ctx.save_artifact`) or the plain environment-variable contract, and declare contracts in `method.yaml`.
-- **[[registering-an-environment]]** — How to build the container environment a method runs in.
-- **[[storage-and-provenance]]** and **[[caching-and-reproducibility]]** — The deeper story behind where outputs live and why steps re-run.
+- **<a href="../reference/reference/wf-canvas-toml.html">wf-canvas.toml</a>** — The full reference for every section of `.wfc/wf-canvas.toml`.
+- **[Authoring a Method Script](../tutorials/authoring-a-method-script.md)** — How to write method scripts using `wfc-client` (`@wfc.method` + `ctx.save_artifact`) or the plain environment-variable contract, and declare contracts in `method.yaml`.
+- **[Registering an Environment](../tutorials/registering-an-environment.md)** — How to build the container environment a method runs in.
+- **[Storage & Provenance](../explanation/storage-and-provenance.md)** and **[Caching & Reproducibility](../explanation/caching-and-reproducibility.md)** — The deeper story behind where outputs live and why steps re-run.

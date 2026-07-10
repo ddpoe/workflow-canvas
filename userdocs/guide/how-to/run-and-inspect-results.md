@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.how-to.run-and-inspect-results @ 66f09d80faa3; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.how-to.run-and-inspect-results @ 60eee689a368; do not edit -->
 
 # Run & Inspect Results
 
@@ -22,7 +22,7 @@ A **run** is a single method execution tracked by the system. Each run records:
 
 There is no per-run "output folder" on disk to browse. The output bytes for every run live in one place: the DVC content-addressed cache (`.dvc/cache/files/md5/...`). Each step's output is hashed and moved into that cache, and the run record stores the resulting `content_hash`. To get from a run to its bytes you go through the hash, not through a path.
 
-Why it is organized this way -- the sentinel / cache-authoritative storage model, and why archiving happens *after* the pipeline finishes rather than between steps -- is covered in [[storage-and-provenance]]. For inspecting results you only need the operational view below.
+Why it is organized this way -- the sentinel / cache-authoritative storage model, and why archiving happens *after* the pipeline finishes rather than between steps -- is covered in [Storage & Provenance](../explanation/storage-and-provenance.md). For inspecting results you only need the operational view below.
 
 ### How a run's outputs are retrieved
 
@@ -33,7 +33,7 @@ When a downstream step -- or the Canvas, or you, via the library -- needs an out
 
 If neither tier succeeds, retrieval **fails** and no path is returned. (Very old runs created before content hashing fall back to their original recorded artifact path.)
 
-The practical takeaway: if an output cannot be found locally and there is no remote configured (or the hash is not on the remote), you cannot reconstruct that run's bytes. This is why backing up the cache and the project database matters -- see [[storage-and-provenance]] for the recoverability story.
+The practical takeaway: if an output cannot be found locally and there is no remote configured (or the hash is not on the remote), you cannot reconstruct that run's bytes. This is why backing up the cache and the project database matters -- see [Storage & Provenance](../explanation/storage-and-provenance.md) for the recoverability story.
 
 ## Using the Canvas to inspect runs
 
@@ -47,7 +47,7 @@ From your project directory, run:
 wfc canvas
 ```
 
-This starts the Canvas server (default `http://127.0.0.1:8500`) and serves the project in the current directory -- the directory must contain `.wfc/wfc.db`. Use `--port` to bind a different port, `--host` to change the bind address, and `--project-root <path>` to point at a project other than the current directory. Open the printed URL in your browser. For a tour of the Canvas itself, see [[canvas]].
+This starts the Canvas server (default `http://127.0.0.1:8500`) and serves the project in the current directory -- the directory must contain `.wfc/wfc.db`. Use `--port` to bind a different port, `--host` to change the bind address, and `--project-root <path>` to point at a project other than the current directory. Open the printed URL in your browser. For a tour of the Canvas itself, see [Canvas Visual Builder](../how-to/canvas.md).
 
 ### History tab
 
@@ -83,7 +83,7 @@ The descendants view follows runs *forward*. To trace a run's full *ancestry* --
 python -m wfc.lineage --run-id <id>
 ```
 
-Add `--all` to list every run instead. This walks the complete ancestor DAG, so a fan-in run shows all of its parents, not just one chain. The same data is available programmatically via `get_lineage(run_id)` in `wfc.lineage`. For what lineage *means* and how the parent-child chain is recorded, see [[caching-and-reproducibility]].
+Add `--all` to list every run instead. This walks the complete ancestor DAG, so a fan-in run shows all of its parents, not just one chain. The same data is available programmatically via `get_lineage(run_id)` in `wfc.lineage`. For what lineage *means* and how the parent-child chain is recorded, see [Caching & Reproducibility](../explanation/caching-and-reproducibility.md).
 
 ### Bulk export
 
@@ -91,6 +91,6 @@ To export many runs at once, enable checkbox mode, select the runs you want, and
 
 ## Next steps
 
-- To understand *why* outputs are stored the way they are and how to keep them recoverable, read [[storage-and-provenance]].
-- To understand caching and lineage -- why a step re-runs or hits the cache, and how a run traces back to its samples -- read [[caching-and-reproducibility]].
-- For a full tour of the Canvas builder beyond the History tab, see [[canvas]].
+- To understand *why* outputs are stored the way they are and how to keep them recoverable, read [Storage & Provenance](../explanation/storage-and-provenance.md).
+- To understand caching and lineage -- why a step re-runs or hits the cache, and how a run traces back to its samples -- read [Caching & Reproducibility](../explanation/caching-and-reproducibility.md).
+- For a full tour of the Canvas builder beyond the History tab, see [Canvas Visual Builder](../how-to/canvas.md).

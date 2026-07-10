@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.how-to.sweep-parameters-and-fan-out @ 85fd671f47ac; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.how-to.sweep-parameters-and-fan-out @ 217a4477904e; do not edit -->
 
 # How-to: Sweep Parameters & Fan Out
 
@@ -10,7 +10,7 @@ This how-to covers three ways to run one pipeline across many inputs and many se
 - **Fan-out and fan-in** — run the same steps independently per sample (fan-out), or bundle several samples into a single collapsed run (fan-in).
 - **Pipeline variables** — name a shared value once and bind it to many parameter rows, so you change it in one place.
 
-All three are authored in the Canvas Builder and travel in the exported pipeline JSON, so a pipeline you build visually runs the same way from `wfc run-pipeline`. For the Builder and History UI mechanics referenced throughout, see [[canvas]]. If you are new to building a pipeline at all, start with [[getting-started]].
+All three are authored in the Canvas Builder and travel in the exported pipeline JSON, so a pipeline you build visually runs the same way from `wfc run-pipeline`. For the Builder and History UI mechanics referenced throughout, see [Canvas Visual Builder](../how-to/canvas.md). If you are new to building a pipeline at all, start with [Getting Started](../tutorials/getting-started.md).
 
 ## Parameter sweeps, variants & per-sample overrides
 
@@ -32,7 +32,7 @@ The upshot: you describe the values you care about, and the pipeline fans into e
 
 **The single-selector rule.** A fan-in selector must feed exactly one direct consumer method node; the Builder rejects shapes where a fan-in selector fans into several steps at once. This keeps the collapse unambiguous: the bundle goes to one place, and collapse then propagates contagiously — every descendant of a collapsed step is itself collapsed, so once samples are bundled they stay bundled for the rest of the chain.
 
-**Mixing fan-out and fan-in.** A pipeline can do both: fan out across samples for per-sample processing, then fan in to a collapsing step that pulls those per-sample outputs back together. This is the common shape for "process each replicate, then combine." For how the picker and `fan_mode` toggle appear in the Builder, see [[canvas]].
+**Mixing fan-out and fan-in.** A pipeline can do both: fan out across samples for per-sample processing, then fan in to a collapsing step that pulls those per-sample outputs back together. This is the common shape for "process each replicate, then combine." For how the picker and `fan_mode` toggle appear in the Builder, see [Canvas Visual Builder](../how-to/canvas.md).
 
 ## Reusing values with pipeline variables
 
@@ -44,11 +44,11 @@ When the same value appears in many parameter rows — a shared label column, a 
 
 **How binding travels.** In the exported pipeline JSON, a bound parameter is written as a `{"$var": "name"}` reference instead of a literal, and the named values live in a `variables` block. At submission time the server resolves these references to their literal values before the pipeline runs, so methods always receive concrete values — the variable indirection is purely an authoring convenience.
 
-**History round-trip.** Because the pre-resolution form is saved alongside each run, you can reopen a past pipeline with the variables and chips intact. In the History tab, use **Open pipeline in Canvas** on a pipeline; the Builder rehydrates the Pipeline Variables panel and re-binds every bound row exactly as it was when you submitted — no retyping required. The shared `{$var}` mechanism was introduced in ADR-017; the full UI walkthrough lives in [[canvas]].
+**History round-trip.** Because the pre-resolution form is saved alongside each run, you can reopen a past pipeline with the variables and chips intact. In the History tab, use **Open pipeline in Canvas** on a pipeline; the Builder rehydrates the Pipeline Variables panel and re-binds every bound row exactly as it was when you submitted — no retyping required. The shared `{$var}` mechanism was introduced in ADR-017; the full UI walkthrough lives in [Canvas Visual Builder](../how-to/canvas.md).
 
 ## Next steps
 
-- **[[canvas]]** — the full Builder and History UI: the node palette, inspectors, the Pipeline Variables panel, and the **Open pipeline in Canvas** action used to rehydrate a past run.
-- **[[getting-started]]** — build and run your first pipeline end to end if you have not yet.
+- **[Canvas Visual Builder](../how-to/canvas.md)** — the full Builder and History UI: the node palette, inspectors, the Pipeline Variables panel, and the **Open pipeline in Canvas** action used to rehydrate a past run.
+- **[Getting Started](../tutorials/getting-started.md)** — build and run your first pipeline end to end if you have not yet.
 - Run sweeps and fan-out pipelines from the command line with `wfc run-pipeline` on an exported pipeline JSON; see the CLI reference for the full command set.
 - To trace which run produced which output across a fan-out or a collapsed fan-in, inspect lineage in the History tab.

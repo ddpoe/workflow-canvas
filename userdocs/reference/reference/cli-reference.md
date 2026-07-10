@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.reference.cli-reference @ d86a9bb184a3; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.reference.cli-reference @ 5f9edb97e56b; do not edit -->
 
 # CLI Reference
 
@@ -58,7 +58,7 @@ Launch the Canvas web UI -- a browser-based visual pipeline builder and run hist
 | `--reload` | Enable auto-reload for development |
 | `--project-root` | Override the project root for auto-load |
 
-For a walkthrough of setting up and running your first project, see [[getting-started]].
+For a walkthrough of setting up and running your first project, see <a href="../../tutorials/getting-started.html">Getting Started</a>.
 
 ## Registration Commands
 

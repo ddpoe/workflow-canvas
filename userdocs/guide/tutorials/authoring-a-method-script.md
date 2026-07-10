@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.tutorials.authoring-a-method-script @ 1b9b079b9426; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.tutorials.authoring-a-method-script @ 6009692121fb; do not edit -->
 
 # Tutorial: Authoring a Method Script
 
@@ -13,7 +13,7 @@ There are two layers you can write against, and you'll meet both here:
 
 We'll build the directory, write the script the recommended way, then show the exact contract it sits on. You only need a Python script and a small `method.yaml` to get started.
 
-If you haven't set up a project yet, start with [[getting-started]] first — it scaffolds the project this method will live in.
+If you haven't set up a project yet, start with [Getting Started](../tutorials/getting-started.md) first — it scaffolds the project this method will live in.
 
 ## Step 1 — Lay out the method directory
 
@@ -222,15 +222,15 @@ The essentials:
 - **`params:`** — typed params with defaults; pipeline overrides merge on top, and the merged dict arrives as `ctx.params` / `WFC_PARAMS`.
 - **`env:`** — the named container environment your method runs in. This must be a registered environment name (not a runtime package list).
 
-This is the *basics* only. The full field reference — every input/output/param field, column validation, executor selection, and the complete `env:` vocabulary including pinned digests — lives in [[method-yaml-schema]]. For input/output *contracts* (column validation, `from_params`, module-level overrides) see [[writing-contracts]].
+This is the *basics* only. The full field reference — every input/output/param field, column validation, executor selection, and the complete `env:` vocabulary including pinned digests — lives in <a href="../reference/reference/method-yaml-schema.html">method.yaml Schema</a>. For input/output *contracts* (column validation, `from_params`, module-level overrides) see [Writing Contracts](../tutorials/writing-contracts.md).
 
 ## Next steps
 
 You now have a method directory, a script (either the `wfc-client` decorator or the bare env-var + file contract), and a `method.yaml` that declares its slots. From here:
 
-- **Register the environment your method runs in.** The `env:` you named must point at a container environment that has been built first. See [[registering-an-environment]] — it covers `wfc register-env`, what `wfc doctor` checks, and how `wfc init` sets the project up.
+- **Register the environment your method runs in.** The `env:` you named must point at a container environment that has been built first. See [Registering an Environment](../tutorials/registering-an-environment.md) — it covers `wfc register-env`, what `wfc doctor` checks, and how `wfc init` sets the project up.
 - **Register the method itself** with `wfc register-method <path> --module <module>`, once its environment exists.
-- **Flesh out the contract** — column validation, typed params, and module-level overrides — in [[writing-contracts]].
-- **Look up any field** in the full [[method-yaml-schema]] reference.
+- **Flesh out the contract** — column validation, typed params, and module-level overrides — in [Writing Contracts](../tutorials/writing-contracts.md).
+- **Look up any field** in the full <a href="../reference/reference/method-yaml-schema.html">method.yaml Schema</a> reference.
 
-With the method registered, you can drop it into a pipeline and run it. To wire and run pipelines, head to [[use-the-canvas]].
+With the method registered, you can drop it into a pipeline and run it. To wire and run pipelines, head to [Canvas Visual Builder](../how-to/canvas.md).

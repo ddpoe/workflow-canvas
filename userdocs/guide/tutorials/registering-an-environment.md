@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.tutorials.registering-an-environment @ ae639db80ee5; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.tutorials.registering-an-environment @ 9843aefee78b; do not edit -->
 
 # Tutorial: Registering an Environment
 
@@ -14,7 +14,7 @@ This tutorial walks the whole flow end to end:
 
 A few things to keep in mind before you start. Docker is a hard requirement: there is no host-Python execution path, so a method cannot run until you have built a container env for it and Docker is running. An environment is built once and reused; you only rebuild when its dependencies change. And your environment contains only *your* dependencies plus Python — Workflow Canvas itself is never installed into it.
 
-If you have not set a project up yet, run `wfc init` first (see [[getting-started]]); it scaffolds a runnable project so you have somewhere to register environments and methods. Then come back here.
+If you have not set a project up yet, run `wfc init` first (see [Getting Started](../tutorials/getting-started.md)); it scaffolds a runnable project so you have somewhere to register environments and methods. Then come back here.
 
 ## Why environments exist
 
@@ -24,7 +24,7 @@ Reproducibility and isolation are the two problems an environment solves.
 
 **Isolation.** Each method names its own env, so a pipeline can mix a method that needs an old NumPy with one that needs a brand-new PyTorch without either stepping on the other. There is no shared, mutable "project Python" they all draw from.
 
-Because the environment is the software half of what makes a step reproducible, it also feeds the cache: when Workflow Canvas decides whether a step can be skipped, the environment's fingerprint is one of the inputs to that decision. Change the env and dependent steps re-run. You can read more about that in [[caching-and-reproducibility]].
+Because the environment is the software half of what makes a step reproducible, it also feeds the cache: when Workflow Canvas decides whether a step can be skipped, the environment's fingerprint is one of the inputs to that decision. Change the env and dependent steps re-run. You can read more about that in [Caching & Reproducibility](../explanation/caching-and-reproducibility.md).
 
 ## Choosing a backend
 
@@ -62,7 +62,7 @@ The input modes are mutually exclusive: a positional spec, `--from`, and a bare 
 
 The `pixi`, `conda`, and `byo` words name *build backends only*. They are not values you can put in a method's `env:` field — see the next section for what goes there.
 
-For the complete flag table (`--image`, `--base-image`, and the rest) and the companion `wfc list-envs` / `wfc show-env` / `wfc delete-env` commands, see [[cli-reference]].
+For the complete flag table (`--image`, `--base-image`, and the rest) and the companion `wfc list-envs` / `wfc show-env` / `wfc delete-env` commands, see <a href="../reference/reference/cli-reference.html">CLI Reference</a>.
 
 ## Referencing an env from a method
 
@@ -94,7 +94,7 @@ wfc register-env cell_pose conda:cell_pose      # build the env first
 wfc register-method modules/segmentation/segment --module segmentation
 ```
 
-One more invariant worth internalizing: your environment never contains Workflow Canvas. Whatever backend you build with, the image holds only your declared dependencies plus Python. Your method reaches the framework through environment variables and files the runner sets up (`WFC_RUN_DIR`, `WFC_INPUT_PATHS`, `WFC_PARAMS`, and friends), not through an import. If you want the `@wfc.method` decorator ergonomics, add the small pure-stdlib `wfc-client` package to your env's dependencies like any other library — even then, the full framework stays out of your environment. See [[authoring-a-method-script]] for both styles.
+One more invariant worth internalizing: your environment never contains Workflow Canvas. Whatever backend you build with, the image holds only your declared dependencies plus Python. Your method reaches the framework through environment variables and files the runner sets up (`WFC_RUN_DIR`, `WFC_INPUT_PATHS`, `WFC_PARAMS`, and friends), not through an import. If you want the `@wfc.method` decorator ergonomics, add the small pure-stdlib `wfc-client` package to your env's dependencies like any other library — even then, the full framework stays out of your environment. See [Authoring a Method Script](../tutorials/authoring-a-method-script.md) for both styles.
 
 ## The ephemeral-container model
 
@@ -136,7 +136,7 @@ All three honor the same ephemeral rule as pipeline steps: each invocation is a 
 
 Because execution is container-only, Docker is not optional — a method cannot run at all without it. There is no host-Python fallback to dodge this with. If the Docker daemon is missing or stopped, the failure surfaces when you try to build or run: `wfc register-env` and `wfc run-step` exit with an actionable error rather than silently degrading.
 
-`wfc init` is what gets a fresh project to a runnable state before you start building envs: it scaffolds the project layout, the local database, and configuration. Run it first in a new project (see [[getting-started]]). `wfc doctor` pre-flights the three things a project needs to run — git, the DVC output archive, and Docker readiness — and reports them in one place, so "why won't this run?" has a single door. Run it any time: it prints a health table and exits non-zero if anything is broken, which makes it equally useful at your terminal and as a CI gate. Build- and run-time commands still surface their own actionable errors when the Docker daemon is missing or stopped.
+`wfc init` is what gets a fresh project to a runnable state before you start building envs: it scaffolds the project layout, the local database, and configuration. Run it first in a new project (see [Getting Started](../tutorials/getting-started.md)). `wfc doctor` pre-flights the three things a project needs to run — git, the DVC output archive, and Docker readiness — and reports them in one place, so "why won't this run?" has a single door. Run it any time: it prints a health table and exits non-zero if anything is broken, which makes it equally useful at your terminal and as a CI gate. Build- and run-time commands still surface their own actionable errors when the Docker daemon is missing or stopped.
 
 One note on durability worth knowing early: the run outputs that get archived are stored as content-addressed blobs, and the index that maps those blobs back to meaningful results lives in `.wfc/wfc.db`. That database is deliberately *not* tracked in git (it is mutable state, not source). So if you care about recovering archived outputs later, back up the `.wfc/` directory — the blobs alone are not interpretable without the index.
 
@@ -146,7 +146,7 @@ You now have the full environment loop: build an env with `wfc register-env`, po
 
 Where to go next:
 
-- **[[authoring-a-method-script]]** — write the method that runs in this environment, in either the `@wfc.method` decorator style or the plain env-var + file contract.
-- **[[cli-reference]]** — the complete flag tables for `register-env`, `list-envs`, `show-env`, `delete-env`, and the dev-loop commands.
-- **[[caching-and-reproducibility]]** — how the environment's fingerprint feeds the cache and decides when a step re-runs.
-- **[[getting-started]]** — if you have not yet scaffolded a project with `wfc init`.
+- **[Authoring a Method Script](../tutorials/authoring-a-method-script.md)** — write the method that runs in this environment, in either the `@wfc.method` decorator style or the plain env-var + file contract.
+- **<a href="../reference/reference/cli-reference.html">CLI Reference</a>** — the complete flag tables for `register-env`, `list-envs`, `show-env`, `delete-env`, and the dev-loop commands.
+- **[Caching & Reproducibility](../explanation/caching-and-reproducibility.md)** — how the environment's fingerprint feeds the cache and decides when a step re-runs.
+- **[Getting Started](../tutorials/getting-started.md)** — if you have not yet scaffolded a project with `wfc init`.

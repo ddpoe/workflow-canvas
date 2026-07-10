@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.how-to.canvas @ 34781af14eae; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.how-to.canvas @ eedba3d13e75; do not edit -->
 
 # Canvas Visual Builder
 
@@ -64,7 +64,7 @@ The Registry view is the third top-level canvas view, alongside the Builder and 
 
 **Envs:** Lists registered environments. Expand a pixi or conda env to see its **Packages** panel: the installed `name==version` list, tagged by source (conda / pixi / pip). Bring-your-own and not-yet-captured envs show a backend-specific empty state instead.
 
-These are read-and-browse surfaces; to register from the browser instead of the CLI, see [[registration]], and for how environments are built and referenced, see [[registering-an-environment]].
+These are read-and-browse surfaces; to register from the browser instead of the CLI, see [Registering Modules, Methods, and Samples](../how-to/registration.md), and for how environments are built and referenced, see [Registering an Environment](../tutorials/registering-an-environment.md).
 
 ## Pipeline Variables
 
@@ -117,4 +117,4 @@ Switch to the History tab to browse past pipeline executions.
 
 ## Next Steps
 
-See the [[cli-reference]] for the full list of `wfc` commands, including `wfc run-pipeline` for running pipelines from the command line, `wfc register-module` / `wfc register-method` for registering pipeline components, and `wfc cache` for managing run archives.
+See the <a href="../reference/reference/cli-reference.html">CLI Reference</a> for the full list of `wfc` commands, including `wfc run-pipeline` for running pipelines from the command line, `wfc register-module` / `wfc register-method` for registering pipeline components, and `wfc cache` for managing run archives.

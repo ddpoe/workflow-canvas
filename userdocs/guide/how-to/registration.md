@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.how-to.registration @ d475fcd67b13; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.how-to.registration @ 3a1150c0e732; do not edit -->
 
 # Registering Modules, Methods, and Samples
 
@@ -109,5 +109,5 @@ This registers exactly what the CLI commands above do -- use whichever fits your
 
 ## Next Steps
 
-- **[[run-and-inspect-results]]** -- learn how to browse runs, trace lineage, and view outputs after pipeline execution.
-- **[[canvas]]** -- use the visual Pipeline Builder and Run History interface.
+- **[Run & Inspect Results](../how-to/run-and-inspect-results.md)** -- learn how to browse runs, trace lineage, and view outputs after pipeline execution.
+- **[Canvas Visual Builder](../how-to/canvas.md)** -- use the visual Pipeline Builder and Run History interface.

@@ -1,18 +1,12 @@
-<!-- generated from pm_mvp::docs.consumer.tutorials.getting-started @ b6e4774746f7; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.tutorials.getting-started @ 4eb317306611; do not edit -->
 
 # Getting Started with Workflow Canvas
 
-## What is Workflow Canvas?
+## Introduction
 
-Workflow Canvas is a reproducible computational pipeline system built around **wfc** (Workflow Canvas CLI), its CLI. It solves the problem of managing multi-step analysis pipelines where you need:
+Workflow Canvas keeps your own Python analysis pipelines **organized, reproducible, and easy to reuse**. It records exactly what produced every result, skips any step whose inputs haven't changed so you never recompute the same thing twice, and lets you swap one analysis method for another without rewiring the pipeline. [Snakemake](https://snakemake.readthedocs.io/) runs your pipelines underneath; Workflow Canvas is the layer on top that keeps them traceable.
 
-- **Contracts** — Methods declare their inputs, outputs, and parameters via `method.yaml`. Modules enforce required outputs. The system catches wiring errors and missing outputs before you waste time on a long run.
-- **Caching** — Each step is fingerprinted by its source code, parameters, and upstream inputs. Unchanged steps are skipped automatically. The system refuses to run on uncommitted code (`DirtyRepositoryError`) to ensure reproducibility.
-- **Lineage** — Every run is recorded in a SQLite database. You can trace any output back through its full DAG ancestry, including cache hits which appear as audit rows in the lineage.
-- **Snakemake execution** — Pipelines are defined as JSON and compiled to Snakefiles. Snakemake handles parallelism and dependency resolution.
-- **Canvas UI** — A visual interface for building and inspecting pipelines (separate feature).
-
-wfc manages the full lifecycle: register your modules, methods, and data samples, define a pipeline, run it, and query lineage — all from the command line.
+This tutorial gets you from installation to a running pipeline. For the bigger picture — what Workflow Canvas is, who it's for, and how the pieces fit together — start with [What is Workflow Canvas?](../overview/what-is-workflow-canvas.md).
 
 ## Prerequisites
 
@@ -27,7 +21,7 @@ A few things you do **not** need to install separately:
 - **DVC** ships with wfc — it is a dependency, installed automatically when you `pip install workflow-canvas`. wfc uses it as the content-addressed store for your run outputs and registered samples. `wfc init` configures a local archive for you; you never have to set DVC up by hand.
 - **Snakemake** also ships with wfc and runs your pipelines under the hood — wfc generates the Snakefile and invokes it for you.
 
-Container environments are built ahead of time from a backend such as a base image, pixi, or conda, but those tools belong to the environment-build step, not to running wfc itself. See [[registering-an-environment]] for how environments are built and named.
+Container environments are built ahead of time from a backend such as a base image, pixi, or conda, but those tools belong to the environment-build step, not to running wfc itself. See [Registering an Environment](../tutorials/registering-an-environment.md) for how environments are built and named.
 
 
 ## Installation
@@ -103,7 +97,7 @@ wfc register-method modules/cell_analysis/preprocess --module cell_analysis
 wfc register-method methods/aggregate --module my_module
 ```
 
-A method declares the container environment it runs in (via `env:` in its `method.yaml`), and that environment must be built and registered with `wfc register-env` before the method can run. See [[registering-an-environment]] for the details.
+A method declares the container environment it runs in (via `env:` in its `method.yaml`), and that environment must be built and registered with `wfc register-env` before the method can run. See [Registering an Environment](../tutorials/registering-an-environment.md) for the details.
 
 > **Two Pythons, by design.** The wfc engine runs in its own environment on the host machine; your method runs in its own container environment, which contains only your declared dependencies (and, optionally, the pure-stdlib `wfc-client` package). wfc never imports your method's code and your method never imports the wfc engine — they communicate only through `WFC_*` environment variables and files in the run directory. Because that contract is plain env vars and files, any recorded run can be reproduced later regardless of which client version (or none) the method was authored with.
 
@@ -145,10 +139,10 @@ This parses and validates the pipeline (cycle detection, slot wiring), generates
 
 Now that you have a working pipeline, explore further:
 
-- **[[registering-an-environment]]** — Build and register the container environment your methods run in. Every method needs one, and `wfc doctor` checks that Docker is ready for it.
-- **[[authoring-a-method-script]]** — Write methods with the `wfc-client` decorator (recommended) or the canonical `WFC_*` env-var + file contract, and declare contracts in `method.yaml`.
-- **[[writing-contracts]]** — Declare and enforce the inputs and outputs that wire your pipeline together correctly.
-- **[[project-anatomy]]** — Understand the directory structure, the database, the config file, and how modules, methods, and runs are organized.
-- **[[canvas]]** — Build and inspect pipelines visually instead of by hand-editing JSON.
-- **[[run-and-inspect-results]]** — Find a run's outputs and trace its lineage after it completes.
+- **[Registering an Environment](../tutorials/registering-an-environment.md)** — Build and register the container environment your methods run in. Every method needs one, and `wfc doctor` checks that Docker is ready for it.
+- **[Authoring a Method Script](../tutorials/authoring-a-method-script.md)** — Write methods with the `wfc-client` decorator (recommended) or the canonical `WFC_*` env-var + file contract, and declare contracts in `method.yaml`.
+- **[Writing Contracts](../tutorials/writing-contracts.md)** — Declare and enforce the inputs and outputs that wire your pipeline together correctly.
+- **[Project Anatomy](../explanation/project-anatomy.md)** — Understand the directory structure, the database, the config file, and how modules, methods, and runs are organized.
+- **[Canvas Visual Builder](../how-to/canvas.md)** — Build and inspect pipelines visually instead of by hand-editing JSON.
+- **[Run & Inspect Results](../how-to/run-and-inspect-results.md)** — Find a run's outputs and trace its lineage after it completes.
 

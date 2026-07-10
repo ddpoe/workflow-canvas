@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.explanation.how-a-run-executes @ eb692815a8f1; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.explanation.how-a-run-executes @ 4ea0c0309173; do not edit -->
 
 # How a Run Executes
 
@@ -14,7 +14,7 @@ There are three ideas to hold onto, and the rest of this page just unpacks them:
 
 If you only remember one thing: a run is a tree of small, cacheable, language-agnostic steps, orchestrated by Snakemake and isolated in containers. The sections below walk each layer from the outside in.
 
-For how to *write* the method that runs inside a step, see [[authoring-a-method-script]]. For *why* a step re-runs (or doesn't), and how outputs are tracked across runs, see [[caching-and-reproducibility]].
+For how to *write* the method that runs inside a step, see [Authoring a Method Script](../tutorials/authoring-a-method-script.md). For *why* a step re-runs (or doesn't), and how outputs are tracked across runs, see [Caching & Reproducibility](../explanation/caching-and-reproducibility.md).
 
 ## Snakemake is the orchestrator
 
@@ -39,7 +39,7 @@ Every rule in the generated Snakefile boils down to a single shell command: `wfc
 A single `wfc run-step` invocation runs this lifecycle (see ADR-008 for the full protocol):
 
 1. **Look up the step's config** — which method, which inputs, which params, from the frozen pipeline definition for this run.
-2. **Cache check.** wfc computes the step's cache key and asks: has this exact work been done before? If yes, it restores the prior outputs into the workspace and records the step as cached — your method never runs. (What goes into that key, and why a step is or isn't a cache hit, is covered in [[caching-and-reproducibility]].)
+2. **Cache check.** wfc computes the step's cache key and asks: has this exact work been done before? If yes, it restores the prior outputs into the workspace and records the step as cached — your method never runs. (What goes into that key, and why a step is or isn't a cache hit, is covered in [Caching & Reproducibility](../explanation/caching-and-reproducibility.md).)
 3. **Resolve the container environment.** Each method declares an environment by name; wfc resolves it to a built container image. The method runs *inside* that image, isolated from wfc and from every other method's dependencies. Docker must be available — host execution is not supported.
 4. **Set the `WFC_*` environment variables** describing this run: where to write outputs, the resolved input file paths, the params, the run/sample/node/pipeline identifiers.
 5. **Run your method as a subprocess** inside its container. wfc captures stdout and stderr into the run logs. Your method does its work and exits.
@@ -66,7 +66,7 @@ Because this contract is *only* env vars and files, **a method can be written in
 
 **Two ways to write to that contract.** For Python authors, the shipped `wfc-client` package is the ergonomic layer: `import wfc_client as wfc`, decorate your function with `@wfc.method`, use the `ctx` object (`ctx.input(...)`, `ctx.params`, `ctx.run_dir`, `ctx.save_artifact(...)`, `ctx.log_metric(...)`), and call `wfc.run()`. `wfc-client` is pure-stdlib and only records metadata — it never copies or reads your data bytes — and on exit it writes a single `_wfc_results.json` manifest listing your outputs and metrics. Underneath, that is exactly the env-var + file contract. You can also write straight to the contract with zero dependencies (not even `wfc-client`) in any language; if you skip the manifest, wfc just scans `WFC_RUN_DIR` for the output filenames your `method.yaml` declares.
 
-Either way, the floor is the same: the `WFC_*` variables and your output files. The `wfc-client` decorator is convenience sitting on top of a contract that never changes. The authoring side of this — the decorator surface and the raw contract — is covered end-to-end in [[authoring-a-method-script]].
+Either way, the floor is the same: the `WFC_*` variables and your output files. The `wfc-client` decorator is convenience sitting on top of a contract that never changes. The authoring side of this — the decorator surface and the raw contract — is covered end-to-end in [Authoring a Method Script](../tutorials/authoring-a-method-script.md).
 
 ## Where to go next
 
@@ -74,7 +74,7 @@ You now have the end-to-end picture: Snakemake compiles and orchestrates, each `
 
 From here:
 
-- **Write the code that runs inside a step** — [[authoring-a-method-script]] covers the `wfc-client` decorator and the raw env-var + file contract in depth.
-- **Understand why a step re-runs or is skipped** — [[caching-and-reproducibility]] explains the cache key and how lineage links a run back to its inputs.
-- **Inspect a run after it finishes** — [[run-and-inspect-results]] walks through finding a run's outputs, status, and history (use the *Open pipeline in Canvas* action to load it visually).
-- **See the whole flow on a worked example first** — [[getting-started]] runs a real pipeline end to end.
+- **Write the code that runs inside a step** — [Authoring a Method Script](../tutorials/authoring-a-method-script.md) covers the `wfc-client` decorator and the raw env-var + file contract in depth.
+- **Understand why a step re-runs or is skipped** — [Caching & Reproducibility](../explanation/caching-and-reproducibility.md) explains the cache key and how lineage links a run back to its inputs.
+- **Inspect a run after it finishes** — [Run & Inspect Results](../how-to/run-and-inspect-results.md) walks through finding a run's outputs, status, and history (use the *Open pipeline in Canvas* action to load it visually).
+- **See the whole flow on a worked example first** — [Getting Started](../tutorials/getting-started.md) runs a real pipeline end to end.

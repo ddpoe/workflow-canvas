@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.explanation.storage-and-provenance @ 20d8350d20d6; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.explanation.storage-and-provenance @ fa16804d82ac; do not edit -->
 
 # Storage & Provenance
 
@@ -12,7 +12,7 @@ The short version:
 - **The provenance trail** lives in a SQLite database (`.wfc/wfc.db`). It records every run and maps each output to the content hash that holds its bytes.
 - **Git** tracks your *method source* (so a method's code is versioned), but it never records pipeline *runs*.
 
-This page explains why outputs are addressed by content instead of by path, what git does and does not capture, how the cache is shared across machines, and what you must back up to keep results recoverable. For the operational "how do I find a run's output" recipe, see [[run-and-inspect-results]]; for why a step re-runs or hits the cache, see [[caching-and-reproducibility]].
+This page explains why outputs are addressed by content instead of by path, what git does and does not capture, how the cache is shared across machines, and what you must back up to keep results recoverable. For the operational "how do I find a run's output" recipe, see [Run & Inspect Results](../how-to/run-and-inspect-results.md); for why a step re-runs or hits the cache, see [Caching & Reproducibility](../explanation/caching-and-reproducibility.md).
 
 ## The content-addressed cache is the only authoritative store
 
@@ -34,7 +34,7 @@ The honest caveat to understand here: the cache is a flat pile of content-addres
 
 ## What git tracks (and what it doesn't)
 
-Git's role here is narrow and deliberate. When you register a method, Workflow Canvas snapshots that method's source files into the project and **auto-commits** that snapshot to git. Your method code is therefore versioned, and the commit SHA is captured as audit metadata on the method version row. (Cache validity itself is driven by a content fingerprint of the source files, not by the commit, so an unrelated commit elsewhere in the repo does not invalidate cached results — see [[caching-and-reproducibility]].)
+Git's role here is narrow and deliberate. When you register a method, Workflow Canvas snapshots that method's source files into the project and **auto-commits** that snapshot to git. Your method code is therefore versioned, and the commit SHA is captured as audit metadata on the method version row. (Cache validity itself is driven by a content fingerprint of the source files, not by the commit, so an unrelated commit elsewhere in the repo does not invalidate cached results — see [Caching & Reproducibility](../explanation/caching-and-reproducibility.md).)
 
 What git does **not** do: pipeline runs never produce git commits. Running a pipeline does not stage, commit, or touch your working tree. There is intentionally no `--allow-dirty` style escape hatch layered on top of runs — the commit-then-run discipline applies to *registering methods*, not to executing pipelines.
 
@@ -46,11 +46,11 @@ Because outputs are addressed by content hash, sharing them is just a matter of 
 
 A collaborator who pulls your database can then reproduce your results: the database tells them which `content_hash` belongs to which run, and the cache resolver fetches any missing blob from the remote on demand. When something reads an output, resolution happens in tiers — **CACHE** if the hash is already in the local cache, otherwise **REMOTE-PULL** to fetch it from the configured remote, and only then **FAIL** if neither has it.
 
-You configure all of this through the `[dvc]` block in `.wfc/wf-canvas.toml` — set `url` to any DVC-native scheme (`file://`, `s3://`, `ssh://`, `gs://`, `azure://`, and so on). Workflow Canvas mirrors that config to DVC and dispatches on the URL scheme for you; you **never run `dvc` directly**. See [[project-anatomy]] for the full config block.
+You configure all of this through the `[dvc]` block in `.wfc/wf-canvas.toml` — set `url` to any DVC-native scheme (`file://`, `s3://`, `ssh://`, `gs://`, `azure://`, and so on). Workflow Canvas mirrors that config to DVC and dispatches on the URL scheme for you; you **never run `dvc` directly**. See [Project Anatomy](../explanation/project-anatomy.md) for the full config block.
 
 ## Where to go next
 
-- [[run-and-inspect-results]] — the operational recipe: find a run, read its outputs, and trace lineage.
-- [[caching-and-reproducibility]] — why a step re-runs versus hits the cache, and how the lineage chain is recorded.
-- [[project-anatomy]] — the `.wfc/` layout and the `wf-canvas.toml` config, including the `[dvc]` remote block.
-- [[registration]] — how registering a method snapshots and commits its source.
+- [Run & Inspect Results](../how-to/run-and-inspect-results.md) — the operational recipe: find a run, read its outputs, and trace lineage.
+- [Caching & Reproducibility](../explanation/caching-and-reproducibility.md) — why a step re-runs versus hits the cache, and how the lineage chain is recorded.
+- [Project Anatomy](../explanation/project-anatomy.md) — the `.wfc/` layout and the `wf-canvas.toml` config, including the `[dvc]` remote block.
+- [Registering Modules, Methods, and Samples](../how-to/registration.md) — how registering a method snapshots and commits its source.

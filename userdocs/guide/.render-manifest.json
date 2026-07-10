@@ -1,50 +1,54 @@
 {
   "explanation/caching-and-reproducibility.md": {
     "doc_id": "pm_mvp::docs.consumer.explanation.caching-and-reproducibility",
-    "hash": "babad95db23e"
+    "hash": "83bd97494008"
   },
   "explanation/how-a-run-executes.md": {
     "doc_id": "pm_mvp::docs.consumer.explanation.how-a-run-executes",
-    "hash": "eb692815a8f1"
+    "hash": "4ea0c0309173"
   },
   "explanation/project-anatomy.md": {
     "doc_id": "pm_mvp::docs.consumer.explanation.project-anatomy",
-    "hash": "73a47a6f0671"
+    "hash": "34363c5fad11"
   },
   "explanation/storage-and-provenance.md": {
     "doc_id": "pm_mvp::docs.consumer.explanation.storage-and-provenance",
-    "hash": "20d8350d20d6"
+    "hash": "fa16804d82ac"
   },
   "how-to/canvas.md": {
     "doc_id": "pm_mvp::docs.consumer.how-to.canvas",
-    "hash": "34781af14eae"
+    "hash": "eedba3d13e75"
   },
   "how-to/registration.md": {
     "doc_id": "pm_mvp::docs.consumer.how-to.registration",
-    "hash": "d475fcd67b13"
+    "hash": "3a1150c0e732"
   },
   "how-to/run-and-inspect-results.md": {
     "doc_id": "pm_mvp::docs.consumer.how-to.run-and-inspect-results",
-    "hash": "66f09d80faa3"
+    "hash": "60eee689a368"
   },
   "how-to/sweep-parameters-and-fan-out.md": {
     "doc_id": "pm_mvp::docs.consumer.how-to.sweep-parameters-and-fan-out",
-    "hash": "85fd671f47ac"
+    "hash": "217a4477904e"
+  },
+  "overview/what-is-workflow-canvas.md": {
+    "doc_id": "pm_mvp::docs.consumer.overview.what-is-workflow-canvas",
+    "hash": "5963dc02b568"
   },
   "tutorials/authoring-a-method-script.md": {
     "doc_id": "pm_mvp::docs.consumer.tutorials.authoring-a-method-script",
-    "hash": "1b9b079b9426"
+    "hash": "6009692121fb"
   },
   "tutorials/getting-started.md": {
     "doc_id": "pm_mvp::docs.consumer.tutorials.getting-started",
-    "hash": "b6e4774746f7"
+    "hash": "4eb317306611"
   },
   "tutorials/registering-an-environment.md": {
     "doc_id": "pm_mvp::docs.consumer.tutorials.registering-an-environment",
-    "hash": "ae639db80ee5"
+    "hash": "9843aefee78b"
   },
   "tutorials/writing-contracts.md": {
     "doc_id": "pm_mvp::docs.consumer.tutorials.writing-contracts",
-    "hash": "a9302c4c8244"
+    "hash": "4078d6d1a2b7"
   }
 }
