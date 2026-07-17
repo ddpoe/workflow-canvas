@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.reference.cli-reference @ 5f9edb97e56b; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.reference.cli-reference @ 09178a258fe7; do not edit -->
 
 # CLI Reference
 
@@ -250,3 +250,19 @@ Remove old run archives and optionally DVC local cache entries to reclaim disk s
 | `--include-local` | Also prune `.dvc/cache/` unreferenced hashes |
 | `--dry-run` | Print what would be deleted without deleting |
 | `--force` | Skip the confirmation prompt and remote reachability check |
+
+
+### wfc export
+
+Copy a run's output out of the cache into a file you own, or print the resolved cache path in place. Cache entries are read-only (see <a href="../../explanation/storage-and-provenance.html">Storage &amp; Provenance</a>), so this is the supported way to get a mutable copy.
+
+| Arg | Description |
+|---|---|
+| `run_id` | Run to export from (positional) |
+| `output_name` | Output name (positional, optional with `--all`) |
+| `dest` | Destination file or directory (positional, optional with `--path`) |
+| `--all` | Export every output of the run into `dest` (a directory) under predictable per-output names |
+| `--path` | Print the resolved cache path instead of copying (script-friendly: `p=$(wfc export 412 masks --path)`) |
+| `--force` | Overwrite an existing destination file |
+
+A bare `wfc export <run-id>` or a mistyped output name exits nonzero and lists the run's actual output names instead of guessing.

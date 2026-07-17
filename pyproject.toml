@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "workflow-canvas"
-version = "0.3.0"
+version = "0.4.0"
 description = "Workflow Canvas — DB + wfc CLI + Snakemake execution"
 authors = ["Dante <dantepoe@noboundssolutions.com>"]
 license = "BSD-3-Clause"

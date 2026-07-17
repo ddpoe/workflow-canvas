@@ -290,6 +290,8 @@ def conda_list_explicit(env_path: str | Path) -> str:
             ["conda", "list", "--explicit", "--md5", "--prefix", str(env_path)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
     except FileNotFoundError as e:
         raise FileNotFoundError(
@@ -332,6 +334,8 @@ def pip_freeze(env_python: str | Path) -> str:
             [str(env_python), "-m", "pip", "freeze", "--disable-pip-version-check"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
     except FileNotFoundError as e:
         raise FileNotFoundError(
@@ -374,6 +378,8 @@ def pip_freeze_best_effort(env_python: str | Path) -> str:
             [str(env_python), "-m", "pip", "freeze", "--disable-pip-version-check"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
     except FileNotFoundError as e:
         raise FileNotFoundError(

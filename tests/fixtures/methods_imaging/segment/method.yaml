@@ -9,5 +9,12 @@ outputs:
     type: .csv
     required: true
 
+params:
+  threshold:
+    type: float
+    required: false
+    default: 0.0
+    description: "Rows with numeric id < threshold are dropped from masks (0.0 keeps all)"
+
 executor: python
 env: container:fixture-env

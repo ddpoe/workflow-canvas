@@ -16,12 +16,14 @@
    */
   import { pipelineVariables, createVariable, deleteVariable } from './stores.js';
   import { paramEditorAggregator } from './machines/root.js';
+  import { coerceParamValue } from './machines/paramEditor.machine.js';
 
   let collapsed = $state(false);
   let showAdd = $state(false);
   let newName = $state('');
   let newType = $state<'str' | 'int' | 'float' | 'bool' | 'list' | 'dict'>('str');
   let newValueText = $state('');
+  let addError = $state<string | null>(null);
 
   /**
    * Count actor rows currently bound to a given variable name.
@@ -48,16 +50,6 @@
     return n;
   }
 
-  function parseValue(type: string, raw: string): unknown {
-    if (type === 'int') return parseInt(raw, 10);
-    if (type === 'float') return parseFloat(raw);
-    if (type === 'bool') return raw === 'true' || raw === '1';
-    if (type === 'list' || type === 'dict') {
-      try { return JSON.parse(raw); } catch { return raw; }
-    }
-    return raw;
-  }
-
   function displayValue(v: unknown): string {
     if (v === undefined || v === null) return '';
     if (typeof v === 'object') {
@@ -71,17 +63,31 @@
     newName = '';
     newType = 'str';
     newValueText = '';
+    addError = null;
   }
 
   function confirmAdd(): void {
     const name = newName.trim();
     if (!name) return;
-    createVariable(name, newType, parseValue(newType, newValueText));
+    // Same coerce rules the param editor applies — a value that a param
+    // row would reject must not become a variable either.
+    const result = coerceParamValue({
+      raw: newValueText,
+      paramType: newType === 'str' ? 'string' : newType,
+      required: false,
+    });
+    if (!result.ok) {
+      addError = result.error;
+      return;
+    }
+    createVariable(name, newType, result.value);
+    addError = null;
     showAdd = false;
   }
 
   function cancelAdd(): void {
     showAdd = false;
+    addError = null;
   }
 
   function handleDelete(name: string): void {
@@ -128,6 +134,9 @@
             <input class="pv-input" placeholder="value"
               type={newType === 'int' || newType === 'float' ? 'number' : 'text'}
               bind:value={newValueText} data-testid="pv-new-value" />
+          {/if}
+          {#if addError}
+            <div class="pv-add-error" data-testid="pv-add-error">{addError}</div>
           {/if}
           <div class="pv-add-actions">
             <button type="button" class="pv-confirm" onclick={confirmAdd}
@@ -214,6 +223,7 @@
     outline: none;
   }
   .pv-json { resize: vertical; min-height: 40px; }
+  .pv-add-error { color: #E74C3C; font-size: 11px; }
   .pv-add-actions { display: flex; gap: 4px; justify-content: flex-end; }
   .pv-confirm, .pv-cancel {
     background: transparent;

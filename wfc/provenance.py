@@ -146,6 +146,66 @@ def _cache_path(project_dir: Path, md5: str) -> Path:
     return _cache_dir(project_dir) / md5[:2] / md5[2:]
 
 
+def _make_read_only(path: Path | str) -> None:
+    """Best-effort chmod a cache entry read-only (footgun guard, ADR-018).
+
+    Files become 0444; directory entries are walked with files set to 0444
+    and directories to 0555.  On Windows ``os.chmod(p, 0o444)`` sets the
+    read-only attribute on files, which blocks accidental overwrites of
+    cache entries handed out by path (e.g. ``wfc export --path``).
+
+    Best-effort by design: a chmod failure (root-owned container outputs,
+    exotic filesystems) warns to stderr and continues — archiving must
+    never fail because protection could not be applied.  This is a footgun
+    guard, not a security boundary.
+
+    Args:
+        path: Cache entry path (file or directory).
+    """
+    path = Path(path)
+    try:
+        if path.is_dir():
+            for root, dirs, files in os.walk(path):
+                for name in files:
+                    os.chmod(os.path.join(root, name), 0o444)
+                for name in dirs:
+                    os.chmod(os.path.join(root, name), 0o555)
+            os.chmod(path, 0o555)
+        else:
+            os.chmod(path, 0o444)
+    except OSError as exc:
+        print(
+            f"WARNING: could not mark cache entry read-only ({path}): {exc}",
+            file=sys.stderr,
+        )
+
+
+def _make_writable(path: Path | str) -> None:
+    """Best-effort chmod a path (recursively) back to owner-writable.
+
+    Inverse of :func:`_make_read_only`, used before deleting or replacing
+    protected entries/copies (the Windows read-only attribute blocks
+    ``unlink``/``rmtree``).  Silent best-effort: failures surface later as
+    the actual delete/replace error, which is more informative.
+
+    Args:
+        path: Path (file or directory) to make writable.
+    """
+    path = Path(path)
+    try:
+        if path.is_dir():
+            os.chmod(path, 0o755)
+            for root, dirs, files in os.walk(path):
+                for name in dirs:
+                    os.chmod(os.path.join(root, name), 0o755)
+                for name in files:
+                    os.chmod(os.path.join(root, name), 0o644)
+        else:
+            os.chmod(path, 0o644)
+    except OSError:
+        pass
+
+
 def cache_file(
     path: Path | str,
     md5: str,
@@ -203,6 +263,7 @@ def cache_file(
             shutil.move(str(path), str(dest))
         else:
             shutil.copytree(str(path), str(dest))
+        _make_read_only(dest)
         return dest
 
     # File path
@@ -235,6 +296,7 @@ def cache_file(
                 tmp.unlink()
             raise
 
+    _make_read_only(dest)
     return dest
 
 
@@ -269,7 +331,11 @@ def restore_from_cache(
         existing_hash = hash_path(dest)
         if existing_hash == md5:
             return True  # Already valid — skip restore
-        # Stale/corrupted — remove before replacing
+        # Stale/corrupted — remove before replacing. Workspace copies
+        # restored from a protected cache entry inherit its read-only bits
+        # (copy2/copytree preserve mode), and on Windows the read-only
+        # attribute blocks unlink — make the stale dest writable first.
+        _make_writable(dest)
         if dest.is_dir():
             shutil.rmtree(dest)
         else:
@@ -876,6 +942,10 @@ def prune_dvc_cache(
 
     if not dry_run:
         for path in to_delete:
+            # Cache entries are read-only (footgun guard); on Windows the
+            # read-only attribute blocks unlink/rmtree, so make each
+            # selected entry deletable first (best-effort).
+            _make_writable(path)
             if path.is_dir():
                 shutil.rmtree(path)
             else:
@@ -963,5 +1033,12 @@ def archive_outputs(
             results.append(entry)
 
         session.commit()
+
+    # Protection sweep (best-effort, idempotent): mark every cache entry
+    # read-only. Covers entries written before write-time protection landed
+    # and entries materialized by DVC pulls, which bypass cache_file. Runs
+    # on both `wfc cache archive` and the run_pipeline auto-archive.
+    for entry_path in scan_dvc_cache_entries(project_dir).values():
+        _make_read_only(entry_path)
 
     return results

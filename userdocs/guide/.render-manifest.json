@@ -13,7 +13,7 @@
   },
   "explanation/storage-and-provenance.md": {
     "doc_id": "pm_mvp::docs.consumer.explanation.storage-and-provenance",
-    "hash": "fa16804d82ac"
+    "hash": "a3e16e45dfd4"
   },
   "how-to/canvas.md": {
     "doc_id": "pm_mvp::docs.consumer.how-to.canvas",
@@ -25,7 +25,7 @@
   },
   "how-to/run-and-inspect-results.md": {
     "doc_id": "pm_mvp::docs.consumer.how-to.run-and-inspect-results",
-    "hash": "60eee689a368"
+    "hash": "89ac9cdcb27c"
   },
   "how-to/sweep-parameters-and-fan-out.md": {
     "doc_id": "pm_mvp::docs.consumer.how-to.sweep-parameters-and-fan-out",

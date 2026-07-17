@@ -9,5 +9,17 @@ outputs:
     type: .csv
     required: true
 
+params:
+  tile_size:
+    type: int
+    required: false
+    default: 256
+    description: "Tile edge length (px) for the synthetic tiling metric"
+  overlap:
+    type: float
+    required: false
+    default: 0.1
+    description: "Fractional overlap between adjacent tiles"
+
 executor: python
 env: container:fixture-env

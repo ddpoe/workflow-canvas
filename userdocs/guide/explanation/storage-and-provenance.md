@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.explanation.storage-and-provenance @ fa16804d82ac; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.explanation.storage-and-provenance @ a3e16e45dfd4; do not edit -->
 
 # Storage & Provenance
 
@@ -21,6 +21,16 @@ Output bytes live in exactly one place: the DVC content-addressed cache, on disk
 There is **no workspace tree**. A method writes its output into a transient staging directory under `.runs/{run_id}/` while it runs, and once the data is safe in the cache that staging copy is gone. The file Snakemake actually tracks as a step's output is a **zero-byte sentinel** under `.runs/sentinels/...` — it carries no data; it exists only so Snakemake can wire the dependency graph and know a step finished. The real bytes are in the cache, addressed by hash.
 
 This is why you should never go looking for outputs by browsing folders. A downstream step, the History view, and the Canvas all reach an output the same way: they read its `content_hash` from the database and resolve that hash to a cache path. Because the address is the content, an output is immutable and de-duplicated for free — the same result is stored once no matter how many runs reference it.
+
+Archived cache entries are marked read-only at the filesystem level. Because a cache file's path is the hash of its contents, editing the file in place would corrupt every run that references that hash — so the store refuses writes outright. If you get a path from `wfc export --path` and write back to it, the write fails:
+
+```python
+path = "…"  # from: wfc export 412 masks --path
+df.to_csv(path)
+# PermissionError: [Errno 13] Permission denied: '.dvc/cache/files/md5/1f/9c…'
+```
+
+To change an output, export a copy you own instead (see [Run & Inspect Results](../how-to/run-and-inspect-results.md)). `wfc cache prune` still deletes protected entries when you reclaim space.
 
 This model was adopted in ADR-018, which eliminated the older copy-everything workspace in favor of the cache being the sole on-disk store and a move (not a copy) into it.
 

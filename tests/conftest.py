@@ -48,7 +48,11 @@ def git_project(tmp_path):
     (tmp_path / ".gitkeep").write_text("")
     subprocess.run(["git", "add", "."], cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, check=True, capture_output=True)
-    return tmp_path
+    # resolve(): pytest builds tmp_path from getpass.getuser(), whose casing can
+    # disagree with the on-disk basetemp dir on Windows (case-insensitive FS).
+    # project_root() resolves paths, so unresolved fixture paths break string
+    # comparisons against resolver output.
+    return tmp_path.resolve()
 
 
 def _make_wfc_marker(project_dir: Path) -> None:
@@ -271,7 +275,8 @@ def fixture_container_image() -> str:
     build = subprocess.run(
         ["docker", "build", "-t", _FIXTURE_IMAGE_TAG,
          "-f", str(dockerfile), str(PROJECT_ROOT)],
-        capture_output=True, text=True, timeout=600,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=600,
     )
     if build.returncode != 0:
         pytest.fail(
@@ -281,7 +286,8 @@ def fixture_container_image() -> str:
 
     inspect = subprocess.run(
         ["docker", "image", "inspect", "--format", "{{.Id}}", _FIXTURE_IMAGE_TAG],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=30,
     )
     if inspect.returncode != 0:
         pytest.fail(

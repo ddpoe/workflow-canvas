@@ -541,7 +541,8 @@ def _default_run_import_check(python_bin: str, script_path: str):
     )
     result = subprocess.run(
         [python_bin, "-c", code],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=60,
     )
     return (result.returncode, result.stdout, result.stderr)
 

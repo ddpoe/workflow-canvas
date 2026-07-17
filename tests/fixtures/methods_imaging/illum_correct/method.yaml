@@ -9,5 +9,12 @@ outputs:
     type: .csv
     required: true
 
+params:
+  sigma:
+    type: float
+    required: false
+    default: 2.0
+    description: "Gaussian sigma for the illumination-correction metric"
+
 executor: python
 env: container:fixture-env

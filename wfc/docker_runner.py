@@ -62,7 +62,11 @@ def build(dockerfile_dir: Union[str, Path], tag: str) -> None:
         cmd,
         env=build_env,
         capture_output=True,
+        # docker always emits UTF-8 (BuildKit progress uses multi-byte chars);
+        # the Windows default cp1252 decode crashes the reader thread.
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     if proc.returncode != 0:
@@ -94,7 +98,11 @@ def image_inspect(ref: str) -> str:
     proc = subprocess.run(
         cmd,
         capture_output=True,
+        # docker always emits UTF-8 (BuildKit progress uses multi-byte chars);
+        # the Windows default cp1252 decode crashes the reader thread.
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     if proc.returncode != 0:
@@ -126,7 +134,11 @@ def pull(ref: str) -> None:
     proc = subprocess.run(
         cmd,
         capture_output=True,
+        # docker always emits UTF-8 (BuildKit progress uses multi-byte chars);
+        # the Windows default cp1252 decode crashes the reader thread.
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     if proc.returncode != 0:

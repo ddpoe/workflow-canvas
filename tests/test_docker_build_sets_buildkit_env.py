@@ -34,7 +34,8 @@ def test_docker_build_sets_buildkit_env(monkeypatch, tmp_path):
 
     captured = {}
 
-    def fake_run(cmd, env=None, capture_output=False, text=False, check=False):
+    def fake_run(cmd, env=None, capture_output=False, text=False, check=False,
+                 **kwargs):
         captured["cmd"] = cmd
         captured["env"] = env
         return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -59,7 +60,8 @@ def test_docker_build_raises_runtimeerror_on_nonzero(monkeypatch, tmp_path):
     """Non-zero docker exit must raise RuntimeError with stderr surfaced."""
     from wfc import docker_runner
 
-    def fake_run(cmd, env=None, capture_output=False, text=False, check=False):
+    def fake_run(cmd, env=None, capture_output=False, text=False, check=False,
+                 **kwargs):
         return SimpleNamespace(returncode=1, stdout="", stderr="COPY failed: file not found")
 
     monkeypatch.setattr(subprocess, "run", fake_run)

@@ -75,7 +75,8 @@ def client_image(repo_root: Path) -> str:
     build = subprocess.run(
         ["docker", "build", "-t", CLIENT_IMAGE_TAG,
          "-f", str(dockerfile), str(repo_root)],
-        capture_output=True, text=True, timeout=600,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=600,
     )
     if build.returncode != 0:
         pytest.fail(
@@ -85,7 +86,8 @@ def client_image(repo_root: Path) -> str:
 
     inspect = subprocess.run(
         ["docker", "image", "inspect", "--format", "{{.Id}}", CLIENT_IMAGE_TAG],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=30,
     )
     if inspect.returncode != 0:
         pytest.fail(

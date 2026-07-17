@@ -15,6 +15,7 @@ Structure mapping:
 
 import os
 import json
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field, asdict
@@ -792,39 +793,86 @@ class WfcProvider:
             for m in self._methods.values()
         ]
 
-    def list_artifacts(self, run_id: str) -> List[Dict[str, Any]]:
-        """List top-level artifacts for a run.
+    def _resolved_outputs(self, run_id) -> List[tuple]:
+        """Resolve a run's ``RunOutput`` rows to local cache paths (ADR-018).
 
-        Files in the root of the run's archive directory are returned as
-        ``type='file'`` rows. Subdirectories are returned as ``type='dir'``
-        rows carrying a descendant-file ``count`` and a summed ``size``.
-        The caller can drill into a directory by requesting its contents
-        via a future per-path endpoint; this keeps the response shallow
-        and paginatable regardless of how deep the run archive gets.
+        Reads the run's ``RunOutput`` rows through the provider's own
+        ``db_path``-bound engine and resolves each named row via the shared
+        ``wfc.cli.resolve_output`` with ``pull=False`` — GUI resolution is
+        local-cache-only and never blocks an HTTP request on a remote pull.
+        Rows that cannot be resolved (unnamed, un-archived NULL
+        ``content_hash``, or missing from the local cache) are skipped with
+        a log line rather than failing the caller.
+
+        Args:
+            run_id: Run id (string, as used throughout the provider).
+
+        Returns:
+            List of ``(RunOutput, cache_path)`` tuples for resolvable rows.
         """
-        run_dir = self.project_root / ".runs" / f"{int(run_id):08d}"
-        if not run_dir.exists():
+        from wfc.cli import ResolveOutputError, resolve_output
+
+        try:
+            rid = int(run_id)
+        except (ValueError, TypeError):
             return []
+
+        results: List[tuple] = []
+        engine = self._build_engine()
+        try:
+            with Session(engine) as session:
+                rows = session.exec(
+                    select(RunOutput).where(RunOutput.run_id == rid)
+                ).all()
+                for ro in rows:
+                    if not ro.output_name:
+                        print(
+                            f"[wfc_provider] run {rid}: skipping unnamed "
+                            f"output row id={ro.id}",
+                            file=sys.stderr,
+                        )
+                        continue
+                    try:
+                        cache_path, _ = resolve_output(
+                            rid,
+                            ro.output_name,
+                            pull=False,
+                            project_dir=self.project_root,
+                            session=session,
+                        )
+                    except ResolveOutputError as exc:
+                        print(
+                            f"[wfc_provider] run {rid}: skipping output "
+                            f"'{ro.output_name}': {exc}",
+                            file=sys.stderr,
+                        )
+                        continue
+                    results.append((ro, cache_path))
+        finally:
+            engine.dispose()
+        return results
+
+    def list_artifacts(self, run_id: str) -> List[Dict[str, Any]]:
+        """List top-level artifacts for a run from the DVC cache (ADR-018).
+
+        One row per archived ``RunOutput``: file outputs are returned as
+        ``type='file'`` rows named ``output_name`` + original suffix;
+        directory outputs are returned as ``type='dir'`` rows carrying a
+        descendant-file ``count``, a summed ``size``, and one-level
+        ``children`` for the expand-in-place UI. Outputs that are
+        un-archived or missing from the local cache are skipped (logged),
+        never raised through the endpoint.
+        """
+        from wfc.cli import _output_export_name
 
         image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}
         artifacts: List[Dict[str, Any]] = []
 
-        for item in sorted(run_dir.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
-            if item.is_file():
-                ext = item.suffix.lower()
-                artifacts.append(
-                    {
-                        "name": item.name,
-                        "type": "file",
-                        "size": item.stat().st_size,
-                        "is_image": ext in image_extensions,
-                        "extension": ext.lstrip("."),
-                    }
-                )
-            elif item.is_dir():
+        for ro, cache_path in self._resolved_outputs(run_id):
+            if cache_path.is_dir():
                 count = 0
                 total = 0
-                for child in item.rglob("*"):
+                for child in cache_path.rglob("*"):
                     if child.is_file():
                         count += 1
                         total += child.stat().st_size
@@ -834,7 +882,7 @@ class WfcProvider:
                 direct_children: List[Dict[str, Any]] = []
                 try:
                     for child in sorted(
-                        item.iterdir(),
+                        cache_path.iterdir(),
                         key=lambda p: (not p.is_dir(), p.name.lower()),
                     ):
                         if child.name.startswith("."):
@@ -853,7 +901,7 @@ class WfcProvider:
                     pass
                 artifacts.append(
                     {
-                        "name": item.name + "/",
+                        "name": ro.output_name + "/",
                         "type": "dir",
                         "size": total,
                         "count": count,
@@ -862,7 +910,22 @@ class WfcProvider:
                         "children": direct_children,
                     }
                 )
+            else:
+                name = _output_export_name(ro)
+                ext = Path(name).suffix.lower()
+                artifacts.append(
+                    {
+                        "name": name,
+                        "type": "file",
+                        "size": cache_path.stat().st_size,
+                        "is_image": ext in image_extensions,
+                        "extension": ext.lstrip("."),
+                    }
+                )
 
+        # Same presentation order as the pre-ADR-018 lister: directories
+        # first, then case-insensitive by name.
+        artifacts.sort(key=lambda a: (a["type"] != "dir", a["name"].lower()))
         return artifacts
 
     def get_artifacts(self, run_ids: Optional[List[str]] = None, extensions: Optional[List[str]] = None) -> List[Dict[str, Any]]:
@@ -880,6 +943,8 @@ class WfcProvider:
         if not self._loaded:
             self.load()
 
+        from wfc.cli import _output_export_name
+
         target_ids = run_ids if run_ids else list(self._runs.keys())
         ext_set = {f'.{e.lstrip(".").lower()}' for e in extensions} if extensions else None
         results = []
@@ -889,31 +954,45 @@ class WfcProvider:
             if not run:
                 continue
 
-            try:
-                run_dir = self.project_root / ".runs" / f"{int(rid):08d}"
-            except (ValueError, TypeError):
-                continue
-
-            if not run_dir.exists():
-                continue
-
-            for item in run_dir.rglob("*"):
-                if not item.is_file():
-                    continue
-                if ext_set is not None and item.suffix.lower() not in ext_set:
-                    continue
-                rel_path = item.relative_to(run_dir)
-                results.append(
-                    {
-                        "run_id": rid,
-                        "run_name": run.runName or rid,
-                        "method": run.method,
-                        "artifact_name": str(rel_path),
-                        "file_path": str(item),
-                        "extension": item.suffix.lstrip(".").lower(),
-                        "size_bytes": item.stat().st_size,
-                    }
-                )
+            for ro, cache_path in self._resolved_outputs(rid):
+                if cache_path.is_dir():
+                    # ADR-018 stores directory outputs as real directories —
+                    # enumerate member files so the zip keeps per-file entries.
+                    for member in cache_path.rglob("*"):
+                        if not member.is_file():
+                            continue
+                        if ext_set is not None and member.suffix.lower() not in ext_set:
+                            continue
+                        rel = member.relative_to(cache_path).as_posix()
+                        results.append(
+                            {
+                                "run_id": rid,
+                                "run_name": run.runName or rid,
+                                "method": run.method,
+                                "artifact_name": f"{ro.output_name}/{rel}",
+                                "file_path": str(member),
+                                "extension": member.suffix.lstrip(".").lower(),
+                                "size_bytes": member.stat().st_size,
+                            }
+                        )
+                else:
+                    artifact_name = _output_export_name(ro)
+                    # Filter on the ACTUAL file suffix (the bare output_name
+                    # may carry none; the cache entry itself is a hash name).
+                    suffix = Path(artifact_name).suffix.lower()
+                    if ext_set is not None and suffix not in ext_set:
+                        continue
+                    results.append(
+                        {
+                            "run_id": rid,
+                            "run_name": run.runName or rid,
+                            "method": run.method,
+                            "artifact_name": artifact_name,
+                            "file_path": str(cache_path),
+                            "extension": suffix.lstrip("."),
+                            "size_bytes": cache_path.stat().st_size,
+                        }
+                    )
 
         return results
 
@@ -922,19 +1001,26 @@ class WfcProvider:
         return self.get_artifacts(run_ids, extensions=['csv'])
 
     def get_artifact_path(self, run_id: str, artifact_name: str) -> Optional[Path]:
-        """Get the full path to an artifact file in the run's archive directory."""
-        try:
-            run_dir = self.project_root / ".runs" / f"{int(run_id):08d}"
-        except (ValueError, TypeError):
-            return None
+        """Resolve an artifact display name to its local cache path (ADR-018).
 
-        if not run_dir.exists():
-            return None
+        ``artifact_name`` is the name this provider hands out elsewhere:
+        ``output_name`` + original suffix for file outputs, or
+        ``output_name`` / ``output_name/<member path>`` for directory
+        outputs. Resolution is local-cache-only; unknown names return None.
+        """
+        from wfc.cli import _output_export_name
 
-        # Normalize path separators
-        artifact_name = artifact_name.replace("/", os.sep).replace("\\", os.sep)
-        artifact_path = run_dir / artifact_name
+        requested = artifact_name.replace("\\", "/").strip("/")
 
-        if artifact_path.exists():
-            return artifact_path
+        for ro, cache_path in self._resolved_outputs(run_id):
+            if cache_path.is_dir():
+                if requested == ro.output_name:
+                    return cache_path
+                if requested.startswith(ro.output_name + "/"):
+                    member = cache_path / requested[len(ro.output_name) + 1:]
+                    if member.exists():
+                        return member
+            else:
+                if requested == _output_export_name(ro):
+                    return cache_path
         return None

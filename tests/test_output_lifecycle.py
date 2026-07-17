@@ -45,9 +45,12 @@ def test_resolve_input_fail_path(cli, tmp_project):
         else:
             artifact_path.unlink()
 
-    # Delete the DVC cache entry
+    # Delete the DVC cache entry (entries are read-only — make deletable
+    # first, exactly as prune_dvc_cache does)
+    from wfc.provenance import _make_writable
     cache_path = tmp_project / ".dvc" / "cache" / "files" / "md5" / content_hash[:2] / content_hash[2:]
     if cache_path.exists():
+        _make_writable(cache_path)
         if cache_path.is_dir():
             shutil.rmtree(cache_path)
         else:

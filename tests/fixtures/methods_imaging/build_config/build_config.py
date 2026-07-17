@@ -8,6 +8,12 @@ from pathlib import Path
 STAGE = "build_config"
 
 
+def write_results(run_dir, outputs, metrics):
+    """Hand-written Tier-2 results manifest — same shape wfc-client finalizes."""
+    payload = {"outputs": outputs, "metrics": metrics}
+    (run_dir / "_wfc_results.json").write_text(json.dumps(payload, indent=2))
+
+
 def main():
     run_dir = Path(os.environ["WFC_RUN_DIR"])
     slot_paths = json.loads(os.environ.get("WFC_INPUT_PATHS", "{}"))
@@ -21,6 +27,7 @@ def main():
         w = csv.writer(f)
         w.writerow(header + ["stage"])
         w.writerows(rows)
+    write_results(run_dir, {"config": "config.csv"}, {"config_rows": len(rows)})
     print(f"{STAGE}: wrote {len(rows)} rows to {out_path.name}")
 
 

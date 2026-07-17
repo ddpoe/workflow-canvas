@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.how-to.run-and-inspect-results @ 60eee689a368; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.how-to.run-and-inspect-results @ 89ac9cdcb27c; do not edit -->
 
 # Run & Inspect Results
 
@@ -34,6 +34,48 @@ When a downstream step -- or the Canvas, or you, via the library -- needs an out
 If neither tier succeeds, retrieval **fails** and no path is returned. (Very old runs created before content hashing fall back to their original recorded artifact path.)
 
 The practical takeaway: if an output cannot be found locally and there is no remote configured (or the hash is not on the remote), you cannot reconstruct that run's bytes. This is why backing up the cache and the project database matters -- see [Storage & Provenance](../explanation/storage-and-provenance.md) for the recoverability story.
+
+## Exporting a run's outputs
+
+The cache is authoritative and **read-only** — you never edit result bytes where they live. `wfc export` is the supported way to get a run's outputs out of it, either as a copy you own or as an in-place path.
+
+### Get a copy you own
+
+```bash
+wfc export <run-id> <output-name> <dest>
+```
+
+This copies the output's bytes out of the cache into a normal, writable file — open it, edit it, save over it; the archived original is untouched. If `<dest>` is an existing directory, the file lands inside it under its original name. An existing destination *file* is refused unless you pass `--force`, so the command never silently overwrites your data.
+
+To export every output of a run at once, pass `--all` with a directory:
+
+```bash
+wfc export <run-id> --all results/
+```
+
+Each output is written into the directory under a predictable per-output name.
+
+### Huge outputs: read in place with `--path`
+
+Copying a multi-GB output just to read it is wasteful. `--path` prints the resolved cache path instead of copying:
+
+```bash
+p=$(wfc export 412 masks --path)
+```
+
+Exactly the path goes to stdout (script-friendly, as above); a warning on stderr reminds you it points into read-only cache storage. Reading it is fine. *Writing* to it fails with a permission error by design — that protection is what keeps a careless `df.to_csv(p)` from corrupting the archived bytes that every future cache hit depends on. If the bytes are not in the local cache yet, they are pulled from the DVC remote before the path is printed.
+
+### When you don't know the output name
+
+Run export with just the run ID:
+
+```bash
+wfc export 412
+```
+
+This — or a mistyped output name — exits nonzero and lists the run's actual output names, so you never receive the wrong file silently. An output from a run that predates archiving errors with instructions to run `wfc cache archive` first.
+
+For the full flag table see the <a href="../reference/reference/cli-reference.html">CLI Reference</a>. For why outputs live in a read-only content-addressed cache in the first place, see [Storage & Provenance](../explanation/storage-and-provenance.md).
 
 ## Using the Canvas to inspect runs
 

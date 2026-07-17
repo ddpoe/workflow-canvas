@@ -42,6 +42,7 @@
     registerEditorChild,
     unregisterEditorChild,
   } from './machines/root.js';
+  import { classifyParamType } from './paramTypes.js';
   import { pendingBoundVariables } from './pipeline.js';
   import { pipelineVariables } from './stores.js';
   import { get } from 'svelte/store';
@@ -85,11 +86,15 @@
   } = $props();
 
   let ct = $derived<ContractType>((param.contractType ?? 'unknown') as ContractType);
-  let isBoolean = $derived(param.type === 'boolean' || ct === 'bool');
-  let isEnum = $derived(!!(param.constraints?.enum && param.constraints.enum.length > 0));
-  let isNumber = $derived(param.type === 'number' || ct === 'int' || ct === 'float');
-  let isJson = $derived(ct === 'list' || ct === 'dict' || param.type === 'list' || param.type === 'dict');
-  let isString = $derived(!isBoolean && !isEnum && !isNumber && !isJson);
+  // One classification drives both the widget choice and the validation
+  // rule the actor applies — deriving them separately lets them disagree
+  // (e.g. a number input paired with int-only validation on a float param).
+  let editorType = $derived(classifyParamType(param));
+  let isBoolean = $derived(editorType === 'bool');
+  let isEnum = $derived(editorType === 'enum');
+  let isNumber = $derived(editorType === 'int' || editorType === 'float');
+  let isJson = $derived(editorType === 'list' || editorType === 'dict');
+  let isString = $derived(editorType === 'string');
   let listDictDisabled = $derived(ct === 'list' || ct === 'dict');
 
   type Row = { id: string; variantName: string | null; isBase: boolean };
@@ -102,13 +107,7 @@
   let expanded = $state<Record<string, boolean>>({});
 
   function paramTypeForActor(): ParamEditorType {
-    if (isBoolean) return 'bool';
-    if (isEnum) return 'enum';
-    if (param.type === 'number' || ct === 'int') return 'int';
-    if (param.type === 'number' || ct === 'float') return 'float';
-    if (ct === 'list' || param.type === 'list') return 'list';
-    if (ct === 'dict' || param.type === 'dict') return 'dict';
-    return 'string';
+    return editorType;
   }
 
   function rowAggregatorId(row: Row): string {

@@ -17,6 +17,12 @@ STAGE = "quantify"
 SLOTS = ["stitched", "masks"]
 
 
+def write_results(run_dir, outputs, metrics):
+    """Hand-written Tier-2 results manifest — same shape wfc-client finalizes."""
+    payload = {"outputs": outputs, "metrics": metrics}
+    (run_dir / "_wfc_results.json").write_text(json.dumps(payload, indent=2))
+
+
 def read_slot_rows(slot_paths, slot_name):
     """Yield (row_id, lineage, source_slot) for every row of every path in a slot."""
     out = []
@@ -48,6 +54,12 @@ def main():
         for row_id, lineage, source_slot in rows:
             w.writerow([row_id, lineage, source_slot, STAGE])
 
+    write_results(
+        run_dir,
+        {"measurements": "measurements.csv"},
+        {"n_measured": len(rows),
+         "slots_seen": len({slot for _, _, slot in rows})},
+    )
     print(f"{STAGE}: fan-in slots={list(slot_paths)}; wrote {len(rows)} rows")
 
 

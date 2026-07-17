@@ -284,7 +284,12 @@ def test_corruption_detected_and_replaced(tmp_project):
     dest = tmp_project / "checkout.csv"
     assert restore_from_cache(content_hash, dest, tmp_project) is True
     assert dest.read_bytes() == b"clean-bytes-v1\n"
-    # Tamper the restored copy.
+    # Tamper the restored copy. The restore inherits the cache entry's
+    # read-only mode (copy2 preserves bits; entries are protected), so the
+    # tamperer must chmod first — owner can always do that (footgun guard,
+    # not a security boundary).
+    import os, stat
+    os.chmod(dest, stat.S_IWRITE)
     dest.write_bytes(b"TAMPERED\n")
     assert hash_path(dest) != content_hash
     # restore_from_cache is hash-verified: it detects the mismatch and replaces.

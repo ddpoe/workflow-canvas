@@ -1166,6 +1166,165 @@ def resolve_input(run_id: int) -> str | None:
         return None
 
 
+class ResolveOutputError(Exception):
+    """Base error for :func:`resolve_output` — correct bytes or a clear error."""
+
+
+class UnknownRunError(ResolveOutputError):
+    """The run id does not exist in the database."""
+
+
+class UnknownOutputError(ResolveOutputError):
+    """No/wrong output name; the message lists the run's available names.
+
+    Attributes:
+        available: The run's recorded output names (discovery listing).
+    """
+
+    def __init__(self, message: str, available: list[str] | None = None):
+        super().__init__(message)
+        self.available = available or []
+
+
+class NotArchivedError(ResolveOutputError):
+    """The output has no content_hash yet (legacy / un-archived run)."""
+
+
+class NotInCacheError(ResolveOutputError):
+    """The content hash is not in the local cache (and pull did not help)."""
+
+
+def resolve_output(
+    run_id: int,
+    output_name: str | None = None,
+    *,
+    pull: bool = True,
+    project_dir: Path | None = None,
+    session=None,
+) -> tuple[Path, RunOutput]:
+    """Resolve a run's named output to its cache path (shared resolver).
+
+    The one truth for run-output → cache-path resolution, consumed by the
+    ``wfc export`` verb (copy and ``--path`` modes) and the Canvas provider
+    artifact methods.  Unlike :func:`resolve_input` there is NO
+    ``.first()`` guessing and NO ``artifact_path`` fallback: the result is
+    the correct archived bytes or a kind-carrying error — never a stale,
+    adjacent, or guessed path.
+
+    Args:
+        run_id: The run's integer database id.
+        output_name: Explicit output name to resolve. ``None`` raises
+            ``UnknownOutputError`` listing the run's available names
+            (that error doubles as the discovery listing).
+        pull: When True (default), a local cache miss attempts a pull
+            from the configured DVC remote before failing. The Canvas
+            provider passes ``pull=False`` (GUI never blocks on a pull).
+        project_dir: Project root override; defaults to the ambient
+            project root. The Canvas provider passes its own root.
+        session: Open DB session override; defaults to a fresh session on
+            the global engine. The Canvas provider passes a session bound
+            to its per-load engine.
+
+    Returns:
+        Tuple of (cache path, the matching ``RunOutput`` row).
+
+    Raises:
+        UnknownRunError: ``run_id`` does not exist.
+        UnknownOutputError: ``output_name`` is missing or not one of the
+            run's outputs; the message lists the available names.
+        NotArchivedError: The output's ``content_hash`` is NULL — point
+            the user at ``wfc cache archive``.
+        NotInCacheError: The hash is not in the local cache and the
+            remote pull (if attempted) did not materialize it.
+    """
+    if project_dir is None:
+        project_dir = get_project_root()
+    if session is None:
+        with get_session() as _session:
+            return _resolve_output_in_session(
+                _session, project_dir, run_id, output_name, pull
+            )
+    return _resolve_output_in_session(
+        session, project_dir, run_id, output_name, pull
+    )
+
+
+def _resolve_output_in_session(
+    session, project_dir: Path, run_id: int, output_name: str | None, pull: bool
+) -> tuple[Path, RunOutput]:
+    """Body of :func:`resolve_output`, operating in a caller-supplied session."""
+    run = session.get(Run, run_id)
+    if run is None:
+        raise UnknownRunError(f"Run {run_id} not found.")
+
+    rows = session.exec(
+        select(RunOutput).where(RunOutput.run_id == run_id)
+    ).all()
+    available = [ro.output_name for ro in rows if ro.output_name]
+
+    if not rows:
+        raise UnknownOutputError(f"Run {run_id} has no recorded outputs.")
+
+    if output_name is None:
+        raise UnknownOutputError(
+            f"Run {run_id} requires an output name. Available outputs: "
+            f"{', '.join(available) or '(unnamed)'}",
+            available=available,
+        )
+
+    ro = next((r for r in rows if r.output_name == output_name), None)
+    if ro is None:
+        raise UnknownOutputError(
+            f"Run {run_id} has no output named '{output_name}'. "
+            f"Available outputs: {', '.join(available) or '(unnamed)'}",
+            available=available,
+        )
+
+    if not ro.content_hash:
+        raise NotArchivedError(
+            f"Output '{output_name}' of run {run_id} has not been archived "
+            f"(no content hash). Run `wfc cache archive` first."
+        )
+
+    from .provenance import _cache_path, _make_read_only, pull_cache
+
+    cache_path = _cache_path(project_dir, ro.content_hash)
+    if cache_path.exists():
+        return cache_path, ro
+
+    if pull:
+        try:
+            pulled = pull_cache([ro.content_hash], project_dir)
+        except Exception as exc:
+            print(
+                f"resolve_output: pull_cache raised for run {run_id}: {exc}",
+                file=sys.stderr,
+            )
+            pulled = False
+        if cache_path.exists():
+            if pulled:
+                # Best-effort: DVC's fetch writer bypasses cache_file, so
+                # protect the freshly pulled entry here (the archive sweep
+                # covers it eventually regardless).
+                _make_read_only(cache_path)
+            return cache_path, ro
+
+    try:
+        from .remote import has_remote_configured
+        remote_state = (
+            "remote configured but entry unavailable"
+            if has_remote_configured(project_dir)
+            else "no DVC remote configured"
+        )
+    except Exception:
+        remote_state = "remote state unknown"
+    raise NotInCacheError(
+        f"Output '{output_name}' of run {run_id} "
+        f"(content_hash={ro.content_hash}) is not in the local cache"
+        f"{' and could not be pulled' if pull else ''} ({remote_state})."
+    )
+
+
 def resolve_sample(name: str) -> str | None:
     """Return the cache path for a registered sample (ADR-018).
 
@@ -1937,7 +2096,11 @@ def _run_method_subprocess(
         env=env,
         stdout=_sp.PIPE,
         stderr=_sp.PIPE,
+        # Child output includes docker passthrough, which is UTF-8 regardless
+        # of the Windows codepage; cp1252 decode crashes the pump thread.
         text=True,
+        encoding="utf-8",
+        errors="replace",
         bufsize=1,
     )
 
@@ -3084,6 +3247,234 @@ def cache_prune(
 
 
 # =============================================================================
+# export (run-output export)
+# =============================================================================
+
+def _output_export_name(ro: RunOutput) -> str:
+    """Export/display name for a file output: output_name + original suffix.
+
+    The suffix comes from ``artifact_path`` (the cache entry itself is a bare
+    hash name). When ``output_name`` already carries the suffix (e.g. legacy
+    rows named ``out.csv``), it is not duplicated.
+
+    Args:
+        ro: The ``RunOutput`` row to name.
+
+    Returns:
+        A filename-like display name for the output.
+    """
+    name = ro.output_name or (
+        Path(ro.artifact_path).name if ro.artifact_path else "output"
+    )
+    suffix = Path(ro.artifact_path).suffix if ro.artifact_path else ""
+    if suffix and not name.endswith(suffix):
+        name += suffix
+    return name
+
+
+def _chmod_user_writable(path: Path) -> None:
+    """Recursively add the owner-write bit to an exported copy.
+
+    ``shutil.copy2``/``copytree`` preserve the cache's read-only mode bits,
+    so every exported copy must be made writable afterwards — a read-only
+    "mutable copy" silently breaks the export feature's whole point.
+
+    Args:
+        path: The exported file or directory.
+    """
+    import stat as _stat
+
+    def _add_w(p) -> None:
+        os.chmod(p, os.stat(p).st_mode | _stat.S_IWUSR)
+
+    if path.is_dir():
+        _add_w(path)
+        for root, dirs, files in os.walk(path):
+            for name in dirs:
+                _add_w(os.path.join(root, name))
+            for name in files:
+                _add_w(os.path.join(root, name))
+    else:
+        _add_w(path)
+
+
+def _copy_out(src: Path, dest: Path, force: bool) -> None:
+    """Copy a cache entry OUT to a user destination and make it writable.
+
+    Mirrors ``restore_from_cache`` copy semantics (copy2 for files,
+    copytree for directories). When ``force`` and ``dest`` exists, the
+    stale dest is made writable and removed first (the Windows read-only
+    attribute would otherwise block the replace).
+
+    Args:
+        src: Resolved cache path (never mutated).
+        dest: Destination path owned by the user.
+        force: Replace an existing destination.
+    """
+    if dest.exists() and force:
+        from .provenance import _make_writable
+        _make_writable(dest)
+        if dest.is_dir():
+            shutil.rmtree(dest)
+        else:
+            dest.unlink()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if src.is_dir():
+        shutil.copytree(str(src), str(dest))
+    else:
+        shutil.copy2(str(src), str(dest))
+    _chmod_user_writable(dest)
+
+
+@task(purpose="Export a run's archived output(s) to a user-owned destination")
+def export_output(
+    *,
+    run_id: int,
+    output_name: str | None = None,
+    dest: str | None = None,
+    export_all: bool = False,
+    path_only: bool = False,
+    force: bool = False,
+) -> int:
+    """Export a run's output(s): mutable copy out of the cache, or ``--path``.
+
+    Resolution happens up front for every requested output — on any
+    resolution error nothing is printed to stdout and no file is produced
+    (correct bytes or a clear error, never a partial export).
+
+    Args:
+        run_id: The run's integer id.
+        output_name: Output to export; ``None`` triggers the discovery
+            error listing the run's available output names.
+        dest: Destination file/directory (copy mode).
+        export_all: Export every output of the run into ``dest`` (a
+            directory) — or print every path with ``path_only``.
+        path_only: Print the resolved read-only cache path(s) on stdout
+            instead of copying.
+        force: Overwrite existing destination files.
+
+    Returns:
+        0 on success, 1 on any error.
+    """
+    project_dir = get_project_root()
+
+    # -- Resolve phase (fail before producing anything) --
+    resolved: list[tuple[RunOutput, Path]] = []
+    try:
+        if export_all:
+            with get_session() as session:
+                run = session.get(Run, run_id)
+                if run is None:
+                    raise UnknownRunError(f"Run {run_id} not found.")
+                rows = session.exec(
+                    select(RunOutput).where(RunOutput.run_id == run_id)
+                ).all()
+                if not rows:
+                    raise UnknownOutputError(
+                        f"Run {run_id} has no recorded outputs."
+                    )
+                for row in rows:
+                    if not row.output_name:
+                        raise UnknownOutputError(
+                            f"Run {run_id} has an unnamed output row (id="
+                            f"{row.id}) that cannot be exported by name."
+                        )
+                    cache_path, ro = resolve_output(
+                        run_id, row.output_name,
+                        pull=True, project_dir=project_dir, session=session,
+                    )
+                    resolved.append((ro, cache_path))
+        else:
+            # output_name=None raises UnknownOutputError listing available
+            # names — that error IS the discovery listing.
+            cache_path, ro = resolve_output(
+                run_id, output_name, pull=True, project_dir=project_dir
+            )
+            resolved.append((ro, cache_path))
+    except ResolveOutputError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    # -- --path mode: print cache path(s), stdout only --
+    if path_only:
+        print(
+            "WARNING: the printed path points into the read-only DVC cache "
+            "(managed storage). Read it, don't modify it; use a copy export "
+            "for a writable file.",
+            file=sys.stderr,
+        )
+        if export_all:
+            for ro, cache_path in resolved:
+                print(f"{ro.output_name}\t{cache_path}")
+        else:
+            print(str(resolved[0][1]))
+        return 0
+
+    # -- copy mode --
+    if dest is None:
+        # cli_main normally rejects this at argparse level (exit 2); kept
+        # as a guard for direct callers.
+        print("ERROR: destination required (or use --path).", file=sys.stderr)
+        return 1
+
+    if export_all:
+        dest_dir = Path(dest)
+        if dest_dir.exists() and not dest_dir.is_dir():
+            print(
+                f"ERROR: --all destination must be a directory: {dest_dir}",
+                file=sys.stderr,
+            )
+            return 1
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        # Predictable per-output names: directories land as
+        # <dest>/<output_name>/, files as <output_name><original suffix>.
+        targets: list[tuple[RunOutput, Path, Path]] = []
+        for ro, cache_path in resolved:
+            if cache_path.is_dir():
+                target = dest_dir / ro.output_name
+            else:
+                target = dest_dir / _output_export_name(ro)
+            targets.append((ro, cache_path, target))
+
+        conflicts = [t for _, _, t in targets if t.exists()]
+        if conflicts and not force:
+            listing = ", ".join(str(c) for c in conflicts)
+            print(
+                f"ERROR: destination(s) already exist: {listing}. "
+                f"Use --force to overwrite.",
+                file=sys.stderr,
+            )
+            return 1
+
+        for ro, cache_path, target in targets:
+            _copy_out(cache_path, target, force)
+            print(f"Exported {ro.output_name} -> {target}")
+        return 0
+
+    ro, cache_path = resolved[0]
+    dest_path = Path(dest)
+    if dest_path.is_dir():
+        # Existing-directory destination: place basename(artifact_path)
+        # inside it under the output's original name.
+        base = (
+            Path(ro.artifact_path).name if ro.artifact_path
+            else _output_export_name(ro)
+        )
+        dest_path = dest_path / base
+    if dest_path.exists() and not force:
+        print(
+            f"ERROR: destination already exists: {dest_path}. "
+            f"Use --force to overwrite.",
+            file=sys.stderr,
+        )
+        return 1
+    _copy_out(cache_path, dest_path, force)
+    print(f"Exported {ro.output_name} -> {dest_path}")
+    return 0
+
+
+# =============================================================================
 # Env-manifest CLI helpers (ADR-019)
 # =============================================================================
 
@@ -3974,6 +4365,45 @@ def build_parser() -> argparse.ArgumentParser:
         help="Archive only outputs from a specific run ID",
     )
 
+    # -- export (run-output export) --
+    export_cmd = sub.add_parser(
+        "export",
+        help="Export a run's archived output(s) out of managed storage",
+        epilog=(
+            "Destination semantics: if DEST is an existing directory the "
+            "file lands inside it under its original name; an existing "
+            "destination file is refused unless --force is given. "
+            "With --all, DEST must be a directory: file outputs land as "
+            "<output_name><original suffix>, directory outputs as "
+            "<DEST>/<output_name>/. Exported copies are writable; --path "
+            "prints the read-only cache path instead of copying. "
+            "Run `wfc export <run-id>` with no output name to list the "
+            "run's available outputs."
+        ),
+    )
+    export_cmd.add_argument("run_id", type=int, help="Run ID to export from")
+    export_cmd.add_argument(
+        "output_name", nargs="?", default=None,
+        help="Output name to export (omit to list the run's outputs)",
+    )
+    export_cmd.add_argument(
+        "dest", nargs="?", default=None,
+        help="Destination file or directory for the exported copy",
+    )
+    export_cmd.add_argument(
+        "--all", action="store_true", dest="export_all",
+        help="Export every output of the run into DEST (a directory)",
+    )
+    export_cmd.add_argument(
+        "--path", action="store_true", dest="path_only",
+        help="Print the resolved read-only cache path instead of copying "
+             "(with --all: one 'name<TAB>path' line per output)",
+    )
+    export_cmd.add_argument(
+        "--force", action="store_true",
+        help="Overwrite an existing destination file",
+    )
+
     return parser
 
 
@@ -4250,6 +4680,35 @@ def cli_main(argv: list[str] | None = None) -> int:
         elif args.cache_command == "archive":
             return cache_archive(run_id=args.run_id)
         return 1
+
+    elif args.command == "export":
+        output_name = args.output_name
+        dest = args.dest
+        if args.export_all:
+            # `wfc export 412 --all ./out` binds ./out to the output_name
+            # positional — rebind it as the destination.
+            if output_name is not None and dest is None:
+                output_name, dest = None, output_name
+            elif output_name is not None:
+                parser.error(
+                    "--all exports every output; do not pass an output name"
+                )
+        if args.path_only and dest is not None:
+            parser.error("--path cannot be combined with a destination")
+        if not args.path_only and output_name is not None and dest is None:
+            parser.error(
+                "destination required (or use --path to print the cache path)"
+            )
+        if args.export_all and not args.path_only and dest is None:
+            parser.error("--all requires a destination directory (or --path)")
+        return export_output(
+            run_id=args.run_id,
+            output_name=output_name,
+            dest=dest,
+            export_all=args.export_all,
+            path_only=args.path_only,
+            force=args.force,
+        )
 
     elif args.command == "canvas":
         try:
