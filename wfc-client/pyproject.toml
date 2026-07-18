@@ -1,0 +1,33 @@
+[tool.poetry]
+name = "wfc-client"
+version = "0.1.0"
+description = "Pure-stdlib Tier-1 sugar for writing Workflow Canvas (wfc) methods"
+authors = ["Dante <dantepoe@noboundssolutions.com>"]
+readme = "README.md"
+license = "MIT"
+homepage = "https://github.com/ddpoe/workflow-canvas"
+repository = "https://github.com/ddpoe/workflow-canvas"
+keywords = ["workflow", "pipeline", "methods", "reproducibility", "provenance"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+packages = [{ include = "wfc_client" }]
+
+# Zero third-party dependencies by design (ADR-020): wfc-client is a
+# metadata recorder that imports only the Python standard library.
+[tool.poetry.dependencies]
+python = ">=3.8"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

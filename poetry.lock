@@ -5773,6 +5773,17 @@ files = [
 ]
 
 [[package]]
+name = "wfc-client"
+version = "0.1.0"
+description = "Pure-stdlib Tier-1 sugar for writing Workflow Canvas (wfc) methods"
+optional = false
+python-versions = ">=3.8"
+files = [
+    {file = "wfc_client-0.1.0-py3-none-any.whl", hash = "sha256:06b7058ce1e27952bb035ad7d4de56afc15e390a826ef4f4804d0c8e872f0de5"},
+    {file = "wfc_client-0.1.0.tar.gz", hash = "sha256:df40076af648e5facf564ea0068e2cb058d2547eccdfde5b116cdbbf96403db2"},
+]
+
+[[package]]
 name = "wrapt"
 version = "2.1.2"
 description = "Module for decorators, wrappers and monkey patching."
@@ -6052,4 +6063,4 @@ test = ["zope.testing"]
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.11,<3.13"
-content-hash = "8dafb179bf4fde0e1c89dfb477f969a6ca91c1313fd680d08d05e2781925d579"
+content-hash = "fc0bdfc6cb1bd71b5ad19785230bb590004664474ee675632e6c34cff224197b"

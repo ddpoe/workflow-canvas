@@ -19,6 +19,7 @@ numpy = ">=1.24"
 pyarrow = ">=14.0"
 axiom-annotations = "^0.1.0"
 dvc = "^3.67.1"
+wfc-client = ">=0.1.0,<0.2.0"
 
 [tool.poetry.group.dev.dependencies]
 axiom-graph = {version = "^2.1.1", extras = ["viz", "js"]}
