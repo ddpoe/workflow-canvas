@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.overview.what-is-workflow-canvas @ c85689c74034; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.overview.what-is-workflow-canvas @ acd74b8803d0; do not edit -->
 
 # What is Workflow Canvas?
 
@@ -18,7 +18,7 @@ wfc init
 wfc demo
 ```
 
-That spins up the exact pipeline shown above on your machine — see [Exploring the Demo](tutorials/wfc-demo.md) for the tour.
+That spins up the exact pipeline shown above on your machine — see [Exploring the Demo](tutorials/wfc-demo.md) for the tour. You'll need [Docker](https://docs.docker.com/get-started/get-docker/) running — every step executes in a container — plus Python 3.11+ and git; see [Installation](tutorials/getting-started.md#installation) for the details.
 
 **Workflow Canvas hands you that stack, pre-built.** You describe each analysis step once — a contract saying what it takes in and what it produces — and Workflow Canvas takes it from there: it orchestrates the runs, isolates each step in its own container, skips work that hasn't changed, and records every run in a queryable database you can trace any result back through. You get workflow orchestration and a full provenance layer without learning a workflow language or building the infrastructure yourself — that engineering is part of what Workflow Canvas brings.
 
