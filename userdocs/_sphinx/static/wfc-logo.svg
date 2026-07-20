@@ -1,0 +1,47 @@
+<svg width="410" height="180" viewBox="135 40 410 180" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>Workflow Canvas</title>
+<desc>The WFC directed-graph monogram: glowing teal nodes joined by orange arrows, above a workflow canvas wordmark.</desc>
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="#e39a5c" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+<g id="nd">
+<circle r="17" fill="#5eead4" opacity="0.20"/>
+<circle r="11" fill="#2dd4bf" opacity="0.50"/>
+<circle r="6" fill="#0d9488"/>
+<circle r="2.4" fill="#ccfbf1"/>
+</g>
+</defs>
+<g stroke="#e39a5c" stroke-width="2.3" stroke-linecap="round" opacity="0.95" fill="none">
+<line x1="166.9" y1="79.8" x2="183.6" y2="146.4" marker-end="url(#arrow)"/>
+<line x1="190.5" y1="152.8" x2="204.0" y2="124.6" marker-end="url(#arrow)"/>
+<line x1="213.5" y1="119.2" x2="227.0" y2="147.4" marker-end="url(#arrow)"/>
+<line x1="234.9" y1="152.2" x2="251.6" y2="85.6" marker-end="url(#arrow)"/>
+<line x1="295" y1="80" x2="295" y2="102" marker-end="url(#arrow)"/>
+<line x1="295" y1="124" x2="295" y2="146" marker-end="url(#arrow)"/>
+<line x1="303" y1="72" x2="371" y2="72" marker-end="url(#arrow)"/>
+<line x1="303" y1="116" x2="356" y2="116" marker-end="url(#arrow)"/>
+<line x1="491.3" y1="77.0" x2="473.6" y2="72.5" marker-end="url(#arrow)"/>
+<line x1="453.4" y1="73.5" x2="437.6" y2="84.2" marker-end="url(#arrow)"/>
+<line x1="426" y1="100" x2="426" y2="126" marker-end="url(#arrow)"/>
+<line x1="432.6" y1="144.5" x2="448.4" y2="155.2" marker-end="url(#arrow)"/>
+<line x1="467.8" y1="161.0" x2="485.4" y2="156.5" marker-end="url(#arrow)"/>
+</g>
+<use href="#nd" x="165" y="72"/>
+<use href="#nd" x="187" y="160"/>
+<use href="#nd" x="210" y="112"/>
+<use href="#nd" x="233" y="160"/>
+<use href="#nd" x="255" y="72"/>
+<use href="#nd" x="295" y="72"/>
+<use href="#nd" x="295" y="116"/>
+<use href="#nd" x="295" y="160"/>
+<use href="#nd" x="385" y="72"/>
+<use href="#nd" x="370" y="116"/>
+<use href="#nd" x="499" y="79"/>
+<use href="#nd" x="460" y="69"/>
+<use href="#nd" x="426" y="92"/>
+<use href="#nd" x="426" y="140"/>
+<use href="#nd" x="460" y="163"/>
+<use href="#nd" x="499" y="153"/>
+<text x="340" y="205" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="15" letter-spacing="4" fill="#ffffff">workflow <tspan font-weight="500" fill="#2dd4bf">canvas</tspan></text>
+</svg>

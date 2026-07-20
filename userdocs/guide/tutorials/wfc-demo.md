@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.tutorials.wfc-demo @ 4724dc19a4c2; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.tutorials.wfc-demo @ f794f4f52a38; do not edit -->
 
 # Tutorial: Exploring the Demo
 
@@ -7,11 +7,12 @@
 `wfc demo` populates an already-initialised project with a complete, runnable pipeline in one command — no methods, environments, or sample data to author yourself. It's the fastest way to see a real Workflow Canvas run end to end.
 
 ```bash
+pip install workflow-canvas
 wfc init
 wfc demo
 ```
 
-`wfc demo` requires `wfc init` first. It builds a small container environment, registers five methods and three samples through the genuine registration path (the same code path your own methods go through — no shortcuts), writes a pipeline file, and opens the Canvas with that pipeline already wired. Pressing **Run** executes all five steps for all three samples.
+`wfc demo` requires `wfc init` first (see [Installation](getting-started.md#installation) for prerequisites — Python 3.11+, Docker, and git). It builds a small container environment, registers five methods and three samples through the genuine registration path (the same code path your own methods go through — no shortcuts), writes a pipeline file, and opens the Canvas with that pipeline already wired. Pressing **Run** executes all five steps for all three samples.
 
 ![The Canvas Builder with the demo pipeline pre-wired: five method nodes fed by an Input Selector with the three demo samples](../_images/builder-demo-pipeline.png)
 

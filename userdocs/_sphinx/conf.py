@@ -11,7 +11,9 @@
 
 project = "Workflow Canvas"
 author = "Workflow Canvas"
-release = "0.3.0"
+release = "0.5.0"
+
+html_logo = "static/wfc-logo.svg"
 
 extensions = ["myst_parser", "sphinxcontrib.mermaid"]
 
@@ -30,4 +32,6 @@ html_theme_options = {
     "navigation_depth": 4,
     "collapse_navigation": False,
     "sticky_navigation": True,
+    # The logo carries its own wordmark; suppress the theme's project-name text.
+    "logo_only": True,
 }

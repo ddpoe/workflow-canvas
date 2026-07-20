@@ -2,6 +2,8 @@
 
 Reproducible computational pipelines, managed from the command line (`wfc`) or a visual Canvas.
 
+![The Canvas Builder with the demo pipeline wired: three samples fanned across five methods](https://raw.githubusercontent.com/ddpoe/workflow-canvas/main/userdocs/guide/_images/builder-demo-pipeline.png)
+
 Workflow Canvas tracks your methods, their input/output contracts, run lineage, and
 content-addressed caching in a local SQLite database, then compiles pipelines to
 [Snakemake](https://snakemake.readthedocs.io/) Snakefiles so Snakemake handles

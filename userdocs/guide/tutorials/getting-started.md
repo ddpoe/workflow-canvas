@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.tutorials.getting-started @ 0012cc8ee0e8; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.tutorials.getting-started @ fa4fd788c4c8; do not edit -->
 
 # Tutorial: Your First Pipeline
 
@@ -6,7 +6,7 @@
 
 Workflow Canvas keeps your own Python analysis pipelines **organized, reproducible, and easy to reuse**. It records exactly what produced every result, skips any step whose inputs haven't changed so you never recompute the same thing twice, and lets you swap one analysis method for another without rewiring the pipeline. [Snakemake](https://snakemake.readthedocs.io/) runs your pipelines underneath; Workflow Canvas is the layer on top that keeps them traceable.
 
-This tutorial gets you from installation to a pipeline you built yourself. To watch a complete run before authoring anything, install below, then jump to [Exploring the Demo](wfc-demo.md) — `wfc demo` sets up a runnable five-method pipeline in one command. For the bigger picture — what Workflow Canvas is, who it's for, and how the pieces fit together — start with [What is Workflow Canvas?](../overview/what-is-workflow-canvas.md).
+This tutorial gets you from installation to a pipeline you built yourself. To watch a complete run before authoring anything, install below, then jump to [Exploring the Demo](wfc-demo.md) — `wfc demo` sets up a runnable five-method pipeline in one command. For the bigger picture — what Workflow Canvas is, who it's for, and how the pieces fit together — start with [What is Workflow Canvas?](../index.md).
 
 ## Prerequisites
 

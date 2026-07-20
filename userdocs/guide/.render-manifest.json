@@ -33,7 +33,7 @@
   },
   "overview/what-is-workflow-canvas.md": {
     "doc_id": "pm_mvp::docs.consumer.overview.what-is-workflow-canvas",
-    "hash": "5963dc02b568"
+    "hash": "c85689c74034"
   },
   "tutorials/authoring-a-method-script.md": {
     "doc_id": "pm_mvp::docs.consumer.tutorials.authoring-a-method-script",
@@ -41,7 +41,7 @@
   },
   "tutorials/getting-started.md": {
     "doc_id": "pm_mvp::docs.consumer.tutorials.getting-started",
-    "hash": "0012cc8ee0e8"
+    "hash": "fa4fd788c4c8"
   },
   "tutorials/registering-an-environment.md": {
     "doc_id": "pm_mvp::docs.consumer.tutorials.registering-an-environment",
@@ -49,7 +49,7 @@
   },
   "tutorials/wfc-demo.md": {
     "doc_id": "pm_mvp::docs.consumer.tutorials.wfc-demo",
-    "hash": "4724dc19a4c2"
+    "hash": "f794f4f52a38"
   },
   "tutorials/writing-contracts.md": {
     "doc_id": "pm_mvp::docs.consumer.tutorials.writing-contracts",
