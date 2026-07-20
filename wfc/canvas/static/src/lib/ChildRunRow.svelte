@@ -11,6 +11,10 @@
   interface Props { run: WfcRun }
   let { run }: Props = $props();
   let highlighted = $derived($highlightedRunId === run.id);
+  // Cache-hit audit rows keep their success status (cached is a flavor of
+  // success, matching the Lineages PathNodeCard treatment) and add the
+  // amber CACHED pill.
+  let isCached = $derived(!!run.cacheSourceRunId);
 </script>
 
 <button
@@ -22,7 +26,12 @@
 >
   <span class="dot" style="background: {statusColor(run.status)}"></span>
   <span class="status">{run.status}</span>
-  <span class="method">{run.method}</span>
+  <span class="method">
+    <span class="method-name">{run.method}</span>
+    {#if isCached}
+      <span class="cached-pill">{'⟳'} CACHED</span>
+    {/if}
+  </span>
   <span class="sample">{run.dataSource || '—'}</span>
   <span class="nid">{run.nid || ''}</span>
   <span class="duration">{formatDuration(run.duration)}</span>
@@ -53,7 +62,20 @@
   }
   .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
   .status { color: var(--text-secondary, #888); text-transform: capitalize; font-size: 10.5px; }
-  .method { color: var(--text-primary, #ccc); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .method { display: flex; align-items: center; gap: 8px; overflow: hidden; }
+  .method-name { color: var(--text-primary, #ccc); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Matches the Lineages PathNodeCard cached pill. */
+  .cached-pill {
+    background: rgba(233, 168, 71, 0.15);
+    color: #E9A847;
+    border: 1px solid rgba(233, 168, 71, 0.45);
+    border-radius: 9px;
+    font-size: 9.5px;
+    font-weight: 600;
+    padding: 1px 7px;
+    letter-spacing: 0.3px;
+    white-space: nowrap;
+  }
   .sample { color: var(--color-completed, #50C878); font-family: 'Consolas', monospace; font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .nid, .duration, .run-id { color: var(--text-muted, #666); font-family: 'Consolas', monospace; font-size: 10.5px; text-align: right; }
 </style>

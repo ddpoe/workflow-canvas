@@ -711,6 +711,13 @@ def test_run_step_collapsed_sample_fallback_resolves_per_sample_dirs(
     pipeline_path = tmp_path / "pipe.json"
     pipeline_path.write_text(json.dumps(pipeline_dict))
 
+    # The host-side pre-flight (thin-container dispatch) verifies the method
+    # script exists before any docker invocation — write a stub at the
+    # project-root-relative script path the run_step call below names.
+    stub_script = project_root / "modules" / "_builtin" / "csv_merge" / "csv_merge.py"
+    stub_script.parent.mkdir(parents=True, exist_ok=True)
+    stub_script.write_text("# stub\n")
+
     # Patch the slow/heavy pieces of run_step. We only care about the
     # input resolution branch -- short-circuit pre_run, the subprocess,
     # complete_run, and DVC.

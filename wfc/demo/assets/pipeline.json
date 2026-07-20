@@ -1,0 +1,19 @@
+{
+  "name": "demo",
+  "nodes": [
+    {"id": "node_1", "type": "input_selector", "method": "", "module": "", "params": {}, "samples": ["__demo__ctrl_01", "__demo__treat_01", "__demo__treat_02"], "source": "registered", "fan_mode": "out", "keep_going": true, "position": {"x": 40, "y": 220}},
+    {"id": "node_2", "type": "method", "method": "preprocess", "module": "__demo__", "params": {"drop_na": true, "value_column": "intensity"}, "position": {"x": 300, "y": 220}},
+    {"id": "node_3", "type": "method", "method": "filter_cells", "module": "__demo__", "params": {"min_quality": 0.5}, "position": {"x": 560, "y": 220}},
+    {"id": "node_4", "type": "method", "method": "label", "module": "__demo__", "params": {"threshold": 150, "label_column": "label"}, "position": {"x": 820, "y": 220}},
+    {"id": "node_5", "type": "method", "method": "summarize", "module": "__demo__", "params": {"group_by": "label"}, "position": {"x": 1080, "y": 100}},
+    {"id": "node_6", "type": "method", "method": "plot", "module": "__demo__", "params": {"value_column": "intensity", "bins": 20}, "position": {"x": 1080, "y": 340}}
+  ],
+  "links": [
+    {"source": "node_1", "target": "node_2", "sourceHandle": "output", "targetHandle": "data"},
+    {"source": "node_2", "target": "node_3", "sourceHandle": "clean", "targetHandle": "data"},
+    {"source": "node_3", "target": "node_4", "sourceHandle": "filtered", "targetHandle": "data"},
+    {"source": "node_4", "target": "node_5", "sourceHandle": "labeled", "targetHandle": "data"},
+    {"source": "node_4", "target": "node_6", "sourceHandle": "labeled", "targetHandle": "data"}
+  ],
+  "samples": ["__demo__ctrl_01", "__demo__treat_01", "__demo__treat_02"]
+}

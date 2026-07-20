@@ -157,22 +157,47 @@ def _has_global_git_identity() -> bool:
     return bool(name.stdout.strip()) and bool(email.stdout.strip())
 
 
+# DVC-native remote schemes _normalize_archive recognizes, mapped to the
+# plugin module each one needs at runtime.  Only ``dvc-http`` ships with
+# the base ``dvc`` dependency — the rest require the matching ``dvc[<x>]``
+# extra, so a scheme is only accepted when its plugin is importable.
+# ``file`` is deliberately absent: local archives are stored as plain
+# absolute paths (DVC accepts them directly), so a typed ``file://`` is
+# rejected with a pointer to just enter the directory path.
+_REMOTE_SCHEME_PLUGINS = {
+    "s3": "dvc_s3",
+    "ssh": "dvc_ssh",
+    "gs": "dvc_gs",
+    "azure": "dvc_azure",
+    "gdrive": "dvc_gdrive",
+    "webdav": "dvc_webdav",
+    "webdavs": "dvc_webdav",
+    "http": "dvc_http",
+    "https": "dvc_http",
+    "oss": "dvc_oss",
+    "hdfs": "dvc_hdfs",
+}
+
+
 def _default_archive_url(project_dir: Path) -> str:
-    """Return the default DVC archive URL for a project.
+    """Return the default DVC archive location for a project.
 
     The default is a durable per-project directory under the user's home —
-    ``~/.wfc/archives/<project>`` — expressed as an absolute ``file://`` URL
-    so it lives outside the project repo and survives across re-clones.
+    ``~/.wfc/archives/<project>`` — expressed as a plain absolute path
+    with forward slashes (``C:/Users/...`` on Windows: backslashes are
+    escape characters inside wf-canvas.toml's quoted strings).  DVC
+    accepts plain paths for local remotes on every platform; a ``file://``
+    URL is NOT emitted because DVC's config schema rejects the
+    ``file://C:/...`` form that drive-letter paths would produce.
 
     Args:
         project_dir: The project root (its name is used as the archive
             subdirectory name).
 
     Returns:
-        A ``file://<absolute-path>`` URL string.
+        An absolute path string (forward slashes).
     """
-    archive_dir = (Path.home() / ".wfc" / "archives" / project_dir.name).resolve()
-    return f"file://{archive_dir.as_posix()}"
+    return (Path.home() / ".wfc" / "archives" / project_dir.name).resolve().as_posix()
 
 
 def _resolve_archive_url(
@@ -183,12 +208,13 @@ def _resolve_archive_url(
     """Resolve the DVC archive location for a fresh ``wfc init``.
 
     Resolution order:
-      1. An explicit ``archive`` value (from ``--archive PATH``) — used as-is
-         (a bare path is normalized to a ``file://`` URL).
+      1. An explicit ``archive`` value (from ``--archive PATH``) — normalized
+         (a bare path resolves to an absolute plain path).
       2. Otherwise, in non-interactive mode (``assume_yes``) or when stdin is
          not a TTY, the default.
       3. Otherwise, an interactive prompt that leads with what the archive is
-         and lets the user press Enter to accept the default.
+         and lets the user press Enter to accept the default.  A rejected
+         value (``file://`` / unknown scheme) re-prompts with the reason.
 
     Args:
         project_dir: The project root.
@@ -197,7 +223,11 @@ def _resolve_archive_url(
         assume_yes: When ``True``, skip the prompt and use the default.
 
     Returns:
-        A DVC archive URL string.
+        A plain absolute path or a scheme-qualified DVC remote URL.
+
+    Raises:
+        ValueError: When an explicit ``archive`` value is rejected by
+            :func:`_normalize_archive` (interactive input re-prompts instead).
     """
     default = _default_archive_url(project_dir)
 
@@ -212,39 +242,75 @@ def _resolve_archive_url(
         "  wfc stores every run's outputs here, content-addressed and indexed\n"
         "  by .wfc/wfc.db. The default is a durable folder outside this repo.\n"
     )
-    try:
-        answer = input(f"  Archive location [{default}]: ").strip()
-    except EOFError:
-        answer = ""
-    if not answer:
-        return default
-    return _normalize_archive(answer, project_dir)
+    while True:
+        try:
+            answer = input(f"  Archive location [{default}]: ").strip()
+        except EOFError:
+            answer = ""
+        if not answer:
+            return default
+        try:
+            return _normalize_archive(answer, project_dir)
+        except ValueError as exc:
+            print(f"  {exc}")
 
 
 def _normalize_archive(value: str, project_dir: Path) -> str:
-    """Normalize a user-supplied archive location to a DVC URL.
+    """Normalize a user-supplied archive location to what DVC accepts.
 
-    A value that already carries a scheme (``file://``, ``s3://``, ``ssh://``,
-    ...) is returned unchanged.  A bare filesystem path is expanded
-    (``~``), resolved to an absolute path relative to *project_dir* when
-    needed, and prefixed with ``file://``.
+    A bare filesystem path (the common case) is expanded (``~``), resolved
+    to an absolute path — relative paths resolve against *project_dir* —
+    and returned as a plain path string.  A value carrying a DVC-native
+    remote scheme (``s3://``, ``ssh://``, ...) is returned unchanged.
+    ``file://`` and unrecognized schemes are rejected up front so a bad
+    location fails at init with a clear message instead of at first push.
 
     Args:
         value: The user-supplied archive location.
         project_dir: The project root (for resolving relative paths).
 
     Returns:
-        A DVC archive URL string.
+        A plain absolute path or a scheme-qualified DVC remote URL.
+
+    Raises:
+        ValueError: On a ``file://`` value or an unsupported scheme.
     """
     value = value.strip()
     if "://" in value:
+        scheme = value.split("://", 1)[0].lower()
+        if scheme == "file":
+            raise ValueError(
+                f"archive location {value!r}: enter the directory path "
+                "directly (no file:// prefix), e.g. "
+                f"{Path.home() / '.wfc' / 'archives' / project_dir.name}"
+            )
+        plugin = _REMOTE_SCHEME_PLUGINS.get(scheme)
+        if plugin is None:
+            supported = ", ".join(
+                f"{s}://" for s in sorted(_REMOTE_SCHEME_PLUGINS)
+            )
+            raise ValueError(
+                f"archive location {value!r}: unsupported scheme "
+                f"{scheme}:// — use a plain directory path or one of: "
+                f"{supported}"
+            )
+        import importlib.util
+        if importlib.util.find_spec(plugin) is None:
+            extra = plugin.removeprefix("dvc_")
+            raise ValueError(
+                f"archive location {value!r}: {scheme}:// requires DVC's "
+                f"{extra} plugin, which is not installed — install it with: "
+                f"pip install 'dvc[{extra}]'"
+            )
         return value
     path = Path(value).expanduser()
     if not path.is_absolute():
         path = (project_dir / path).resolve()
     else:
         path = path.resolve()
-    return f"file://{path.as_posix()}"
+    # Forward slashes: the value is interpolated into wf-canvas.toml's
+    # quoted strings, where backslashes are escape characters.
+    return path.as_posix()
 
 
 def _stdin_is_interactive() -> bool:
@@ -281,10 +347,11 @@ def init_project(
         project_dir: Root directory for the project (created if needed).
         init_git: Accepted no-op alias — git is now initialized by default.
             Retained for backward compatibility with scripts/docs.
-        archive: Explicit DVC archive location (any DVC URL or path).  When
-            provided, the wizard does not prompt for it.  Defaults to
-            ``file://~/.wfc/archives/<project>`` (expanded to an absolute
-            path outside the repo).
+        archive: Explicit DVC archive location (a directory path or a
+            DVC remote URL such as ``s3://...``).  When provided, the
+            wizard does not prompt for it.  Defaults to
+            ``~/.wfc/archives/<project>`` (expanded to an absolute path
+            outside the repo).
         assume_yes: When ``True``, run fully non-interactively (accept all
             defaults, never call ``input()``).  Set by ``wfc init --yes``.
 
@@ -304,6 +371,13 @@ def init_project(
           .gitignore      ← ignore DB and .runs/
     """
     project_dir = Path(project_dir).resolve()
+    # Validate an explicit --archive value up front (ValueError on file://,
+    # unknown scheme, or missing DVC plugin) so a bad location refuses
+    # before any scaffolding.  Normalization is idempotent — the resolved
+    # value passes through _resolve_archive_url unchanged.
+    if archive:
+        archive = _normalize_archive(archive, project_dir)
+
     created: dict[str, bool] = {}
 
     # One-time legacy .pm/ -> .wfc/ migration (ADR-021). No-op for fresh
@@ -465,7 +539,8 @@ def init_project(
             try:
                 init_dvc(project_dir, dvc_config)
                 created["dvc"] = True
-                print("  + DVC initialized with local remote")
+                archive_loc = dvc_config.get("url") or dvc_config.get("remote_path")
+                print(f"  + DVC initialized (archive: {archive_loc})")
             except DvcNotInstalledError:
                 created["dvc"] = False
                 print(

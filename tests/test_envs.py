@@ -172,6 +172,61 @@ def test_save_manifest_is_atomic(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Tier 2: resolve_env_python — interpreter fallback chain
+# ---------------------------------------------------------------------------
+
+@workflow(purpose="resolve_env_python implements the three-step interpreter "
+                  "fallback: recorded field wins; else per-backend default "
+                  "(pixi env path / conda base-env python / byo 'python'); "
+                  "else bare 'python' for unknown or missing records")
+@pytest.mark.parametrize(
+    "backend,recorded_python,expected",
+    [
+        # Arm 1: recorded field wins, whatever the backend says.
+        ("pixi", "/custom/bin/python3.12", "/custom/bin/python3.12"),
+        ("byo", "/usr/bin/python3", "/usr/bin/python3"),
+        # Arm 2: per-backend defaults for pre-field records (python=None).
+        ("pixi", None, "/image-io/envs/default/bin/python"),
+        ("conda", None, "/opt/conda/bin/python"),
+        ("byo", None, "python"),
+        # Arm 3: unknown backend -> bare "python".
+        ("something-else", None, "python"),
+    ],
+)
+def test_resolve_env_python_fallback_chain(backend, recorded_python, expected):
+    from wfc.envs import EnvRecord, resolve_env_python
+
+    data = _sample_record()
+    data["backend"] = backend
+    if recorded_python is not None:
+        data["python"] = recorded_python
+    record = EnvRecord.from_dict(data)
+    assert resolve_env_python("image-io", record) == expected
+
+
+def test_resolve_env_python_no_record_is_bare_python():
+    """A missing record (env not in the manifest, or escape-hatch direct
+    image ref) resolves to bare ``python``."""
+    from wfc.envs import resolve_env_python
+    assert resolve_env_python("image-io", None) == "python"
+
+
+def test_env_record_python_field_round_trips_and_old_records_load():
+    """Additive-field backcompat: a pre-field record loads with python=None;
+    a new record round-trips the field through to_dict/from_dict."""
+    from wfc.envs import EnvRecord
+
+    old = EnvRecord.from_dict(_sample_record())
+    assert old.python is None
+
+    data = _sample_record()
+    data["python"] = "/opt/conda/bin/python"
+    new = EnvRecord.from_dict(data)
+    assert new.python == "/opt/conda/bin/python"
+    assert new.to_dict()["python"] == "/opt/conda/bin/python"
+
+
+# ---------------------------------------------------------------------------
 # Tier 2: read_config parses [registry] block
 # ---------------------------------------------------------------------------
 

@@ -163,23 +163,26 @@ def test_run_step_container_dispatch_docker_argv(tmp_path, monkeypatch):
     assert "--user" in cmd
     # Image ref present (digest-pinned, no docker:// prefix in argv).
     assert CONTAINER_REF_BARE in cmd
-    # Inner argv calls `wfc exec-method` (NOT recursive wfc run-step). The
-    # outer host run-step owns run-state; the in-container target is the
-    # leaner exec-method verb that just runs the method script. See
-    # ADR-019 Cycle D fix-pass 5 driver-shape decision.
-    assert "python" in cmd and "-m" in cmd and "wfc" in cmd and "exec-method" in cmd
-    assert "run-step" not in cmd[cmd.index(CONTAINER_REF_BARE):], (
+    # Inner argv runs the method script DIRECTLY under the env's resolved
+    # interpreter — no `-m wfc`, no in-container wfc entrypoint at all. The
+    # outer host run-step owns run-state; the image needs nothing
+    # wfc-related (thin-container dispatch cutover). The fixture env record
+    # declares backend=pixi with no recorded `python`, so the resolver
+    # falls back to the pixi per-backend default for env name "image-io".
+    image_idx = cmd.index(CONTAINER_REF_BARE)
+    inner = cmd[image_idx + 1:]
+    assert inner == [
+        "/image-io/envs/default/bin/python",
+        "/work/methods/ml_train/ml_train.py",
+    ], f"inner argv must be [<env-python>, <script-in-container>]; got {inner!r}"
+    assert "-m" not in cmd and "wfc" not in cmd, (
+        "Inner argv must NOT dispatch through `python -m wfc` — registered "
+        "env images contain nothing wfc-related."
+    )
+    assert "run-step" not in inner, (
         "Inner argv must NOT recursively call wfc run-step — that regenerates "
         "run_id and breaks host-side output collection."
     )
-    # Inner argv shape: --run-id N --node-id N --script /work/methods/.../...py
-    assert "--script" in cmd
-    script_idx = cmd.index("--script")
-    assert cmd[script_idx + 1].startswith("/work/"), (
-        f"--script must point inside the bind-mounted /work; got {cmd[script_idx + 1]!r}"
-    )
-    assert cmd[script_idx + 1].endswith("ml_train.py")
-    assert "--run-id" in cmd
     # WFC_* env vars are forwarded via -e flags.
     flag_pairs = [(cmd[i], cmd[i + 1]) for i in range(len(cmd) - 1) if cmd[i] == "-e"]
     forwarded_keys = {pair[1].split("=", 1)[0] for pair in flag_pairs}
@@ -327,6 +330,39 @@ def test_run_step_translates_wfc_paths_for_container(tmp_path, monkeypatch):
 
     # Regression: PYTHONPATH still absent from forwarded -e flags.
     assert "PYTHONPATH" not in forwarded
+
+
+@workflow(purpose="run_step with a nonexistent method script fails host-side "
+                  "with a clear error BEFORE any docker invocation (US-5)")
+def test_run_step_missing_script_fails_before_docker(tmp_path, monkeypatch, capsys):
+    proj = _setup_project(tmp_path)
+    method_dir = _write_method(proj, "ml_ghost")
+    pj = _make_pipeline(proj, "ml_ghost")
+
+    # Point the node's script at a file that does NOT exist.
+    pipeline = json.loads(pj.read_text())
+    pipeline["nodes"][0]["script"] = str(method_dir / "nope.py")
+    pj.write_text(json.dumps(pipeline))
+
+    captured = _patch_pre_run_and_subprocess(monkeypatch, proj)
+
+    from wfc.cli import run_step
+    rc = run_step(
+        node_id="n1",
+        sample="s1",
+        variant="default",
+        pipeline_json=str(pj),
+        pipeline_id="p1",
+        ref_inputs=["data=" + str(proj / "ref.txt")],
+    )
+    assert rc == 1
+    # No docker command was ever assembled/run.
+    assert "cmd" not in captured, (
+        f"docker must not be invoked for a missing script; got {captured.get('cmd')!r}"
+    )
+    err = capsys.readouterr().err
+    assert "method script not found" in err
+    assert "nope.py" in err
 
 
 def test_snakefile_generator_emits_python_dash_m_wfc_for_container_env(tmp_path):

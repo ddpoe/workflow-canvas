@@ -37,6 +37,17 @@ from typing import Optional, Union
 from .bases import MICROMAMBA_BASE
 
 
+# Where the micromamba base image keeps its ``base`` env. Verified
+# empirically against mambaorg/micromamba (2026-07-18): ``micromamba env
+# list`` reports base at ``/opt/conda`` (== MAMBA_ROOT_PREFIX) and NO
+# ``/opt/conda/envs`` directory exists — installs via ``-n base`` land
+# directly under ``/opt/conda``. Both the chmod stage below and the
+# dispatch-time interpreter default
+# (:func:`wfc.envs.default_python_for_backend`) derive from these.
+CONDA_ENV_DIR = "/opt/conda"
+CONDA_ENV_PYTHON = f"{CONDA_ENV_DIR}/bin/python"
+
+
 def generate(
     env_name: str,
     explicit_list_path: Union[str, Path],
@@ -47,8 +58,9 @@ def generate(
 
     Args:
         env_name: Name of the conda env to materialize. The micromamba
-            base image's ``base`` env is reused (single-env image); the
-            *env_name* travels into the chmod path for permissions.
+            base image's ``base`` env is reused (single-env image), so the
+            *env_name* does not affect any in-image path — it exists for
+            signature parity with the other backend generators.
         explicit_list_path: Path to the host explicit-list file (used
             here only as documentation; the CLI handler stages it into
             the build context).
@@ -62,9 +74,12 @@ def generate(
     Returns:
         Dockerfile text as a single string ending with a trailing newline.
     """
-    # micromamba's base env lives at /opt/conda by default in the mambaorg
-    # image. chmod that tree so --user-mismatched runtimes can read it.
-    env_dir = f"/opt/conda/envs/{env_name}"
+    # micromamba's base env lives at /opt/conda itself in the mambaorg image
+    # (installs go to `-n base`; there is no /opt/conda/envs/<name> tree).
+    # chmod the real env tree so --user-mismatched runtimes can read it.
+    # The old target (/opt/conda/envs/<env_name>) never exists in the built
+    # image, which made the chmod RUN — and thus every conda build — fail.
+    env_dir = CONDA_ENV_DIR
     base = base_image if base_image is not None else MICROMAMBA_BASE
 
     lines = [

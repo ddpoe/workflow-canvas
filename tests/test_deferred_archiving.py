@@ -254,19 +254,94 @@ def test_archive_progress_callbacks(tmp_project):
             ))
             session.commit()
 
-    # Track progress calls
+    # Track progress calls — (run_id, output_name, status) per event
     progress_calls = []
 
-    def track_progress(name, status):
-        progress_calls.append((name, status))
+    def track_progress(rid, name, status):
+        progress_calls.append((rid, name, status))
 
     archive_outputs(tmp_project, run_id=run_id, progress_fn=track_progress)
 
-    assert len(progress_calls) == 2
-    assert all(s == "archived" for _, s in progress_calls)
-    names = {n for n, _ in progress_calls}
+    assert all(rid == run_id for rid, _, _ in progress_calls)
+    # Each file gets a "hashing" event followed by its terminal status
+    hashing = [(n, s) for _, n, s in progress_calls if s == "hashing"]
+    terminal = [(n, s) for _, n, s in progress_calls if s != "hashing"]
+    assert len(hashing) == 2
+    assert len(terminal) == 2
+    assert all(s == "archived" for _, s in terminal)
+    names = {n for n, _ in terminal}
     assert "a.parquet" in names
     assert "b.parquet" in names
+
+
+@workflow(purpose="Interrupted archive pass keeps per-row commits; re-run archives only the remainder")
+def test_archive_incremental_commits_survive_abort(tmp_project):
+    """archive_outputs commits each row as it completes: aborting the pass
+    after k outputs leaves exactly k rows with hashes, and a re-run
+    archives only the remainder."""
+    from wfc.database import get_session
+    from wfc.models import Module, Method, Run, RunOutput
+    from wfc.provenance import archive_outputs
+
+    (tmp_project / ".dvc" / "cache" / "files" / "md5").mkdir(parents=True, exist_ok=True)
+
+    with get_session() as session:
+        mod = Module(name="inc_mod")
+        session.add(mod)
+        session.commit()
+        session.refresh(mod)
+
+        meth = Method(name="inc_meth", module_id=mod.id, env="container:demo")
+        session.add(meth)
+        session.commit()
+        session.refresh(meth)
+
+        run = Run(method_id=meth.id, sample="s1", status="completed")
+        session.add(run)
+        session.commit()
+        session.refresh(run)
+        run_id = run.id
+
+    for name in ["a.parquet", "b.parquet", "c.parquet"]:
+        f = tmp_project / name
+        f.write_bytes(f"content-{name}".encode())
+        with get_session() as session:
+            session.add(RunOutput(
+                run_id=run_id, output_name=name,
+                artifact_path=str(f), artifact_type="module_file",
+            ))
+            session.commit()
+
+    # Abort the pass on the second file's "hashing" event: the first row
+    # is already committed, the second never gets hashed.
+    seen_hashing = []
+
+    def aborting_progress(rid, name, status):
+        if status == "hashing":
+            seen_hashing.append(name)
+            if len(seen_hashing) == 2:
+                raise RuntimeError("simulated interruption")
+
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        archive_outputs(tmp_project, run_id=run_id, progress_fn=aborting_progress)
+
+    with get_session() as session:
+        rows = session.exec(
+            select(RunOutput).where(RunOutput.run_id == run_id)
+        ).all()
+        archived = [r for r in rows if r.content_hash is not None]
+        assert len(archived) == 1, "exactly the pre-abort row is committed"
+
+    # Re-run without aborting: only the two remaining rows are processed.
+    results = archive_outputs(tmp_project, run_id=run_id)
+    assert len(results) == 2
+    assert all(r["status"] == "archived" for r in results)
+
+    with get_session() as session:
+        rows = session.exec(
+            select(RunOutput).where(RunOutput.run_id == run_id)
+        ).all()
+        assert all(r.content_hash is not None for r in rows)
 
 
 # =============================================================================

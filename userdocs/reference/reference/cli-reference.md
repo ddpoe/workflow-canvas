@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.reference.cli-reference @ 09178a258fe7; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.reference.cli-reference @ 2a23fcc45cd3; do not edit -->
 
 # CLI Reference
 
@@ -46,6 +46,24 @@ Each check reports `ok`, `warn`, or `fail` with a short fix hint. `wfc doctor` *
 | Arg | Description |
 |---|---|
 | *(none)* | Runs all checks against the current project |
+
+### wfc demo
+
+Populate an already-initialised project with a complete, runnable pipeline in one command. `wfc demo` builds a small container environment, registers five methods and three samples through the normal registration path, writes a pipeline file, and opens the Canvas with that pipeline pre-wired — press Run to execute it. It requires `wfc init` first and exits non-zero having changed nothing if the directory is not an initialised project or Docker is unavailable. If a demo is already present it exits non-zero and points you at `--force` (replace) or `--remove` (tear down).
+
+`wfc demo --remove` deletes exactly what the demo added — its module, methods, samples, environment, runs, files, and pipeline — and nothing you registered yourself. It prints what it will remove and asks for confirmation unless you pass `--yes`. Demo entries all use the reserved `__demo__` name prefix, which the registration commands refuse for your own names.
+
+| Arg | Description |
+|---|---|
+| `--dir` | Existing initialised project directory (default: current directory) |
+| `--port` | Canvas port (default: `8500`) |
+| `--no-open` | Scaffold and serve without opening a browser |
+| `--force` | Re-register over an existing demo |
+| `--remove` | Remove every demo-owned entity, run, and file |
+| `--purge-image` | With `--remove`: also delete the `local/wfc-demo-env` Docker image |
+| `--yes` | With `--remove`: skip the confirmation prompt |
+
+For a walkthrough see <a href="../../tutorials/wfc-demo.html">Exploring the Demo</a>.
 
 ### wfc canvas
 
@@ -104,6 +122,8 @@ Restore a registered sample from the DVC cache to `data/samples/{name}/`. Verifi
 
 ## Container Env Commands
 
+## Container Env Commands
+
 Manage container environments used by methods and dev-loop commands. Container envs are registered in `.wfc/envs.json` and referenced by method `env:` fields.
 
 ### wfc register-env
@@ -116,6 +136,8 @@ Build and register a container env. Generates a Dockerfile for the chosen backen
 
 Modes are mutually exclusive; combining a positional typed-spec with `--backend` or `--from` errors before any docker subprocess fires. With `--dry-run`, writes the Dockerfile to `.wfc/build/<name>/Dockerfile` and exits (legacy mode only).
 
+The image itself never needs `wfc` installed — at dispatch, `wfc run-step` runs the method script directly under the env's recorded interpreter (see `--python` below and the execution model in the env-isolation design doc).
+
 | Arg | Description |
 |---|---|
 | `name` | Env name (key in `.wfc/envs.json`) |
@@ -124,6 +146,7 @@ Modes are mutually exclusive; combining a positional typed-spec with `--backend`
 | `--from PATH` | File-mode: copy this file into the build context under the generator's expected filename. Requires explicit `--backend pixi` or `--backend conda`. |
 | `--image` | `docker://` image reference for `byo` backend |
 | `--base-image` | Override the default base image for this env |
+| `--python PATH` | Container-side path of the env's Python interpreter, recorded in `.wfc/envs.json` and used by `wfc run-step` to launch the method script directly (no `wfc` involvement inside the container). Accepted for any backend; when omitted, a per-backend default is recorded (the pixi/conda env's own interpreter, or bare `python` for `byo`). Useful for `byo` images whose Python is not on `PATH`. |
 | `--dry-run` | Write Dockerfile only; do not invoke docker (legacy mode only) |
 | `--force` | Overwrite an existing manifest entry for `name` |
 
@@ -139,8 +162,8 @@ wfc register-env analysis pixi:wcia:hello
 # File-mode: build from a checked-in lock file
 wfc register-env analysis --backend pixi --from envs/analysis/pixi.lock
 
-# BYO image — pull a pre-built image by digest
-wfc register-env vendor --backend byo --image docker://ghcr.io/org/img@sha256:...
+# BYO image — pull a pre-built image by digest, with an explicit interpreter
+wfc register-env vendor --backend byo --image docker://ghcr.io/org/img@sha256:... --python /usr/bin/python3
 ```
 
 Live-env capture records the env's current state, including any ad-hoc `pip install` mutations on top of the conda/pixi env. To inspect what went into an image, open the canvas **Registry → Envs** tab and expand the env: its **Packages** panel lists the installed `name==version` packages, tagged by source (conda/pixi/pip). A `byo` image has no manifest to show, and an env registered before its packages were captured (or never rebuilt since) shows as not captured until you re-register it.
@@ -153,7 +176,7 @@ No arguments.
 
 ### wfc show-env
 
-Print the full record for a single registered env as key/value lines. Fields: name, backend, source, container, env_fingerprint, built_from_lock, built_at.
+Print the full record for a single registered env as key/value lines. Fields: name, backend, source, container, python (the recorded container-side interpreter path used by `wfc run-step`; blank for envs registered before interpreter recording), env_fingerprint, source_fingerprint, built_from_lock, built_at.
 
 | Arg | Description |
 |---|---|
@@ -168,15 +191,6 @@ Remove a container env from `.wfc/envs.json`. Warns and lists any methods that r
 | `name` | Env name to delete |
 | `--force` | Skip the confirmation prompt (warn-on-reference listing still prints) |
 
-### wfc exec-method
-
-In-container entrypoint used by `wfc run-step` when dispatching to a container env. Executes a method script with the `WFC_*` environment variables already set by the outer `docker run -e` invocation. Does not call `pre_run`, `complete_run`, or touch the database — all run-state is owned by the outer host `wfc run-step`.
-
-| Arg | Description |
-|---|---|
-| `--run-id` | Outer run ID (for error-message clarity) |
-| `--node-id` | Pipeline node ID (for error-message clarity) |
-| `--script` | Absolute path inside the container to the method script |
 
 ## Dev-Loop Commands
 
@@ -234,7 +248,7 @@ Generate a Snakefile from a pipeline JSON and execute it via Snakemake. After th
 
 ### wfc cache archive
 
-Hash and cache all un-archived run outputs (those with `content_hash = NULL`) into the DVC cache. Shows per-file progress. Use this after running a pipeline with `--no-archive`, or to archive a specific run.
+Hash and cache all un-archived run outputs (those with `content_hash = NULL`) into the DVC cache. Shows per-file progress. Use this after running a pipeline with `--no-archive`, or to archive a specific run. Each file is committed to the archive as it completes, so an interrupted archive loses nothing — re-running `wfc cache archive` picks up only the outputs that are still un-archived.
 
 | Arg | Description |
 |---|---|
@@ -254,7 +268,7 @@ Remove old run archives and optionally DVC local cache entries to reclaim disk s
 
 ### wfc export
 
-Copy a run's output out of the cache into a file you own, or print the resolved cache path in place. Cache entries are read-only (see <a href="../../explanation/storage-and-provenance.html">Storage &amp; Provenance</a>), so this is the supported way to get a mutable copy.
+Copy a run's output out of the cache into a file you own, or print the resolved cache path in place. Cache entries are read-only (see <a href="../../explanation/storage-and-provenance.html">Storage &amp; Provenance</a>), so this is the supported way to get a mutable copy. Cache-hit runs resolve to the original run's outputs automatically.
 
 | Arg | Description |
 |---|---|

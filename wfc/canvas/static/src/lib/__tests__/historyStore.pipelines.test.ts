@@ -76,6 +76,31 @@ describe('pipelineRuns derived store', () => {
     expect(p2.done).toBe(0);                // running doesn't count as done
   });
 
+  it('counts cache-hit runs (cacheSourceRunId set) in cachedCount', () => {
+    runs.set([
+      mkRun({ id: 'r1', pipelineId: 'p1', status: 'success', cacheSourceRunId: 'orig1' }),
+      mkRun({ id: 'r2', pipelineId: 'p1', status: 'success', cacheSourceRunId: 'orig2' }),
+      mkRun({ id: 'r3', pipelineId: 'p1', status: 'success' }),
+      mkRun({ id: 'r4', pipelineId: 'p2', status: 'success' }),
+    ]);
+    const rows = get(pipelineRuns);
+    expect(rows.find(r => r.pipelineId === 'p1')!.cachedCount).toBe(2);
+    expect(rows.find(r => r.pipelineId === 'p2')!.cachedCount).toBe(0);
+  });
+
+  it('titles rows with the first pipelineName in the group, else the short pipeline id', () => {
+    runs.set([
+      mkRun({ id: 'r1', pipelineId: 'p1', pipelineName: null, timestamp: 100 }),
+      mkRun({ id: 'r2', pipelineId: 'p1', pipelineName: 'demo', timestamp: 200 }),
+      mkRun({ id: 'r3', pipelineId: 'abcdef12-3456-7890', timestamp: 50 }),
+    ]);
+    const rows = get(pipelineRuns);
+    expect(rows.find(r => r.pipelineId === 'p1')!.name).toBe('demo');
+    // No pipelineName anywhere in the group → short id, never a child
+    // run's method prefix (runName stays 'pip/run' in mkRun).
+    expect(rows.find(r => r.pipelineId === 'abcdef12-3456-7890')!.name).toBe('abcdef12');
+  });
+
   it('orders rows newest-first by started timestamp', () => {
     runs.set([
       mkRun({ id: 'r1', pipelineId: 'p_old', status: 'success', timestamp: 100 }),

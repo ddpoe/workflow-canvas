@@ -1,0 +1,6 @@
+/* Widen the RTD theme's content column (default caps at 800px, which
+   renders UI screenshots too small to read). Screenshots are captured at
+   2x device scale, so they stay sharp at this width. */
+.wy-nav-content {
+    max-width: 1400px;
+}

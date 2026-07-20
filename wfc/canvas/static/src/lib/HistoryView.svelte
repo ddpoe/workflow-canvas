@@ -3,6 +3,7 @@
   import PathsView from './PathsView.svelte';
   import PipelinesView from './PipelinesView.svelte';
   import DescendantTree from './DescendantTree.svelte';
+  import DescendantsView from './DescendantsView.svelte';
   import RunDetailPanel from './RunDetailPanel.svelte';
   import ExportPreview from './ExportPreview.svelte';
   import {
@@ -31,14 +32,19 @@
   <div class="view-switcher">
     <button
       class="seg"
-      class:active={$historyView === 'pipelines'}
-      onclick={() => historyView.set('pipelines')}
-    >Pipelines</button>
+      class:active={$historyView === 'descendants'}
+      onclick={() => historyView.set('descendants')}
+    >Descendants</button>
     <button
       class="seg"
       class:active={$historyView === 'lineages'}
       onclick={() => historyView.set('lineages')}
     >Lineages</button>
+    <button
+      class="seg"
+      class:active={$historyView === 'pipelines'}
+      onclick={() => historyView.set('pipelines')}
+    >Pipelines</button>
   </div>
   <FilterBar />
 
@@ -46,6 +52,10 @@
     <span class="summary-bucket summary-success">
       <span class="summary-dot" style="background:#27ae60"></span>
       {$statusBuckets.success} success
+    </span>
+    <span class="summary-bucket summary-cached" title="Cache-hit runs (also counted in success)">
+      <span class="summary-dot" style="background:#E9A847"></span>
+      {$statusBuckets.cached} cached
     </span>
     <span class="summary-bucket summary-failed">
       <span class="summary-dot" style="background:#e74c3c"></span>
@@ -78,6 +88,8 @@
           <DescendantTree runId={$descendantTreeRoot} />
         {:else if $historyView === 'pipelines'}
           <PipelinesView />
+        {:else if $historyView === 'descendants'}
+          <DescendantsView />
         {:else}
           <PathsView />
         {/if}

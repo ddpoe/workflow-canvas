@@ -275,6 +275,39 @@ def test_export_errors_and_discovery(cli, tmp_project):
     assert result.stdout == ""
 
 
+def test_export_all_audit_row_exports_source_outputs(cli, tmp_project):
+    """`wfc export <audit-id> --all` enumerates and resolves the SOURCE
+    run's outputs — cache-hit audit rows own no RunOutput rows."""
+    from wfc.database import get_session
+    from wfc.models import Run
+    from wfc.provenance import archive_outputs
+
+    alpha = tmp_project / "staging" / "alpha.csv"
+    alpha.parent.mkdir(parents=True)
+    alpha.write_text("a,b\n1,2\n")
+    source_id = _seed_run(tmp_project, {"alpha": alpha})
+    archive_outputs(tmp_project, run_id=source_id)
+
+    with get_session() as session:
+        source = session.get(Run, source_id)
+        audit = Run(
+            method_id=source.method_id,
+            status="completed",
+            sample="s1",
+            cache_source_run_id=source_id,
+        )
+        session.add(audit)
+        session.commit()
+        session.refresh(audit)
+        audit_id = audit.id
+
+    result = cli("export", str(audit_id), "--all", "--path")
+    assert result.returncode == 0
+    cache_path = _cache_path_for(tmp_project, source_id, "alpha")
+    assert "alpha" in result.stdout
+    assert str(cache_path) in result.stdout
+
+
 # ---------------------------------------------------------------------------
 # US-4 Tier 2: Canvas provider artifact surfaces resolve from the cache
 # ---------------------------------------------------------------------------

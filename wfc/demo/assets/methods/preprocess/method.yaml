@@ -1,0 +1,33 @@
+# Contract for the demo `preprocess` method. Each block corresponds 1:1 to
+# what preprocess.py does with ctx:
+#   inputs.data    <-> ctx.input("data")
+#   outputs.clean  <-> ctx.save_artifact("clean", ...)
+#   params.*       <-> ctx.params[...]
+inputs:
+  data:
+    type: .csv
+    required: true
+    description: "Per-cell measurements (id, intensity, area, quality)"
+
+outputs:
+  clean:
+    type: .csv
+    required: true
+    description: "Rows with a usable value_column measurement"
+
+params:
+  drop_na:
+    type: bool
+    required: false
+    default: true
+    description: "Drop rows whose value_column is missing or non-numeric"
+  value_column:
+    type: str
+    required: false
+    default: "intensity"
+    description: "Measurement column to validate"
+
+executor: local
+# Names the container env this method runs in — `wfc demo` registers
+# `__demo__env` in .wfc/envs.json before registering this method.
+env: container:__demo__env

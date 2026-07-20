@@ -154,7 +154,8 @@ test.describe('History pipelines view (smoke)', () => {
     await expect(pipelinesBtn).toBeVisible();
     await expect(lineagesBtn).toBeVisible();
 
-    // Default view is Pipelines (D-7); active class is on the Pipelines button.
+    // Default view is Descendants; this suite exercises Pipelines.
+    await pipelinesBtn.click();
     await expect(pipelinesBtn).toHaveClass(/active/);
 
     // At least one pipeline row should render once /api/wfc/runs has resolved.
@@ -179,6 +180,9 @@ test.describe('History pipelines view (smoke)', () => {
     await setupHistoryRoutes(page);
     await page.goto('/?fixture=history-pipelines');
     await page.waitForSelector('.view-switcher', { timeout: 10_000 });
+
+    // Default view is Descendants — switch to Pipelines first.
+    await page.locator('.view-switcher .seg', { hasText: 'Pipelines' }).click();
 
     // Find the pipe_done row (most recent succeeded one) and expand it.
     const doneRow = page.locator('.pipeline-row', { hasText: 'pipe_done' });

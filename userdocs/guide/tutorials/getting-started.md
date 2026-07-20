@@ -1,12 +1,12 @@
-<!-- generated from pm_mvp::docs.consumer.tutorials.getting-started @ 4eb317306611; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.tutorials.getting-started @ 0012cc8ee0e8; do not edit -->
 
-# Getting Started with Workflow Canvas
+# Tutorial: Your First Pipeline
 
 ## Introduction
 
 Workflow Canvas keeps your own Python analysis pipelines **organized, reproducible, and easy to reuse**. It records exactly what produced every result, skips any step whose inputs haven't changed so you never recompute the same thing twice, and lets you swap one analysis method for another without rewiring the pipeline. [Snakemake](https://snakemake.readthedocs.io/) runs your pipelines underneath; Workflow Canvas is the layer on top that keeps them traceable.
 
-This tutorial gets you from installation to a running pipeline. For the bigger picture — what Workflow Canvas is, who it's for, and how the pieces fit together — start with [What is Workflow Canvas?](../overview/what-is-workflow-canvas.md).
+This tutorial gets you from installation to a pipeline you built yourself. To watch a complete run before authoring anything, install below, then jump to [Exploring the Demo](wfc-demo.md) — `wfc demo` sets up a runnable five-method pipeline in one command. For the bigger picture — what Workflow Canvas is, who it's for, and how the pieces fit together — start with [What is Workflow Canvas?](../overview/what-is-workflow-canvas.md).
 
 ## Prerequisites
 
@@ -70,7 +70,7 @@ wfc init --dir ./my_project --archive /data/archives/my_project --yes
 
 > **About the archive.** The archive stores your outputs as content-addressed blobs, indexed by the database in `.wfc/` (which is deliberately *not* tracked in git). To keep archived outputs recoverable, back up your `.wfc/` directory along with the archive folder.
 
-> **Tip:** Run `wfc seed` to populate the project with demo modules, methods, and sample data for experimentation.
+> **Tip:** Run `wfc demo` to populate the project with a complete, runnable demo pipeline — five methods, three samples, and its own container environment — and open the Canvas with it pre-wired. See [Exploring the Demo](../tutorials/wfc-demo.md). `wfc demo --remove` tears it down again.
 
 ### 2. Register a module
 
@@ -132,13 +132,14 @@ Run it:
 wfc run-pipeline --pipeline pipeline.json --cores 4
 ```
 
-This parses and validates the pipeline (cycle detection, slot wiring), generates a Snakefile, and executes via Snakemake. Each step checks git state, checks the cache (skipping the step on a hit), runs in its container if needed, archives output, and records the run in the database. If a run won't start, `wfc doctor` will tell you why.
+This parses and validates the pipeline (cycle detection, slot wiring), generates a Snakefile, and executes via Snakemake. Each step checks git state, checks the cache (skipping the step on a hit), runs in its container, and records the run in the database; outputs are archived automatically after the pipeline completes (pass `--no-archive` to defer that to `wfc cache archive`). If a run won't start, `wfc doctor` will tell you why.
 
 
 ## Next Steps
 
 Now that you have a working pipeline, explore further:
 
+- **[Exploring the Demo](../tutorials/wfc-demo.md)** — Populate an initialised project with a complete five-step demo pipeline in one command (`wfc demo`), run it in Canvas, and tear it down with `wfc demo --remove`.
 - **[Registering an Environment](../tutorials/registering-an-environment.md)** — Build and register the container environment your methods run in. Every method needs one, and `wfc doctor` checks that Docker is ready for it.
 - **[Authoring a Method Script](../tutorials/authoring-a-method-script.md)** — Write methods with the `wfc-client` decorator (recommended) or the canonical `WFC_*` env-var + file contract, and declare contracts in `method.yaml`.
 - **[Writing Contracts](../tutorials/writing-contracts.md)** — Declare and enforce the inputs and outputs that wire your pipeline together correctly.

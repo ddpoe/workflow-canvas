@@ -1,0 +1,32 @@
+# Contract for the demo `plot` method:
+#   inputs.data     <-> ctx.input("data")
+#   outputs.figure  <-> ctx.save_artifact("figure", ...)  (a .png artifact)
+#   params.*        <-> ctx.params[...]
+# No threshold param on purpose: the figure colours by the label column the
+# upstream `label` method wrote.
+inputs:
+  data:
+    type: .csv
+    required: true
+    description: "Labelled cells from label"
+
+outputs:
+  figure:
+    type: .png
+    required: true
+    description: "Histogram of value_column coloured by threshold side"
+
+params:
+  value_column:
+    type: str
+    required: false
+    default: "intensity"
+    description: "Column to histogram"
+  bins:
+    type: int
+    required: false
+    default: 20
+    description: "Number of histogram bins"
+
+executor: local
+env: container:__demo__env

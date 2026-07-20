@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.reference.method-yaml-schema @ 62b7baae590e; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.reference.method-yaml-schema @ 97c061c27ec0; do not edit -->
 
 # Reference: method.yaml Schema
 
@@ -6,7 +6,7 @@
 
 `method.yaml` is the contract file that sits next to a method script. It declares what the method reads (`inputs`), what it writes (`outputs`), the knobs it accepts (`params`), the language it runs (`executor`), the container environment it runs in (`env`), and whether it needs a GPU (`gpus`). The canvas reads it to draw input/output slots and parameter widgets; the engine reads it to validate wiring, check column contracts, and dispatch the run in the right container.
 
-A method without a `method.yaml` still runs, but it has no slot-level metadata in the database or canvas. As soon as you add one, every key below becomes available.
+A method without a `method.yaml` cannot be registered: `wfc register-method` rejects it, because execution is container-only and the `env:` key in `method.yaml` is what names the method's container. Every method therefore has a `method.yaml` with at least `env:`; the other keys below are optional.
 
 This page is the canonical field-by-field reference. The tutorials <a href="../../tutorials/authoring-a-method-script.html">Authoring a Method Script</a> and <a href="../../tutorials/writing-contracts.html">Writing Contracts</a> introduce these keys in context and link back here for the exact fields rather than repeating the tables.
 
@@ -22,10 +22,6 @@ This page is the canonical field-by-field reference. The tutorials <a href="../.
 | `gpus` | bool | no (default `false`) | When `true`, the container is launched with `--gpus all`. |
 
 Missing sections default to empty mappings, and `executor` defaults to `python`. `env` is the one key with no default: every method must name an environment that has already been built.
-
-## Fields
-
-_Stub._ One row per method.yaml key: `inputs` / `outputs` (slots, types), `params` (+ kinds incl. `column_of_input`, `new_column`), `columns:` (strict/from_params/patterns), `executor`, `env:` (inherit/pixi/conda/container:<name>/container:docker://...@sha256), `gpus:`. **To absorb:** writing-methods/method-yaml; ADR-002; ADR-005; ADR-019.
 
 ## inputs and outputs
 

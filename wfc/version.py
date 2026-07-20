@@ -9,6 +9,7 @@ Five public functions:
   build_cache_key(code_fingerprint, params, input_fingerprint, env_fingerprint)
   capture_env_content(env_spec, project_dir)
   store_env_content(content, project_dir) -> md5 (env_fingerprint)
+  resolve_env_fingerprint(env_spec, project_dir) -> md5 (env_fingerprint)
 
 Design notes (aligned with design/l2/gaps.md § Gap 15):
   - get_git_commit raises DirtyRepositoryError if there are uncommitted changes.
@@ -344,12 +345,14 @@ def capture_env_content(env_spec: str, project_dir: Path | str) -> str:
         the container image and its digest. This is the **precompute
         write path** used by :func:`wfc.envs.register` to populate
         ``env_fingerprint`` at registration time. The runtime *read*
-        path (looking up a method's container at run-step time) lands
-        in Cycle D.
+        path (a method's registered env at run-step time) is
+        :func:`resolve_env_fingerprint`, which never calls this function
+        for registered container envs.
 
-    The returned string is deterministic for a given env state and is the
-    input to :func:`store_env_content`, which hashes it and stores the blob
-    in the DVC content-addressed cache.
+    The returned string is always real env content — never a precomputed
+    fingerprint — deterministic for a given env state, and is the input to
+    :func:`store_env_content`, which hashes it and stores the blob in the
+    DVC content-addressed cache.
 
     Args:
         env_spec: Typed env string from ``Method.env`` (e.g.
@@ -371,25 +374,6 @@ def capture_env_content(env_spec: str, project_dir: Path | str) -> str:
     from .register import resolve_python_for_env
 
     project_dir = Path(project_dir)
-
-    # ADR-019 Cycle D runtime-read short-circuit: if env_spec is a bare env
-    # name registered in .wfc/envs.json with a non-empty ``container`` field,
-    # return the precomputed env_fingerprint verbatim. No subprocess, no
-    # pixi.lock parse — this is the primary runtime perf benefit of the
-    # container backend (US-4).
-    #
-    # Only fires for bare names (no backend prefix). Typed specs (pixi:,
-    # conda:, container:) fall through to their existing branches
-    # below. A manifest entry with container="" is treated as non-container
-    # and falls through.
-    if ":" not in env_spec:
-        try:
-            from .envs import get as _envs_get
-            record = _envs_get(env_spec, project_dir)
-        except Exception:
-            record = None
-        if record is not None and getattr(record, "container", "") and record.env_fingerprint:
-            return record.env_fingerprint
 
     if env_spec.startswith("container:"):
         # Container-backend precompute path (ADR-019 Cycle C). The spec is
@@ -541,3 +525,44 @@ def store_env_content(content: str, project_dir: Path | str) -> str:
             os.unlink(tmp_path)
         except FileNotFoundError:
             pass
+
+
+def resolve_env_fingerprint(env_spec: str, project_dir: Path | str) -> str:
+    """Resolve a method's env spec to its ``env_fingerprint`` (md5).
+
+    The single runtime entry point for turning ``Method.env`` into the
+    fingerprint persisted on the Run row and folded into the cache key.
+
+    Bare env names registered in ``.wfc/envs.json`` with a non-empty
+    ``container`` field short-circuit to the manifest's precomputed
+    ``env_fingerprint`` — no subprocess, no lock parse, and **no cache
+    write** (the blob was stored at registration time; re-storing the
+    fingerprint string here would hash the hash). This is the primary
+    runtime perf benefit of the container backend.
+
+    Every other spec (``pixi:``, ``conda:``,
+    ``container:<image>@sha256:<hex>``, and bare names without a
+    registered container env) captures the deterministic env-content blob
+    and stores it in the DVC cache:
+    ``store_env_content(capture_env_content(...))``.
+
+    Args:
+        env_spec: Env string from ``Method.env``, with any ``container:``
+            prefix already stripped from bare manifest names by the caller.
+        project_dir: Root directory of the wfc project.
+
+    Returns:
+        32-character hex MD5 env fingerprint.
+    """
+    project_dir = Path(project_dir)
+
+    if ":" not in env_spec:
+        try:
+            from .envs import get as _envs_get
+            record = _envs_get(env_spec, project_dir)
+        except Exception:
+            record = None
+        if record is not None and getattr(record, "container", "") and record.env_fingerprint:
+            return record.env_fingerprint
+
+    return store_env_content(capture_env_content(env_spec, project_dir), project_dir)

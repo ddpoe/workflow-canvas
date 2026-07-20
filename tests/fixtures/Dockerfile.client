@@ -1,34 +1,21 @@
 # Tier-1 user-env image for ADR-020 integration tests.
 #
-# Like Dockerfile.minimal it installs the host `wfc` package (the in-container
-# entrypoint is `python -m wfc exec-method`, which needs wfc importable), but
-# it ALSO installs the pure-stdlib `wfc-client` package so a Tier-1 user method
+# Installs ONLY the pure-stdlib `wfc-client` package so a Tier-1 user method
 # can `import wfc_client as wfc` and call `@wfc.method` / `ctx.save_artifact`.
+# The full `wfc` engine is deliberately absent: under thin-container dispatch
+# the host `wfc run-step` runs the method script directly via the env's
+# interpreter, so the image needs nothing wfc-engine-related.
 #
 # This image represents a real user environment that has opted into the Tier-1
 # authoring sugar. The Tier-2 parity test deliberately uses Dockerfile.minimal
 # (NO wfc-client) so the equivalent method runs against env-vars + files only.
 FROM python:3.11-slim
 
-# git is required at runtime by wfc's pre_run (cache-key computation reads
-# git SHAs) and by DVC.
-RUN apt-get update && apt-get install -y --no-install-recommends git \
-    && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /build
 
-# Copy package metadata + source for the host engine. README.md is referenced
-# by pyproject.toml.
-COPY pyproject.toml README.md ./
-COPY wfc ./wfc
-
-# Copy the standalone wfc-client package (its own pyproject.toml lives at
-# wfc_client/ with package-dir ".").
-COPY wfc_client ./wfc_client
-
-# Install the host engine (pandas/sqlmodel/snakemake/dvc resolve here) ...
-RUN pip install .
-# ... and the pure-stdlib client (zero deps) so user methods can import it.
-RUN pip install ./wfc_client
+# Copy the standalone wfc-client package (nested poetry package at
+# wfc-client/ since the 0.1.0 PyPI restructure) and install it (zero deps).
+COPY wfc-client ./wfc-client
+RUN pip install ./wfc-client
 
 WORKDIR /work

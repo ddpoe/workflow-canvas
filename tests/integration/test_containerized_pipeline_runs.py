@@ -119,6 +119,9 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
         "envs": {
             "smoke-env": {
                 "backend": "pixi",
+                # Fixture image is plain python:3.11-slim; record the
+                # interpreter so dispatch skips the pixi default path.
+                "python": "python",
                 "source": "pixi.toml",
                 "container": container_ref,
                 "env_fingerprint": image_digest,

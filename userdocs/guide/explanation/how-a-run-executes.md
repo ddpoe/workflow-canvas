@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.explanation.how-a-run-executes @ 4ea0c0309173; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.explanation.how-a-run-executes @ 95cfbc9ce9a1; do not edit -->
 
 # How a Run Executes
 
@@ -9,7 +9,7 @@ This page explains what actually happens between the moment you click **Run** (o
 There are three ideas to hold onto, and the rest of this page just unpacks them:
 
 1. **Snakemake runs the show.** wfc compiles your pipeline into a Snakefile and hands it to Snakemake, which figures out the order, the parallelism, and which steps can be skipped.
-2. **Each step is one self-contained `wfc run-step` unit.** A single step checks the cache, resolves its container environment, sets a handful of environment variables, runs your method as a subprocess, and archives whatever it produced.
+2. **Each step is one self-contained `wfc run-step` unit.** A single step checks the cache, resolves its container environment, sets a handful of environment variables, runs your method as a subprocess, and records whatever it produced for the archive pass that runs after the pipeline finishes.
 3. **The boundary between wfc and your method is just environment variables and files.** wfc never imports your code and your method never imports wfc. That clean line is what lets a method be written in any language and rerun years later.
 
 If you only remember one thing: a run is a tree of small, cacheable, language-agnostic steps, orchestrated by Snakemake and isolated in containers. The sections below walk each layer from the outside in.
@@ -39,13 +39,14 @@ Every rule in the generated Snakefile boils down to a single shell command: `wfc
 A single `wfc run-step` invocation runs this lifecycle (see ADR-008 for the full protocol):
 
 1. **Look up the step's config** — which method, which inputs, which params, from the frozen pipeline definition for this run.
-2. **Cache check.** wfc computes the step's cache key and asks: has this exact work been done before? If yes, it restores the prior outputs into the workspace and records the step as cached — your method never runs. (What goes into that key, and why a step is or isn't a cache hit, is covered in [Caching & Reproducibility](../explanation/caching-and-reproducibility.md).)
+2. **Cache check.** wfc computes the step's cache key and asks: has this exact work been done before? If yes, it records the step as a cache hit — an audit run pointing at the original run whose output is reused — and your method never runs. Nothing is copied back onto disk: downstream steps read the reused output straight from the cache. (What goes into that key, and why a step is or isn't a cache hit, is covered in [Caching & Reproducibility](../explanation/caching-and-reproducibility.md).)
 3. **Resolve the container environment.** Each method declares an environment by name; wfc resolves it to a built container image. The method runs *inside* that image, isolated from wfc and from every other method's dependencies. Docker must be available — host execution is not supported.
 4. **Set the `WFC_*` environment variables** describing this run: where to write outputs, the resolved input file paths, the params, the run/sample/node/pipeline identifiers.
-5. **Run your method as a subprocess** inside its container. wfc captures stdout and stderr into the run logs. Your method does its work and exits.
-6. **Archive the outputs.** On a clean exit, wfc collects the declared outputs, hashes them into the content-addressed cache, and records the run — including its lineage back to the upstream runs that fed it. A non-zero exit, or a missing required output, fails the step.
+5. **Check the script exists.** Before the container starts, wfc checks that the method's script file exists on disk. A missing script fails the step immediately with a clear error in the run record, rather than a traceback from inside the container.
+6. **Run your method as a subprocess** inside its container. The process inside the container is your environment's own Python interpreter running your method script — nothing else runs in there. The interpreter path is recorded in `.wfc/envs.json` when you register the env (pixi and conda record their known interpreter automatically; a bring-your-own image defaults to `python` unless you recorded an explicit path), and `wfc show-env <name>` prints it as the `python` field. If a container step fails with an interpreter error, check that recorded path first. wfc captures stdout and stderr into the run logs. Your method does its work and exits.
+7. **Record the outputs.** On a clean exit, wfc collects the declared outputs and records the run — including its lineage back to the upstream runs that fed it. Hashing the bytes into the content-addressed cache happens afterwards, in the archive pass that runs once the whole pipeline finishes (see [Storage & Provenance](../explanation/storage-and-provenance.md)). A non-zero exit, or a missing required output, fails the step.
 
-Because this whole lifecycle lives behind one command, the orchestrator only ever needs to say "run this step" — all the cache, isolation, capture, and archiving behavior is identical whether the step was launched by Snakemake, re-run by hand, or driven by a future executor. A real end-to-end example exercising this path over a large fan-out/fan-in pipeline is the L2 siRNA pipeline run.
+Because this whole lifecycle lives behind one command, the orchestrator only ever needs to say "run this step" — all the cache, isolation, capture, and recording behavior is identical whether the step was launched by Snakemake, re-run by hand, or driven by a future executor. A real end-to-end example exercising this path over a large fan-out/fan-in pipeline is the L2 siRNA pipeline run.
 
 ## The wfc ↔ method boundary: env vars + files
 

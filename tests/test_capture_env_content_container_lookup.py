@@ -1,11 +1,11 @@
-"""Tier 2: capture_env_content manifest-lookup branch is subprocess-free.
+"""resolve_env_fingerprint manifest-lookup branch is subprocess- and write-free.
 
 US-4 acceptance: when env_spec resolves to a manifest entry with a non-empty
-``container`` field, capture_env_content returns the precomputed
-``env_fingerprint`` verbatim with no subprocess invocation.
-
-The pixi branch retains its current subprocess behavior — regression check
-included.
+``container`` field, resolve_env_fingerprint returns the precomputed
+``env_fingerprint`` verbatim with no subprocess invocation and no cache
+write (re-storing the fingerprint string would hash the hash). All other
+specs go through capture_env_content + store_env_content, whose behavior
+is pinned here too.
 """
 from __future__ import annotations
 
@@ -36,11 +36,13 @@ def _write_manifest(project_dir: Path, name: str, container: str, fingerprint: s
 def test_container_lookup_returns_precomputed_fingerprint_no_subprocess(tmp_path, monkeypatch):
     """Manifest entry with `container` set → return env_fingerprint verbatim.
 
-    Patch subprocess.run to raise so any accidental shell-out blows up.
+    Patch subprocess.run to raise so any accidental shell-out blows up, and
+    assert no DVC cache write happens — the blob was stored at registration
+    time; the runtime read path must not hash the fingerprint string.
     """
     import subprocess as _sp
 
-    from wfc.version import capture_env_content
+    from wfc.version import resolve_env_fingerprint
 
     fingerprint = "deadbeef" * 8
     container = "docker://ghcr.io/dante/image-io@sha256:" + ("a" * 64)
@@ -53,8 +55,9 @@ def test_container_lookup_returns_precomputed_fingerprint_no_subprocess(tmp_path
 
     monkeypatch.setattr(_sp, "run", boom)
 
-    result = capture_env_content("image-io", tmp_path)
+    result = resolve_env_fingerprint("image-io", tmp_path)
     assert result == fingerprint
+    assert not (tmp_path / ".dvc").exists()
 
 
 def test_container_spec_string_branch_still_works(tmp_path):
@@ -108,13 +111,31 @@ def test_pixi_branch_still_calls_subprocess(tmp_path, monkeypatch):
 def test_manifest_lookup_falls_through_when_container_field_absent(tmp_path):
     """A manifest entry MUST have ``container`` set non-empty for the
     short-circuit to fire. Manifest entry with no container → fall through
-    to the existing dispatch (which will raise ValueError for the bare
-    name because it's not a typed backend spec)."""
-    from wfc.version import capture_env_content
+    to capture_env_content's dispatch (which will raise ValueError for the
+    bare name because it's not a typed backend spec)."""
+    from wfc.version import resolve_env_fingerprint
 
     # Write a manifest entry with container="" so the lookup branch skips.
     _write_manifest(tmp_path, "broken-env", container="", fingerprint="x" * 64)
-    # The bare name "broken-env" is not a typed backend (pixi:/conda:/inherit/container:),
+    # The bare name "broken-env" is not a typed backend (pixi:/conda:/container:),
     # so we expect the existing unknown-backend ValueError.
     with pytest.raises(ValueError, match="Unknown env backend"):
-        capture_env_content("broken-env", tmp_path)
+        resolve_env_fingerprint("broken-env", tmp_path)
+
+
+def test_resolve_direct_ref_spec_equals_capture_plus_store(tmp_path):
+    """Typed specs are unaffected by the manifest short-circuit: for a
+    direct-ref container spec, resolve_env_fingerprint returns exactly
+    store_env_content(capture_env_content(...)) — cache keys preserved."""
+    from wfc.version import (
+        capture_env_content,
+        resolve_env_fingerprint,
+        store_env_content,
+    )
+
+    (tmp_path / ".wfc").mkdir()
+    spec = "container:image-io@sha256:" + ("a" * 64)
+
+    resolved = resolve_env_fingerprint(spec, tmp_path)
+    expected = store_env_content(capture_env_content(spec, tmp_path), tmp_path)
+    assert resolved == expected

@@ -181,6 +181,10 @@ class WfcRun:
     bundledSamples: List[str] = field(default_factory=list)
     # wfc-specific fields
     pipelineId: Optional[str] = None
+    # Human-readable pipeline name from the Builder toolbar at submission
+    # time, read from the pipeline record on disk. None for legacy or
+    # unnamed pipelines.
+    pipelineName: Optional[str] = None
     scriptPath: Optional[str] = None
     # Populated for runs that ended in failure. Both NULL for successful
     # and in-progress runs.
@@ -298,6 +302,28 @@ class WfcProvider:
                     return [str(s) for s in samples]
         return []
 
+    def _load_pipeline_name(self, pipeline_id: str) -> Optional[str]:
+        """Return the pipeline name recorded at submission time.
+
+        The name lives in ``pipeline.editable.json`` (which preserves the
+        user-submitted shape) and, for newer runs, in ``pipeline.json``
+        too. Returns None when neither file carries a usable name —
+        legacy and unnamed pipelines.
+        """
+        base = self.project_root / ".runs" / "pipelines" / pipeline_id
+        for filename in ("pipeline.editable.json", "pipeline.json"):
+            path = base / filename
+            if not path.exists():
+                continue
+            try:
+                raw = json.loads(path.read_text())
+            except (json.JSONDecodeError, OSError):
+                continue
+            name = raw.get("name")
+            if isinstance(name, str) and name.strip():
+                return name
+        return None
+
     def _iso_to_epoch_ms(self, iso_str: Optional[str]) -> float:
         """Convert an ISO datetime string to Unix epoch milliseconds."""
         if not iso_str:
@@ -377,23 +403,29 @@ class WfcProvider:
         return self._iso_to_epoch_ms(value)
 
     def load(self) -> None:
-        """Load all runs from the wfc database."""
-        self._runs = {}
-        self._modules = {}
-        self._methods = {}
+        """Load all runs from the wfc database.
+
+        Builds into local dicts and swaps them in at the end: endpoints run
+        in FastAPI's threadpool and ``get_all_runs`` reloads on every call,
+        so concurrent readers must only ever observe a complete registry —
+        old or new — never a cleared/partial one.
+        """
+        runs: Dict[str, WfcRun] = {}
+        modules: Dict[int, str] = {}
+        methods: Dict[int, Dict[str, Any]] = {}
 
         engine = self._build_engine()
         try:
             with Session(engine) as session:
                 # Load modules
                 for module in session.exec(select(Module)):
-                    self._modules[module.id] = module.name
+                    modules[module.id] = module.name
 
                 # Load methods. Columns come straight from the model — no
                 # env/env_strategy probing; ``ensure_schema`` guarantees the
                 # ``env`` column exists on the on-disk schema.
                 for method in session.exec(select(Method)):
-                    self._methods[method.id] = {
+                    methods[method.id] = {
                         "name": method.name,
                         "module_id": method.module_id,
                         "script_path": method.script_path,
@@ -417,8 +449,8 @@ class WfcProvider:
                     })
 
                 for run_row in session.exec(select(Run)):
-                    method_info = self._methods.get(run_row.method_id, {})
-                    module_name = self._modules.get(
+                    method_info = methods.get(run_row.method_id, {})
+                    module_name = modules.get(
                         method_info.get("module_id", -1), "unknown"
                     )
                     method_name = method_info.get("name", "unknown")
@@ -492,13 +524,13 @@ class WfcProvider:
                         cacheSourceRunId=cache_source,
                     )
 
-                    self._runs[run.id] = run
+                    runs[run.id] = run
 
                 # Load outputs for each run
                 for out in session.exec(select(RunOutput)):
                     run_id = str(out.run_id)
-                    if run_id in self._runs:
-                        run = self._runs[run_id]
+                    if run_id in runs:
+                        run = runs[run_id]
                         name = out.output_name or "output"
                         run.outputs[name] = out.artifact_path or ""
 
@@ -508,9 +540,9 @@ class WfcProvider:
                 # table-exists or column probing needed.
                 for ann in session.exec(select(RunAnnotation)):
                     rid = str(ann.run_id)
-                    if rid not in self._runs:
+                    if rid not in runs:
                         continue
-                    run = self._runs[rid]
+                    run = runs[rid]
                     run.favorite = bool(ann.favorite)
                     raw_tags = ann.tags
                     if raw_tags:
@@ -533,7 +565,7 @@ class WfcProvider:
         # the pipeline.json at .runs/pipelines/<pipeline_id>/pipeline.json.
         # Cache per pipeline_id so we only read each file once.
         pipeline_samples_cache: Dict[str, List[str]] = {}
-        for run in self._runs.values():
+        for run in runs.values():
             if run.dataSource != "__all__" or not run.pipelineId:
                 continue
             if run.pipelineId not in pipeline_samples_cache:
@@ -542,6 +574,16 @@ class WfcProvider:
             if samples:
                 run.bundledSamples = list(samples)
 
+        # Resolve pipeline display names from the on-disk pipeline record,
+        # cached per pipeline_id like the bundled-samples pass above.
+        pipeline_name_cache: Dict[str, Optional[str]] = {}
+        for run in runs.values():
+            if not run.pipelineId:
+                continue
+            if run.pipelineId not in pipeline_name_cache:
+                pipeline_name_cache[run.pipelineId] = self._load_pipeline_name(run.pipelineId)
+            run.pipelineName = pipeline_name_cache[run.pipelineId]
+
         # Compute NID auto-versions for runs without a custom nid.
         # Group runs by (sample, method_name), sort by timestamp, and
         # assign v1, v2, v3... to each run.  Runs with a custom nid
@@ -549,7 +591,7 @@ class WfcProvider:
         # auto-version but still occupy a version slot.
         from collections import defaultdict
         groups: Dict[tuple, List[WfcRun]] = defaultdict(list)
-        for run in self._runs.values():
+        for run in runs.values():
             key = (run.dataSource, run.method)
             groups[key].append(run)
 
@@ -560,6 +602,10 @@ class WfcProvider:
                     run.nid = f"v{i}"
                 # else: keep custom nid as-is
 
+        # Atomic swap: publish the complete new registries in one step each.
+        self._modules = modules
+        self._methods = methods
+        self._runs = runs
         self._loaded = True
         print(
             f"WfcProvider: Loaded {len(self._modules)} modules, "

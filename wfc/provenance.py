@@ -206,6 +206,46 @@ def _make_writable(path: Path | str) -> None:
         pass
 
 
+def _consume_staging(path: Path) -> None:
+    """Best-effort delete of a staging source after a dedup.
+
+    The content already lives at the cache dest, so the staging copy is a
+    duplicate; failing to remove it must not fail the caller.
+    """
+    try:
+        if path.is_dir():
+            shutil.rmtree(str(path))
+        else:
+            path.unlink()
+    except OSError:
+        pass
+
+
+def _copy_via_tmp(path: Path, dest: Path) -> None:
+    """Copy ``path`` to ``dest`` atomically via a process-unique tmp file.
+
+    The tmp name embeds the pid so concurrent writers of the same
+    content-addressed ``dest`` never clobber each other's staging file.
+    If the final replace fails but ``dest`` exists, another writer already
+    landed the identical content (same md5 = same bytes) — that is a
+    success, not an error.
+    """
+    tmp = dest.with_suffix(f".{os.getpid()}.tmp")
+    try:
+        shutil.copy2(str(path), str(tmp))
+        tmp.replace(dest)
+    except OSError:
+        if dest.exists():
+            return
+        raise
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
 def cache_file(
     path: Path | str,
     md5: str,
@@ -227,6 +267,14 @@ def cache_file(
     Idempotency:
     - If ``dest`` already exists, this is a dedup. Unlink the staging
       duplicate (when ``move=True``) and return ``dest`` without overwriting.
+    - The same principle covers concurrent writers: the cache is
+      content-addressed (same md5 = same bytes), so on ANY failure path
+      where ``dest`` turns out to exist, another writer already landed
+      this content and the call succeeds. On Windows the loser's
+      ``os.rename`` onto a just-created dest raises (POSIX silently
+      overwrites), so without this guard parallel jobs sharing an env
+      blob crash mid-pipeline. An existing ``dest`` is never deleted,
+      truncated, or overwritten.
 
     Args:
         path: Source file/directory path.
@@ -246,23 +294,24 @@ def cache_file(
         # Content-addressed idempotency: dedup. Unlink the staging
         # duplicate so callers don't leave orphan staging copies behind.
         if move and path.exists() and path != dest:
-            try:
-                if path.is_dir():
-                    shutil.rmtree(str(path))
-                else:
-                    path.unlink()
-            except FileNotFoundError:
-                pass
+            _consume_staging(path)
         return dest
 
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     if path.is_dir():
-        if move:
-            # shutil.move handles cross-volume directory transfers.
-            shutil.move(str(path), str(dest))
-        else:
-            shutil.copytree(str(path), str(dest))
+        try:
+            if move:
+                # shutil.move handles cross-volume directory transfers.
+                shutil.move(str(path), str(dest))
+            else:
+                shutil.copytree(str(path), str(dest))
+        except (OSError, shutil.Error):
+            if not dest.exists():
+                raise
+            # Concurrent writer landed the same content first: dedup.
+            if move and path.exists():
+                _consume_staging(path)
         _make_read_only(dest)
         return dest
 
@@ -272,29 +321,21 @@ def cache_file(
             # os.rename is atomic on same volume; OSError on cross-volume.
             os.rename(str(path), str(dest))
         except OSError:
-            # Cross-volume fallback: copy then unlink.
-            tmp = dest.with_suffix(".tmp")
-            try:
-                shutil.copy2(str(path), str(tmp))
-                tmp.replace(dest)
-            except Exception:
-                if tmp.exists():
-                    tmp.unlink()
-                raise
+            if dest.exists():
+                # Concurrent writer won the rename race: dedup, consume
+                # the staging duplicate. (Not cross-volume — on Windows,
+                # rename onto an existing file raises.)
+                _consume_staging(path)
+                return dest
+            # Genuine cross-volume fallback: copy then unlink.
+            _copy_via_tmp(path, dest)
             try:
                 path.unlink()
             except FileNotFoundError:
                 pass
     else:
         # Copy mode: atomic write via tmp+rename, preserve source.
-        tmp = dest.with_suffix(".tmp")
-        try:
-            shutil.copy2(str(path), str(tmp))
-            tmp.replace(dest)
-        except Exception:
-            if tmp.exists():
-                tmp.unlink()
-            raise
+        _copy_via_tmp(path, dest)
 
     _make_read_only(dest)
     return dest
@@ -968,14 +1009,18 @@ def archive_outputs(
 
     Queries the DB for RunOutput rows where content_hash IS NULL (deferred
     archiving), computes hashes, copies files into the DVC cache, and
-    updates the DB rows.
+    updates the DB rows.  Each row is committed individually, immediately
+    after its cache copy lands — an interrupted pass keeps all completed
+    rows and a re-run picks up only the remainder.
 
     Args:
         project_dir: Root directory of the wfc project.
         run_id: Optional filter to archive only outputs from a specific run.
-        progress_fn: Optional callback called for each file with
-            (output_name, status) where status is "archived", "missing",
-            or "error:{message}".
+        progress_fn: Optional callback called per file with
+            (run_id, output_name, status).  Status is "hashing" (before
+            hashing starts), then one of "archived", "missing", or
+            "error:{message}".  An exception raised by the callback aborts
+            the pass; rows committed so far are kept.
 
     Returns:
         List of dicts with keys: run_id, output_name, content_hash, status.
@@ -1011,9 +1056,14 @@ def archive_outputs(
             if artifact is None or not artifact.exists():
                 entry["status"] = "missing"
                 if progress_fn:
-                    progress_fn(ro.output_name or "<unknown>", "missing")
+                    progress_fn(ro.run_id, ro.output_name or "<unknown>", "missing")
                 results.append(entry)
                 continue
+
+            # Outside the try: a raising callback aborts the whole pass,
+            # leaving rows committed so far intact (resume via re-run).
+            if progress_fn:
+                progress_fn(ro.run_id, ro.output_name or "<unknown>", "hashing")
 
             try:
                 content_hash = hash_path(artifact)
@@ -1021,18 +1071,21 @@ def archive_outputs(
                 cache_file(artifact, content_hash, project_dir, move=False)
                 ro.content_hash = content_hash
                 session.add(ro)
+                # Per-row commit, only after the cache copy above landed: a
+                # kill can never leave a committed hash whose blob is absent.
+                session.commit()
                 entry["content_hash"] = content_hash
                 entry["status"] = "archived"
-                if progress_fn:
-                    progress_fn(ro.output_name or "<unknown>", "archived")
             except Exception as exc:
+                # Drop any pending mutation from the failed row so it can't
+                # ride along with a later row's commit.
+                session.rollback()
                 entry["status"] = f"error:{exc}"
-                if progress_fn:
-                    progress_fn(ro.output_name or "<unknown>", f"error:{exc}")
+
+            if progress_fn:
+                progress_fn(ro.run_id, ro.output_name or "<unknown>", entry["status"])
 
             results.append(entry)
-
-        session.commit()
 
     # Protection sweep (best-effort, idempotent): mark every cache entry
     # read-only. Covers entries written before write-time protection landed

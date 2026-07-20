@@ -329,6 +329,30 @@
     expandedDirs = next;
   }
 
+  // ----- Inline image preview (US-2) -----
+  // Gate: the BACKEND `is_image` flag (browser-renderable set only:
+  // png/jpg/jpeg/gif/svg/webp — computed by WfcProvider.list_artifacts).
+  // Deliberately NOT the wider IMAGE_EXTS grouping set below, which
+  // includes pdf/tif/tiff that an <img> cannot paint. Strictly additive:
+  // every artifact keeps its download-link row.
+  let lightboxSrc = $state<string | null>(null);
+  let lightboxAlt = $state('');
+  function openLightbox(src: string, alt: string): void {
+    lightboxSrc = src;
+    lightboxAlt = alt;
+  }
+  function closeLightbox(): void {
+    lightboxSrc = null;
+  }
+  $effect(() => {
+    if (!lightboxSrc) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeLightbox();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
   // ----- Artifact grouping -----
   const IMAGE_EXTS = new Set(['png','jpg','jpeg','gif','svg','webp','pdf','tif','tiff']);
   const DATA_EXTS  = new Set(['h5ad','h5','hdf5','parquet','csv','tsv','json','pkl','npy','npz','arrow','feather']);
@@ -794,11 +818,39 @@
                         >{a.extension || '—'}</span>
                         <span class="file-size">{formatBytes(a.size)}</span>
                       </a>
+                      {#if a.is_image}
+                        <!-- Additive inline preview: link row above stays.
+                             Light card — a PNG always renders on its light
+                             surface, so it must not float on a dark panel. -->
+                        <button
+                          class="thumb-card"
+                          onclick={() => openLightbox(artifactDownloadUrl(run.id, a.name), a.name)}
+                          aria-label={`Preview ${a.name}`}
+                        >
+                          <img
+                            class="thumb-img"
+                            src={artifactDownloadUrl(run.id, a.name)}
+                            alt={a.name}
+                            loading="lazy"
+                          />
+                        </button>
+                      {/if}
                     {/if}
                   {/each}
                 </div>
               {/if}
             {/each}
+          </div>
+        {/if}
+        {#if lightboxSrc}
+          <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+          <div class="lightbox-overlay" onclick={closeLightbox}>
+            <img
+              class="lightbox-img"
+              src={lightboxSrc}
+              alt={lightboxAlt}
+              onclick={(e: MouseEvent) => e.stopPropagation()}
+            />
           </div>
         {/if}
 
@@ -1438,6 +1490,37 @@
 
   /* Artifacts */
   .artifacts { display: flex; flex-direction: column; gap: 8px; }
+  /* Inline image preview (US-2): light card so the always-light PNG does
+     not float on a dark panel; click opens the lightbox. */
+  .thumb-card {
+    display: block;
+    margin: 4px 8px 8px 24px;
+    padding: 6px;
+    background: #fcfcfb;
+    border: 1px solid var(--border, #e1e0d9);
+    border-radius: 6px;
+    cursor: zoom-in;
+    max-width: 260px;
+  }
+  .thumb-img { display: block; max-width: 100%; height: auto; }
+  .lightbox-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    background: rgba(0, 0, 0, 0.72);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: zoom-out;
+  }
+  .lightbox-img {
+    max-width: 92vw;
+    max-height: 92vh;
+    background: #fcfcfb;
+    padding: 8px;
+    border-radius: 6px;
+    cursor: default;
+  }
   .artifacts-summary {
     padding: 0 4px;
     font-size: 10px;

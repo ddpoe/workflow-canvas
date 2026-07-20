@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.tutorials.registering-an-environment @ 9843aefee78b; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.tutorials.registering-an-environment @ b35377e65160; do not edit -->
 
 # Tutorial: Registering an Environment
 
@@ -59,6 +59,8 @@ wfc register-env vendor --backend byo --image docker://ghcr.io/org/img@sha256:..
 ```
 
 The input modes are mutually exclusive: a positional spec, `--from`, and a bare `--backend` are three different sources, and combining them errors before Docker is ever invoked. Pass `--force` to overwrite an env that already exists under the same name. To preview the generated Dockerfile without running a build, add `--dry-run` — it writes the Dockerfile to `.wfc/build/<name>/Dockerfile` and exits without touching Docker.
+
+For a `byo` image whose Python is not on the container's `PATH`, pass `--python <path>` (e.g. `--python /opt/venv/bin/python`) to record the exact interpreter `wfc run-step` should launch method scripts under. Without it, `byo` defaults to bare `python`; `pixi` and `conda` backends already record their own known interpreter path automatically, so `--python` there is only for overriding that default.
 
 The `pixi`, `conda`, and `byo` words name *build backends only*. They are not values you can put in a method's `env:` field — see the next section for what goes there.
 

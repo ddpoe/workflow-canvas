@@ -1,0 +1,20 @@
+# Container env for the wfc demo pipeline (built by `wfc demo`).
+#
+# The image contains ONLY what the demo methods themselves import — the host
+# `wfc run-step` executes each method script directly under this image's
+# Python, so nothing wfc-engine-related is (or needs to be) installed here.
+# This is the same contract your own registered envs follow.
+FROM python:3.11-slim
+
+# The demo methods are Tier-1 scripts: they `import wfc_client as wfc` for
+# the @wfc.method authoring sugar. wfc-client is a pure-stdlib package,
+# pinned to the version installed on the host. ({wfc_client_version} is
+# filled in by `wfc demo` from the installed package metadata.)
+RUN pip install --no-cache-dir wfc-client=={wfc_client_version}
+
+# The demo's `plot` method needs matplotlib. This line is the worked example
+# of declaring your own scientific dependency: add whatever your methods
+# import here.
+RUN pip install --no-cache-dir matplotlib
+
+WORKDIR /work

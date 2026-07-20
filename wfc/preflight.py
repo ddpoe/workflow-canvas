@@ -220,6 +220,24 @@ def check_dvc(project_dir: Path | str | None = None) -> CheckResult:
             fix_hint="Check the archive path exists, or re-run `wfc init`.",
         )
 
+    # Deep-validate: make DVC itself parse .dvc/config and resolve the
+    # default remote.  The cheap checks above only INI-parse the file, so
+    # a URL DVC's schema rejects (the historic file://C:/... form) passed
+    # them and only failed at first push.  This is doctor — the one-time
+    # ~4s DVC import cost is acceptable here.
+    try:
+        from dvc.repo import Repo
+        with Repo(str(proj)) as repo:
+            repo.cloud.get_remote_odb()
+    except Exception as exc:
+        return CheckResult(
+            name="dvc",
+            status="fail",
+            message=f"DVC rejected the archive configuration: {exc}",
+            fix_hint="Re-run `wfc init` to rewrite the archive location, or "
+                     "fix the remote URL in .dvc/config and wf-canvas.toml.",
+        )
+
     return CheckResult(
         name="dvc",
         status="ok",

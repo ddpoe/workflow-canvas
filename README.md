@@ -44,6 +44,16 @@ wfc --help
 New to Workflow Canvas? Start with the **Getting Started** tutorial in the
 [documentation](#documentation).
 
+For the fastest first look, `wfc demo` populates a freshly initialized project
+with a complete runnable example pipeline and opens it in the Canvas
+(`wfc demo --remove` takes it back out):
+
+```bash
+wfc init --dir ./demo_project && cd demo_project && wfc demo
+```
+
+The steps below show the same setup done manually with your own code and data:
+
 ```bash
 # 1. Initialize a project (guided wizard: scaffolds dirs, configures an output
 #    archive, sets up a local git repo, and pre-flights Docker)
@@ -111,7 +121,7 @@ archive (default `~/.wfc/archives/<project>`, outside the repo), indexed by
 Full user documentation is published at
 [workflow-canvas.readthedocs.io](https://workflow-canvas.readthedocs.io) and covers:
 
-- **Tutorials** — Getting Started, Authoring a Method Script, Registering an Environment, Writing Contracts
+- **Tutorials** — Getting Started, Exploring the Demo, Authoring a Method Script, Registering an Environment, Writing Contracts
 - **How-to** — Registration, the Canvas, Running & Inspecting Results, Sweeping Parameters & Fanning Out
 - **Reference** — CLI Reference, `method.yaml` schema, `wf-canvas.toml`
 - **Explanation** — How a Run Executes, Caching & Reproducibility, Project Anatomy, Storage & Provenance

@@ -17,7 +17,7 @@
   import ConfirmDialog from './lib/ConfirmDialog.svelte';
   import GraftToast from './lib/GraftToast.svelte';
   import { confirmDialogState, graftToastState, centerOnNodeRequest } from './lib/uiState.js';
-  import { nodes, edges, selectedNodeId, nextNodeId, deleteNodes, loadSamples, runState, setPipelineError, flashToast, dismissFlash } from './lib/stores.js';
+  import { nodes, edges, selectedNodeId, nextNodeId, deleteNodes, loadSamples, runState, setPipelineError, flashToast, dismissFlash, modules as modulesStore } from './lib/stores.js';
   // Side-effect import — starts the singleton pipelineRunActor and (in
   // DEV) wires the Stately Inspector. ADR-016 §root.ts.
   import './lib/machines/root.js';
@@ -203,6 +203,44 @@
   if (_fixtureKey === 'bound-variable-history') {
     activeTab = 'history';
   }
+
+  // `?pipeline=demo` — demo pre-wiring (`wfc demo` opens the browser on
+  // this URL). Fetches GET /api/pipelines/demo and hands the document to
+  // loadPipeline() — NEVER the seedFixture store-poking path — so each
+  // node's real method-specific slots resolve against the registry. The
+  // modules store is populated asynchronously by Sidebar's fetchModules;
+  // loadPipeline must wait for it or every method node falls back to the
+  // generic data/output CSV pair.
+  const _pipelineKey = typeof window !== 'undefined'
+    ? new URLSearchParams(window.location.search).get('pipeline')
+    : null;
+  function waitForModules(timeoutMs: number): Promise<void> {
+    return new Promise(resolve => {
+      let done = false;
+      let unsub: (() => void) | null = null;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        if (unsub) unsub();
+        resolve();
+      };
+      const timer = setTimeout(finish, timeoutMs);
+      unsub = modulesStore.subscribe(m => { if (m.length > 0) finish(); });
+      if (done && unsub) unsub();
+    });
+  }
+  async function loadDemoPipeline(): Promise<void> {
+    try {
+      const resp = await fetch('/api/pipelines/demo');
+      if (!resp.ok) return; // no demo scaffolded — inert
+      const json = await resp.json();
+      const { loadPipeline } = await import('./lib/pipeline.js');
+      await waitForModules(10_000);
+      loadPipeline(json);
+    } catch { /* inert on any failure — normal canvas boot continues */ }
+  }
+  if (_pipelineKey === 'demo') loadDemoPipeline();
 
   $effect(() => {
     fetch('/api/dev/status')

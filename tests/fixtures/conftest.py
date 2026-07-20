@@ -178,6 +178,11 @@ def _write_fixture_env_manifest(project_dir: Path, image_digest: str) -> None:
                 "env_fingerprint": image_digest,
                 "built_from_lock": "pixi.lock",
                 "built_at": "2026-06-23T00:00:00Z",
+                # The fixture image is plain python:3.11-slim (python on
+                # PATH); record the interpreter explicitly so dispatch does
+                # not fall back to the pixi-backend default path, which does
+                # not exist in that image.
+                "python": "python",
             }
         },
     }))

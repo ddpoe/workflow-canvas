@@ -12,6 +12,7 @@ overview/what-is-workflow-canvas
 :maxdepth: 2
 
 tutorials/getting-started
+tutorials/wfc-demo
 tutorials/authoring-a-method-script
 tutorials/registering-an-environment
 tutorials/writing-contracts

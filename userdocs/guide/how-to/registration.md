@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.how-to.registration @ 3a1150c0e732; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.how-to.registration @ 3cfeb140bae3; do not edit -->
 
 # Registering Modules, Methods, and Samples
 
@@ -28,6 +28,8 @@ wfc register-module --name my_analysis \
 2. One **ModuleContract** row is created for each contract entry. Module contracts declare the module's required *outputs* and *metrics* (each row has a `type` of `output` or `metric`, a `name`, an optional `value_type`, and a `required` flag). At method registration, the framework checks that each method's declared outputs include every output the module marks `required` — module contracts are an output/metric guarantee, not an input-slot spec.
 
 Modules are idempotent to re-register -- calling the command again with the same name updates the existing row.
+
+Names beginning with `__demo__` are reserved for the bundled demo: `register-module`, `register-method`, `register-sample`, `register-env`, and the Canvas Registry all refuse them, so that `wfc demo --remove` can safely identify demo-owned entries.
 
 ## Registering a Method
 
@@ -72,7 +74,7 @@ wfc register-sample --name CFPAC_ERKi --source /data/raw/cfpac_erki.csv
 
 ### Prerequisites
 
-DVC must be configured. Your `.wfc/wf-canvas.toml` must include a `[dvc]` section with a `url` field (e.g. `url = "file:///path/to/storage"`, `s3://...`, `ssh://...`); `wfc init` creates and mirrors it automatically when `auto_init = true`. Registration raises `DvcNotConfiguredError` if the section is missing, if `url` is unset, or if `.dvc/config` declares no remotes.
+DVC must be configured. Your `.wfc/wf-canvas.toml` must include a `[dvc]` section with a `url` field (a directory path such as `url = "/data/wfc-archive"`, or a remote scheme like `s3://...`); `wfc init` creates and mirrors it automatically when `auto_init = true`. Registration raises `DvcNotConfiguredError` if the section is missing, if `url` is unset, or if `.dvc/config` declares no remotes.
 
 ### What the command does
 

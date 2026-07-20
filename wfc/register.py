@@ -265,15 +265,17 @@ def resolve_python_for_env(
 def _resolve_env(env_spec: str, project_dir: Path) -> str:
     """Resolve and validate a named shared environment.
 
-    Supports three prefix families:
+    Method envs are container-only (ADR-019 Cycle H). Accepted forms:
 
     - ``container:<envname>`` — look up *envname* in ``.wfc/envs.json``
       (ADR-019). The record's ``container`` field must be digest-pinned;
       the image itself is **not** pulled at registration time (decision #8).
+      A bare ``<envname>`` is accepted as shorthand for the same lookup.
     - ``container:docker://<host>/<path>@sha256:<hex>`` — direct digest-pinned
       ref (ADR-019 decision #12 escape hatch). Validated for shape only.
-    - ``pixi:<...>`` / ``conda:<name>`` — existing typed env spec, resolved
-      to a python executable via :func:`resolve_python_for_env`.
+
+    Any other typed spec (``pixi:<...>``, ``conda:<name>``) fails the manifest
+    lookup with a ``ValueError`` directing the user to ``wfc register-env``.
 
     Args:
         env_spec: The env spec from method.yaml (not ``"inherit"``).
@@ -404,6 +406,7 @@ def register_module(
     contracts: list[dict] | None = None,
     description: str | None = None,
     module_dir: Path | None = None,
+    allow_reserved: bool = False,
 ) -> int:
     """Create or update a module row.
 
@@ -433,7 +436,12 @@ def register_module(
 
     Raises:
         TypeError: If neither ``contracts`` nor a valid ``module.yaml`` is available.
+        ValueError: If ``name`` uses the reserved ``__demo__`` prefix and
+            ``allow_reserved`` is False.
     """
+    from .reserved import check_reserved_name
+    check_reserved_name(name, "module", allow_reserved)
+
     # Resolve contracts from module.yaml if not explicitly provided
     if contracts is None and module_dir is not None:
         module_yaml_data = parse_module_yaml(module_dir)
@@ -504,6 +512,7 @@ def register_method(
     module_name: str,
     method_name: str | None = None,
     script_name: str | None = None,
+    allow_reserved: bool = False,
 ) -> int:
     """Scan a method script and register it in the database.
 
@@ -531,6 +540,13 @@ def register_method(
         method_name = method_dir.name
     if script_name is None:
         script_name = f"{method_name}.py"
+
+    # Reserved-namespace guard (US-4): refuse a __demo__* method name AND
+    # refuse attaching a method to a __demo__* module, before any filesystem
+    # or DB work. `wfc demo` opts in via allow_reserved=True.
+    from .reserved import check_reserved_name
+    check_reserved_name(method_name, "method", allow_reserved)
+    check_reserved_name(module_name, "module", allow_reserved)
 
     口 = Step(step_num=1, name="Locate and scan script",
              purpose="Find method script and extract function signatures via AST parsing")

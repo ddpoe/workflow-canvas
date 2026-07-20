@@ -1,0 +1,25 @@
+# Contract for the demo `summarize` method:
+#   inputs.data      <-> ctx.input("data")
+#   outputs.summary  <-> ctx.save_artifact("summary", ...)
+#   params.group_by  <-> ctx.params.get("group_by")
+inputs:
+  data:
+    type: .csv
+    required: true
+    description: "Labelled cells from label"
+
+outputs:
+  summary:
+    type: .csv
+    required: true
+    description: "Per-group cell count and mean intensity"
+
+params:
+  group_by:
+    type: str
+    required: false
+    default: "label"
+    description: "Column to group by (defaults to label's output column)"
+
+executor: local
+env: container:__demo__env

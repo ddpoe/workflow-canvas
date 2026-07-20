@@ -87,6 +87,13 @@ class EnvRecord:
     # ``GET /api/registry/envs/blob/<md5>`` and parsed by
     # :func:`wfc.env_packages.parse_packages`.
     source_fingerprint: Optional[str] = None
+    # Container-side path of the env's Python interpreter, recorded at
+    # registration: computed for pixi/conda from the generator recipe;
+    # ``"python"`` for byo (overridable via ``wfc register-env --python``).
+    # ``None`` for records written before this field existed — dispatch
+    # falls back to the per-backend default via :func:`resolve_env_python`
+    # (identical values by construction, so no re-registration is needed).
+    python: Optional[str] = None
 
     def to_dict(self) -> dict:
         """Return a plain dict suitable for JSON serialization.
@@ -299,6 +306,70 @@ def validate_container_ref(ref: str) -> None:
 
 
 # =============================================================================
+# Interpreter resolution (thin-container dispatch)
+# =============================================================================
+
+def default_python_for_backend(backend: Optional[str], env_name: str) -> str:
+    """Return the per-backend default container interpreter path.
+
+    The defaults mirror what each backend's image recipe actually
+    materializes, so envs registered before the per-env ``python`` field
+    existed resolve to identical values by construction:
+
+    - ``pixi``: the env python the pixi generator's own pip stage uses
+      (``/<env_name>/envs/default/bin/python``).
+    - ``conda``: the micromamba base-env python (``/opt/conda/bin/python``,
+      verified empirically against the mambaorg base image).
+    - ``byo`` and anything unknown: bare ``"python"`` (resolved by the
+      image's PATH).
+
+    Args:
+        backend: Backend name from the env record (``"pixi"``, ``"conda"``,
+            ``"byo"``), or ``None`` when no record is available.
+        env_name: Env name (needed for the pixi env path).
+
+    Returns:
+        Container-side interpreter path or bare ``"python"``.
+    """
+    if backend == "pixi":
+        from .dockerfiles.pixi import env_python_path
+        return env_python_path(env_name)
+    if backend == "conda":
+        from .dockerfiles.conda import CONDA_ENV_PYTHON
+        return CONDA_ENV_PYTHON
+    return "python"
+
+
+def resolve_env_python(env_name: str, record: Optional["EnvRecord"]) -> str:
+    """Resolve the interpreter a container should run a method script with.
+
+    Pure three-step fallback:
+
+    1. The record's ``python`` field, when present (recorded at
+       registration; wins unconditionally).
+    2. The per-backend default computed from the record's backend
+       (:func:`default_python_for_backend`) — covers records written
+       before the field existed.
+    3. Bare ``"python"`` when there is no record at all (unknown env or
+       the per-method direct-image escape hatch).
+
+    The returned value is a CONTAINER path — callers must never run it
+    through host→container path translation.
+
+    Args:
+        env_name: Env name (manifest key).
+        record: The env's manifest record, or ``None``.
+
+    Returns:
+        Container-side interpreter path or bare ``"python"``.
+    """
+    if record is not None and getattr(record, "python", None):
+        return record.python  # type: ignore[return-value]
+    backend = record.backend if record is not None else None
+    return default_python_for_backend(backend, env_name)
+
+
+# =============================================================================
 # Write-side public API (ADR-019 Cycle C)
 # =============================================================================
 
@@ -350,6 +421,8 @@ def register(
     project_dir: Optional[Path] = None,
     *,
     live_spec: Optional[str] = None,
+    allow_reserved: bool = False,
+    python_override: Optional[str] = None,
 ) -> EnvRecord:
     """Register a container env: build the image, resolve its digest, and
     write the manifest entry.
@@ -415,6 +488,12 @@ def register(
             no longer gates ``source_fingerprint`` capture — capture now
             keys off the staged *source* content for both live-spec and
             ``--from`` modes (see the source_fingerprint note below).
+        python_override: Optional container-side interpreter path recorded
+            verbatim as the env's ``python`` field. Intended for byo images
+            whose Python is not on PATH (``wfc register-env --python``);
+            accepted for any backend since an explicit record always wins
+            at dispatch. When ``None``, the per-backend default from
+            :func:`default_python_for_backend` is recorded.
 
     Returns:
         The persisted :class:`EnvRecord`.
@@ -428,7 +507,12 @@ def register(
     """
     from . import dockerfiles as df_pkg
     from . import docker_runner
+    from .reserved import check_reserved_name
     from .version import capture_env_content, store_env_content
+
+    # Reserved-namespace guard (US-4): refuse a __demo__* env name before any
+    # docker interaction or manifest write. `wfc demo` opts in.
+    check_reserved_name(name, "env", allow_reserved)
 
     口 = Step(step_num=1, name="Validate request and select backend",
              purpose="Resolve project_dir, reject a duplicate env name without force, "
@@ -640,6 +724,12 @@ def register(
     from datetime import datetime, timezone
     built_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    # Per-env interpreter path (thin-container dispatch): recorded truth so
+    # run-step launches the method script under the env's actual Python.
+    # An explicit --python override wins; otherwise the per-backend default
+    # (which mirrors what the generator recipe materialized).
+    env_python = python_override or default_python_for_backend(backend, name)
+
     record = EnvRecord(
         backend=backend,
         source=source_field,
@@ -648,6 +738,7 @@ def register(
         built_from_lock=built_from_lock,
         built_at=built_at,
         source_fingerprint=source_fingerprint,
+        python=env_python,
     )
     envs_block[name] = record.to_dict()
     manifest["envs"] = envs_block

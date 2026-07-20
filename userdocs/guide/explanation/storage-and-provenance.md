@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.explanation.storage-and-provenance @ a3e16e45dfd4; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.explanation.storage-and-provenance @ c87208667bf1; do not edit -->
 
 # Storage & Provenance
 
@@ -18,7 +18,7 @@ This page explains why outputs are addressed by content instead of by path, what
 
 Output bytes live in exactly one place: the DVC content-addressed cache, on disk at `.dvc/cache/files/md5/XX/YYY...`, where the path is derived from the MD5 hash of the file's contents. Two runs that produce byte-identical output share a single cache entry; an output is located by its hash, never by a per-run folder you could navigate to.
 
-There is **no workspace tree**. A method writes its output into a transient staging directory under `.runs/{run_id}/` while it runs, and once the data is safe in the cache that staging copy is gone. The file Snakemake actually tracks as a step's output is a **zero-byte sentinel** under `.runs/sentinels/...` — it carries no data; it exists only so Snakemake can wire the dependency graph and know a step finished. The real bytes are in the cache, addressed by hash.
+There is **no workspace tree**. A method writes its output into a staging directory under `.runs/{run_id}/` while it runs. The archive pass copies the bytes into the cache and leaves the staging copy in place; `wfc cache prune` reclaims staging directories when you want the space back. The file Snakemake actually tracks as a step's output is a **zero-byte sentinel** under `.runs/sentinels/...` — it carries no data; it exists only so Snakemake can wire the dependency graph and know a step finished. The authoritative bytes are in the cache, addressed by hash.
 
 This is why you should never go looking for outputs by browsing folders. A downstream step, the History view, and the Canvas all reach an output the same way: they read its `content_hash` from the database and resolve that hash to a cache path. Because the address is the content, an output is immutable and de-duplicated for free — the same result is stored once no matter how many runs reference it.
 
@@ -32,13 +32,13 @@ df.to_csv(path)
 
 To change an output, export a copy you own instead (see [Run & Inspect Results](../how-to/run-and-inspect-results.md)). `wfc cache prune` still deletes protected entries when you reclaim space.
 
-This model was adopted in ADR-018, which eliminated the older copy-everything workspace in favor of the cache being the sole on-disk store and a move (not a copy) into it.
+This model was adopted in ADR-018, which eliminated the older copy-everything workspace in favor of the cache being the single authoritative store.
 
 ## Archiving is deferred, and indexed by the database
 
-Hashing a file and moving it into the cache is called **archiving**, and it does not happen inline between pipeline steps. While a pipeline runs, each step records its output row with `content_hash = NULL` and leaves the bytes in staging. After the whole pipeline finishes, a single archive pass hashes every un-archived output and moves it into the cache in one batch. This keeps slow hashing I/O off the critical path between steps, which matters a lot for large-output pipelines.
+Hashing a file and copying it into the cache is called **archiving**, and it does not happen inline between pipeline steps. While a pipeline runs, each step records its output row with `content_hash = NULL` and leaves the bytes in staging. After the whole pipeline finishes, an archive pass hashes every un-archived output and copies it into the cache, recording each output in the database the moment its copy lands. This keeps slow hashing I/O off the critical path between steps, which matters a lot for large-output pipelines. It also means an interrupted pass loses nothing: if the machine goes down halfway through archiving twenty outputs, the ones already archived stay archived, and the next archive pass picks up only the remainder.
 
-Archiving runs automatically when you pass the archive option to a pipeline run, and you can also trigger it on demand with `wfc cache archive`, which finds every output still carrying a `NULL` hash and archives it.
+Archiving runs automatically after a pipeline run finishes (opt out with `--no-archive`), and you can also trigger it on demand with `wfc cache archive`, which finds every output still carrying a `NULL` hash and archives it.
 
 The honest caveat to understand here: the cache is a flat pile of content-addressed blobs with no human-readable names. The **only** thing that maps a meaningful run and output back to the right blob is the SQLite database at `.wfc/wfc.db` — and that database is **not tracked in git**. If you delete or lose `.wfc/`, the blobs in the cache become anonymous and unrecoverable even though the bytes are still on disk. **Backing up `.wfc/` is required** to keep archived outputs usable. The cache pruning command refuses to remove blobs for runs whose outputs have not yet been archived, so you cannot accidentally prune away data that exists only in staging — but it cannot protect you from losing the database index itself.
 
@@ -56,7 +56,7 @@ Because outputs are addressed by content hash, sharing them is just a matter of 
 
 A collaborator who pulls your database can then reproduce your results: the database tells them which `content_hash` belongs to which run, and the cache resolver fetches any missing blob from the remote on demand. When something reads an output, resolution happens in tiers — **CACHE** if the hash is already in the local cache, otherwise **REMOTE-PULL** to fetch it from the configured remote, and only then **FAIL** if neither has it.
 
-You configure all of this through the `[dvc]` block in `.wfc/wf-canvas.toml` — set `url` to any DVC-native scheme (`file://`, `s3://`, `ssh://`, `gs://`, `azure://`, and so on). Workflow Canvas mirrors that config to DVC and dispatches on the URL scheme for you; you **never run `dvc` directly**. See [Project Anatomy](../explanation/project-anatomy.md) for the full config block.
+You configure all of this through the `[dvc]` block in `.wfc/wf-canvas.toml` — set `url` to a directory path for a local or network-drive archive, or to a DVC remote scheme (`s3://`, `ssh://`, `gs://`, `azure://`). Remote schemes need the matching DVC plugin installed (for example `pip install 'dvc[s3]'`). Workflow Canvas mirrors that config to DVC and dispatches on the URL scheme for you; you **never run `dvc` directly**. See [Project Anatomy](../explanation/project-anatomy.md) for the full config block.
 
 ## Where to go next
 

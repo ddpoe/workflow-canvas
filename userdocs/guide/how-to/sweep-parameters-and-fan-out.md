@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.how-to.sweep-parameters-and-fan-out @ 217a4477904e; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.how-to.sweep-parameters-and-fan-out @ 3f217953eea0; do not edit -->
 
 # How-to: Sweep Parameters & Fan Out
 
@@ -10,7 +10,7 @@ This how-to covers three ways to run one pipeline across many inputs and many se
 - **Fan-out and fan-in** — run the same steps independently per sample (fan-out), or bundle several samples into a single collapsed run (fan-in).
 - **Pipeline variables** — name a shared value once and bind it to many parameter rows, so you change it in one place.
 
-All three are authored in the Canvas Builder and travel in the exported pipeline JSON, so a pipeline you build visually runs the same way from `wfc run-pipeline`. For the Builder and History UI mechanics referenced throughout, see [Canvas Visual Builder](../how-to/canvas.md). If you are new to building a pipeline at all, start with [Getting Started](../tutorials/getting-started.md).
+All three are authored in the Canvas Builder. Sweeps, per-sample overrides, and fan-out/fan-in travel in the exported pipeline JSON, so a pipeline you build visually runs the same way from `wfc run-pipeline`. Pipeline variables are the exception: the Canvas server resolves them at submission, and `wfc run-pipeline` does not — run variable-using pipelines from the Canvas. For the Builder and History UI mechanics referenced throughout, see [Canvas Visual Builder](../how-to/canvas.md). If you are new to building a pipeline at all, start with [Getting Started](../tutorials/getting-started.md).
 
 ## Parameter sweeps, variants & per-sample overrides
 
@@ -21,6 +21,8 @@ A **sweep** runs the same method several times with different parameter values a
 **Per-sample overrides.** Sometimes one sample needs different settings from the rest — a higher threshold, a different reference column. Instead of a global variant, you attach an override to a specific sample on that node. The override applies only to that sample; every other sample keeps the base parameters (or the swept variants).
 
 **How this expands the DAG.** Sweeps and overrides are compiled into a `param_sets` block in the pipeline JSON. When you export or run, Canvas walks each method node and emits its variant rows. If *any* node anywhere in the pipeline has an override, the engine switches to selective mode, where the run list is exclusive: Canvas then emits the full sample × sweep-variant matrix *plus* the override rows, so no swept combination is silently dropped. If there are only sweeps and no overrides, the `param_sets` block carries the variants and the engine's normal cartesian expansion fills in the matrix. Either way, the result is one branch per (sample, variant) combination, and a per-sample override whose resolved parameters happen to match an existing sweep variant is de-duplicated rather than run twice.
+
+**Check the expansion before you run.** The **Runs Preview** table at the bottom of the Builder lists every (sample × variant) run the pipeline will generate, with each run's merged parameters and the total run count. It is open by default; if you closed it, click the **Runs Preview** tab at the bottom of the canvas to reopen it. A mismatch here is cheaper to catch than after a run.
 
 The upshot: you describe the values you care about, and the pipeline fans into exactly the set of runs those values imply — each cached, tracked, and inspectable on its own.
 

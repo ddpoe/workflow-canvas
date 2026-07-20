@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.explanation.project-anatomy @ 34363c5fad11; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.explanation.project-anatomy @ a19d8880b30b; do not edit -->
 
 # Project Anatomy
 
@@ -17,9 +17,9 @@ my_project/
   data/
     samples/              # Ephemeral workspace for restored sample files
                           #   DVC-managed; lazily restored at execution time
-  .runs/                  # Sentinels + transient staging (bytes live in the DVC archive)
+  .runs/                  # Sentinels + staging (authoritative bytes live in the DVC archive)
     sentinels/            #   zero-byte Snakemake DAG-wiring sentinels
-    {run_id}/             #   transient staging; archive pass moves bytes to DVC archive
+    {run_id}/             #   staging; archive pass copies bytes into the DVC archive
   .dvc/                   # DVC working directory (always present after init)
     cache/files/md5/      #   local content-addressed cache
   .gitignore              # Pre-configured for wfc artifacts
@@ -44,7 +44,7 @@ Key points:
 - **`modules/`** holds nested module/method hierarchies. Each module directory can contain a `module.yaml` for output contracts and subdirectories for each method.
 - **`methods/`** holds flat standalone methods that belong to a module but live outside the module directory.
 - **`data/samples/`** is NOT a permanent storage location. Files are restored here lazily by the Snakemake `restore_sample` rule at pipeline execution time. The actual data lives in the DVC archive.
-- **`.runs/sentinels/`** holds zero-byte Snakemake DAG-wiring sentinels (no output bytes). **`.runs/{run_id}/`** is a transient *staging* directory — methods write outputs there, then the archive pass moves them to the DVC archive, which is the sole permanent store. There is no `.runs/workspace/` tree.
+- **`.runs/sentinels/`** holds zero-byte Snakemake DAG-wiring sentinels (no output bytes). **`.runs/{run_id}/`** is a *staging* directory — methods write outputs there, then the archive pass copies them into the DVC archive, which is the sole permanent store. The staging copy stays behind until `wfc cache prune` reclaims it. There is no `.runs/workspace/` tree.
 - **`.dvc/`** is always created by `wfc init`. It holds the local DVC cache. The long-term archive lives at the `url` configured in `wf-canvas.toml` (default: `~/.wfc/archives/<project>`), which is outside the repo so outputs survive repo re-creation.
 - **`.wfc/envs.json` IS tracked in git.** It is the manifest of your registered container environments — each env's backend, build spec, and resolved image content digest. Committing it makes your environments part of the project's reproducible record (a lockfile for environments): a collaborator who checks out the repo gets the exact image digests your methods were validated against. See [Registering an Environment](../tutorials/registering-an-environment.md).
 - **`.wfc/wfc.db` is NOT tracked in git** (listed in `.gitignore`). It is the index that maps every output to its content hash. Back up the `.wfc/` directory along with your archive folder to keep results recoverable.
@@ -99,16 +99,16 @@ For the full walkthrough of authoring a method, declaring its contracts, and bui
 
 ## The Run Workspace (.runs/)
 
-The `.runs/` directory is where a pipeline does its transient work. It serves two purposes:
+The `.runs/` directory is where a pipeline does its working-copy writes. It serves two purposes:
 
 - **`sentinels/`** — Zero-byte sentinel files used only for Snakemake DAG wiring, organized by `{pipeline_id}/{node_id}/{sample}/{variant}/.complete`. They mark a step as finished; they hold no output bytes.
-- **`{run_id}/`** — A transient *staging* directory. A method writes its outputs here, then the archive pass moves the bytes into the DVC content-addressed cache, which is the sole authoritative store. The former `.runs/workspace/` output tree no longer exists; outputs are reached by content-hash, not by a workspace path.
+- **`{run_id}/`** — A *staging* directory. A method writes its outputs here, then the archive pass copies the bytes into the DVC content-addressed cache, which is the sole authoritative store; `wfc cache prune` reclaims the leftover staging copies. The former `.runs/workspace/` output tree no longer exists; outputs are reached by content-hash, not by a workspace path.
 
-Because `.runs/` is staging and sentinels rather than durable data, `wfc init` adds it to `.gitignore` — you never commit it and you can delete it safely between runs.
+Because `.runs/` is staging and sentinels rather than durable data, `wfc init` adds it to `.gitignore` — you never commit it, and once a run's outputs have been archived you can delete it safely. If you ran with `--no-archive`, run `wfc cache archive` first: un-archived outputs exist only in staging.
 
 ### What lives where
 
-The key idea is that **output bytes never live under `.runs/`** for long. They are hashed and moved into the content-addressed cache, and the database records which hash holds each output. Whether a step re-runs or reuses a prior result is decided by a cache key computed from the method's code, its parameters, its inputs, and its environment. Both of these — the storage model and the cache-key model — have their own pages:
+The key idea is that **the cache, not `.runs/`, is the authoritative store**. The archive pass hashes each output and copies it into the content-addressed cache, and the database records which hash holds each output. Whether a step re-runs or reuses a prior result is decided by a cache key computed from the method's code, its parameters, its inputs, and its environment. Both of these — the storage model and the cache-key model — have their own pages:
 
 - [Storage & Provenance](../explanation/storage-and-provenance.md) explains the content-addressed cache, what git does and does not track, how the cache is shared across machines, and what to back up.
 - [Caching & Reproducibility](../explanation/caching-and-reproducibility.md) explains how the cache key is computed and why a given step re-runs or hits the cache.

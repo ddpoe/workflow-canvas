@@ -18,6 +18,14 @@
   let isFavorite = $derived(!!run.favorite);
 
   /**
+   * Cache-hit audit rows reuse another run's outputs. They keep the green
+   * success body (module left border + tint) and add an amber wrap on the
+   * other three edges plus a CACHED pill — deliberately distinct from the
+   * running style (amber left border + amber tint + ring).
+   */
+  let isCached = $derived(!!run.cacheSourceRunId);
+
+  /**
    * Compute border color based on run status.
    * Running = amber, failed = red, completed/success = module color, other = grey.
    */
@@ -85,6 +93,7 @@
   class:running={run.status === 'running'}
   class:failed={run.status === 'failed'}
   class:selected={$filters.selectMode && $selectedRunIds.has(run.id)}
+  class:cached={isCached}
   style="border-left-color: {borderColor}; background: {bgColor}; box-shadow: {boxShadow};"
   role="button"
   tabindex="0"
@@ -101,7 +110,12 @@
     </button>
   </div>
   <div class="divider"></div>
-  <div class="nid" style="color: {nidColor}">{run.nid || run.runName || run.id.slice(0, 8)}</div>
+  <div class="nid" style="color: {nidColor}">
+    {run.nid || run.runName || run.id.slice(0, 8)}
+    {#if isCached}
+      <span class="cached-pill">{'⟳'} CACHED</span>
+    {/if}
+  </div>
   {#if run.dataSource === '__all__' && run.bundledSamples && run.bundledSamples.length > 0}
     <div class="sample" title={run.bundledSamples.join(', ')}>
       {run.bundledSamples.length} samples: {run.bundledSamples.join(', ')}
@@ -178,6 +192,27 @@
   .nid {
     font-weight: 600;
     font-size: 15px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  /* Cached: amber on top/right/bottom only — the left edge stays the
+     module-color border so the green "completed" signal is untouched. */
+  .path-node.cached {
+    border-top: 1.5px solid #E9A847;
+    border-right: 1.5px solid #E9A847;
+    border-bottom: 1.5px solid #E9A847;
+  }
+  .cached-pill {
+    background: rgba(233, 168, 71, 0.15);
+    color: #E9A847;
+    border: 1px solid rgba(233, 168, 71, 0.45);
+    border-radius: 9px;
+    font-size: 9.5px;
+    font-weight: 600;
+    padding: 1px 7px;
+    letter-spacing: 0.3px;
+    white-space: nowrap;
   }
   .sample {
     color: var(--text-muted, #666);

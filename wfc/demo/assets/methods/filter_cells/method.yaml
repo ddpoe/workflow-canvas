@@ -1,0 +1,29 @@
+# Contract for the demo `filter_cells` method:
+#   inputs.data       <-> ctx.input("data")
+#   outputs.filtered  <-> ctx.save_artifact("filtered", ...)
+#   params.*          <-> ctx.params[...]  (min_quality is required: the
+#                         pipeline must supply it; max_area is optional)
+inputs:
+  data:
+    type: .csv
+    required: true
+    description: "Cleaned per-cell measurements from preprocess"
+
+outputs:
+  filtered:
+    type: .csv
+    required: true
+    description: "Cells passing the quality (and optional area) gates"
+
+params:
+  min_quality:
+    type: float
+    required: true
+    description: "Keep cells with quality >= this value (samples span ~0.2-0.98)"
+  max_area:
+    type: float
+    required: false
+    description: "Optionally drop cells with area above this value"
+
+executor: local
+env: container:__demo__env

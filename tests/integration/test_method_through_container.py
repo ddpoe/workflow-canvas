@@ -95,6 +95,9 @@ def _write_envs_json(proj: Path, image_digest: str, env_name: str) -> None:
                 "env_fingerprint": image_digest,
                 "built_from_lock": "pixi.lock",
                 "built_at": "2026-06-24T00:00:00Z",
+                # Plain python:3.11-slim image — python is on PATH; record
+                # it so dispatch skips the pixi-backend default path.
+                "python": "python",
             }
         },
     }))

@@ -335,10 +335,9 @@ def pre_run(
         build_cache_key,
         build_code_fingerprint,
         build_input_fingerprint,
-        capture_env_content,
         get_git_commit,
         get_or_create_version,
-        store_env_content,
+        resolve_env_fingerprint,
     )
 
     params = params or {}
@@ -414,38 +413,34 @@ def pre_run(
 
     input_fingerprint = build_input_fingerprint(upstream_run_ids, sample_ids)
 
-    口 = Step(step_num=6, name="Capture env content",
-             purpose="Resolve the method's env backend and build its deterministic "
-                     "env-content blob: pixi/conda lock + pip freeze, interpreter "
-                     "or a container env's precomputed "
-                     "image fingerprint / image@sha256 digest")
+    口 = Step(step_num=6, name="Resolve env fingerprint",
+             purpose="Resolve the method's env to the env_fingerprint persisted on "
+                     "the Run row: a registered container env returns the manifest's "
+                     "precomputed fingerprint directly (no cache write); pixi/conda/"
+                     "direct-ref specs capture their deterministic env-content blob "
+                     "and store it under .dvc/cache/files/md5/")
     project_dir_for_env = get_project_root()
-    # ADR-019 Cycle D: ``container:<bare-name>`` (e.g. ``container:smoke-env``)
+    # ``container:<bare-name>`` (e.g. ``container:smoke-env``)
     # is the prefix-tagged form ``_resolve_env`` accepts at registration and
-    # the form persisted on ``Method.env``. ``capture_env_content``'s manifest
-    # short-circuit fires for bare names only, so strip the prefix here when
-    # the payload is a bare manifest name (no ``@sha256:``). The direct ref
-    # form ``container:<image>@sha256:<hex>`` falls through unchanged because
-    # ``capture_env_content`` handles that branch itself.
-    _env_for_capture = method_env
+    # the form persisted on ``Method.env``. ``resolve_env_fingerprint``'s
+    # manifest short-circuit fires for bare names only, so strip the prefix
+    # here when the payload is a bare manifest name (no ``@sha256:``). The
+    # direct ref form ``container:<image>@sha256:<hex>`` falls through
+    # unchanged because ``capture_env_content`` handles that branch itself.
+    _env_for_fingerprint = method_env
     if isinstance(method_env, str) and method_env.startswith("container:"):
         _payload = method_env[len("container:"):]
         if "@sha256:" not in _payload and not _payload.startswith("docker://"):
-            _env_for_capture = _payload
-    env_content = capture_env_content(_env_for_capture, project_dir_for_env)
+            _env_for_fingerprint = _payload
+    env_fingerprint = resolve_env_fingerprint(_env_for_fingerprint, project_dir_for_env)
 
-    口 = Step(step_num=7, name="Store env content in DVC cache",
-             purpose="Hash the env blob and store it under .dvc/cache/files/md5/; "
-                     "the returned md5 is the env_fingerprint persisted on the Run row")
-    env_fingerprint = store_env_content(env_content, project_dir_for_env)
-
-    口 = Step(step_num=8, name="Build cache key",
+    口 = Step(step_num=7, name="Build cache key",
              purpose="Combine code_fingerprint + params + input_fingerprint + env_fingerprint into cache key")
     cache_key = build_cache_key(
         code_fingerprint, params, input_fingerprint, env_fingerprint
     )
 
-    口 = Step(step_num=9, name="Cache lookup and registration",
+    口 = Step(step_num=8, name="Cache lookup and registration",
              purpose="Query by cache_key; return CACHED:{id} on hit or register new run on miss")
     with get_session() as session:
         stmt = (
@@ -1110,6 +1105,12 @@ def resolve_input(run_id: int) -> str | None:
     the actual cache location, not a workspace copy. Downstream consumers
     read directly from the cache.
 
+    Cache-hit audit rows (``cache_source_run_id`` set) own no RunOutput
+    rows — their outputs live on the source run they reference. When the
+    given run has no outputs but is an audit row, resolution follows the
+    pointer one hop to the source run. One hop always suffices: pre_run
+    never selects an audit row as a cache source.
+
     For runs predating content-hash integration (content_hash is None),
     the artifact_path is returned as-is (no cache to consult).
 
@@ -1129,7 +1130,22 @@ def resolve_input(run_id: int) -> str | None:
 
         output_stmt = select(RunOutput).where(RunOutput.run_id == run_id)
         ro = session.exec(output_stmt).first()
+        if ro is None and run.cache_source_run_id is not None:
+            source_stmt = select(RunOutput).where(
+                RunOutput.run_id == run.cache_source_run_id
+            )
+            ro = session.exec(source_stmt).first()
+            if ro is not None:
+                print(
+                    f"resolve_input: AUDIT (run {run_id} -> source run "
+                    f"{run.cache_source_run_id})",
+                    file=sys.stderr,
+                )
         if ro is None:
+            print(
+                f"resolve_input: FAIL (run {run_id} has no recorded outputs)",
+                file=sys.stderr,
+            )
             return None
 
         # No content_hash -- backward compat: return original artifact_path.
@@ -1211,6 +1227,13 @@ def resolve_output(
     the correct archived bytes or a kind-carrying error — never a stale,
     adjacent, or guessed path.
 
+    Cache-hit audit rows (``cache_source_run_id`` set) own no RunOutput
+    rows — their outputs live on the source run they reference. When the
+    given run has no rows but is an audit row, resolution follows the
+    pointer one hop to the source run; name matching, the error contract,
+    and the discovery listing all operate on the source rows. One hop
+    always suffices: pre_run never selects an audit row as a cache source.
+
     Args:
         run_id: The run's integer database id.
         output_name: Explicit output name to resolve. ``None`` raises
@@ -1260,6 +1283,15 @@ def _resolve_output_in_session(
     rows = session.exec(
         select(RunOutput).where(RunOutput.run_id == run_id)
     ).all()
+    if not rows and run.cache_source_run_id is not None:
+        # Cache-hit audit rows own no RunOutput rows — resolve against the
+        # source run they reference. One hop always suffices: pre_run never
+        # selects an audit row as a cache source.
+        rows = session.exec(
+            select(RunOutput).where(
+                RunOutput.run_id == run.cache_source_run_id
+            )
+        ).all()
     available = [ro.output_name for ro in rows if ro.output_name]
 
     if not rows:
@@ -1390,6 +1422,7 @@ def register_sample(
     source_path: Path,
     project_root: Path | None = None,
     registration_mode: str = "copy",
+    allow_reserved: bool = False,
 ) -> Path:
     """Copy a data file into ``data/samples/{name}/``, content-hash it via
     DVC, store it in the DVC cache, and record it in the DB.
@@ -1416,6 +1449,11 @@ def register_sample(
         ValueError: If a sample with this name is already registered.
         DvcNotConfiguredError: If DVC is not configured.
     """
+    # Reserved-namespace guard (US-4): refuse a __demo__* sample name before
+    # any file operation or DB write. `wfc demo` opts in via allow_reserved.
+    from .reserved import check_reserved_name
+    check_reserved_name(name, "sample", allow_reserved)
+
     if registration_mode != "copy":
         raise NotImplementedError(
             f"registration_mode={registration_mode!r} is not implemented. "
@@ -1749,6 +1787,7 @@ def run_pipeline(
     keep_going: bool = False,
     process_registry=None,
     is_cancelled=None,
+    archive_progress_fn=None,
 ) -> int:
     """Generate a Snakefile from a pipeline JSON and run it with Snakemake.
 
@@ -1787,6 +1826,12 @@ def run_pipeline(
             on the failed one.  Useful for fan-out pipelines where each
             sample is independent: one bad sample still lets the others
             complete.  Default False (Snakemake's default fail-fast).
+        archive_progress_fn: Optional callback forwarded to
+            ``archive_outputs`` during the end-of-run archive pass, called
+            per file with (run_id, output_name, status) — see
+            ``wfc.provenance.archive_outputs``.  Lets an in-process caller
+            (the canvas server) observe auto-archive progress.  When None
+            (default, CLI usage), progress is only printed.
 
     Returns:
         Snakemake exit code (0 = success).
@@ -2019,8 +2064,11 @@ def run_pipeline(
     if archive:
         from .provenance import archive_outputs as _archive_outputs
 
-        def _progress(name: str, status: str) -> None:
-            print(f"  {name}: {status}")
+        def _progress(run_id, name: str, status: str) -> None:
+            if status != "hashing":
+                print(f"  {name}: {status}")
+            if archive_progress_fn is not None:
+                archive_progress_fn(run_id, name, status)
 
         print("Archiving pipeline outputs...")
         _results = _archive_outputs(_project_root, progress_fn=_progress)
@@ -2162,7 +2210,8 @@ def run_step(
     2.  Resolve parent run IDs from sentinel sidecars
     3.  Call pre_run() for cache check + run registration
     4.  On CACHED: touch the sentinel, write sidecars, and return
-    5.  Resolve input paths (parents, root sample, collapsed fan-in, ref-inputs)
+    5.  Resolve input paths (parents, root sample, collapsed fan-in,
+        ref-inputs); fail loudly on any unresolvable parent slot
     6.  Write _run_context.json and the WFC_* env
     7.  Resolve the node's container image (manifest + per-method escape hatch)
     8.  Build the docker run command (binds, env forwarding, path translation)
@@ -2358,8 +2407,8 @@ def run_step(
 
     口 = Step(step_num=5, name="Resolve input paths",
              purpose="Build the slot→paths map from parent runs, the root sample dir, "
-                     "collapsed fan-in samples, and --ref-input flags; fail if a root "
-                     "node resolves no inputs")
+                     "collapsed fan-in samples, and --ref-input flags; fail if any "
+                     "parent slot fails to resolve or a root node resolves no inputs")
     # Resolve input path(s).  For fan-in nodes with multiple parents we
     # build a slot→paths dict so method.py can dispatch via WFC_INPUT_PATHS.
     slot_paths: dict[str, list[str]] = {}  # slot → [resolved_path, ...]
@@ -2372,8 +2421,16 @@ def run_step(
                 slot = "data"
                 pid_str = s
             resolved = resolve_input(run_id=int(pid_str))
-            if resolved:
-                slot_paths.setdefault(slot, []).append(str(resolved))
+            if not resolved:
+                print(
+                    f"ERROR: node '{node_id}' could not resolve input for "
+                    f"slot '{slot}' from parent run {pid_str}: the parent's "
+                    f"output is not in the local DVC cache and could not be "
+                    f"pulled. Refusing to run with a missing input.",
+                    file=sys.stderr,
+                )
+                return 1
+            slot_paths.setdefault(slot, []).append(str(resolved))
     else:
         # Root node (e.g. downstream of input_selector): resolve sample
         # data from data/samples/{sample}/ when available.
@@ -2531,10 +2588,16 @@ def run_step(
     # "out of scope for v1" (ADR-019 amendment 2026-05-17 carved cluster
     # Apptainer out of v1).
     container_image_ref: str | None = None
+    # Env record + lookup name are retained for interpreter resolution at
+    # step 8 (resolve_env_python: recorded field -> per-backend default ->
+    # bare "python"). The escape-hatch branch below has no record, so it
+    # resolves to bare "python".
+    env_record = None
+    lookup_name = env_name
     # 1) Manifest lookup by env name. No recursive-dispatch guard needed:
-    # the in-container entrypoint is ``wfc exec-method`` (not ``wfc run-step``),
-    # and ``exec-method`` has no container-dispatch branch — so recursion is
-    # impossible by construction.
+    # the container runs the method script directly under the env's own
+    # interpreter — there is no in-container wfc entrypoint at all, so
+    # recursion is impossible by construction.
     try:
         from .envs import get as _envs_get
         # The contract/documented form ``env: container:<name>`` (no digest)
@@ -2545,11 +2608,11 @@ def run_step(
         # matching the escape-hatch branch's own comment below. Leave
         # ``container:...@sha256:...`` for that escape-hatch branch (skip the
         # strip when a digest is present); a bare name is untouched (no-op).
-        lookup_name = env_name
         if env_name.startswith("container:") and "@sha256:" not in env_name:
             lookup_name = env_name[len("container:"):]
         record = _envs_get(lookup_name, project_root)
         if record is not None and getattr(record, "container", ""):
+            env_record = record
             # Strip docker:// prefix; the docker CLI accepts the bare
             # registry/repo@digest form. (Apptainer wants docker://;
             # build_apptainer_command re-prefixes.)
@@ -2557,6 +2620,7 @@ def run_step(
             container_image_ref = ref[len("docker://"):] if ref.startswith("docker://") else ref
     except Exception:
         container_image_ref = None
+        env_record = None
 
     # 2) Per-method escape hatch: ``env: container:docker://...@sha256:...``.
     # We re-parse method.yaml here (cheap) to pick up the ``env`` and
@@ -2616,8 +2680,9 @@ def run_step(
         return 1
 
     口 = Step(step_num=8, name="Build docker run command",
-             purpose="Set up per-run log paths and assemble the docker run argv: bind "
-                     "mounts, image ref, the inner exec-method command, and -e WFC_* "
+             purpose="Set up per-run log paths, verify the method script exists on "
+                     "the host, and assemble the docker run argv: bind mounts, image "
+                     "ref, the env-interpreter + script inner command, and -e WFC_* "
                      "forwarding with host→container path translation")
     stdout_log = run_dir / "stdout.log"
     stderr_log = run_dir / "stderr.log"
@@ -2634,6 +2699,34 @@ def run_step(
             )
             return 1
 
+        # Host-side pre-flight: the method script must exist BEFORE any
+        # container starts. The container runs the script directly (no
+        # in-container wfc to validate it), so a missing script would
+        # otherwise surface as an opaque interpreter error from inside
+        # docker. Fail fast with an actionable message instead. Relative
+        # script paths (e.g. pipeline-JSON "methods/<m>/<m>.py") are
+        # anchored at project_root, not the cwd.
+        _script_host = Path(script_path)
+        if not _script_host.is_absolute():
+            _script_host = Path(project_root) / _script_host
+        if not _script_host.resolve().is_file():
+            error_msg = (
+                f"method script not found: {script_path} "
+                f"(node '{node_id}', method '{method_name}'). "
+                f"Check the method's script path before dispatch — "
+                f"no container was started."
+            )
+            try:
+                complete_run(run_id=run_id, status="failed",
+                             error_message=error_msg, error_traceback=error_msg)
+            except Exception:
+                pass
+            outcome["status"] = "failed"
+            outcome["error"] = error_msg
+            _write_outcome(outcomes_dir, node_id, sample, variant, outcome)
+            print(f"ERROR: {error_msg}", file=sys.stderr)
+            return 1
+
         from .container_runner import build_docker_command
 
         # UID/GID: ``os.getuid()`` doesn't exist on Windows. Docker Desktop
@@ -2648,12 +2741,17 @@ def run_step(
         # host sees.
         dvc_cache_dir = project_root / ".dvc" / "cache"
 
-        # Inner command: ``wfc exec-method`` runs the method script using the
-        # run-state already established by THIS outer ``wfc run-step``. The
-        # in-container wfc does NOT re-enter the run_step workflow — that
-        # would regenerate run_id and write outputs to the wrong run dir,
-        # because the outer host run-state is the source of truth (DB rows,
-        # cache keys, output collection all happen out here in the host wfc).
+        # Inner command: the method script runs DIRECTLY under the env's
+        # recorded interpreter — the image needs nothing wfc-related. The
+        # outer host run-step remains sole owner of run-state (DB rows,
+        # cache keys, output collection); the container's only job is to
+        # execute the script with the WFC_* env vars forwarded below.
+        #
+        # Interpreter resolution (wfc.envs.resolve_env_python): the env
+        # record's ``python`` field wins; pre-field records fall back to
+        # the per-backend default; no record (escape hatch) means bare
+        # ``python``. The resolved value is a CONTAINER path — it must NOT
+        # go through _translate_host_path below.
         #
         # Script-path translation: host ``<project_root>/methods/<m>/<m>.py``
         # becomes ``/work/methods/<m>/<m>.py`` because ``/work`` is the
@@ -2665,12 +2763,10 @@ def run_step(
             script_in_container = "/work/" + rel_script.as_posix()
         except ValueError:
             script_in_container = str(script_path)
-        inner_argv = [
-            "python", "-m", "wfc", "exec-method",
-            "--run-id", str(run_id),
-            "--node-id", node_id,
-            "--script", script_in_container,
-        ]
+
+        from .envs import resolve_env_python
+        env_python = resolve_env_python(lookup_name, env_record)
+        inner_argv = [env_python, script_in_container]
 
         cmd = build_docker_command(
             image_ref=container_image_ref,
@@ -2688,8 +2784,8 @@ def run_step(
         #
         # Path translation: WFC_RUN_DIR is a host absolute path, and
         # WFC_INPUT_PATHS is a JSON dict/list of host absolute paths. The
-        # in-container ``wfc`` reads these env vars; the project tree is
-        # bind-mounted at ``/work`` and the DVC cache at ``/dvc-cache``,
+        # in-container method script reads these env vars; the project tree
+        # is bind-mounted at ``/work`` and the DVC cache at ``/dvc-cache``,
         # so host paths under those roots must be rewritten before
         # forwarding (otherwise the container hits nonexistent paths).
         proj_posix = Path(project_root).resolve().as_posix()
@@ -2976,72 +3072,6 @@ def run_step(
     return 0
 
 
-def exec_method(run_id: int, node_id: str, script_path: str) -> int:
-    """Execute one method script in the env established by the outer wfc run-step.
-
-    In-container entrypoint of the ADR-019 container dispatch path. The outer
-    host ``wfc run-step`` owns run-state (DB rows, cache keys, output
-    collection); this subcommand just executes the method script with the WFC_*
-    env vars already set in ``os.environ`` by ``docker run -e ...``.
-
-    Critically, ``exec-method`` does NOT call ``register_run``, ``pre_run``,
-    ``post_run``, ``complete_run``, hit the DB, compute cache keys, collect
-    outputs, or enter any container-dispatch branch. Those are all owned by
-    the outer host ``wfc run-step`` invocation. ``exec-method`` is the leanest
-    possible "exec my method in this env" verb — and because it has no
-    container-dispatch branch, recursion is impossible by construction (no
-    ``WFC_IN_CONTAINER`` guard needed).
-
-    Args:
-        run_id: Run ID from the outer ``wfc run-step``. Not used internally;
-            captured for error-message clarity and to leave a record of which
-            outer run dispatched into this container.
-        node_id: Pipeline node ID. Captured for error-message clarity.
-        script_path: Absolute path inside the container to the method script
-            (typically ``/work/methods/<m>/<m>.py``).
-
-    Returns:
-        Exit code from the method-script subprocess. ``0`` on success;
-        non-zero on validation failure or method-script failure.
-    """
-    import subprocess as _sp
-
-    # Validate required env: WFC_RUN_DIR must be set and point at an existing
-    # directory inside the container (typically /work/.runs/<run_id>/...).
-    wfc_run_dir = os.environ.get("WFC_RUN_DIR")
-    if not wfc_run_dir:
-        print(
-            "ERROR: wfc exec-method requires WFC_RUN_DIR in environment "
-            "(set by the outer dispatch via `docker run -e WFC_RUN_DIR=...`)",
-            file=sys.stderr,
-        )
-        return 1
-    run_dir = Path(wfc_run_dir)
-    if not run_dir.is_dir():
-        print(
-            f"ERROR: WFC_RUN_DIR={wfc_run_dir} does not exist or is not a directory",
-            file=sys.stderr,
-        )
-        return 1
-
-    script = Path(script_path)
-    if not script.is_file():
-        print(
-            f"ERROR: method script not found: {script_path}",
-            file=sys.stderr,
-        )
-        return 1
-
-    # Exec the script; inherit env (WFC_* already set by outer dispatch via
-    # -e flags). Pipe stdout/stderr through directly so the user sees method
-    # output in the container log stream.
-    result = _sp.run(
-        [sys.executable, str(script)],
-        env=os.environ.copy(),
-    )
-    return result.returncode
-
-
 def _write_outcome(outcomes_dir: Path, node_id: str, sample: str, variant: str, outcome: dict) -> None:
     """Write a JSON outcome sidecar file."""
     filename = f"{node_id}__{sample}__{variant}.json"
@@ -3118,8 +3148,9 @@ def cache_archive(*, run_id: int | None = None) -> int:
 
     project_dir = get_project_root()
 
-    def _progress(name: str, status: str) -> None:
-        print(f"  {name}: {status}")
+    def _progress(_run_id, name: str, status: str) -> None:
+        if status != "hashing":
+            print(f"  {name}: {status}")
 
     print("Archiving un-archived outputs...")
     results = archive_outputs(project_dir, run_id=run_id, progress_fn=_progress)
@@ -3369,6 +3400,15 @@ def export_output(
                 rows = session.exec(
                     select(RunOutput).where(RunOutput.run_id == run_id)
                 ).all()
+                if not rows and run.cache_source_run_id is not None:
+                    # Cache-hit audit row: enumerate the source run's
+                    # outputs (resolve_output performs the same hop per
+                    # name below).
+                    rows = session.exec(
+                        select(RunOutput).where(
+                            RunOutput.run_id == run.cache_source_run_id
+                        )
+                    ).all()
                 if not rows:
                     raise UnknownOutputError(
                         f"Run {run_id} has no recorded outputs."
@@ -3561,7 +3601,7 @@ def _cli_show_env(name: str) -> int:
     # separately so users still see it on `wfc show-env <name>`.
     data = record.to_dict()
     keys = (
-        "name", "backend", "source", "container",
+        "name", "backend", "source", "container", "python",
         "env_fingerprint", "source_fingerprint",
         "built_from_lock", "built_at",
     )
@@ -3783,6 +3823,7 @@ def _cli_register_env(args) -> int:
             force=args.force,
             project_dir=project_dir,
             live_spec=live_spec,
+            python_override=getattr(args, "python_path", None),
         )
     except FileExistsError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -4089,8 +4130,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="(no-op) git is now initialized by default; kept for "
                              "backward compatibility")
     init_p.add_argument("--archive", default=None, metavar="PATH",
-                        help="DVC archive location (any DVC URL or path). "
-                             "Default: file://~/.wfc/archives/<project>")
+                        help="DVC archive location (a directory path, or a "
+                             "DVC remote URL like s3://). "
+                             "Default: ~/.wfc/archives/<project>")
     init_p.add_argument("--yes", action="store_true", dest="assume_yes",
                         help="Run non-interactively, accepting all defaults")
 
@@ -4100,8 +4142,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="Check run-readiness (git / DVC / Docker). Exits non-zero on any fail.",
     )
 
-    # -- seed --
-    sub.add_parser("seed", help="Seed the database with demo methods")
+    # -- seed (retired) --
+    sub.add_parser(
+        "seed",
+        help="(retired) Replaced by `wfc demo` — prints a pointer and exits "
+             "non-zero",
+    )
+
+    # -- demo --
+    dm = sub.add_parser(
+        "demo",
+        help="Scaffold and serve a runnable demo pipeline in an initialised "
+             "project (tear it down with `wfc demo --remove`)",
+    )
+    dm.add_argument("--dir", dest="demo_dir", default=None,
+                    help="Existing initialised project directory (default: cwd)")
+    dm.add_argument("--port", type=int, default=8500,
+                    help="Canvas port (default: 8500)")
+    dm.add_argument("--no-open", action="store_true", dest="no_open",
+                    help="Scaffold and serve without opening a browser")
+    dm.add_argument("--force", action="store_true",
+                    help="Re-register over an existing demo")
+    dm.add_argument("--remove", action="store_true", dest="remove",
+                    help="Remove every demo-owned entity, run, and file")
+    dm.add_argument("--purge-image", action="store_true", dest="purge_image",
+                    help="With --remove: also delete the local/wfc-demo-env "
+                         "Docker image")
+    dm.add_argument("--yes", action="store_true", dest="assume_yes",
+                    help="With --remove: skip the confirmation prompt")
 
     # -- register-sample --
     rs = sub.add_parser("register-sample", help="Register a data sample (copy into data/samples/)")
@@ -4178,21 +4246,6 @@ def build_parser() -> argparse.ArgumentParser:
                              "Repeatable. The runtime walks data/samples/<s>/ per name "
                              "and accumulates the per-sample data files into the fan-in "
                              "slot. Order is preserved.")
-
-    # -- exec-method (ADR-019 Cycle D, fix-pass 5) --
-    em_cmd = sub.add_parser(
-        "exec-method",
-        help="In-container entrypoint: execute a method script in the env "
-             "established by the outer `wfc run-step` (no run-state ownership)",
-    )
-    em_cmd.add_argument("--run-id", type=int, required=True,
-                        help="Outer run_id (for error-message clarity; "
-                             "cross-referenced against WFC_RUN_DIR)")
-    em_cmd.add_argument("--node-id", required=True,
-                        help="Pipeline node ID (for error-message clarity)")
-    em_cmd.add_argument("--script", required=True,
-                        help="Absolute path to the method script inside the "
-                             "container (e.g. /work/methods/<m>/<m>.py)")
 
     # -- pipeline-summary (ADR 008) --
     ps_cmd = sub.add_parser("pipeline-summary", help="Aggregate outcome sidecars into summary")
@@ -4271,6 +4324,14 @@ def build_parser() -> argparse.ArgumentParser:
                         help="docker:// reference for --backend byo")
     re_cmd.add_argument("--base-image", default=None,
                         help="Override the default base image for this env")
+    re_cmd.add_argument(
+        "--python", dest="python_path", default=None, metavar="PATH",
+        help="Container-side path of the env's Python interpreter, recorded "
+             "in .wfc/envs.json and used by `wfc run-step` to launch method "
+             "scripts. Mainly for --backend byo images whose Python is not "
+             "on PATH (default: computed per backend; byo defaults to "
+             "'python').",
+    )
     re_cmd.add_argument(
         "--dry-run", action="store_true",
         help="Write the Dockerfile to .wfc/build/<name>/Dockerfile and "
@@ -4503,12 +4564,18 @@ def cli_main(argv: list[str] | None = None) -> int:
     elif args.command == "init":
         from .init import init_project
         target = Path(args.dir).resolve()
-        created = init_project(
-            target,
-            init_git=args.git,
-            archive=args.archive,
-            assume_yes=args.assume_yes,
-        )
+        try:
+            created = init_project(
+                target,
+                init_git=args.git,
+                archive=args.archive,
+                assume_yes=args.assume_yes,
+            )
+        except ValueError as exc:
+            # A rejected --archive value (file:// / unknown scheme /
+            # missing DVC plugin) — refuse before any scaffolding.
+            print(f"wfc init: {exc}", file=sys.stderr)
+            return 1
         print(f"Initialized wfc project at {target}")
         for name, was_created in created.items():
             icon = "+" if was_created else "."
@@ -4527,8 +4594,29 @@ def cli_main(argv: list[str] | None = None) -> int:
 
     elif args.command == "seed":
         from .seed import seed
-        seed()
-        return 0
+        return seed()
+
+    elif args.command == "demo":
+        from .demo.scaffold import DemoError, run_demo
+
+        try:
+            if args.remove:
+                from .demo.remove import remove_demo
+
+                return remove_demo(
+                    target_dir=args.demo_dir,
+                    purge_image=args.purge_image,
+                    assume_yes=args.assume_yes,
+                )
+            return run_demo(
+                target_dir=args.demo_dir,
+                port=args.port,
+                no_open=args.no_open,
+                force=args.force,
+            )
+        except DemoError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
 
     elif args.command == "register-sample":
         source = Path(args.source).resolve()
@@ -4566,22 +4654,30 @@ def cli_main(argv: list[str] | None = None) -> int:
             candidate = Path("modules") / args.name
             if candidate.is_dir():
                 module_dir = candidate
-        register_module(
-            name=args.name,
-            contracts=contracts,
-            description=args.description,
-            module_dir=module_dir,
-        )
+        try:
+            register_module(
+                name=args.name,
+                contracts=contracts,
+                description=args.description,
+                module_dir=module_dir,
+            )
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
         return 0
 
     elif args.command == "register-method":
         from .register import register_method
-        register_method(
-            method_dir=Path(args.method_dir),
-            module_name=args.module,
-            method_name=args.name,
-            script_name=args.script,
-        )
+        try:
+            register_method(
+                method_dir=Path(args.method_dir),
+                module_name=args.module,
+                method_name=args.name,
+                script_name=args.script,
+            )
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
         return 0
 
     elif args.command == "run-pipeline":
@@ -4623,13 +4719,6 @@ def cli_main(argv: list[str] | None = None) -> int:
             collapsed_samples=args.collapsed_sample,
         )
         return rc
-
-    elif args.command == "exec-method":
-        return exec_method(
-            run_id=args.run_id,
-            node_id=args.node_id,
-            script_path=args.script,
-        )
 
     elif args.command == "pipeline-summary":
         return pipeline_summary(pipeline_id=args.pipeline_id)

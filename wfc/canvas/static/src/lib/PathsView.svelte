@@ -3,14 +3,26 @@
   import {
     runs,
     filteredRuns,
-    pathRows,
+    visiblePathRows,
+    hiddenCachedPathCount,
+    showFullyCachedPaths,
     filters,
     effectiveSample,
   } from './historyStore.js';
 </script>
 
 <div class="paths-view">
-  {#if $pathRows.length === 0}
+  {#if $hiddenCachedPathCount > 0}
+    <div class="cached-paths-toggle">
+      {$hiddenCachedPathCount} fully-cached path{$hiddenCachedPathCount === 1 ? '' : 's'}
+      {$showFullyCachedPaths ? '' : 'hidden '}·
+      <button
+        class="cached-paths-toggle-btn"
+        on:click={() => showFullyCachedPaths.update(v => !v)}
+      >{$showFullyCachedPaths ? 'Hide' : 'Show'}</button>
+    </div>
+  {/if}
+  {#if $visiblePathRows.length === 0}
     <div class="empty-state">
       {#if $runs.length === 0}
         <p>No runs yet. Click Run on the canvas to start one.</p>
@@ -21,7 +33,7 @@
       {/if}
     </div>
   {:else}
-    {#each $pathRows as row (row.pathId)}
+    {#each $visiblePathRows as row (row.pathId)}
       {@const rootRun = row.nodes[0]}
       {@const sampleName = rootRun ? effectiveSample(rootRun, $runs) : null}
       <div class="path-row">
@@ -46,6 +58,21 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+  }
+
+  .cached-paths-toggle {
+    font-size: 12px;
+    color: var(--text-muted, #666);
+  }
+
+  .cached-paths-toggle-btn {
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: 12px;
+    color: var(--accent, #4A90D9);
+    cursor: pointer;
+    text-decoration: underline;
   }
 
   .empty-state {

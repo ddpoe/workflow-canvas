@@ -28,7 +28,7 @@
   let { row, currentCanvasPipelineId }: Props = $props();
 
   let expanded = $derived($expandedPipelineIds.has(row.pipelineId));
-  let pipelineLabel = $derived(row.runs[0]?.runName?.split('/')[0] ?? row.pipelineId);
+  let pipelineLabel = $derived(row.name);
 
   async function handleOpenPipeline(e: MouseEvent): Promise<void> {
     e.stopPropagation();
@@ -78,7 +78,12 @@
     <span class="caret">{expanded ? '▾' : '▸'}</span>
     <span class="dot" style="background: {statusColor(row.status)}"></span>
     <span class="status-text">{row.status}</span>
-    <span class="pipeline-name">{pipelineLabel}</span>
+    <span class="name-cell">
+      <span class="pipeline-name">{pipelineLabel}</span>
+      {#if row.cachedCount > 0}
+        <span class="cached-pill">{'⟳'} {row.cachedCount}/{row.total} cached</span>
+      {/if}
+    </span>
     <span class="progress">{row.done}/{row.total}</span>
     <span class="samples">{row.sampleCount} samples</span>
     <span class="time">{formatRelativeTime(row.started)}</span>
@@ -121,10 +126,23 @@
   .caret { color: var(--text-muted, #666); }
   .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
   .status-text { color: var(--text-secondary, #888); text-transform: capitalize; font-size: 11px; }
+  .name-cell { display: flex; align-items: center; gap: 8px; overflow: hidden; }
   .pipeline-name {
     font-weight: 600;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* Matches the Lineages PathNodeCard cached pill. */
+  .cached-pill {
+    background: rgba(233, 168, 71, 0.15);
+    color: #E9A847;
+    border: 1px solid rgba(233, 168, 71, 0.45);
+    border-radius: 9px;
+    font-size: 9.5px;
+    font-weight: 600;
+    padding: 1px 7px;
+    letter-spacing: 0.3px;
     white-space: nowrap;
   }
   .progress, .samples, .time { color: var(--text-muted, #666); font-family: 'Consolas', monospace; font-size: 11px; }

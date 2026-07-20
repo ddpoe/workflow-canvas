@@ -24,6 +24,8 @@ myst_enable_extensions = ["colon_fence", "deflist", "tasklist"]
 myst_heading_anchors = 3
 
 html_theme = "sphinx_rtd_theme"
+html_static_path = ["static"]
+html_css_files = ["custom.css"]
 html_theme_options = {
     "navigation_depth": 4,
     "collapse_navigation": False,

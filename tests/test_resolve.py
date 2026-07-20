@@ -197,3 +197,103 @@ class TestResolveInputThreeState:
 
         monkeypatch.setattr(_prov, "pull_cache", lambda hashes, project_dir: False)
         assert resolve_input(run_id) is None
+
+    def test_audit_row_resolves_via_source_run(self, tmp_project):
+        """A cache-hit audit row (no RunOutput rows of its own) resolves to
+        the source run's cached output — the wiring a re-executing step
+        downstream of a cache hit depends on."""
+        from wfc.cli import resolve_input
+
+        content = b"cached source output"
+        md5 = hashlib.md5(content).hexdigest()
+        cache_path = _cache_path(tmp_project, md5)
+        cache_path.parent.mkdir(parents=True)
+        cache_path.write_bytes(content)
+
+        source_run_id = self._seed_run(tmp_project, md5)
+
+        # Audit row exactly as pre_run's cache-hit branch inserts it:
+        # completed, cache_source_run_id set, no RunOutput rows.
+        with get_session() as session:
+            source = session.get(Run, source_run_id)
+            audit = Run(
+                method_id=source.method_id,
+                params={},
+                sample="s1",
+                status="completed",
+                cache_source_run_id=source_run_id,
+            )
+            session.add(audit)
+            session.commit()
+            session.refresh(audit)
+            audit_id = audit.id
+
+        assert resolve_input(audit_id) == str(cache_path)
+
+
+# =============================================================================
+# resolve_output — audit-row hop
+# =============================================================================
+
+class TestResolveOutputAuditHop:
+    """resolve_output dereferences cache-hit audit rows to their source run."""
+
+    def _seed_source_and_audit(self, project_dir):
+        """Source run with one archived output (cache populated) plus an
+        audit row exactly as pre_run's cache-hit branch inserts it:
+        completed, cache_source_run_id set, no RunOutput rows."""
+        content = b"cached source output"
+        md5 = hashlib.md5(content).hexdigest()
+        cache_path = _cache_path(project_dir, md5)
+        cache_path.parent.mkdir(parents=True)
+        cache_path.write_bytes(content)
+
+        with get_session() as session:
+            method = _ensure_method(session)
+            source = Run(
+                method_id=method.id,
+                params={},
+                sample="s1",
+                status="completed",
+            )
+            session.add(source)
+            session.commit()
+            session.refresh(source)
+            session.add(RunOutput(
+                run_id=source.id,
+                output_name="out.txt",
+                artifact_path=str(
+                    project_dir / ".runs" / str(source.id) / "out.txt"
+                ),
+                artifact_type="method_file",
+                content_hash=md5,
+            ))
+            audit = Run(
+                method_id=method.id,
+                params={},
+                sample="s1",
+                status="completed",
+                cache_source_run_id=source.id,
+            )
+            session.add(audit)
+            session.commit()
+            session.refresh(audit)
+            return source.id, audit.id, cache_path
+
+    def test_audit_row_resolves_source_output(self, tmp_project):
+        from wfc.cli import resolve_output
+
+        source_id, audit_id, cache_path = self._seed_source_and_audit(tmp_project)
+
+        path, ro = resolve_output(audit_id, "out.txt")
+        assert path == cache_path
+        assert ro.run_id == source_id
+
+    def test_audit_row_discovery_lists_source_names(self, tmp_project):
+        from wfc.cli import UnknownOutputError, resolve_output
+
+        _, audit_id, _ = self._seed_source_and_audit(tmp_project)
+
+        with pytest.raises(UnknownOutputError) as excinfo:
+            resolve_output(audit_id, None)
+        assert excinfo.value.available == ["out.txt"]

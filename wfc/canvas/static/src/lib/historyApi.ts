@@ -37,6 +37,9 @@ export interface WfcRun {
   user: string;
   favorite: boolean;
   pipelineId: string | null;
+  // Human-readable pipeline name from the Builder toolbar at submission
+  // time. Null/absent for legacy or unnamed pipelines.
+  pipelineName?: string | null;
   scriptPath: string | null;
   // Optional user-editable display name. Falls back to `method` when absent.
   // TODO(backend): persist via PATCH /api/runs/:id body { name }

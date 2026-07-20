@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.how-to.run-and-inspect-results @ 89ac9cdcb27c; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.how-to.run-and-inspect-results @ 9d13c2588d15; do not edit -->
 
 # Run & Inspect Results
 
@@ -55,6 +55,8 @@ wfc export <run-id> --all results/
 
 Each output is written into the directory under a predictable per-output name.
 
+Cache-hit runs export like any other run. A run that was skipped on a cache hit stores no bytes of its own — its record points at the original run whose outputs were reused. `wfc export` follows that pointer automatically, so exporting from a cache-hit run (or listing its output names) gives you the original run's outputs. Any run ID you pick from the History view is exportable, cached or not.
+
 ### Huge outputs: read in place with `--path`
 
 Copying a multi-GB output just to read it is wasteful. `--path` prints the resolved cache path instead of copying:
@@ -101,25 +103,29 @@ Use the filter controls to narrow what you see:
 
 - **Data source** -- filter by sample name.
 - **Time range** -- restrict to a date window.
-- **Module and method** -- multi-select to show only specific analysis steps.
+- **Module and method** -- multi-select to show only specific analysis steps. The dropdowns cascade: picking a module narrows the method list to that module's methods, and the sample list narrows to samples with matching runs; selections a narrowed dropdown no longer offers are cleared automatically.
 - **Favorites** -- star runs for quick access, then filter to show only starred runs.
 - **Text search** -- free-text search across run metadata.
 
-### Browse lineage chains
+### Executed-run trees (Descendants)
 
-Runs are grouped by sample and shown as horizontal chains, with arrows showing how each run feeds the next. Each pipeline row has an **Open pipeline in Canvas ↗** button that loads that pipeline into the builder. Click any run card to open its detail panel.
+The default **Descendants** view shows, per sample, a collapsible tree of the runs that actually executed. Cache-hit runs are hidden here -- their executed children attach to the nearest non-cached ancestor -- so after a re-run the tree contains only real work. Every filter applies to the tree, and Collapse all / Expand all buttons sit at the right end of the filter bar.
+
+### Browse lineage chains (Lineages)
+
+Switch to **Lineages** to see runs as horizontal chains, with arrows showing how each run feeds the next. Cache-hit runs stay visible in this view, marked with a thin amber border on three sides and a "⟳ CACHED" pill; the status summary counts them separately. Click any run card to open its detail panel. To reload a whole submitted pipeline into the builder, switch to the **Pipelines** view: each pipeline card has an **Open pipeline in Canvas ↗** button.
 
 ### Detail panel
 
 The detail panel for a selected run shows its metadata (run ID, method, sample, status, timing), the exact parameters used, any numeric **metrics** the method logged, and its **artifacts** (output files). PNG artifacts show inline thumbnails with a lightbox viewer, and artifacts can be downloaded individually. From the panel you can also use **Open lineage in Canvas** to visualize the run's ancestry, or **Reference in Canvas** to graft the run into a new pipeline as an input.
 
-### Descendants view
+### Per-run descendant drill-down
 
-Select a run and click **→ View Descendants** in the detail panel to open the descendants view: the selected run as a root card with a tree of every run derived from it (with collapse toggles).
+Select a run and click **→ View Descendants** in the detail panel to open a drill-down for that run: the selected run as a root card with a tree of every run derived from it (with collapse toggles). Unlike the Descendants tab, this drill-down ignores filters and includes cache-hit runs.
 
 ### Full fan-in lineage from the command line
 
-The descendants view follows runs *forward*. To trace a run's full *ancestry* -- including fan-in, where a run consumed outputs from several upstream steps at once -- use the lineage command:
+The descendant drill-down follows runs *forward*. To trace a run's full *ancestry* -- including fan-in, where a run consumed outputs from several upstream steps at once -- use the lineage command:
 
 ```bash
 python -m wfc.lineage --run-id <id>

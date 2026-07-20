@@ -12,6 +12,7 @@
   } from './pipeline.js';
   import { dispatchRun, dispatchUserStop, hasDirtyEditors,
            dirtyEditorIds, awaitAllCommitted } from './machines/root.js';
+  import ArchiveBadge from './ArchiveBadge.svelte';
   import type { PipelineJSON, CanvasNodeData } from './types.js';
   import { get } from 'svelte/store';
 
@@ -209,6 +210,7 @@
     <button class="tab" class:active={activeTab === 'history'} onclick={() => onTabChange?.('history')}>History</button>
   </div>
   <div class="spacer"></div>
+  <ArchiveBadge />
   <input class="pipeline-name" type="text" value={$pipelineName}
     oninput={(e: Event) => pipelineName.set((e.target as HTMLInputElement).value)} />
   <div class="actions">

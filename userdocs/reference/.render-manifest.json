@@ -1,14 +1,14 @@
 {
   "reference/cli-reference.md": {
     "doc_id": "pm_mvp::docs.consumer.reference.cli-reference",
-    "hash": "09178a258fe7"
+    "hash": "2a23fcc45cd3"
   },
   "reference/method-yaml-schema.md": {
     "doc_id": "pm_mvp::docs.consumer.reference.method-yaml-schema",
-    "hash": "62b7baae590e"
+    "hash": "97c061c27ec0"
   },
   "reference/wf-canvas-toml.md": {
     "doc_id": "pm_mvp::docs.consumer.reference.wf-canvas-toml",
-    "hash": "61f18b41c444"
+    "hash": "6456bf6b9580"
   }
 }

@@ -4,7 +4,7 @@
  * (matches the pattern in stores.ts).
  */
 import { writable, derived, get } from 'svelte/store';
-import type { WfcRun } from './historyApi.js';
+import type { MethodInfo, WfcRun } from './historyApi.js';
 import {
   fetchRuns,
   fetchModules,
@@ -65,7 +65,23 @@ export const selectedRunIds = writable<Set<string>>(new Set());
 export const descendantTreeRoot = writable<string | null>(null);
 
 export const availableModules = writable<string[]>([]);
-export const availableMethods = writable<string[]>([]);
+
+/** Full method records (name + owning module) from /api/wfc/methods. */
+export const methodInfos = writable<MethodInfo[]>([]);
+
+/**
+ * Methods offered by the FilterBar dropdown. Cascades: when a module
+ * filter is active, only that module's methods are listed.
+ */
+export const availableMethods = derived(
+  [methodInfos, filters],
+  ([$infos, $filters]) => {
+    const pool = $filters.module
+      ? $infos.filter(m => m.module === $filters.module)
+      : $infos;
+    return pool.map(m => m.name).sort();
+  }
+);
 
 // ---------- Favorites (localStorage) ----------
 
@@ -144,14 +160,27 @@ export function effectiveSample(run: WfcRun, allRuns: WfcRun[]): string | null {
 
 // ---------- Derived: availableSamples ----------
 
-export const availableSamples = derived(runs, ($runs) => {
-  const rootSamples = new Set<string>();
-  for (const r of $runs) {
-    if (r.parentRunIds.length === 0 && r.dataSource) {
-      rootSamples.add(r.dataSource);
-    }
+/**
+ * Samples offered by the FilterBar dropdown. Cascades: when module or
+ * methods filters are active, only samples whose lineage contains a
+ * matching run are listed (lineage-aware via effectiveSample). The
+ * sample filter itself never narrows this list.
+ */
+export const availableSamples = derived([runs, filters], ([$runs, $filters]) => {
+  let pool = $runs;
+  if ($filters.module) {
+    pool = pool.filter(r => r.module === $filters.module);
   }
-  return Array.from(rootSamples).sort();
+  if ($filters.methods.length > 0) {
+    const methodSet = new Set($filters.methods);
+    pool = pool.filter(r => methodSet.has(r.method));
+  }
+  const samples = new Set<string>();
+  for (const r of pool) {
+    const es = effectiveSample(r, $runs);
+    if (es) samples.add(es);
+  }
+  return Array.from(samples).sort();
 });
 
 // ---------- Derived: filtered runs ----------
@@ -304,6 +333,40 @@ export const pathRows = derived(filteredRuns, ($filtered) => {
   return rows;
 });
 
+// ---------- Derived: visiblePathRows ----------
+
+/**
+ * Lineages display preference: show path rows whose every node is a
+ * cache hit. Deliberately NOT part of the `filters` object — it doesn't
+ * participate in the cascade setters and is not persisted across sessions.
+ */
+export const showFullyCachedPaths = writable<boolean>(false);
+
+function isFullyCached(row: PathRow): boolean {
+  return row.nodes.every(n => !!n.cacheSourceRunId);
+}
+
+/**
+ * Path rows the Lineages view renders. Fully-cached rows (every node a
+ * cache hit) are duplicates of the executed path they were cloned from
+ * and carry no provenance information, so they are dropped unless
+ * showFullyCachedPaths is on. Partially cached rows always stay visible.
+ */
+export const visiblePathRows = derived(
+  [pathRows, showFullyCachedPaths],
+  ([$rows, $show]) => ($show ? $rows : $rows.filter(row => !isFullyCached(row)))
+);
+
+/**
+ * Number of fully-cached rows the default view suppresses. Independent of
+ * the toggle so the count-and-toggle line can still show the count while
+ * the rows are revealed ("· Hide" state). Whenever this is nonzero the
+ * view MUST render the count line — suppression is never silent.
+ */
+export const hiddenCachedPathCount = derived(pathRows, ($rows) =>
+  $rows.filter(isFullyCached).length
+);
+
 // ---------- Actions ----------
 
 export async function loadRuns(): Promise<void> {
@@ -319,7 +382,7 @@ export async function loadRuns(): Promise<void> {
     ]);
     runs.set(allRuns);
     availableModules.set(mods.sort());
-    availableMethods.set(meths.map(m => m.name).sort());
+    methodInfos.set(meths);
   } catch (err) {
     error.set(err instanceof Error ? err.message : String(err));
   } finally {
@@ -444,6 +507,47 @@ export async function deleteRunOptimistic(runId: string): Promise<void> {
   }
 }
 
+/**
+ * Set the module filter. Cascade-prunes dependent selections: selected
+ * methods that don't belong to the module and selected samples the
+ * narrowed dropdown no longer offers are dropped, so no invisible
+ * filter can remain active.
+ */
+export function setModuleFilter(module: string): void {
+  filters.update(f => {
+    let methods = f.methods;
+    if (module) {
+      const valid = new Set(
+        get(methodInfos).filter(m => m.module === module).map(m => m.name),
+      );
+      methods = f.methods.filter(m => valid.has(m));
+    }
+    return { ...f, module, methods };
+  });
+  pruneSampleSelection();
+}
+
+/** Toggle a method filter selection, then cascade-prune samples. */
+export function toggleMethodFilter(method: string): void {
+  filters.update(f => {
+    const methods = f.methods.includes(method)
+      ? f.methods.filter(m => m !== method)
+      : [...f.methods, method];
+    return { ...f, methods };
+  });
+  pruneSampleSelection();
+}
+
+/** Drop selected samples that the narrowed dropdown no longer offers. */
+function pruneSampleSelection(): void {
+  const avail = new Set(get(availableSamples));
+  filters.update(f =>
+    f.sample.every(s => avail.has(s))
+      ? f
+      : { ...f, sample: f.sample.filter(s => avail.has(s)) },
+  );
+}
+
 export function resetFilters(): void {
   filters.set({
     timeRange: 'all',
@@ -460,10 +564,10 @@ export function resetFilters(): void {
 
 // ---------- Load-in-Canvas: Pipelines view ----------
 
-export type HistoryViewMode = 'pipelines' | 'lineages';
+export type HistoryViewMode = 'pipelines' | 'lineages' | 'descendants';
 
-/** Which top-level History view is showing. Default Pipelines (D-7). */
-export const historyView = writable<HistoryViewMode>('pipelines');
+/** Which top-level History view is showing. Default Descendants. */
+export const historyView = writable<HistoryViewMode>('descendants');
 
 /** Set of pipeline_id values whose child run rows are currently expanded. */
 export const expandedPipelineIds = writable<Set<string>>(new Set());
@@ -477,6 +581,13 @@ export const highlightedRunId = writable<string | null>(null);
 
 export interface PipelineRowSummary {
   pipelineId: string;
+  /**
+   * Display name: the pipeline name given at submission, falling back to
+   * the short pipeline id when no run in the group carries one. Never
+   * derived from a child run's method — that made every card in a group
+   * of same-shaped pipelines show the same first-method label.
+   */
+  name: string;
   /** Aggregate status: running > failed > cancelled > success > unknown. */
   status: string;
   /** Number of completed child runs. */
@@ -487,6 +598,8 @@ export interface PipelineRowSummary {
   sampleCount: number;
   /** Earliest started_at across child runs. */
   started: number;
+  /** Child runs that were cache hits (cacheSourceRunId set). */
+  cachedCount: number;
   runs: WfcRun[];
 }
 
@@ -529,11 +642,13 @@ export const pipelineRuns = derived(runs, ($runs): PipelineRowSummary[] => {
     );
     rows.push({
       pipelineId: pid,
+      name: group.map(r => r.pipelineName).find(n => !!n) ?? pid.slice(0, 8),
       status: rollupStatus(group),
       done,
       total: group.length,
       sampleCount: samples.size,
       started,
+      cachedCount: group.filter(r => !!r.cacheSourceRunId).length,
       runs: group,
     });
   }
@@ -633,15 +748,161 @@ export const statusBuckets = derived(
     } else if ($filters.archiveView === 'only') {
       result = result.filter(r => !!r.archivedAt);
     }
-    const buckets: Record<RunStatusFilter, number> = {
-      success: 0, failed: 0, running: 0, cancelled: 0,
+    const buckets: Record<RunStatusFilter | 'cached', number> = {
+      success: 0, failed: 0, running: 0, cancelled: 0, cached: 0,
     };
     for (const r of result) {
       if (r.status === 'success' || r.status === 'failed' ||
           r.status === 'running' || r.status === 'cancelled') {
         buckets[r.status as RunStatusFilter] += 1;
       }
+      // Informational overlap: a cache-hit run counts in BOTH its status
+      // bucket (success) and here — "11 success · 3 cached" means 3 of
+      // the 11 successes were cache hits.
+      if (r.cacheSourceRunId) {
+        buckets.cached += 1;
+      }
     }
     return buckets;
   }
 );
+
+// ---------- Descendants view: forest derivation + collapse state ----------
+
+export interface DescTreeNode {
+  run: WfcRun;
+  children: DescTreeNode[];
+}
+
+export interface DescendantSection {
+  /** Section label — effectiveSample of the roots (null when unknown). */
+  sample: string | null;
+  /** Top-level trees in execution order (timestamp ascending). */
+  roots: DescTreeNode[];
+}
+
+/**
+ * Per-root forest of what actually executed, derived from filteredRuns.
+ *
+ * Cache-hit runs (cacheSourceRunId != null) are excluded from display
+ * entirely; so are runs removed by any filter. Exclusion never invents
+ * structure: a hidden run's non-hidden children re-attach to their nearest
+ * visible ancestor (walking real parent edges through the full run list),
+ * or become section top-level trees when the whole upstream chain is
+ * hidden. Diamond fan-in children appear under the first-visited parent —
+ * the same visit-once DAG projection as DescendantTree's buildTree.
+ * Sections group roots by effective sample, newest section first.
+ */
+export const descendantForest = derived(
+  [filteredRuns, runs],
+  ([$filtered, $runs]): DescendantSection[] => {
+    const allMap = new Map<string, WfcRun>();
+    for (const r of $runs) allMap.set(r.id, r);
+
+    const visible = $filtered.filter(r => !r.cacheSourceRunId);
+    const visibleSet = new Set(visible.map(r => r.id));
+
+    // Nearest visible ancestors of a run: walk each parent edge through
+    // hidden runs until a visible run terminates that path. Memoised per
+    // hidden node; the pre-seeded empty set keeps a malformed cyclic
+    // parent graph from recursing forever.
+    const nearestCache = new Map<string, Set<string>>();
+    function nearestVisible(id: string): Set<string> {
+      const memo = nearestCache.get(id);
+      if (memo) return memo;
+      const result = new Set<string>();
+      nearestCache.set(id, result);
+      const run = allMap.get(id);
+      if (!run) return result;
+      for (const pid of run.parentRunIds) {
+        if (visibleSet.has(pid)) {
+          result.add(pid);
+        } else {
+          for (const a of nearestVisible(pid)) result.add(a);
+        }
+      }
+      return result;
+    }
+
+    const childrenMap = new Map<string, WfcRun[]>();
+    const rootRuns: WfcRun[] = [];
+    for (const r of visible) {
+      const ancestors = nearestVisible(r.id);
+      if (ancestors.size === 0) {
+        rootRuns.push(r);
+      } else {
+        for (const aid of ancestors) {
+          const arr = childrenMap.get(aid) ?? [];
+          arr.push(r);
+          childrenMap.set(aid, arr);
+        }
+      }
+    }
+
+    const visited = new Set<string>();
+    function buildChildren(parentId: string): DescTreeNode[] {
+      const kids = (childrenMap.get(parentId) ?? [])
+        .slice()
+        .sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+      const out: DescTreeNode[] = [];
+      for (const k of kids) {
+        if (visited.has(k.id)) continue;
+        visited.add(k.id);
+        out.push({ run: k, children: buildChildren(k.id) });
+      }
+      return out;
+    }
+
+    // Roots in execution order so a cross-root diamond child lands under
+    // the earlier root; sections keyed by sample label.
+    rootRuns.sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+    const sections = new Map<string, DescendantSection>();
+    for (const root of rootRuns) {
+      visited.add(root.id);
+      const sample = effectiveSample(root, $runs);
+      const key = sample ?? '';
+      let sec = sections.get(key);
+      if (!sec) {
+        sec = { sample, roots: [] };
+        sections.set(key, sec);
+      }
+      sec.roots.push({ run: root, children: buildChildren(root.id) });
+    }
+
+    const result = [...sections.values()];
+    result.sort((a, b) => {
+      const at = Math.max(...a.roots.map(n => n.run.timestamp ?? 0));
+      const bt = Math.max(...b.roots.map(n => n.run.timestamp ?? 0));
+      return bt - at;
+    });
+    return result;
+  }
+);
+
+/** Run ids whose subtree is collapsed in the Descendants view. */
+export const descendantsCollapsed = writable<Set<string>>(new Set());
+
+export function toggleDescendantCollapsed(runId: string): void {
+  descendantsCollapsed.update(s => {
+    const next = new Set(s);
+    if (next.has(runId)) next.delete(runId); else next.add(runId);
+    return next;
+  });
+}
+
+/** Collapse every expandable node in every section. */
+export function collapseAllDescendants(): void {
+  const ids = new Set<string>();
+  const walk = (n: DescTreeNode): void => {
+    if (n.children.length > 0) {
+      ids.add(n.run.id);
+      n.children.forEach(walk);
+    }
+  };
+  for (const sec of get(descendantForest)) sec.roots.forEach(walk);
+  descendantsCollapsed.set(ids);
+}
+
+export function expandAllDescendants(): void {
+  descendantsCollapsed.set(new Set());
+}

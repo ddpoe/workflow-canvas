@@ -8,6 +8,11 @@
     clearSelection,
     resetFilters,
     loadRuns,
+    historyView,
+    collapseAllDescendants,
+    expandAllDescendants,
+    setModuleFilter,
+    toggleMethodFilter,
   } from './historyStore.js';
   import type { TimeRange, RunStatusFilter } from './historyStore.js';
 
@@ -31,17 +36,15 @@
     filters.update(f => ({ ...f, timeRange: value as TimeRange }));
   }
 
+  // Module and method changes go through the store's cascading setters,
+  // which prune dependent method/sample selections the narrowed
+  // dropdowns no longer offer.
   function setModule(value: string) {
-    filters.update(f => ({ ...f, module: value }));
+    setModuleFilter(value);
   }
 
   function toggleMethod(method: string) {
-    filters.update(f => {
-      const methods = f.methods.includes(method)
-        ? f.methods.filter(m => m !== method)
-        : [...f.methods, method];
-      return { ...f, methods };
-    });
+    toggleMethodFilter(method);
   }
 
   function toggleSample(sample: string) {
@@ -137,7 +140,7 @@
           </label>
         {/each}
         {#if $availableMethods.length === 0}
-          <span class="dropdown-empty">No methods loaded</span>
+          <span class="dropdown-empty">{$filters.module ? 'No methods in this module' : 'No methods loaded'}</span>
         {/if}
       </div>
     {/if}
@@ -217,6 +220,17 @@
       Reset
     </button>
   </div>
+
+  {#if $historyView === 'descendants'}
+    <div class="filter-actions collapse-actions">
+      <button class="filter-btn collapse-all-btn" onclick={collapseAllDescendants} title="Collapse every tree section">
+        {'⊟'} Collapse all
+      </button>
+      <button class="filter-btn expand-all-btn" onclick={expandAllDescendants} title="Expand every tree section">
+        {'⊞'} Expand all
+      </button>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -271,6 +285,12 @@
     gap: 4px;
     align-items: flex-end;
     padding-bottom: 1px;
+  }
+  .collapse-actions {
+    margin-left: auto;
+  }
+  .collapse-all-btn, .expand-all-btn {
+    color: var(--accent, #4A90D9);
   }
   .filter-btn {
     background: var(--bg-input, #1e1e1e);

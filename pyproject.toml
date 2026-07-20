@@ -1,12 +1,13 @@
 [tool.poetry]
 name = "workflow-canvas"
-version = "0.4.0"
+version = "0.5.0"
 description = "Workflow Canvas — DB + wfc CLI + Snakemake execution"
 authors = ["Dante <dantepoe@noboundssolutions.com>"]
 license = "BSD-3-Clause"
 packages = [{include = "wfc"}]
 include = [
-  { path = "wfc/canvas/static/dist/**/*", format = ["sdist", "wheel"] }
+  { path = "wfc/canvas/static/dist/**/*", format = ["sdist", "wheel"] },
+  { path = "wfc/demo/assets/**/*", format = ["sdist", "wheel"] }
 ]
 
 [tool.poetry.dependencies]

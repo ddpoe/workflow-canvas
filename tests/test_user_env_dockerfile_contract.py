@@ -14,8 +14,10 @@ What is asserted here (negatives + the non-root-readable chmod):
     into a user-env image).
   - For pixi/conda, the recipe ends with `RUN chmod -R a+rX <env_dir>` at the
     *backend-native* env prefix (pixi `/{name}/envs/default`, conda
-    `/opt/conda/envs/{name}`) — the non-root-readable target that pairs with
-    the runtime `--user` fix (ADR-019 #9).
+    `/opt/conda` — micromamba installs into `-n base`, whose prefix IS
+    /opt/conda; there is no /opt/conda/envs/{name} tree in the built image) —
+    the non-root-readable target that pairs with the runtime `--user` fix
+    (ADR-019 #9).
 
 Deliberately NOT re-asserted here (already covered by
 `tests/test_dockerfile_generation.py`): pixi/conda base digest pinning and the
@@ -57,7 +59,9 @@ _BACKEND_CASES = [
             "explicit_list_path": Path("/proj/explicit-list.txt"),
             "pip_freeze_content": VALID_FREEZE,
         },
-        "/opt/conda/envs/demo",
+        # micromamba's base env prefix — installs go to `-n base`, so the
+        # real env tree (and the recorded interpreter's home) is /opt/conda.
+        "/opt/conda",
         id="conda",
     ),
 ]

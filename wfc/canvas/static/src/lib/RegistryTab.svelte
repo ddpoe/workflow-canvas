@@ -333,6 +333,15 @@
           {#each Object.entries(methodsByModule) as [modName, rows]}
             <div class="group-header mono">{modName} <span class="dim">({rows.length})</span></div>
             <table class="reg-table nested">
+              <!-- Shared fixed column widths: without these each per-module
+                   table auto-sizes from its own content and the env /
+                   validated / runs columns drift between groups. -->
+              <colgroup>
+                <col />
+                <col class="col-env" />
+                <col class="col-validated" />
+                <col class="col-runs" />
+              </colgroup>
               <tbody>
                 {#each rows as m}
                   {@const key = methodKey(m.module, m.name)}
@@ -601,7 +610,11 @@
   }
   .reg-table tbody tr:hover { background: #2d2d30; }
 
-  .reg-table.nested { margin: 2px 0 14px 0; }
+  .reg-table.nested { margin: 2px 0 14px 0; table-layout: fixed; }
+  .reg-table.nested .col-env { width: 150px; }
+  .reg-table.nested .col-validated { width: 170px; }
+  .reg-table.nested .col-runs { width: 90px; }
+  .reg-table.nested .expand-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .group-header {
     margin-top: 14px;
     padding: 6px 10px;

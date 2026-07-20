@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.reference.wf-canvas-toml @ 61f18b41c444; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.reference.wf-canvas-toml @ 6456bf6b9580; do not edit -->
 
 # Reference: wf-canvas.toml
 
@@ -22,18 +22,18 @@ name = "my-project"
 [pixi]
 root = ".pixi"   # Relative to project root; absolute paths also accepted
 
-[conda]                          # Optional — named conda env resolution
+[conda]                          # Optional — conda env lookup for register-env capture
 root = "/path/to/conda/envs"
 
 [dvc]                            # Optional — enables DVC provenance storage
-url = "file:///path/to/storage"  # Any DVC-native scheme: file://, s3://, ssh://, gs://, azure://, …
+url = "C:/wfc-archives/myproject"  # Directory path, or a remote scheme: s3://, ssh://, gs://, azure://, …
 auto_init = true                 # Auto-run `dvc init` if .dvc/ is missing (default true)
 
 [registry]                       # Optional — where built container images are pushed
 url = "ghcr.io/your-org"
 ```
 
-A freshly generated file contains only `[database]`, `[project]`, and `[pixi]`. The `[conda]`, `[dvc]`, and `[registry]` sections are optional and absent until you add them — `wfc init` writes the `[dvc]` block as a commented-out template you uncomment to opt in.
+A freshly generated file contains `[database]`, `[project]`, `[pixi]`, and a live `[dvc]` block pointing at the default archive (`~/.wfc/archives/<project>`). The `[conda]` and `[registry]` sections are optional and absent until you add them.
 
 ## [database]
 
@@ -60,7 +60,7 @@ name = "my-project"
 root = ".pixi"
 ```
 
-- **`root`** — The environment root directory. When a method declares a named environment (e.g. `env: image-io`), the interpreter is found by globbing `<pixi_root>/<env_name>-*/envs/default/`. A relative `root` is resolved against the project directory; an absolute path is taken as-is, which lets several projects share one environment store.
+- **`root`** — The pixi environment-store root. `wfc register-env` uses it when capturing a live pixi env (a `pixi:<name>` or `pixi:<project>:<env>` spec): the env is located by globbing under the pixi root and its package list is snapshotted into the image build. A relative `root` is resolved against the project directory; an absolute path is taken as-is, which lets several projects share one environment store. A method's `env:` key never touches this setting — it names a built container image in `.wfc/envs.json`.
 
 ## [conda]
 
@@ -69,22 +69,23 @@ root = ".pixi"
 root = "/path/to/conda/envs"
 ```
 
-- **`root`** — Optional alternative to `[pixi]` for resolving named environments out of a conda env directory. Absent by default; when omitted, environment resolution uses only the pixi root.
+- **`root`** — Optional. Where `wfc register-env` looks for named conda envs when capturing from a live `conda:<name>` spec (it checks `<conda_root>/envs/<name>`). When omitted, the conda base is auto-detected via `conda info --base`. Like `[pixi].root`, this only matters at image-build time — methods reference built container images, not host envs.
 
 ## [dvc]
 
 ```toml
 [dvc]
-url = "file:///path/to/storage"
+url = "C:/wfc-archives/myproject"
 auto_init = true
 ```
 
-The `[dvc]` section is optional and turns on DVC provenance storage so run outputs can be shared and pulled across machines. `wfc init` writes it as a commented-out template — uncomment it (or add the block by hand) to opt in.
+The `[dvc]` section configures DVC provenance storage so run outputs can be shared and pulled across machines. `wfc init` writes it automatically, pointing at `~/.wfc/archives/<project>` by default.
 
-- **`url`** — The remote location, given as any DVC-native URL: `file://` for a local or network path, plus `s3://`, `ssh://`, `gs://`, and `azure://` for cloud and remote backends. A single code path supports every backend because the remote push/pull uses DVC's own API. When the section is present, `wfc init` mirrors it to `.dvc/config` and DVC dispatches on the URL scheme.
+- **`url`** — a directory path for a local or network archive, or a DVC remote scheme (`s3://`, `ssh://`, `gs://`, `azure://`). Remote schemes require the matching `dvc[<backend>]` plugin. A single code path supports every backend because push/pull goes through DVC's own API. When the section is present, `wfc init` mirrors it to `.dvc/config` and DVC dispatches on the URL scheme.
 - **`auto_init`** — When true (the default), `wfc init` runs `dvc init` automatically if a `.dvc/` directory does not yet exist.
 
 For backwards compatibility the parser still accepts the legacy `remote_type` / `remote_path` pair (local-only) when `url` is absent, but new projects should use `url`. See <a href="../../explanation/storage-and-provenance.html">Storage &amp; Provenance</a> for how the cache and remote actually work.
+
 
 ## [registry]
 

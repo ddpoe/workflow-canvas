@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import subprocess
 import tomllib
+from pathlib import Path
 
 from axiom_annotations import workflow, Step, AutoStep
 
@@ -44,8 +45,12 @@ def test_init_yes_lands_runnable_project(tmp_path, monkeypatch):
              purpose="wf-canvas.toml carries a live [dvc] url under the home archive dir")
     parsed = _read_toml(project)
     assert "dvc" in parsed
-    assert parsed["dvc"]["url"].startswith("file://")
-    assert "archives" in parsed["dvc"]["url"]
+    url = parsed["dvc"]["url"]
+    # Plain absolute path, not a URL — DVC's schema rejects the file://C:/
+    # form drive-letter paths would produce.
+    assert "://" not in url
+    assert Path(url).is_absolute()
+    assert "archives" in url
     # init_dvc wired the cache + .dvc/config + pre-created the local-FS dir.
     assert (project / ".dvc" / "config").exists()
     assert created["dvc"] is True

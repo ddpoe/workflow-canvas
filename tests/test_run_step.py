@@ -265,6 +265,27 @@ class TestRunStep:
         )
         assert r2.returncode == 0, f"Cache hit run failed: {r2.stderr}"
 
+    def test_run_step_unresolvable_parent_fails_loudly(self, cli, tmp_project):
+        """A non-root step whose parent slot resolves to nothing exits 1 at
+        wiring time with a clear error — never a silent empty slot_paths."""
+        _seed_module_method(cli)
+        _make_method_script(tmp_project)
+
+        result = cli(
+            "run-step",
+            "--node-id", "test_method",
+            "--sample", "S1",
+            "--variant", "default",
+            "--method", "test_method",
+            "--module", "test_mod",
+            "--script", str(tmp_project / "methods" / "test_method" / "test_method.py"),
+            "--pipeline-id", "test-pipeline-006",
+            "--git-commit", "abc123",
+            "--parent-run-id", "data:999999",
+        )
+        assert result.returncode != 0, "run-step must fail on an unresolvable parent"
+        assert "could not resolve input" in result.stderr
+
     @pytest.mark.integration
     @requires_docker
     def test_run_step_reads_results_manifest(self, cli, tmp_project, fixture_container_image):

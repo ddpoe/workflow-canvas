@@ -208,8 +208,10 @@ test.describe('Bound variable round-trip (US-4 smoke)', () => {
     await page.goto('/?fixture=bound-variable-history');
     await modulesResponse;
 
-    // Wait for the History tab + PipelineRow to render.
+    // Wait for the History tab + PipelineRow to render. Default History
+    // view is Descendants — switch to Pipelines first.
     await page.waitForSelector('.view-switcher', { timeout: 10_000 });
+    await page.locator('.view-switcher .seg', { hasText: 'Pipelines' }).click();
     const row = page.locator('.pipeline-row', { hasText: PIPE_ID });
     await expect(row).toBeVisible({ timeout: 10_000 });
 

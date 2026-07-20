@@ -36,6 +36,36 @@ from typing import Optional, Union
 from .bases import PIXI_BASE
 
 
+def env_dir_path(env_name: str) -> str:
+    """Return the container path of the materialized pixi env tree.
+
+    ``pixi install --locked --environment <env_name>`` materializes the env
+    under ``/<env_name>/envs/default`` in the pixi base image. This is the
+    single source of truth for that layout — the generator's pip stage,
+    the chmod stage, and the dispatch-time interpreter default
+    (:func:`wfc.envs.default_python_for_backend`) all derive from it.
+
+    Args:
+        env_name: Name of the pixi environment.
+
+    Returns:
+        Absolute container path of the env directory.
+    """
+    return f"/{env_name}/envs/default"
+
+
+def env_python_path(env_name: str) -> str:
+    """Return the container path of the pixi env's Python interpreter.
+
+    Args:
+        env_name: Name of the pixi environment.
+
+    Returns:
+        Absolute container path of the env's ``python`` binary.
+    """
+    return f"{env_dir_path(env_name)}/bin/python"
+
+
 def generate(
     env_name: str,
     pixi_lock_path: Union[str, Path],
@@ -64,10 +94,10 @@ def generate(
     # pixi installs envs under /<env_name>/envs/default by default; chmod
     # that subtree so a --user-mismatched runtime can read every file
     # (pair with ADR-019 decision #9's `--user $(id -u):$(id -g)` flag).
-    env_dir = f"/{env_name}/envs/default"
+    env_dir = env_dir_path(env_name)
     base = base_image if base_image is not None else PIXI_BASE
     # The python inside the pixi env is what runs the --no-deps freeze.
-    env_python = f"{env_dir}/bin/python"
+    env_python = env_python_path(env_name)
 
     lines = [
         "# syntax=docker/dockerfile:1.4",

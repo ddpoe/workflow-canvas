@@ -23,6 +23,8 @@ GET  /api/wfc/modules              Module names (from provider cache)
 GET  /api/wfc/methods              Method list
 GET  /api/wfc/run/{id}/artifacts   List artifacts in a run archive dir
 GET  /api/wfc/run/{id}/artifact/*  Serve an artifact file
+GET  /api/wfc/archive-status       Unarchived-output counts + archive progress
+POST /api/wfc/cache/archive        Start background archive of unarchived outputs
 
 POST /api/wfc/export-artifacts     Zip download (filtered by type)
 POST /api/wfc/preview-artifacts    Export preview (counts + sizes)
@@ -96,6 +98,145 @@ _wfc_provider: Optional[WfcProvider] = None
 # ---------------------------------------------------------------------------
 
 _active_jobs: Dict[str, Dict[str, Any]] = {}
+
+# ---------------------------------------------------------------------------
+# Archive job tracking (single archive pass at a time)
+# ---------------------------------------------------------------------------
+
+_archive_job: Dict[str, Any] = {"thread": None, "progress": None}
+_archive_lock = threading.RLock()
+
+
+def _pipeline_running() -> bool:
+    """True while any submitted pipeline's run thread is alive."""
+    return any(
+        j.get("thread") is not None and j["thread"].is_alive()
+        for j in _active_jobs.values()
+    )
+
+
+def _canvas_project_root() -> str:
+    """Resolve the project root the same way pipeline submission does."""
+    env_root = os.environ.get("WFC_CANVAS_PROJECT_ROOT")
+    if env_root:
+        return env_root
+    from ..database import project_root as _resolve_project_root
+    try:
+        return str(_resolve_project_root())
+    except RuntimeError:
+        return str(Path.cwd())
+
+
+def _pending_archive_snapshot() -> Dict[str, Any]:
+    """Group unarchived outputs by run — the initial progress payload.
+
+    Same query shape as ``archive_outputs``: RunOutput rows with NULL
+    content_hash on completed runs.
+    """
+    per_run: Dict[int, Dict[str, Any]] = {}
+    with get_session() as session:
+        rows = session.exec(
+            select(RunOutput, Run)
+            .join(Run, RunOutput.run_id == Run.id)  # type: ignore[arg-type]
+            .where(RunOutput.content_hash.is_(None))  # type: ignore[union-attr]
+            .where(Run.status == "completed")
+        ).all()
+        for ro, run in rows:
+            entry = per_run.get(ro.run_id)
+            if entry is None:
+                try:
+                    method_name = run.method.name if run.method else None
+                except Exception:
+                    method_name = None
+                if method_name:
+                    label = f"{method_name}:{run.sample}" if run.sample else method_name
+                else:
+                    label = f"run {ro.run_id}"
+                entry = {
+                    "run_id": ro.run_id,
+                    "label": label,
+                    "done": 0,
+                    "total": 0,
+                    "outputs": [],
+                }
+                per_run[ro.run_id] = entry
+            entry["outputs"].append(
+                {"name": ro.output_name or "<unknown>", "status": "pending"}
+            )
+            entry["total"] += 1
+    return {
+        "runs_done": 0,
+        "runs_total": len(per_run),
+        "current_output": None,
+        "per_run": list(per_run.values()),
+    }
+
+
+def _make_archive_progress_writer():
+    """Build a (run_id, output_name, status) callback feeding ``_archive_job``.
+
+    Lazily snapshots pending outputs on first event, so the same writer
+    serves both the manual archive endpoint and run_pipeline's end-of-run
+    pass (where pending rows only exist once the pipeline completes).
+    Call ``writer.ensure()`` to snapshot eagerly.  When every output has
+    reached a terminal status the live progress handle is cleared and
+    archive-status falls back to plain DB counts.
+    """
+    state: Dict[str, Any] = {"progress": None, "index": None}
+
+    def ensure() -> None:
+        if state["progress"] is None:
+            snap = _pending_archive_snapshot()
+            state["progress"] = snap
+            state["index"] = {r["run_id"]: r for r in snap["per_run"]}
+            with _archive_lock:
+                _archive_job["progress"] = snap
+
+    def writer(run_id, output_name, status) -> None:
+        ensure()
+        progress = state["progress"]
+        run = state["index"].get(run_id)
+        if run is None:
+            # Row appeared after the snapshot; track it defensively.
+            run = {
+                "run_id": run_id,
+                "label": f"run {run_id}",
+                "done": 0,
+                "total": 0,
+                "outputs": [],
+            }
+            state["index"][run_id] = run
+            progress["per_run"].append(run)
+            progress["runs_total"] += 1
+        out = next(
+            (
+                o
+                for o in run["outputs"]
+                if o["name"] == output_name and o["status"] in ("pending", "hashing")
+            ),
+            None,
+        )
+        if out is None:
+            out = {"name": output_name, "status": "pending"}
+            run["outputs"].append(out)
+            run["total"] += 1
+        if status == "hashing":
+            out["status"] = "hashing"
+            progress["current_output"] = output_name
+            return
+        was_pending = out["status"] in ("pending", "hashing")
+        out["status"] = status
+        if was_pending:
+            run["done"] += 1
+            if run["done"] >= run["total"]:
+                progress["runs_done"] += 1
+        if progress["runs_done"] >= progress["runs_total"]:
+            with _archive_lock:
+                if _archive_job.get("progress") is progress:
+                    _archive_job["progress"] = None
+
+    writer.ensure = ensure
+    return writer
 
 
 def _import_run_pipeline():
@@ -224,6 +365,11 @@ def _enrich_pipeline(pipeline: "PipelineInput") -> Dict[str, Any]:
         "links": links,
         "samples": pipeline.samples,
     }
+    # Keep the user-given pipeline name on the persisted record — the
+    # history provider reads it back for the Pipelines-view card title.
+    # load_pipeline() ignores unknown top-level keys.
+    if pipeline.name:
+        result["name"] = pipeline.name
     # Pass through parameter-sweep fields when the canvas has authored any.
     # Both map 1:1 onto the engine's pipeline JSON schema — no transformation.
     if pipeline.param_sets:
@@ -1598,6 +1744,7 @@ def run_workflow(pipeline: PipelineInput):
                 keep_going=pipeline.keep_going,
                 process_registry=_on_process_started,
                 is_cancelled=_is_cancelled,
+                archive_progress_fn=_make_archive_progress_writer(),
             )
         except Exception as exc:
             # If the cancel endpoint already requested cancellation, suppress
@@ -2160,6 +2307,77 @@ def get_wfc_cancelled_descendants(run_id: str):
     return _require_provider().get_cancelled_descendants(run_id)
 
 
+@app.get("/api/wfc/archive-status")
+def get_archive_status():
+    """Unarchived-output counts + live progress of any running archive pass.
+
+    Read-only.  Counts come straight from the DB (progress truth is the DB);
+    ``progress`` is non-null only while an archive pass runs in this server
+    process — a manual job or a pipeline's end-of-run auto-archive.
+    """
+    try:
+        with get_session() as session:
+            run_ids = session.exec(
+                select(RunOutput.run_id)
+                .join(Run, RunOutput.run_id == Run.id)  # type: ignore[arg-type]
+                .where(RunOutput.content_hash.is_(None))  # type: ignore[union-attr]
+                .where(Run.status == "completed")
+            ).all()
+    except RuntimeError:
+        # No project configured yet — report an empty, idle state.
+        run_ids = []
+    pipeline_running = _pipeline_running()
+    with _archive_lock:
+        progress = _archive_job.get("progress")
+        thread = _archive_job.get("thread")
+        archive_thread_alive = thread is not None and thread.is_alive()
+        if progress is not None and not archive_thread_alive and not pipeline_running:
+            # Stale handle from an interrupted pass — drop it.
+            _archive_job["progress"] = None
+            progress = None
+    return {
+        "state": "archiving" if progress is not None else "idle",
+        "unarchived_runs": len(set(run_ids)),
+        "unarchived_outputs": len(run_ids),
+        "pipeline_running": pipeline_running,
+        "progress": progress,
+    }
+
+
+@app.post("/api/wfc/cache/archive")
+def start_cache_archive():
+    """Start a background archive pass over all unarchived outputs.
+
+    409 when an archive job is already running or a pipeline is in flight
+    (the pipeline's end-of-run pass archives on its own).
+    """
+    with _archive_lock:
+        thread = _archive_job.get("thread")
+        if thread is not None and thread.is_alive():
+            raise HTTPException(status_code=409, detail="Archive job already running")
+        if _pipeline_running():
+            raise HTTPException(
+                status_code=409,
+                detail="Pipeline in flight; outputs archive automatically when it completes",
+            )
+        writer = _make_archive_progress_writer()
+        writer.ensure()  # eager snapshot so progress shows immediately (RLock-safe)
+        project_dir = _canvas_project_root()
+
+        def _run_archive() -> None:
+            from ..provenance import archive_outputs
+            try:
+                archive_outputs(project_dir, progress_fn=writer)
+            finally:
+                with _archive_lock:
+                    _archive_job["progress"] = None
+
+        t = threading.Thread(target=_run_archive, daemon=True)
+        _archive_job["thread"] = t
+        t.start()
+    return {"status": "started"}
+
+
 # ---------------------------------------------------------------------------
 # Track 1: column_of_input output column resolution
 # ---------------------------------------------------------------------------
@@ -2310,6 +2528,31 @@ def get_pipeline_document(pipeline_id: str):
         raise HTTPException(
             status_code=500,
             detail=f"Pipeline document for {pipeline_id} is unreadable: {exc}",
+        )
+
+
+@app.get("/api/pipelines/demo")
+def get_demo_pipeline():
+    """Return ``<project_root>/demo-pipeline.json`` (written by ``wfc demo``).
+
+    Consumed by the ``?pipeline=demo`` URL param in the canvas, which hands
+    the document to ``loadPipeline()`` so each node's real slots resolve
+    against the registry. 404 when no demo is scaffolded — inert in a
+    normal project.
+    """
+    provider = _require_provider()
+    pipeline_json = Path(provider.project_root) / "demo-pipeline.json"
+    if not pipeline_json.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="No demo pipeline in this project — run `wfc demo` first.",
+        )
+    try:
+        return json.loads(pipeline_json.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"demo-pipeline.json is unreadable: {exc}",
         )
 
 
