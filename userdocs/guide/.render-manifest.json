@@ -9,7 +9,7 @@
   },
   "explanation/project-anatomy.md": {
     "doc_id": "pm_mvp::docs.consumer.explanation.project-anatomy",
-    "hash": "a19d8880b30b"
+    "hash": "e0750f1f5727"
   },
   "explanation/storage-and-provenance.md": {
     "doc_id": "pm_mvp::docs.consumer.explanation.storage-and-provenance",
@@ -17,7 +17,7 @@
   },
   "how-to/canvas.md": {
     "doc_id": "pm_mvp::docs.consumer.how-to.canvas",
-    "hash": "229d4ab68808"
+    "hash": "840a3171daf0"
   },
   "how-to/registration.md": {
     "doc_id": "pm_mvp::docs.consumer.how-to.registration",
@@ -25,7 +25,7 @@
   },
   "how-to/run-and-inspect-results.md": {
     "doc_id": "pm_mvp::docs.consumer.how-to.run-and-inspect-results",
-    "hash": "9d13c2588d15"
+    "hash": "ff34cba4065c"
   },
   "how-to/sweep-parameters-and-fan-out.md": {
     "doc_id": "pm_mvp::docs.consumer.how-to.sweep-parameters-and-fan-out",
@@ -33,11 +33,23 @@
   },
   "overview/what-is-workflow-canvas.md": {
     "doc_id": "pm_mvp::docs.consumer.overview.what-is-workflow-canvas",
-    "hash": "acd74b8803d0"
+    "hash": "7cf5388eb12d"
+  },
+  "reference/cli-reference.md": {
+    "doc_id": "pm_mvp::docs.consumer.reference.cli-reference",
+    "hash": "c0b53da93453"
+  },
+  "reference/method-yaml-schema.md": {
+    "doc_id": "pm_mvp::docs.consumer.reference.method-yaml-schema",
+    "hash": "d47432fe64a3"
+  },
+  "reference/wf-canvas-toml.md": {
+    "doc_id": "pm_mvp::docs.consumer.reference.wf-canvas-toml",
+    "hash": "4551fb01a29a"
   },
   "tutorials/authoring-a-method-script.md": {
     "doc_id": "pm_mvp::docs.consumer.tutorials.authoring-a-method-script",
-    "hash": "6009692121fb"
+    "hash": "d4eb17df9a65"
   },
   "tutorials/getting-started.md": {
     "doc_id": "pm_mvp::docs.consumer.tutorials.getting-started",
@@ -45,7 +57,7 @@
   },
   "tutorials/registering-an-environment.md": {
     "doc_id": "pm_mvp::docs.consumer.tutorials.registering-an-environment",
-    "hash": "b35377e65160"
+    "hash": "a10b5b449f12"
   },
   "tutorials/wfc-demo.md": {
     "doc_id": "pm_mvp::docs.consumer.tutorials.wfc-demo",
@@ -53,6 +65,6 @@
   },
   "tutorials/writing-contracts.md": {
     "doc_id": "pm_mvp::docs.consumer.tutorials.writing-contracts",
-    "hash": "4078d6d1a2b7"
+    "hash": "9e2ca87bb682"
   }
 }

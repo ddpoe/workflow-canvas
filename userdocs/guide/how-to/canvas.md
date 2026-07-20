@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.how-to.canvas @ 229d4ab68808; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.how-to.canvas @ 840a3171daf0; do not edit -->
 
 # Canvas Visual Builder
 
@@ -145,4 +145,4 @@ Change one parameter on the final plot step and run again: only plot re-executes
 
 ## Next Steps
 
-See the <a href="../reference/reference/cli-reference.html">CLI Reference</a> for the full list of `wfc` commands, including `wfc run-pipeline` for running pipelines from the command line, `wfc register-module` / `wfc register-method` for registering pipeline components, and `wfc cache` for managing run archives.
+See the [CLI Reference](../reference/cli-reference.md) for the full list of `wfc` commands, including `wfc run-pipeline` for running pipelines from the command line, `wfc register-module` / `wfc register-method` for registering pipeline components, and `wfc cache` for managing run archives.

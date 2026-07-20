@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.explanation.project-anatomy @ a19d8880b30b; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.explanation.project-anatomy @ e0750f1f5727; do not edit -->
 
 # Project Anatomy
 
@@ -65,7 +65,7 @@ The database is the provenance record: it is the index that maps each output to 
 
 ## Configuration
 
-Project settings live in `.wfc/wf-canvas.toml` — the database connection, the environment root, a `[dvc]` block (always written by `wfc init`; only the archive URL location is configurable), and an optional registry block. This file is committed to git as project source. For the full field-by-field reference, see <a href="../reference/reference/wf-canvas-toml.html">wf-canvas.toml</a>.
+Project settings live in `.wfc/wf-canvas.toml` — the database connection, the environment root, a `[dvc]` block (always written by `wfc init`; only the archive URL location is configurable), and an optional registry block. This file is committed to git as project source. For the full field-by-field reference, see [wf-canvas.toml](../reference/wf-canvas-toml.md).
 
 ## Modules vs. Methods
 
@@ -119,7 +119,7 @@ This page stays focused on the *layout*: `.wfc/` for config and the database, `m
 
 With an understanding of the project structure, continue to:
 
-- **<a href="../reference/reference/wf-canvas-toml.html">wf-canvas.toml</a>** — The full reference for every section of `.wfc/wf-canvas.toml`.
+- **[wf-canvas.toml](../reference/wf-canvas-toml.md)** — The full reference for every section of `.wfc/wf-canvas.toml`.
 - **[Authoring a Method Script](../tutorials/authoring-a-method-script.md)** — How to write method scripts using `wfc-client` (`@wfc.method` + `ctx.save_artifact`) or the plain environment-variable contract, and declare contracts in `method.yaml`.
 - **[Registering an Environment](../tutorials/registering-an-environment.md)** — How to build the container environment a method runs in.
 - **[Storage & Provenance](../explanation/storage-and-provenance.md)** and **[Caching & Reproducibility](../explanation/caching-and-reproducibility.md)** — The deeper story behind where outputs live and why steps re-run.

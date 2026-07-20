@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.tutorials.authoring-a-method-script @ 6009692121fb; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.tutorials.authoring-a-method-script @ d4eb17df9a65; do not edit -->
 
 # Tutorial: Authoring a Method Script
 
@@ -222,7 +222,7 @@ The essentials:
 - **`params:`** — typed params with defaults; pipeline overrides merge on top, and the merged dict arrives as `ctx.params` / `WFC_PARAMS`.
 - **`env:`** — the named container environment your method runs in. This must be a registered environment name (not a runtime package list).
 
-This is the *basics* only. The full field reference — every input/output/param field, column validation, executor selection, and the complete `env:` vocabulary including pinned digests — lives in <a href="../reference/reference/method-yaml-schema.html">method.yaml Schema</a>. For input/output *contracts* (column validation, `from_params`, module-level overrides) see [Writing Contracts](../tutorials/writing-contracts.md).
+This is the *basics* only. The full field reference — every input/output/param field, column validation, executor selection, and the complete `env:` vocabulary including pinned digests — lives in [method.yaml Schema](../reference/method-yaml-schema.md). For input/output *contracts* (column validation, `from_params`, module-level overrides) see [Writing Contracts](../tutorials/writing-contracts.md).
 
 ## Next steps
 
@@ -231,6 +231,6 @@ You now have a method directory, a script (either the `wfc-client` decorator or 
 - **Register the environment your method runs in.** The `env:` you named must point at a container environment that has been built first. See [Registering an Environment](../tutorials/registering-an-environment.md) — it covers `wfc register-env`, what `wfc doctor` checks, and how `wfc init` sets the project up.
 - **Register the method itself** with `wfc register-method <path> --module <module>`, once its environment exists.
 - **Flesh out the contract** — column validation, typed params, and module-level overrides — in [Writing Contracts](../tutorials/writing-contracts.md).
-- **Look up any field** in the full <a href="../reference/reference/method-yaml-schema.html">method.yaml Schema</a> reference.
+- **Look up any field** in the full [method.yaml Schema](../reference/method-yaml-schema.md) reference.
 
 With the method registered, you can drop it into a pipeline and run it. To wire and run pipelines, head to [Canvas Visual Builder](../how-to/canvas.md).

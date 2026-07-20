@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.tutorials.registering-an-environment @ b35377e65160; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.tutorials.registering-an-environment @ a10b5b449f12; do not edit -->
 
 # Tutorial: Registering an Environment
 
@@ -64,7 +64,7 @@ For a `byo` image whose Python is not on the container's `PATH`, pass `--python 
 
 The `pixi`, `conda`, and `byo` words name *build backends only*. They are not values you can put in a method's `env:` field — see the next section for what goes there.
 
-For the complete flag table (`--image`, `--base-image`, and the rest) and the companion `wfc list-envs` / `wfc show-env` / `wfc delete-env` commands, see <a href="../reference/reference/cli-reference.html">CLI Reference</a>.
+For the complete flag table (`--image`, `--base-image`, and the rest) and the companion `wfc list-envs` / `wfc show-env` / `wfc delete-env` commands, see [CLI Reference](../reference/cli-reference.md).
 
 ## Referencing an env from a method
 
@@ -149,6 +149,6 @@ You now have the full environment loop: build an env with `wfc register-env`, po
 Where to go next:
 
 - **[Authoring a Method Script](../tutorials/authoring-a-method-script.md)** — write the method that runs in this environment, in either the `@wfc.method` decorator style or the plain env-var + file contract.
-- **<a href="../reference/reference/cli-reference.html">CLI Reference</a>** — the complete flag tables for `register-env`, `list-envs`, `show-env`, `delete-env`, and the dev-loop commands.
+- **[CLI Reference](../reference/cli-reference.md)** — the complete flag tables for `register-env`, `list-envs`, `show-env`, `delete-env`, and the dev-loop commands.
 - **[Caching & Reproducibility](../explanation/caching-and-reproducibility.md)** — how the environment's fingerprint feeds the cache and decides when a step re-runs.
 - **[Getting Started](../tutorials/getting-started.md)** — if you have not yet scaffolded a project with `wfc init`.

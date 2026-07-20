@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.overview.what-is-workflow-canvas @ acd74b8803d0; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.overview.what-is-workflow-canvas @ 7cf5388eb12d; do not edit -->
 
 # What is Workflow Canvas?
 
@@ -33,7 +33,7 @@ It is probably **not the right fit if** you run pre-wrapped community tools with
 You don't need the internals to get started — here is the whole mental model in one place, each piece pointing to the page that explains it in depth.
 
 - **Methods and modules** — a *method* is one analysis step (a Python function with a small contract). A *module* is a named group of methods that share an output contract, so your project's analysis library stays organized. See [Authoring a Method Script](tutorials/authoring-a-method-script.md) and [Writing Contracts](tutorials/writing-contracts.md).
-- **Contracts** — each method declares what it needs and what it produces, so wiring mistakes and missing outputs are caught *before* a long run starts, not after. See [Writing Contracts](tutorials/writing-contracts.md) and the <a href="reference/reference/method-yaml-schema.html">method.yaml Schema</a> reference.
+- **Contracts** — each method declares what it needs and what it produces, so wiring mistakes and missing outputs are caught *before* a long run starts, not after. See [Writing Contracts](tutorials/writing-contracts.md) and the [method.yaml Schema](reference/method-yaml-schema.md) reference.
 - **Runs and lineage** — every run is recorded, so you can trace any output back through the full chain of steps, code, and parameters that produced it. See [How a Run Executes](explanation/how-a-run-executes.md) and [Storage & Provenance](explanation/storage-and-provenance.md).
 - **Caching** — a step whose code, inputs, and parameters are unchanged is skipped automatically; change one thing and only what it affects re-runs. See [Caching & Reproducibility](explanation/caching-and-reproducibility.md).
 - **Environments** — each method runs in its own container, so results don't drift with whatever happens to be installed on your laptop. See [Registering an Environment](tutorials/registering-an-environment.md).
@@ -91,4 +91,14 @@ explanation/project-anatomy
 explanation/how-a-run-executes
 explanation/storage-and-provenance
 explanation/caching-and-reproducibility
+```
+
+```{toctree}
+:caption: Reference
+:maxdepth: 2
+:hidden:
+
+reference/cli-reference
+reference/method-yaml-schema
+reference/wf-canvas-toml
 ```

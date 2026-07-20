@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.how-to.run-and-inspect-results @ 9d13c2588d15; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.how-to.run-and-inspect-results @ ff34cba4065c; do not edit -->
 
 # Run & Inspect Results
 
@@ -77,7 +77,7 @@ wfc export 412
 
 This — or a mistyped output name — exits nonzero and lists the run's actual output names, so you never receive the wrong file silently. An output from a run that predates archiving errors with instructions to run `wfc cache archive` first.
 
-For the full flag table see the <a href="../reference/reference/cli-reference.html">CLI Reference</a>. For why outputs live in a read-only content-addressed cache in the first place, see [Storage & Provenance](../explanation/storage-and-provenance.md).
+For the full flag table see the [CLI Reference](../reference/cli-reference.md). For why outputs live in a read-only content-addressed cache in the first place, see [Storage & Provenance](../explanation/storage-and-provenance.md).
 
 ## Using the Canvas to inspect runs
 

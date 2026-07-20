@@ -1,13 +1,11 @@
-# Sphinx config for the axiom-graph-rendered consumer Guide.
+# Sphinx config for the axiom-graph-rendered consumer docs site (guide
+# tracks + reference in one build, so the sidebar and search cover both).
 #
-# Source pages are MyST, produced by axiom-graph's multi-target render:
-#   poetry run axiom-graph render-site . \
-#     --nav docs/consumer/nav-guide.yml --output userdocs/guide-html
-# This config compiles them to an RTD-themed HTML site with a {toctree} sidebar:
+# Source pages are MyST, produced by axiom-graph's render target ("guide" in
+# axiom-graph.toml -> userdocs/guide), regrouped by group_index.py, then
+# compiled to an RTD-themed HTML site:
 #   poetry run sphinx-build -c userdocs/_sphinx -b html \
-#     userdocs/guide-html userdocs/guide-html/_build/html
-# (userdocs/guide-html is a regenerable build artifact and is gitignored.)
-# The same flow builds the Reference site via docs/consumer/nav-reference.yml.
+#     userdocs/guide <output-dir>
 
 project = "Workflow Canvas"
 author = "Workflow Canvas"

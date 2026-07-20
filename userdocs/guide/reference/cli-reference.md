@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.reference.cli-reference @ 2a23fcc45cd3; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.reference.cli-reference @ c0b53da93453; do not edit -->
 
 # CLI Reference
 
@@ -63,7 +63,7 @@ Populate an already-initialised project with a complete, runnable pipeline in on
 | `--purge-image` | With `--remove`: also delete the `local/wfc-demo-env` Docker image |
 | `--yes` | With `--remove`: skip the confirmation prompt |
 
-For a walkthrough see <a href="../../tutorials/wfc-demo.html">Exploring the Demo</a>.
+For a walkthrough see [Exploring the Demo](../tutorials/wfc-demo.md).
 
 ### wfc canvas
 
@@ -76,7 +76,7 @@ Launch the Canvas web UI -- a browser-based visual pipeline builder and run hist
 | `--reload` | Enable auto-reload for development |
 | `--project-root` | Override the project root for auto-load |
 
-For a walkthrough of setting up and running your first project, see <a href="../../tutorials/getting-started.html">Getting Started</a>.
+For a walkthrough of setting up and running your first project, see [Getting Started](../tutorials/getting-started.md).
 
 ## Registration Commands
 
@@ -119,8 +119,6 @@ Restore a registered sample from the DVC cache to `data/samples/{name}/`. Verifi
 |---|---|
 | `--name` | Sample name |
 | `--hash` | Content hash to restore |
-
-## Container Env Commands
 
 ## Container Env Commands
 
@@ -268,7 +266,7 @@ Remove old run archives and optionally DVC local cache entries to reclaim disk s
 
 ### wfc export
 
-Copy a run's output out of the cache into a file you own, or print the resolved cache path in place. Cache entries are read-only (see <a href="../../explanation/storage-and-provenance.html">Storage &amp; Provenance</a>), so this is the supported way to get a mutable copy. Cache-hit runs resolve to the original run's outputs automatically.
+Copy a run's output out of the cache into a file you own, or print the resolved cache path in place. Cache entries are read-only (see [Storage & Provenance](../explanation/storage-and-provenance.md)), so this is the supported way to get a mutable copy. Cache-hit runs resolve to the original run's outputs automatically.
 
 | Arg | Description |
 |---|---|

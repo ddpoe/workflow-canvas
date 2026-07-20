@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.reference.method-yaml-schema @ 97c061c27ec0; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.reference.method-yaml-schema @ d47432fe64a3; do not edit -->
 
 # Reference: method.yaml Schema
 
@@ -8,7 +8,7 @@
 
 A method without a `method.yaml` cannot be registered: `wfc register-method` rejects it, because execution is container-only and the `env:` key in `method.yaml` is what names the method's container. Every method therefore has a `method.yaml` with at least `env:`; the other keys below are optional.
 
-This page is the canonical field-by-field reference. The tutorials <a href="../../tutorials/authoring-a-method-script.html">Authoring a Method Script</a> and <a href="../../tutorials/writing-contracts.html">Writing Contracts</a> introduce these keys in context and link back here for the exact fields rather than repeating the tables.
+This page is the canonical field-by-field reference. The tutorials [Authoring a Method Script](../tutorials/authoring-a-method-script.md) and [Writing Contracts](../tutorials/writing-contracts.md) introduce these keys in context and link back here for the exact fields rather than repeating the tables.
 
 ## Top-level keys
 
@@ -116,7 +116,7 @@ Column validation behaves differently on the two sides of a method:
 - On an **input** slot, the contract is a **hard gate**. If a required column is missing, the step is blocked and the run fails with a clear message.
 - On an **output** slot, the contract is a **soft check**. A mismatch produces a warning but does not fail the run, because a method may legitimately add or rename columns.
 
-At registration and pipeline-load time, `strict` columns are also cross-checked between connected steps so an incompatible wiring is caught statically. The full mental model for designing these contracts lives in <a href="../../tutorials/writing-contracts.html">Writing Contracts</a>.
+At registration and pipeline-load time, `strict` columns are also cross-checked between connected steps so an incompatible wiring is caught statically. The full mental model for designing these contracts lives in [Writing Contracts](../tutorials/writing-contracts.md).
 
 ## executor, env, and gpus
 
@@ -142,7 +142,7 @@ Build an environment once with `wfc register-env <name>`, then name it here. The
 
 ### gpus
 
-Set `gpus: true` to request a GPU. At dispatch the container is launched with `--gpus all`. It defaults to `false`, so methods opt in explicitly. Registering and building environments is covered step by step in <a href="../../tutorials/registering-an-environment.html">Registering an Environment</a>.
+Set `gpus: true` to request a GPU. At dispatch the container is launched with `--gpus all`. It defaults to `false`, so methods opt in explicitly. Registering and building environments is covered step by step in [Registering an Environment](../tutorials/registering-an-environment.md).
 
 ## Worked examples
 
@@ -212,6 +212,6 @@ gpus: true                       # launch the container with --gpus all
 
 ## Next steps
 
-- <a href="../../tutorials/authoring-a-method-script.html">Authoring a Method Script</a> — write the method script that reads these inputs and params and writes these outputs.
-- <a href="../../tutorials/registering-an-environment.html">Registering an Environment</a> — build the container image that the `env` key names.
-- <a href="../../tutorials/writing-contracts.html">Writing Contracts</a> — the mental model behind `columns`, module contracts, and column pickers.
+- [Authoring a Method Script](../tutorials/authoring-a-method-script.md) — write the method script that reads these inputs and params and writes these outputs.
+- [Registering an Environment](../tutorials/registering-an-environment.md) — build the container image that the `env` key names.
+- [Writing Contracts](../tutorials/writing-contracts.md) — the mental model behind `columns`, module contracts, and column pickers.

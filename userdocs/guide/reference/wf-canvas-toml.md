@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.reference.wf-canvas-toml @ 6456bf6b9580; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.reference.wf-canvas-toml @ 4551fb01a29a; do not edit -->
 
 # Reference: wf-canvas.toml
 
@@ -6,7 +6,7 @@
 
 Every project keeps its configuration in `.wfc/wf-canvas.toml`. `wfc init` generates this file, and `wfc` reads it with the standard-library `tomllib` parser (Python 3.11+), so it follows ordinary TOML syntax. The file is committed to git — it is project source, not state.
 
-This page is the field reference for each section. For where the file sits in the wider project layout, see <a href="../../explanation/project-anatomy.html">Project Anatomy</a>.
+This page is the field reference for each section. For where the file sits in the wider project layout, see [Project Anatomy](../explanation/project-anatomy.md).
 
 ## Full example
 
@@ -42,7 +42,7 @@ A freshly generated file contains `[database]`, `[project]`, `[pixi]`, and a liv
 url = "sqlite:///.wfc/wfc.db"
 ```
 
-- **`url`** — A SQLAlchemy connection string for the project database. The default is a local SQLite file at `.wfc/wfc.db`. Point `url` at a Postgres server (`postgresql://…`) instead when several machines share one project over a network drive. The database itself is the single source of truth for all pipeline state; see <a href="../../explanation/project-anatomy.html">Project Anatomy</a> for what it holds.
+- **`url`** — A SQLAlchemy connection string for the project database. The default is a local SQLite file at `.wfc/wfc.db`. Point `url` at a Postgres server (`postgresql://…`) instead when several machines share one project over a network drive. The database itself is the single source of truth for all pipeline state; see [Project Anatomy](../explanation/project-anatomy.md) for what it holds.
 
 ## [project]
 
@@ -84,7 +84,7 @@ The `[dvc]` section configures DVC provenance storage so run outputs can be shar
 - **`url`** — a directory path for a local or network archive, or a DVC remote scheme (`s3://`, `ssh://`, `gs://`, `azure://`). Remote schemes require the matching `dvc[<backend>]` plugin. A single code path supports every backend because push/pull goes through DVC's own API. When the section is present, `wfc init` mirrors it to `.dvc/config` and DVC dispatches on the URL scheme.
 - **`auto_init`** — When true (the default), `wfc init` runs `dvc init` automatically if a `.dvc/` directory does not yet exist.
 
-For backwards compatibility the parser still accepts the legacy `remote_type` / `remote_path` pair (local-only) when `url` is absent, but new projects should use `url`. See <a href="../../explanation/storage-and-provenance.html">Storage &amp; Provenance</a> for how the cache and remote actually work.
+For backwards compatibility the parser still accepts the legacy `remote_type` / `remote_path` pair (local-only) when `url` is absent, but new projects should use `url`. See [Storage & Provenance](../explanation/storage-and-provenance.md) for how the cache and remote actually work.
 
 
 ## [registry]
@@ -102,6 +102,6 @@ Internally, `wfc` reads the file once into a settings dict. The reader returns `
 
 ## Next steps
 
-- Read <a href="../../explanation/project-anatomy.html">Project Anatomy</a> to see where `wf-canvas.toml` lives alongside the database, modules, methods, and the run workspace.
-- Read <a href="../../explanation/storage-and-provenance.html">Storage &amp; Provenance</a> to understand what the `[dvc]` remote buys you and how outputs move between the cache and a remote.
-- Read <a href="../../tutorials/getting-started.html">Getting Started</a> for the full first-project walkthrough that creates this file.
+- Read [Project Anatomy](../explanation/project-anatomy.md) to see where `wf-canvas.toml` lives alongside the database, modules, methods, and the run workspace.
+- Read [Storage & Provenance](../explanation/storage-and-provenance.md) to understand what the `[dvc]` remote buys you and how outputs move between the cache and a remote.
+- Read [Getting Started](../tutorials/getting-started.md) for the full first-project walkthrough that creates this file.

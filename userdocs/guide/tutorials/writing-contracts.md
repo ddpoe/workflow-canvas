@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.tutorials.writing-contracts @ 4078d6d1a2b7; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.tutorials.writing-contracts @ 9e2ca87bb682; do not edit -->
 
 # Tutorial: Writing Contracts
 
@@ -12,7 +12,7 @@ This tutorial covers the three things you need to write contracts well:
 - **Column validation** -- declaring which CSV/Parquet columns a slot requires, so a typo'd or missing column is caught instead of silently dropped.
 - **The three enforcement points** -- registration, pipeline load, and runtime -- and the mental model for *why* a pipeline is rejected at one stage versus another.
 
-This builds directly on the method you wrote in [Authoring a Method Script](../tutorials/authoring-a-method-script.md). If you haven't authored a method yet, start there. For the exhaustive field-by-field reference (every key and its default), see <a href="../reference/reference/method-yaml-schema.html">method.yaml Schema</a> -- this tutorial teaches the model, that page is the lookup table.
+This builds directly on the method you wrote in [Authoring a Method Script](../tutorials/authoring-a-method-script.md). If you haven't authored a method yet, start there. For the exhaustive field-by-field reference (every key and its default), see [method.yaml Schema](../reference/method-yaml-schema.md) -- this tutorial teaches the model, that page is the lookup table.
 
 ## Two tiers: module and method contracts
 
@@ -144,7 +144,7 @@ Contracts are checked at three distinct moments. Knowing which check fires when 
 
 You can now declare contracts at both tiers, validate file contents by column, and reason about which enforcement stage will catch which mistake.
 
-- For the complete `method.yaml` field reference -- every input, output, and param key, all column-spec options, and the `env`/`executor` fields -- see <a href="../reference/reference/method-yaml-schema.html">method.yaml Schema</a>.
+- For the complete `method.yaml` field reference -- every input, output, and param key, all column-spec options, and the `env`/`executor` fields -- see [method.yaml Schema](../reference/method-yaml-schema.md).
 - To author the script those contracts wrap, revisit [Authoring a Method Script](../tutorials/authoring-a-method-script.md).
 - Before a contracted method can run, its environment must be built and registered; see [Registering an Environment](../tutorials/registering-an-environment.md).
 - To wire contracted methods into a pipeline and watch type checks block bad connections live, see [Canvas Visual Builder](../how-to/canvas.md).
