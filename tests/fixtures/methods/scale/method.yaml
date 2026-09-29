@@ -25,4 +25,4 @@ params:
     description: "Decimal places to round the scaled value to"
 
 executor: python
-env: container:fixture-env
+env: fixture-env

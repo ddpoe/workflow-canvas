@@ -1,12 +1,12 @@
 """
-Workflow Test: Unified Path Scheme (Gap 12)
+Workflow Test: Unified Path Scheme
 
 Validates the unified path scheme:
 
-    .runs/workspace/test-pid/{node_id}/{sample}/{variant}/output{ext}
+    .runs/sentinels/test-pid/{node_id}/{sample}/{variant}/.complete
 
 All pipelines — linear, fan-in, fan-out, with or without param_sets —
-use the same path pattern. No separate flat/legacy modes.
+use the same path pattern. There is no separate flat mode.
 
 Scenarios tested:
   1. Fan-in pipeline with no param_sets → all paths use /default/ variant
@@ -21,9 +21,9 @@ from pathlib import Path
 import pytest
 from axiom_annotations import workflow
 
-from wfc.snakemake_gen import (
-    StepDef, PipelineDef, generate_snakefile,
-    load_pipeline, expand_variant_combos)
+from wfc.graph import StepDef, PipelineDef, expand_step_combos
+from wfc.execution import load_pipeline_from_path
+from wfc.orchestration import generate_snakefile
 
 
 # =============================================================================
@@ -44,12 +44,10 @@ def test_fan_in_no_variants_uses_default(wfc_root):
     """Fan-in DAG with no param sweeps. Every path includes /default/."""
 
     src = PROJECT_ROOT / "tests" / "fixtures" / "pipelines" / "pipeline_fan_in.json"
-    pipeline = load_pipeline(src)
+    pipeline = load_pipeline_from_path(src)
     snakefile = generate_snakefile(pipeline, wfc_root, pipeline_id="test-pid")
 
-    # Unified mode, not flat
     assert "unified mode" in snakefile
-    assert "flat mode" not in snakefile
 
     # All paths include {variant} wildcard
     assert "{variant}" in snakefile
@@ -57,7 +55,7 @@ def test_fan_in_no_variants_uses_default(wfc_root):
     # VARIANT_NAMES is just ["default"]
     assert "VARIANT_NAMES = ['default']" in snakefile
 
-    # ADR-018: Snakemake-visible outputs are sentinels, not workspace files.
+    # Snakemake-visible outputs are sentinels.
     # Real outputs live in DVC cache; sentinels gate the DAG.
     assert ".runs/sentinels/test-pid/filter_a/{sample}/{variant}/.complete" in snakefile
     assert ".runs/sentinels/test-pid/filter_b/{sample}/{variant}/.complete" in snakefile
@@ -68,7 +66,7 @@ def test_fan_in_no_variants_uses_default(wfc_root):
     assert "expand(" in rule_all
     assert "variant=VARIANT_NAMES" in rule_all
 
-    # ADR 008: every rule passes variant through params block for run-step
+    # every rule passes variant through params block for run-step
     for nid in ("filter_a", "filter_b", "merge_ab"):
         rule_section = snakefile.split(f"rule {nid}:")[1].split("\nrule ")[0]
         assert f'node_id="{nid}"' in rule_section
@@ -115,7 +113,7 @@ def test_per_node_param_sets(wfc_root):
     # (filter_cells has strict/relaxed, preprocess/label get padded)
     assert "VARIANT_NAMES" in snakefile
 
-    # ADR-018: Snakemake-visible outputs are sentinels, not workspace files.
+    # Snakemake-visible outputs are sentinels.
     assert ".runs/sentinels/test-pid/preprocess/{sample}/{variant}/.complete" in snakefile
     assert ".runs/sentinels/test-pid/filter_cells/{sample}/{variant}/.complete" in snakefile
     assert ".runs/sentinels/test-pid/label/{sample}/{variant}/.complete" in snakefile
@@ -139,7 +137,7 @@ def test_per_node_param_sets(wfc_root):
     assert "expand(" in rule_all
     assert "variant=VARIANT_NAMES" in rule_all
 
-    # expand_variant_combos returns unified format
+    # per-step expansion returns unified rows for every step
     resolved_params = {}
     for step in pipeline.steps:
         resolved_params[step.node_id] = pipeline.param_sets.get(
@@ -147,15 +145,17 @@ def test_per_node_param_sets(wfc_root):
                 step.method_name, {"default": step.params}
             )
         )
-    combos = expand_variant_combos(pipeline.steps, pipeline.samples,
-                                    resolved_params, None)
-    # Should have 1 sample × (default + strict + relaxed) = 3 combos
-    assert len(combos) == 3
-    variants_in_combos = {c["variant"] for c in combos}
-    assert variants_in_combos == {"default", "strict", "relaxed"}
-    # All combos have sample + variant keys only
-    for c in combos:
-        assert set(c.keys()) == {"sample", "variant"}
+    rows = expand_step_combos(pipeline.steps, pipeline.samples,
+                              resolved_params, None)
+    # Every step should have 1 sample × (default + strict + relaxed) = 3 rows
+    assert len(rows) == 3 * len(pipeline.steps)
+    for step in pipeline.steps:
+        combos = [c for s, c in rows if s is step]
+        assert len(combos) == 3
+        assert {c["variant"] for c in combos} == {"default", "strict", "relaxed"}
+        # All combos have sample + variant keys only
+        for c in combos:
+            assert set(c.keys()) == {"sample", "variant"}
 
 
 # =============================================================================
@@ -201,7 +201,7 @@ def test_explicit_combos_unified(wfc_root):
     assert "r['sample']" in rule_all
     assert "r['variant']" in rule_all
 
-    # ADR-018: Snakemake-visible outputs are sentinels, not workspace files.
+    # Snakemake-visible outputs are sentinels.
     assert ".runs/sentinels/test-pid/preprocess/{sample}/{variant}/.complete" in snakefile
     assert ".runs/sentinels/test-pid/filter_cells/{sample}/{variant}/.complete" in snakefile
 
@@ -211,11 +211,11 @@ def test_explicit_combos_unified(wfc_root):
 
 
 # =============================================================================
-# Test 4: Differential QC scenario (Appendix C validation)
+# Test 4: Differential QC scenario
 # =============================================================================
 
 @workflow(
-    purpose="Validate the Differential QC scenario from Gap 12 Appendix C: "
+    purpose="Validate the Differential QC scenario: "
             "fan-in DAG with per-node param_sets and sample-conditional "
             "variant binding via explicit_combos")
 def test_differential_qc_scenario(wfc_root):
@@ -276,7 +276,7 @@ def test_differential_qc_scenario(wfc_root):
                 "merge_cycD1", "label_cycD1"):
         assert f"rule {nid}:" in snakefile
 
-    # ADR-018: Snakemake-visible outputs are sentinels.
+    # Snakemake-visible outputs are sentinels.
     assert ".runs/sentinels/test-pid/scr50/{sample}/{variant}/.complete" in snakefile
     assert ".runs/sentinels/test-pid/fqc_scr50/{sample}/{variant}/.complete" in snakefile
     assert ".runs/sentinels/test-pid/merge_cycD1/" in snakefile
@@ -286,7 +286,7 @@ def test_differential_qc_scenario(wfc_root):
     assert '"standard"' in snakefile
     assert '"dim_corrected"' in snakefile
 
-    # Merge rule has fan-in slot-named inputs (ADR 008: shell-based, no WFC_INPUT_PATHS)
+    # Merge rule has fan-in slot-named inputs (shell-based, no WFC_INPUT_PATHS)
     merge_rule = snakefile.split("rule merge_cycD1:")[1].split("\nrule ")[0]
     assert "sources_0=" in merge_rule
     assert "sources_1=" in merge_rule
@@ -301,7 +301,7 @@ def test_differential_qc_scenario(wfc_root):
     assert "label_cycD1" in rule_all
     assert "for r in RUNS" in rule_all
 
-    # ADR 008: every rule passes variant through params and delegates to run-step
+    # every rule passes variant through params and delegates to run-step
     for nid in ("scr50", "fqc_scr50", "merge_cycD1", "label_cycD1"):
         rule_section = snakefile.split(f"rule {nid}:")[1].split("\nrule ")[0]
         assert 'variant="{variant}"' in rule_section
@@ -311,17 +311,18 @@ def test_differential_qc_scenario(wfc_root):
     python_section = snakefile.split("rule all:")[0]
     compile(python_section, "<snakefile>", "exec")
 
-    # Verify expand_variant_combos returns explicit combos as-is
-    combos = expand_variant_combos(
+    # Verify per-step expansion runs every step over the explicit combos as-is
+    rows = expand_step_combos(
         pipeline.steps, pipeline.samples, {}, pipeline.explicit_combos)
-    assert len(combos) == 2
-    assert combos[0]["variant"] == "standard"
-    assert combos[1]["variant"] == "dim_corrected"
+    assert len(rows) == 2 * len(pipeline.steps)
+    for step in pipeline.steps:
+        combos = [c for s, c in rows if s is step]
+        assert [c["variant"] for c in combos] == ["standard", "dim_corrected"]
 
 
 # =============================================================================
 # Test 5: Canvas compile → engine end-to-end smoke
-# (pev-2026-04-17-parameter-sweeps-chip-ux, Tier 3)
+# (Tier 3)
 # =============================================================================
 
 from axiom_annotations import Step
@@ -330,8 +331,7 @@ from axiom_annotations import Step
 @workflow(
     purpose="End-to-end smoke: canvas-compiled authoring state with mixed "
             "sweeps and one per-sample override produces a Snakefile whose "
-            "run matrix contains both the sweep and the override cells "
-            "(US-1 + US-3).")
+            "run matrix contains both the sweep and the override cells.")
 def test_canvas_sweep_compile_e2e(wfc_root, tmp_path):
     """Simulate what the canvas's compilePipelineToJSON would emit for an
     authoring state with (a) a sweep on filter_cells.min_quality (strict +
@@ -377,7 +377,7 @@ def test_canvas_sweep_compile_e2e(wfc_root, tmp_path):
 
     pipeline_path = tmp_path / "compile_e2e.json"
     pipeline_path.write_text(json.dumps(pipeline_json))
-    pipeline = load_pipeline(pipeline_path)
+    pipeline = load_pipeline_from_path(pipeline_path)
 
     assert pipeline.param_sets == pipeline_json["param_sets"]
     assert pipeline.explicit_combos == pipeline_json["explicit_combos"]
@@ -402,11 +402,13 @@ def test_canvas_sweep_compile_e2e(wfc_root, tmp_path):
     assert "0.7" in params_section  # sweep: strict
     assert "0.3" in params_section  # sweep: relaxed
 
-    _ = Step(step_num=4, name="Verify expand_variant_combos",
-             purpose="Pure-function path: the compiled combos are returned as-is")
+    _ = Step(step_num=4, name="Verify per-step expansion",
+             purpose="Pure-function path: every step runs the compiled combos as-is")
 
-    combos = expand_variant_combos(
+    rows = expand_step_combos(
         pipeline.steps, pipeline.samples, {}, pipeline.explicit_combos)
+    assert len(rows) == 3 * len(pipeline.steps)
+    combos = [c for s, c in rows if s is pipeline.steps[-1]]
     assert len(combos) == 3
     variants_seen = {c["variant"] for c in combos}
     samples_seen = {c["sample"] for c in combos}

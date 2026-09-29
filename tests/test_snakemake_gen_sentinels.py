@@ -1,13 +1,14 @@
-"""ADR-018 Task 2 — Sentinel-only Snakemake outputs.
+"""Sentinel-only Snakemake outputs.
 
 The Snakemake-visible `output:` declaration collapses to a single zero-byte
 sentinel per (pipeline, node, sample, variant). The real data outputs stay
 in `.runs/<run_id>/<slot>/` (staging) — Snakemake never sees them.
 
-These tests pin the new generator contract.
+These tests pin that generator contract.
 """
 
-from wfc.snakemake_gen import StepDef, PipelineDef, generate_snakefile, _output_path
+from wfc.graph import StepDef, PipelineDef
+from wfc.orchestration.snakemake import generate_snakefile, _output_path
 
 
 def _step_map(pipeline: PipelineDef) -> dict[str, StepDef]:
@@ -61,14 +62,11 @@ def test_generate_rule_emits_single_sentinel_output(wfc_root):
     snakefile = generate_snakefile(pipeline, wfc_root)
     rule_block = snakefile.split("rule multi_out:")[1].split("\nrule ")[0]
 
-    # Old multi-slot output declaration must not appear
-    assert "primary=" not in rule_block
-    assert "report=" not in rule_block
-    assert "directory(" not in rule_block
-
-    # New: single sentinel output line
-    assert ".runs/sentinels/" in rule_block
-    assert ".complete" in rule_block
+    # Every slot collapses to one sentinel output
+    output_section = rule_block.split("output:")[1].split("params:")[0]
+    output_lines = [ln.strip() for ln in output_section.splitlines() if ln.strip()]
+    assert len(output_lines) == 1, output_lines
+    assert ".runs/sentinels/" in output_lines[0] and ".complete" in output_lines[0], output_lines
 
 
 def test_generate_rule_single_output_uses_sentinel(wfc_root):
@@ -86,7 +84,7 @@ def test_generate_rule_single_output_uses_sentinel(wfc_root):
     rule_block = snakefile.split("rule step:")[1].split("\nrule ")[0]
     assert ".runs/sentinels/" in rule_block
     assert ".complete" in rule_block
-    # No .runs/workspace/ output any more
+    # No .runs/workspace/ output
     assert ".runs/workspace/" not in rule_block.split("input:")[0]
 
 

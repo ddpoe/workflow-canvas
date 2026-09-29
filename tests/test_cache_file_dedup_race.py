@@ -28,7 +28,8 @@ def test_move_mode_dedups_when_rename_loses_race(tmp_path, monkeypatch):
     Windows-style PermissionError. Expected: no raise, dest returned
     intact, staging source consumed.
     """
-    from wfc.provenance import cache_file, hash_file
+    from wfc.identity import hash_file
+    from wfc.storage import cache_file
 
     content = b"shared env blob"
     src = tmp_path / "staging.blob"
@@ -39,7 +40,9 @@ def test_move_mode_dedups_when_rename_loses_race(tmp_path, monkeypatch):
         _land_winner(Path(d), content)
         raise PermissionError(5, "Access is denied", str(s))
 
-    monkeypatch.setattr(os, "rename", racing_rename)
+    from tests.fixtures.fakes import fake_os_rename
+
+    fake_os_rename(monkeypatch, racing_rename)
 
     dest = cache_file(src, md5, tmp_path, move=True)
 
@@ -58,7 +61,8 @@ def test_copy_mode_dedups_when_replace_loses_race(tmp_path, monkeypatch):
     user-owned source preserved, and the process-unique staging tmp
     cleaned up.
     """
-    from wfc.provenance import cache_file, hash_file
+    from wfc.identity import hash_file
+    from wfc.storage import cache_file
 
     content = b"shared env blob"
     src = tmp_path / "user_owned.blob"
@@ -69,7 +73,9 @@ def test_copy_mode_dedups_when_replace_loses_race(tmp_path, monkeypatch):
         _land_winner(Path(target), content)
         raise PermissionError(5, "Access is denied", str(self))
 
-    monkeypatch.setattr(pathlib.Path, "replace", racing_replace)
+    from tests.fixtures.fakes import fake_path_replace
+
+    fake_path_replace(monkeypatch, racing_replace)
 
     dest = cache_file(src, md5, tmp_path, move=False)
 

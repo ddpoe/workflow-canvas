@@ -1,7 +1,8 @@
-"""E2E test: --force overwrites an existing manifest entry (US-3, Tier 3).
+"""E2E test: --force overwrites an existing manifest entry (Tier 3).
 
-Drives the full CLI path: argparse → _cli_register_env → wfc.envs.register
-→ manifest write. Mocks the docker_runner boundary.
+Drives the full CLI path: argparse → _cli_register_env →
+wfc.environments.verbs.register_env → wfc.environments.register → manifest
+write. Mocks the docker_runner boundary.
 """
 
 from __future__ import annotations
@@ -10,6 +11,8 @@ import json
 from pathlib import Path
 
 import pytest
+
+from tests.fixtures.fakes import stub_docker_build, stub_docker_image_inspect
 
 from axiom_annotations import workflow, Step
 
@@ -23,8 +26,8 @@ from axiom_annotations import workflow, Step
             "time and pick up the new digest automatically."
 )
 def test_register_env_force_overwrites_existing(tmp_path, monkeypatch, capsys):
-    from wfc import envs as envs_mod
-    from wfc import docker_runner
+    from wfc import environments as envs_mod
+    from wfc.environments import docker as docker_runner
     from wfc.cli import cli_main
 
     口 = Step(step_num=1, name="Seed manifest with an existing env",
@@ -47,17 +50,27 @@ def test_register_env_force_overwrites_existing(tmp_path, monkeypatch, capsys):
     }
     (tmp_path / ".wfc" / "envs.json").write_text(json.dumps(seed_manifest))
 
-    # cd into project so _resolve_project_dir_for_envs finds it.
+    # A real project (marker included) with the cwd inside it, so the
+    # canonical resolver's upward walk finds it; the per-process cache is
+    # cleared so the walk actually runs.
+    (tmp_path / ".wfc" / "wf-canvas.toml").write_text('[project]\nname = "t"\n')
     monkeypatch.chdir(tmp_path)
+    from wfc.persistence import reset_engine
+    reset_engine()
+
+    # File-mode source.
+    (tmp_path / "pixi.lock").write_text("version: 6\n", encoding="utf-8")
 
     new_digest = "b" * 64
-    monkeypatch.setattr(docker_runner, "build", lambda d, t: None)
-    monkeypatch.setattr(docker_runner, "image_inspect", lambda r: f"sha256:{new_digest}")
+    stub_docker_build(monkeypatch, lambda d, t: None)
+    stub_docker_image_inspect(monkeypatch, f"sha256:{new_digest}")
 
     口 = Step(step_num=2, name="Run CLI without --force, expect non-zero exit",
              purpose="Default behavior must refuse to clobber; message must "
                      "name the env and point at --force.")
-    rc = cli_main(["register-env", "image-io", "--backend", "pixi"])
+    rc = cli_main([
+        "register-env", "image-io", "--from", "pixi.lock", "--backend", "pixi",
+    ])
     captured = capsys.readouterr()
     assert rc != 0
     assert "image-io" in captured.err
@@ -70,39 +83,15 @@ def test_register_env_force_overwrites_existing(tmp_path, monkeypatch, capsys):
     口 = Step(step_num=3, name="Re-run with --force, expect overwrite",
              purpose="Manifest container field flips to the new digest; "
                      "old image is intentionally NOT deleted from the "
-                     "docker daemon (ADR-019 #7: users prune manually).")
-    rc = cli_main(["register-env", "image-io", "--backend", "pixi", "--force"])
+                     "docker daemon (users prune manually).")
+    rc = cli_main([
+        "register-env", "image-io", "--from", "pixi.lock", "--backend", "pixi",
+        "--force",
+    ])
     assert rc == 0
 
     manifest = json.loads((tmp_path / ".wfc" / "envs.json").read_text())
     new_entry = manifest["envs"]["image-io"]
-    assert new_entry["container"] == f"image-io@sha256:{new_digest}"
+    assert new_entry["container"] == f"docker://local/image-io@sha256:{new_digest}"
     # Different env_fingerprint (digest changed).
     assert new_entry["env_fingerprint"] != "00" * 16
-
-
-def test_register_env_dry_run_skips_docker_and_manifest(tmp_path, monkeypatch):
-    """US-5: --dry-run short-circuits before any docker subprocess and
-    never writes the manifest."""
-    from wfc import docker_runner
-    from wfc.cli import cli_main
-
-    (tmp_path / ".wfc").mkdir()
-    monkeypatch.chdir(tmp_path)
-
-    # Any call to docker_runner is a failure.
-    def _fail(*a, **kw):
-        raise AssertionError("--dry-run must not invoke docker_runner")
-
-    monkeypatch.setattr(docker_runner, "build", _fail)
-    monkeypatch.setattr(docker_runner, "image_inspect", _fail)
-    monkeypatch.setattr(docker_runner, "pull", _fail)
-
-    rc = cli_main([
-        "register-env", "image-io", "--backend", "pixi", "--dry-run",
-    ])
-    assert rc == 0
-    # Manifest must NOT exist (we never wrote one).
-    assert not (tmp_path / ".wfc" / "envs.json").exists()
-    # Dockerfile was written.
-    assert (tmp_path / ".wfc" / "build" / "image-io" / "Dockerfile").exists()

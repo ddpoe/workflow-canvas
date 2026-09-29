@@ -22,4 +22,4 @@ params:
     description: "Fractional overlap between adjacent tiles"
 
 executor: python
-env: container:fixture-env
+env: fixture-env

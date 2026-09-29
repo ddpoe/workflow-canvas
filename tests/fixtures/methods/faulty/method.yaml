@@ -18,6 +18,11 @@ params:
     type: str
     required: true
     description: "'crash' raises an exception, 'missing_output' exits without writing output, 'succeed' behaves like transform"
+  crash_samples:
+    type: str
+    required: false
+    default: ""
+    description: "Comma-separated sample names that crash regardless of failure_mode (a per-sample failure with no variant override)"
 
 executor: python
-env: container:fixture-env
+env: fixture-env

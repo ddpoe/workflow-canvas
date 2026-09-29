@@ -1,6 +1,6 @@
 #!/usr/bin/env -S npx tsx
 /**
- * SSE record-and-replay tool (ADR-015 Phase D Pass 2).
+ * SSE record-and-replay tool.
  *
  * Connects to a live dev server, runs a topology end-to-end, captures
  * every SSE event from `/api/wfc/run/<runId>/stream-logs` with quantised
@@ -10,7 +10,7 @@
  *
  * Why record rather than hand-author:
  * - The SSE wire format (per-event JSON shape, line ordering, terminal
- *   payload) is defined by `wfc.canvas.server::stream_run_logs`.  Recording
+ *   payload) is defined by `wfc.canvas.routes.logs::stream_run_logs`.  Recording
  *   is byte-faithful; hand-authored fixtures drift on every backend
  *   protocol change.
  * - Re-running this script after a backend protocol change makes the

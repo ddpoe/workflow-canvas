@@ -1,10 +1,8 @@
-"""Retired ``wfc seed`` — replaced by ``wfc demo``.
+"""Retired ``wfc seed`` — ``wfc demo`` is the way to populate a project.
 
-The old ``seed()`` hand-inserted DB rows that bypassed the real registration
-path (no env, no contracts, no code snapshot), producing a project that could
-only fail on Run. ``wfc demo`` populates an initialised project through the
-genuine registration path instead. This module keeps only a pointer so any
-caller of the old entry point gets a clear redirect.
+``wfc demo`` populates an initialised project through the genuine
+registration path. This module keeps only a pointer so a caller of the
+``seed`` entry point gets a clear redirect.
 """
 
 import sys
@@ -20,7 +18,7 @@ def seed() -> int:
     """Print the retirement pointer and return a non-zero exit code.
 
     Returns:
-        1, always — the command no longer inserts anything.
+        1, always — the command inserts nothing.
     """
     print(SEED_RETIRED_MESSAGE, file=sys.stderr)
     return 1

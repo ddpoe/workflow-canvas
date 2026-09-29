@@ -1,0 +1,152 @@
+{
+  "id": "cycle-three-node",
+  "case": "order-cycle",
+  "note": "m2 -> m3 -> m2 behind a valid root: validation has no cycle rule, the load refuses.",
+  "document": {
+    "name": "cycle-three-node",
+    "nodes": [
+      {
+        "id": "s",
+        "type": "input_selector",
+        "method": "",
+        "module": "",
+        "params": {},
+        "samples": [
+          "s1"
+        ],
+        "source": "registered",
+        "fan_mode": "out"
+      },
+      {
+        "id": "m1",
+        "type": "method",
+        "method": "filter",
+        "module": "mod",
+        "params": {}
+      },
+      {
+        "id": "m2",
+        "type": "method",
+        "method": "join",
+        "module": "mod",
+        "params": {}
+      },
+      {
+        "id": "m3",
+        "type": "method",
+        "method": "filter",
+        "module": "mod",
+        "params": {}
+      }
+    ],
+    "links": [
+      {
+        "source": "s",
+        "target": "m1",
+        "targetHandle": "data"
+      },
+      {
+        "source": "m1",
+        "target": "m2",
+        "targetHandle": "data"
+      },
+      {
+        "source": "m2",
+        "target": "m3",
+        "targetHandle": "data"
+      },
+      {
+        "source": "m3",
+        "target": "m2",
+        "targetHandle": "other"
+      }
+    ],
+    "samples": [
+      "s1"
+    ]
+  },
+  "contract_map": {
+    "mod.filter": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/filter/filter.py",
+      "env": "container:base"
+    },
+    "mod.plot": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/plot/plot.py",
+      "env": "container:base"
+    },
+    "mod.qc": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/qc/qc.py",
+      "env": "container:base"
+    },
+    "mod.merge": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "sources": {
+          "required": true
+        }
+      },
+      "script_path": "methods/merge/merge.py",
+      "env": "container:base"
+    },
+    "mod.join": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        },
+        "other": {
+          "required": true
+        }
+      },
+      "script_path": "methods/join/join.py",
+      "env": "container:base"
+    }
+  },
+  "reference_outputs": {},
+  "package": {
+    "validation": "accept",
+    "load": "refuse"
+  },
+  "client": {
+    "answers": false,
+    "reason": "the client previews only the duplicate-slot rule"
+  }
+}

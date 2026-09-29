@@ -1,18 +1,16 @@
 """
-Compile-correctness regression guard for the canvas's
-``compilePipelineToJSON`` (wfc/canvas/static/src/lib/compile.ts).
+Compile-correctness guard for the canvas's
+``compilePipelineToJSON`` (wfc/canvas/static/src/lib/builder/compile.ts).
 
 Why this file exists
 --------------------
-Iteration 1 of pev-2026-04-17-parameter-sweeps-chip-ux shipped a compile
-function that silently dropped every (sample × sweep_variant) row from
-``explicit_combos`` whenever any per-sample override was defined on the
-same node.  Because the engine treats ``explicit_combos`` as the
-exclusive run list in selective mode (``wfc/snakemake_gen.py`` L604-606),
-the bug caused the engine to run ONLY the override rows, dropping every
-sweep run.
+A per-sample override defined on a node must not drop that node's
+(sample × sweep_variant) rows from ``explicit_combos``.  The engine
+treats ``explicit_combos`` as the exclusive run list in selective mode
+(``wfc/orchestration/snakemake.py``), so a dropped row is a sweep run
+the engine never executes.
 
-User deferred adding vitest, so we drive the real TS function via a
+The tests drive the real TS function via a
 small Node harness (``tests/js_harness/compile_harness.mjs``) using
 ``node --experimental-strip-types``.  The harness imports from
 ``compile.ts`` directly (not ``pipeline.ts``) to avoid pulling in
@@ -34,7 +32,7 @@ from axiom_annotations import workflow
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 HARNESS = PROJECT_ROOT / "tests" / "js_harness" / "compile_harness.mjs"
 COMPILE_TS = (
-    PROJECT_ROOT / "wfc" / "canvas" / "static" / "src" / "lib" / "compile.ts"
+    PROJECT_ROOT / "wfc" / "canvas" / "static" / "src" / "lib" / "builder" / "compile.ts"
 )
 
 
@@ -79,26 +77,28 @@ def _run_compile(state: dict) -> dict:
 
 
 # =============================================================================
-# Test 1: Pitch fixture — sweep + single-sample override produces 7-row matrix
+# Test 1: sweep + single-sample override produces 7-row matrix
 # =============================================================================
 
 
 @workflow(
-    purpose="Regression guard for the iteration-1 bug where compilePipelineToJSON "
-    "dropped (sample × sweep_variant) rows from explicit_combos whenever "
-    "any per-sample override existed.  Verifies the canonical pitch "
-    "fixture emits all 6 cartesian rows plus the 1 override row (7 total)."
+    purpose="compilePipelineToJSON keeps every (sample × sweep_variant) row "
+    "in explicit_combos when a per-sample override exists: a 3-sample "
+    "pipeline with a 2-variant sweep and one single-sample override "
+    "emits all 6 cartesian rows plus the 1 override row (7 total)."
 )
 def test_compile_sweep_plus_override_emits_full_matrix():
-    """Pitch fixture:
+    """Fixture:
     - samples = [A, B, C]
     - filter node sweeps threshold in {0.5, 0.7} -> v1, v2
     - override on A: threshold=0.9 -> A__o1
 
     Expected:
       param_sets.filter = {v1:{threshold:0.5}, v2:{threshold:0.7}, A__o1:{threshold:0.9}}
-      explicit_combos = [{A,v1},{A,v2},{B,v1},{B,v2},{C,v1},{C,v2},{A,A__o1}]
-      = 7 rows.
+      explicit_combos = [{B,default},{B,v1},{B,v2},{C,default},{C,v1},{C,v2},{A,A__o1}]
+      = 7 rows: the samples without an override keep the box run (as
+      ``default``) plus every common chip; the overridden sample runs only
+      its own rows.
     """
     if not _node_available():
         pytest.skip("Node.js >=22 with --experimental-strip-types not available")
@@ -133,21 +133,14 @@ def test_compile_sweep_plus_override_emits_full_matrix():
         }
     }
 
-    # explicit_combos contains 6 cartesian rows + 1 override row = 7 rows.
-    combos = compiled["explicit_combos"]
-    assert len(combos) == 7, f"expected 7 combos, got {len(combos)}: {combos}"
-
-    combo_set = {(c["sample"], c["variant"]) for c in combos}
-    expected_cartesian = {
-        ("A", "v1"), ("A", "v2"),
-        ("B", "v1"), ("B", "v2"),
-        ("C", "v1"), ("C", "v2"),
-    }
-    assert expected_cartesian.issubset(combo_set), (
-        "missing cartesian rows (iteration-1 regression): "
-        f"{expected_cartesian - combo_set}"
-    )
-    assert ("A", "A__o1") in combo_set, "override row missing"
+    # explicit_combos: the box run plus every common chip for B and C (6 rows)
+    # and only the override row for A (1 row) = 7 rows.
+    combos = [(c["sample"], c["variant"]) for c in compiled["explicit_combos"]]
+    assert combos == [
+        ("B", "default"), ("B", "v1"), ("B", "v2"),
+        ("C", "default"), ("C", "v1"), ("C", "v2"),
+        ("A", "A__o1"),
+    ], f"unexpected run set: {combos}"
 
 
 # =============================================================================
@@ -165,7 +158,7 @@ def test_compile_sweep_only_omits_explicit_combos():
     """Two samples, one sweep on one node, zero overrides.
 
     Expected: explicit_combos is either absent or empty.  The engine
-    handles the cartesian via expand_variant_combos cartesian mode.
+    handles the cartesian via expand_step_combos cartesian mode.
     """
     if not _node_available():
         pytest.skip("Node.js >=22 with --experimental-strip-types not available")
@@ -206,18 +199,17 @@ def test_compile_sweep_only_omits_explicit_combos():
     "non-overridden sample is emitted against a synthetic 'default' "
     "variant. Without that row the engine's selective mode silently "
     "drops the sample (there's no per-sample padding on the explicit-"
-    "combos path — verified against wfc.snakemake_gen.expand_variant_combos)."
+    "combos path — verified against wfc.graph.expand_step_combos)."
 )
 def test_compile_override_only_emits_default_rows_for_unreferenced_samples():
     """One sample override, no sweep variants on the node.
 
-    Earlier behaviour emitted only the override row; non-overridden
-    samples vanished because ``expand_variant_combos`` returns
-    ``explicit_combos`` as-is (no padding) whenever selective mode is
-    active. The fix emits ``{sample, variant: 'default'}`` for every
-    sample not named in an override row so all samples still run; nodes
-    that don't list 'default' in their param_sets fall back to
-    ``node.params`` via the run_step variant lookup.
+    ``expand_step_combos`` returns ``explicit_combos`` as-is (no
+    padding) whenever selective mode is active, so the compiler emits
+    ``{sample, variant: 'default'}`` for every sample not named in an
+    override row, and every sample runs; nodes that don't list 'default'
+    in their param_sets fall back to ``node.params`` via the run_step
+    variant lookup.
     """
     if not _node_available():
         pytest.skip("Node.js >=22 with --experimental-strip-types not available")
@@ -380,8 +372,8 @@ def test_compile_per_sample_sweep_emits_multiple_override_variants():
     purpose="Optional numeric params committed blank in the inspector arrive "
     "as null in paramValues; they must be omitted from the submitted "
     "params dict so wfc's params.get(name) returns None and the method "
-    "takes its unset path. Regression guard for the 0.2.13 fix that "
-    "unblocked blank-commit on type: float/int rows in ValueList.svelte."
+    "takes its unset path. This is what lets a type: float/int row in "
+    "ValueList.svelte be committed blank."
 )
 def test_compile_strips_null_base_params():
     """Node with one real param + one null + one undefined.

@@ -114,7 +114,7 @@ describe('streamingActor', () => {
     const { stub, emit } = makeStubService();
     const actor = startActor(stub);
 
-    // server.py:2092's wall-time-guard path emits `cur_status` raw
+    // routes/logs.py's wall-time-guard path emits `cur_status` raw
     // without going through _log_map_terminal_status. Defensive default.
     emit({
       type: 'SSE_TERMINAL',

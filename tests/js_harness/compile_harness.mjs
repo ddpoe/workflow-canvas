@@ -28,6 +28,7 @@ const compilePath = resolve(
   'static',
   'src',
   'lib',
+  'builder',
   'compile.ts',
 );
 

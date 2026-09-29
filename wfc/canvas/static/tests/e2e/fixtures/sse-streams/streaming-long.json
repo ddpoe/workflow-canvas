@@ -2,7 +2,7 @@
   "topology": "streaming-long-handauthored",
   "node": "node_heartbeat",
   "recordedAt": "2026-05-01T00:00:00.000Z",
-  "_provenance": "Hand-authored for ADR-015 Phase D Pass 3 — paces 5 stdout ticks ~2s apart so the gallery video for liveLogLineAppend.webm visibly shows progressive log lines. Total run ~11s. Replace via record-sse.ts against the streaming topology with duration_s=10/stdout_lines=5 if a recorded version is desired.",
+  "_provenance": "Hand-authored — paces 5 stdout ticks ~2s apart so the gallery video for liveLogLineAppend.webm visibly shows progressive log lines. Total run ~11s. Replace via record-sse.ts against the streaming topology with duration_s=10/stdout_lines=5 if a recorded version is desired.",
   "events": [
     {
       "delayMs": 800,

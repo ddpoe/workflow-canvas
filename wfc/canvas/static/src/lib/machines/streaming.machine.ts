@@ -15,7 +15,7 @@
  *     status === 'failed'    → failed      (final, with error_message + traceback)
  *     status === 'cancelled' → cancelled   (final)
  *     anything else          → failed      (defensive: e.g., raw `running` from
- *                                           server.py's wall-time-guard path)
+ *                                           routes/logs.py's wall-time-guard path)
  *
  *   on SSE_ERROR (genuine wire failure that survived services.ts's grace
  *   window) → failed with synthesized error_message="Connection lost"
@@ -147,7 +147,7 @@ export function makeStreamingMachine() {
             },
             {
               // Default: 'failed' plus anything unexpected (raw `running`
-              // from server.py:2092's wall-time-guard, future enum values, etc.)
+              // from routes/logs.py's wall-time-guard, future enum values, etc.)
               target: 'failed',
               actions: assign({
                 terminalStatus: ({ event }) => event.status,

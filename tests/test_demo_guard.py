@@ -1,4 +1,4 @@
-"""Reserved ``__demo__`` prefix guard (US-4, safety-chain link 1).
+"""Reserved ``__demo__`` prefix guard (safety-chain link 1).
 
 ``wfc demo --remove`` deletes by the ``__demo__`` tag, so the tag must be
 proof of demo ownership: no user-driven registration path may create a
@@ -10,8 +10,8 @@ explicit ``allow_reserved=True`` opt-in used only by ``wfc demo`` itself.
 import pytest
 from axiom_annotations import workflow
 
-from wfc.envs import register as register_env
-from wfc.register import register_method, register_module
+from wfc.environments import register as register_env
+from wfc.registration import register_method, register_module
 
 
 @workflow(purpose="Every user-facing registration path refuses a __demo__* name; "
@@ -37,7 +37,7 @@ def test_reserved_prefix_guard_refuses_and_opt_in_allows(tmp_project):
 
     # -- register_sample refuses a reserved name (guarded before the DVC gate
     #    and before any file ops) --------------------------------------------
-    from wfc.cli import register_sample
+    from wfc.registration import register_sample
     src = tmp_project / "input.csv"
     src.write_text("id,value\n1,2\n")
     with pytest.raises(ValueError, match="reserved"):
@@ -73,10 +73,10 @@ def test_demo_sample_selection_escapes_like_wildcards(tmp_project, capsys):
     existing demo by scaffold and DELETED by `wfc demo --remove`."""
     from sqlmodel import select
 
-    from wfc.database import get_session
+    from wfc.persistence import get_session
     from wfc.demo.remove import remove_demo
     from wfc.demo.scaffold import _existing_demo_entities, _project_env
-    from wfc.models import Sample
+    from wfc.persistence import Sample
 
     user_name = "mydemo__x"       # collides with the unescaped LIKE pattern
     demo_name = "__demo__ctrl_01"

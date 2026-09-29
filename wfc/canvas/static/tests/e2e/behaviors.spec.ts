@@ -1,14 +1,18 @@
 /**
- * ADR-015 Phase D Pass 1: parameterized Playwright spec driving every
+ * Parameterized Playwright spec driving every
  * row of the polling-driven behavior catalog through the canvas DOM.
  *
  * One test per `behaviorCatalog` row.  Per-row assertion logic stays
  * in this file (keyed by row name) so `timelines.ts` doesn't need to
  * import Playwright.  Each row also produces a screenshot at
- * `gallery/states/<name>.png` — committed to git so a future doc
+ * `gallery/states/<name>.png` — committed to git so a doc
  * reader can eyeball every named behavior on GitHub without
- * re-running anything (Phase E "for free", D-4 in the cycle decisions
- * log).
+ * re-running anything.
+ *
+ * That capture is OPT-IN (`CAPTURE_GALLERY`, see playwright.config.ts):
+ * the tests always run, the file writes only happen when the gallery is
+ * being regenerated deliberately.  Nothing below the capture guard is
+ * conditional — no assertion is skipped by a default run.
  *
  * Trajectory-based assertions for transient states
  * (`tallyProgression`, `queuedBehindRunning`, `errorMidGraph`):
@@ -16,7 +20,7 @@
  * asserts on the captured array.  Last-DOM-wins is used only for
  * steady-state outcomes (e.g. `failedWithTraceback` end-state).
  *
- * Visual layer (Phase D §design): rows whose value is the trajectory
+ * Visual layer: rows whose value is the trajectory
  * (not the final state) opt into per-test video capture.  The .webm
  * lands next to the .png as `gallery/states/<name>.webm`.  The
  * playwright.config.ts default of `video: 'retain-on-failure'`
@@ -29,6 +33,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { setupRouteReplay } from '../../src/lib/__fixtures__/route-replay';
 import { behaviorCatalog } from '../../src/lib/__fixtures__/timelines';
+import { CAPTURE_GALLERY } from '../../playwright.config';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -47,7 +52,7 @@ const SHARED_CONTEXT_OPTIONS = {
  * Rows whose value is the trajectory rather than the final DOM —
  * `streamingConnecting` (connecting → streaming flip), `liveLogLineAppend`
  * (lines appending), `cancelledByUserMidRun` (click Stop mid-run),
- * `faultMidStream` (Pass 3: paced lines then mid-stream crash).
+ * `faultMidStream` (paced lines then mid-stream crash).
  * These opt into video capture so the gallery shows the motion.
  */
 const VIDEO_BEHAVIORS = new Set([
@@ -95,9 +100,8 @@ async function runBehaviorRow(
   row: BehaviorRow,
 ): Promise<void> {
     // Merge sseStream (declared on the BehaviorRow itself) into the
-    // RouteReplayOptions passed down — historic two-place schema (Pass 2)
-    // that the previous code path silently dropped, leaving the SSE
-    // fixture unwired.
+    // RouteReplayOptions passed down; without the merge the SSE fixture
+    // is never wired.
     await setupRouteReplay(page, row.timeline, {
       ...(row.routeOptions ?? {}),
       sseStream: row.sseStream,
@@ -112,7 +116,7 @@ async function runBehaviorRow(
       case 'cancelledByUpstreamFailure': {
         // Wait for B to land in `cancelled`, then click into the
         // Inspector and assert the causality-banner names the upstream
-        // node.  Pass 1.5 (D-B1 fix): InspectorPanel.svelte:1231 now
+        // node.  inspector/MethodPanel.svelte
         // exits the empty-state branch when `cancellationBanner` is set,
         // so a cancelled-because-upstream node with `runId === null`
         // renders the banner instead of the placeholder.
@@ -138,6 +142,43 @@ async function runBehaviorRow(
         await expect(banner).toContainText('Cancelled because');
         await expect(banner).toContainText('Method A');
         await expect(banner).toContainText('run-a-1');
+        break;
+      }
+
+      case 'refusedAtClaim': {
+        // A step refused at the claim is a failure with its message, and
+        // its descendant is cancelled because of it (the upstream banner),
+        // not stopped by the user. The terminal frame ends polling.
+        let statusCalls = 0;
+        page.on('request', (req) => {
+          if (req.url().includes('/api/workflow/status/')) statusCalls += 1;
+        });
+        await expect(page.locator('[data-id="method_a"]')).toContainText(
+          /failed/i,
+          { timeout: 8_000 },
+        );
+        await expect(page.locator('[data-id="method_b"]')).toContainText(
+          /cancelled/i,
+          { timeout: 8_000 },
+        );
+        await page.locator('[data-id="method_a"]').click();
+        const errBox = page.getByTestId('node-error-box');
+        await expect(errBox).toBeVisible({ timeout: 5_000 });
+        await expect(errBox).toContainText('was not handed it');
+        await page.locator('[data-id="method_b"]').click();
+        await page.getByRole('button', { name: /output/i }).click();
+        const banner = page.locator(
+          '.causality-banner[data-banner-kind="upstream"]',
+        );
+        await expect(banner).toBeVisible({ timeout: 5_000 });
+        await expect(banner).toContainText('Cancelled because');
+        await expect(banner).toContainText('Method A');
+        await expect(banner).toContainText('7');
+        // Polling stopped at the terminal frame: no status request lands
+        // across several polling intervals.
+        const settled = statusCalls;
+        await page.waitForTimeout(3_000);
+        expect(statusCalls).toBe(settled);
         break;
       }
 
@@ -241,8 +282,8 @@ async function runBehaviorRow(
         const errBox = page.getByTestId('node-error-box');
         await expect(errBox).toBeVisible({ timeout: 5_000 });
         await expect(errBox).toContainText('method_b raised RuntimeError');
-        // C's upstream-cause banner: Pass 1.5 (D-B1) makes this render
-        // even though C never heartbeated.  Banner names B as the
+        // C's upstream-cause banner renders even though C never
+        // heartbeated.  Banner names B as the
         // upstream that failed.
         await page.locator('[data-id="method_c"]').click();
         await page.getByRole('button', { name: /output/i }).click();
@@ -257,9 +298,9 @@ async function runBehaviorRow(
 
       case 'mixedStatus': {
         // Steady-state: node lands in `mixed` (rendered "mixed" with
-        // tally badge by CustomNode.svelte L57).  Distinct from
-        // `failed` (no completed) and `completed` (no failed).  Pass
-        // 1.5 (D-B2) threads the per-node `error` string through the
+        // tally badge by CustomNode's `statusLabel`).  Distinct from
+        // `failed` (no completed) and `completed` (no failed).  The
+        // per-node `error` string is threaded through the
         // bridge so the Inspector's node-error-box renders the
         // failed-sample error for completed_with_failures, same as
         // the `failed` state.
@@ -285,11 +326,16 @@ async function runBehaviorRow(
       case 'partialCacheHit': {
         // A has cache-hit banner; B walks through normal trajectory.
         // Assert (a) A's Output tab shows the cache-hit banner with
-        // the original run id; (b) B reaches `completed`.
+        // the original run id; (b) B reaches `completed`; (c) A's card
+        // reads `cached`, not `completed`, so the reuse is visible on the
+        // canvas without opening the Inspector.
         await expect(page.locator('[data-id="method_b"]')).toContainText(
           /completed/i,
           { timeout: 10_000 },
         );
+        const aStatus = page.locator('[data-id="method_a"] .status-label');
+        await expect(aStatus).toContainText('cached', { timeout: 5_000 });
+        await expect(aStatus).not.toContainText('completed');
         // A: click + Output tab + banner.
         await page.locator('[data-id="method_a"]').click();
         await page.getByRole('button', { name: /output/i }).click();
@@ -304,9 +350,8 @@ async function runBehaviorRow(
         // canvas surfaces the error via `pipeline-error-banner`.  No
         // polling is consumed.  The banner appears = the validate
         // shape `{valid: false, errors: [...]}` was honoured by
-        // submitPipeline (services.ts L69-77).  Pass 1.5 (D-B3): the
-        // banner now renders the actual validate error string instead
-        // of "[object Object]".
+        // submitPipeline's validation check in services.ts.  The banner renders the
+        // actual validate error string, not "[object Object]".
         const banner = page.getByTestId('pipeline-error-banner');
         await expect(banner).toBeVisible({ timeout: 5_000 });
         // submitPipeline wraps the validate errors in a SubmitError
@@ -323,9 +368,9 @@ async function runBehaviorRow(
       }
 
       case 'streamingConnecting': {
-        // ADR-015 Phase D Pass 2 (US-2): the streaming child enters
+        // The streaming child enters
         // `connecting` then flips to `streaming` on the first SSE_LINE
-        // (machine-level flip is asserted in streaming.test.ts Tier 2).
+        // (machine-level flip is asserted in streaming.test.ts).
         // Here we just prove the user-visible transition runs to
         // `completed`.  The Output tab is opened *during* running so
         // the gallery video captures the Inspector populating with
@@ -341,14 +386,13 @@ async function runBehaviorRow(
       }
 
       case 'liveLogLineAppend': {
-        // ADR-015 Phase D Pass 3: paced SSE replay emits 5 stdout ticks
+        // Paced SSE replay emits 5 stdout ticks
         // ~2s apart so the gallery video shows progressive log append.
         // We assert on the Inspector's status badge AND the log pane's
         // line count to catch regressions where the route-replay
-        // wiring drops the SSE fixture (Pass 2 had a silent two-place
-        // schema bug — `row.sseStream` declared but never plumbed into
-        // RouteReplayOptions — so the EventSource fell through to the
-        // single-frame terminal stub and the run looked "idle" with no
+        // wiring drops the SSE fixture (`row.sseStream` not plumbed into
+        // RouteReplayOptions — the EventSource then falls through to the
+        // single-frame terminal stub and the run looks "idle" with no
         // text).  The badge transitions: Idle → Streaming → Terminal.
         const node = page.locator('[data-id="method_a"]');
         await expect(node).toContainText(/running/i, { timeout: 8_000 });
@@ -373,7 +417,7 @@ async function runBehaviorRow(
       }
 
       case 'faultOnStream': {
-        // ADR-015 Phase D Pass 2 (US-4): SSE terminal carries
+        // SSE terminal carries
         // status:failed plus error_message + error_traceback.  Polling
         // ALSO carries an error string so the inspector's
         // node-error-box renders.
@@ -389,7 +433,7 @@ async function runBehaviorRow(
       }
 
       case 'faultMidStream': {
-        // ADR-015 Phase D Pass 3: paced SSE replay emits 3 stdout ticks
+        // Paced SSE replay emits 3 stdout ticks
         // ~1.5s apart, then a stderr crash + traceback + terminal:failed
         // at ~5.4s.  Polling holds `running` for ~6s, then flips to
         // `failed` carrying the error string for the Inspector
@@ -414,7 +458,7 @@ async function runBehaviorRow(
       }
 
       case 'cancelledByUserMidRun': {
-        // ADR-015 Phase D Pass 2 (US-5): user clicks Stop; the
+        // User clicks Stop; the
         // dispatchUserStop wire fires a cancel POST AND the local
         // USER_STOP.  We assert: (a) the cancel POST is hit (route
         // handler default mock returns 200), (b) the polling timeline
@@ -455,14 +499,16 @@ async function runBehaviorRow(
         throw new Error(`No assertion implemented for behavior row "${name}"`);
     }
 
-    // Phase E gallery: every row contributes a PNG so doc readers can
-    // eyeball the named behavior without re-running.  D-4 in the
-    // cycle decisions log.  Directory committed to git (no .gitignore
-    // exclusion).
-    await page.screenshot({
-      path: `gallery/states/${name}.png`,
-      fullPage: true,
-    });
+    // Gallery: every row contributes a PNG so doc readers can
+    // eyeball the named behavior without re-running.  Directory
+    // committed to git (no .gitignore exclusion), so the write is
+    // opt-in — every assertion above already ran.
+    if (CAPTURE_GALLERY) {
+      await page.screenshot({
+        path: `gallery/states/${name}.png`,
+        fullPage: true,
+      });
+    }
 }
 
 for (const [name, row] of Object.entries(behaviorCatalog)) {
@@ -484,7 +530,12 @@ for (const [name, row] of Object.entries(behaviorCatalog)) {
         // Closing the context finalizes the video file before saveAs.
         await ctx.close();
       }
-      if (video) {
+      // `recordVideo` stays on unconditionally: it is a browser-context
+      // option, and toggling it would change the conditions these
+      // trajectory-sensitive rows run under.  Only the copy into the
+      // tracked gallery is gated; the unsaved .webm stays in the
+      // untracked test-results output dir.
+      if (video && CAPTURE_GALLERY) {
         await video.saveAs(`gallery/states/${name}.webm`);
       }
     });

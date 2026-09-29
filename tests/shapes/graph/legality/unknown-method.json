@@ -1,0 +1,135 @@
+{
+  "id": "unknown-method",
+  "case": "legality-unknown-method",
+  "note": "mod.nope names no contract (an error); m2's required slot 'other' is unfilled (a warning).",
+  "document": {
+    "name": "unknown-method",
+    "nodes": [
+      {
+        "id": "s",
+        "type": "input_selector",
+        "method": "",
+        "module": "",
+        "params": {},
+        "samples": [
+          "s1"
+        ],
+        "source": "registered",
+        "fan_mode": "out"
+      },
+      {
+        "id": "m1",
+        "type": "method",
+        "method": "nope",
+        "module": "mod",
+        "params": {}
+      },
+      {
+        "id": "m2",
+        "type": "method",
+        "method": "join",
+        "module": "mod",
+        "params": {}
+      }
+    ],
+    "links": [
+      {
+        "source": "s",
+        "target": "m1",
+        "targetHandle": "data"
+      },
+      {
+        "source": "s",
+        "target": "m2",
+        "targetHandle": "data"
+      }
+    ],
+    "samples": [
+      "s1"
+    ]
+  },
+  "contract_map": {
+    "mod.filter": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/filter/filter.py",
+      "env": "container:base"
+    },
+    "mod.plot": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/plot/plot.py",
+      "env": "container:base"
+    },
+    "mod.qc": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/qc/qc.py",
+      "env": "container:base"
+    },
+    "mod.merge": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "sources": {
+          "required": true
+        }
+      },
+      "script_path": "methods/merge/merge.py",
+      "env": "container:base"
+    },
+    "mod.join": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        },
+        "other": {
+          "required": true
+        }
+      },
+      "script_path": "methods/join/join.py",
+      "env": "container:base"
+    }
+  },
+  "reference_outputs": {},
+  "package": {
+    "validation": "refuse",
+    "load": null
+  },
+  "client": {
+    "answers": false,
+    "reason": "the client previews only the duplicate-slot rule"
+  }
+}

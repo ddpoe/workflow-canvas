@@ -1,7 +1,6 @@
 """Fixture method: heartbeat -- emit timed stdout/stderr for streaming dogfood.
 
-Exercises the SSE log-stream endpoint (step 4) and the Builder Output tab
-(step 8) in `.superpowers/brainstorm/pipeline-output-visibility/plan.md`.
+Exercises the SSE log-stream endpoint and the Builder Output tab.
 The method passes the input CSV through to the output unchanged; the only
 point is producing visible, incremental log output during the run.
 

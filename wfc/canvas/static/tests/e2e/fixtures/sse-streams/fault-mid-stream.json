@@ -2,7 +2,7 @@
   "topology": "streaming_fail-handauthored",
   "node": "node_faulty",
   "recordedAt": "2026-05-01T00:00:00.000Z",
-  "_provenance": "Hand-authored for ADR-015 Phase D Pass 3 — 3 stdout ticks ~1.5s apart, then a stderr crash with traceback, then terminal:failed. Drives faultMidStream.webm gallery video. Will be overwritten by record-sse.ts against the streaming_fail topology in scripts/dev_routes.py once that backend path is validated.",
+  "_provenance": "Hand-authored — 3 stdout ticks ~1.5s apart, then a stderr crash with traceback, then terminal:failed. Drives faultMidStream.webm gallery video. Replace via record-sse.ts against the streaming_fail topology in scripts/dev_routes.py if a recorded version is desired.",
   "events": [
     {
       "delayMs": 600,

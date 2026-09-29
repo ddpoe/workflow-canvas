@@ -1,6 +1,19 @@
-/* Widen the RTD theme's content column (default caps at 800px, which
-   renders UI screenshots too small to read). Screenshots are captured at
-   2x device scale, so they stay sharp at this width. */
-.wy-nav-content {
+/* Widen the article column (the theme caps it at 60em, which renders UI
+   screenshots too small to read). Screenshots are captured at 2x device
+   scale, so they stay sharp at this width. */
+.bd-page-width {
+    max-width: none;
+}
+
+.bd-main .bd-content .bd-article-container {
     max-width: 1400px;
+}
+
+/* Narrower left sidebar on desktop (the theme default is 20%). */
+@media (min-width: 960px) {
+    .bd-sidebar-primary {
+        flex-basis: 16%;
+        width: 16%;
+        min-width: 15rem;
+    }
 }

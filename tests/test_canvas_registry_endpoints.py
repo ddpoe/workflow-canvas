@@ -1,90 +1,107 @@
-"""Registry-tab HTTP endpoints on wfc.canvas.server.
-
-Design handoff: design_handoff_onboarding/ENDPOINTS.md (scoped subset).
+"""Registry-tab HTTP endpoints in wfc.canvas.routes.registry.
 
 Covers:
   - GET  /api/registry/modules     (response shape)
   - GET  /api/registry/methods     (validated: null default)
-  - POST /api/registry/methods     (dryRun cache hit + fingerprint invalidation)
+  - POST /api/registry/methods/validate (cache hit, fingerprint invalidation,
+    the ``__main__`` block not executed)
   - POST /api/registry/samples     (DvcNotConfiguredError -> 409)
   - POST /api/registry/modules     (?dryRun=true does not persist)
+  - method detail (files and contract; path traversal refused)
+  - filesystem browse (project-root listing; traversal refused)
+  - environments list, packages and blob endpoints
 """
 
 from __future__ import annotations
 
+from tests.conftest import pin_project_root
+from tests.fixtures.fakes import stub_registry_seam
+
 import pytest
-from fastapi.testclient import TestClient
-from sqlmodel import Session, SQLModel, create_engine, select
+from sqlmodel import Session, create_engine, select
 
-from wfc.canvas import server as canvas_server
-from wfc.canvas.server import app
-from wfc.models import Method, MethodContract, Module, ModuleContract
+from wfc.canvas.routes import registry as registry_routes
+from wfc.persistence import Method, Module
+from tests.fixtures.routes import (
+    build_project_snapshot,
+    canvas_client,
+    restore_project_snapshot,
+)
+from tests.harness import ModuleSpec, Scenario, node
+
+REGISTRY_MODULE = "preprocessing"
+REGISTRY_DESCRIPTION = "Tile export + normalization."
+# The env every method binds to. The env tests write their own manifest
+# naming it, so the list row's ``spec`` is this bare name as registration
+# stored it -- ``Method.env`` is the method.yaml value verbatim, and the
+# ``container:`` prefix is only the legacy read side of the env grammar.
+REGISTRY_ENV = "demo"
 
 
-@pytest.fixture
-def db_engine(tmp_path, monkeypatch):
-    db_path = tmp_path / ".wfc" / "wfc.db"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    url = f"sqlite:///{db_path}"
-    monkeypatch.setenv("DATABASE_URL", url)
+@pytest.fixture(scope="module")
+def registry_project(tmp_path_factory):
+    """The registry tab's project -- one module, two methods -- built once by registration.
 
-    from wfc.database import reset_engine
+    The module's description and its two module-level contracts are
+    declared on the scenario and reach the rows through production's
+    ``register_module``; the methods' contracts are what registration
+    derived from the generated method directories. Both methods declare
+    the module's required output, because registration refuses a method
+    under a module whose required outputs it does not produce.
+
+    Yields:
+        The ``ProjectSnapshot``: the built project, its ``DATABASE_URL``,
+        the live database file and the pristine copy.
+    """
+    from wfc.persistence import reset_engine
+
+    root = tmp_path_factory.mktemp("canvas_registry_project")
+    scenario = Scenario(
+        nodes=[node("tile_export", module=REGISTRY_MODULE,
+                    outputs={"expression_matrix": ".h5ad"}),
+               node("normalize", module=REGISTRY_MODULE,
+                    outputs={"expression_matrix": ".h5ad"})],
+        env_name=REGISTRY_ENV,
+        modules={REGISTRY_MODULE: ModuleSpec(
+            description=REGISTRY_DESCRIPTION,
+            contracts=(
+                {"type": "output", "name": "expression_matrix",
+                 "value_type": ".h5ad", "required": True},
+                {"type": "metric", "name": "batch_effect_score",
+                 "value_type": "float", "required": True},
+            ),
+        )},
+    )
+    snapshot = build_project_snapshot(scenario, root)
+    yield snapshot
     reset_engine()
 
-    engine = create_engine(url)
-    SQLModel.metadata.create_all(engine)
 
-    with Session(engine) as session:
-        mod = Module(name="preprocessing", description="Tile export + normalization.")
-        session.add(mod)
-        session.flush()
+@pytest.fixture
+def db_engine(registry_project, monkeypatch):
+    """A pristine copy of the harness-built database, pinned for one test."""
+    from wfc.persistence import reset_engine
 
-        session.add_all([
-            ModuleContract(
-                module_id=mod.id,
-                contract_type="output",
-                name="expression_matrix",
-                value_type=".h5ad",
-                required=True,
-            ),
-            ModuleContract(
-                module_id=mod.id,
-                contract_type="metric",
-                name="batch_effect_score",
-                value_type="float",
-                required=True,
-            ),
-        ])
+    restore_project_snapshot(registry_project, monkeypatch)
 
-        m1 = Method(name="tile_export", module_id=mod.id,
-                    script_path="methods/tile_export/tile_export.py",
-                    env="container:demo")
-        m2 = Method(name="normalize", module_id=mod.id,
-                    script_path="methods/normalize/normalize.py",
-                    env="container:demo")
-        session.add_all([m1, m2])
-        session.flush()
-
-        session.add_all([
-            MethodContract(method_id=m1.id, input_slots={}, output_slots={}, params_schema={}),
-            MethodContract(method_id=m2.id, input_slots={}, output_slots={}, params_schema={}),
-        ])
-        session.commit()
-
+    engine = create_engine(registry_project.database_url)
     yield engine
+    engine.dispose()
+    reset_engine()
 
 
 @pytest.fixture
-def client(db_engine):
-    return TestClient(app, raise_server_exceptions=False)
+def client(db_engine, registry_project, monkeypatch):
+    """FastAPI test client over the harness-built project ``db_engine`` pinned."""
+    return canvas_client(registry_project.project.root, monkeypatch)
 
 
 # =============================================================================
-# T1: GET /api/registry/modules — response shape matches ENDPOINTS.md
+# T1: GET /api/registry/modules — response shape
 # =============================================================================
 
 def test_get_registry_modules_shape(client):
-    """Response matches the handoff contract: name, description, contracts, methods count, source."""
+    """Response carries name, description, contracts, methods count, source."""
     resp = client.get("/api/registry/modules")
     assert resp.status_code == 200
 
@@ -93,8 +110,8 @@ def test_get_registry_modules_shape(client):
     assert len(body["modules"]) == 1
 
     mod = body["modules"][0]
-    assert mod["name"] == "preprocessing"
-    assert mod["description"] == "Tile export + normalization."
+    assert mod["name"] == REGISTRY_MODULE
+    assert mod["description"] == REGISTRY_DESCRIPTION
     assert mod["methods"] == 2
     assert mod["source"] == "modules/preprocessing/module.yaml"
 
@@ -116,11 +133,10 @@ def test_get_registry_modules_shape(client):
 # T2: GET /api/registry/methods — validated: null on uncached methods
 # =============================================================================
 
-def test_get_registry_methods_includes_validated_null(client):
+def test_get_registry_methods_includes_validated_null(client, registry_project):
     """Freshly-registered methods (no dryRun run yet) report validated: null.
 
-    Replaces the ENDPOINTS.md `status: "ok"|"stale"|"broken"` enum with a
-    `validated: bool | null` field sourced from the dryRun cache.
+    `validated: bool | null` is sourced from the dryRun cache.
     """
     resp = client.get("/api/registry/methods")
     assert resp.status_code == 200
@@ -132,8 +148,11 @@ def test_get_registry_methods_includes_validated_null(client):
     by_name = {m["name"]: m for m in body["methods"]}
     tile = by_name["tile_export"]
 
-    assert tile["module"] == "preprocessing"
-    assert tile["env"] == "container:demo"
+    assert tile["module"] == REGISTRY_MODULE
+    # The env registration copied from the method's own method.yaml: the
+    # bare env name the scenario declared, which is the only form the
+    # contract parser accepts.
+    assert tile["env"] == registry_project.project.env_name
     assert tile["validated"] is None
     assert tile["runCount"] == 0
     assert tile["source"] == "methods/tile_export/method.yaml"
@@ -152,7 +171,7 @@ def test_method_validate_cache_hit_on_unchanged_fingerprint(
     script.write_text("# tile_export\n")
 
     # Point the server at this tmp project so fingerprint lookup resolves.
-    monkeypatch.setenv("WFC_CANVAS_PROJECT_ROOT", str(tmp_path))
+    pin_project_root(monkeypatch, tmp_path)
 
     call_count = {"n": 0}
 
@@ -160,8 +179,8 @@ def test_method_validate_cache_hit_on_unchanged_fingerprint(
         call_count["n"] += 1
         return (0, "", "")
 
-    monkeypatch.setattr(canvas_server, "_run_import_check_fn", fake_import_check)
-    canvas_server._method_validate_cache.clear()
+    stub_registry_seam(monkeypatch, "_run_import_check_fn", fake_import_check)
+    registry_routes._method_validate_cache.clear()
 
     first = client.post("/api/registry/methods/validate",
                         json={"module": "preprocessing", "method": "tile_export"})
@@ -189,7 +208,7 @@ def test_method_validate_invalidates_on_fingerprint_change(
     script.parent.mkdir(parents=True, exist_ok=True)
     script.write_text("# v1\n")
 
-    monkeypatch.setenv("WFC_CANVAS_PROJECT_ROOT", str(tmp_path))
+    pin_project_root(monkeypatch, tmp_path)
 
     call_count = {"n": 0}
 
@@ -197,8 +216,8 @@ def test_method_validate_invalidates_on_fingerprint_change(
         call_count["n"] += 1
         return (0, "", "")
 
-    monkeypatch.setattr(canvas_server, "_run_import_check_fn", fake_import_check)
-    canvas_server._method_validate_cache.clear()
+    stub_registry_seam(monkeypatch, "_run_import_check_fn", fake_import_check)
+    registry_routes._method_validate_cache.clear()
 
     r1 = client.post("/api/registry/methods/validate",
                      json={"module": "preprocessing", "method": "tile_export"})
@@ -221,15 +240,15 @@ def test_method_validate_invalidates_on_fingerprint_change(
 def test_post_registry_samples_dvc_not_configured_returns_409(
     client, tmp_path, monkeypatch
 ):
-    """`DvcNotConfiguredError` from wfc.cli.register_sample -> HTTP 409."""
-    from wfc.provenance import DvcNotConfiguredError
+    """`DvcNotConfiguredError` from wfc.registration.register_sample -> HTTP 409."""
+    from wfc.storage import DvcNotConfiguredError
 
     def fake_register_sample(*args, **kwargs):
         raise DvcNotConfiguredError(
             "Project has no [dvc] section in wf-canvas.toml"
         )
 
-    monkeypatch.setattr(canvas_server, "_register_sample_fn", fake_register_sample)
+    stub_registry_seam(monkeypatch, "_register_sample_fn", fake_register_sample)
 
     resp = client.post(
         "/api/registry/samples",
@@ -253,7 +272,7 @@ def test_post_registry_modules_dryrun_does_not_persist(
         called["n"] += 1
         raise AssertionError("register_module must NOT be called in dryRun mode")
 
-    monkeypatch.setattr(canvas_server, "_register_module_fn", fake_register_module)
+    stub_registry_seam(monkeypatch, "_register_module_fn", fake_register_module)
 
     resp = client.post(
         "/api/registry/modules?dryRun=true",
@@ -278,7 +297,7 @@ def test_post_registry_modules_dryrun_does_not_persist(
 
 
 # =============================================================================
-# Regression: validate must NOT execute the `if __name__ == "__main__":` block
+# validate must NOT execute the `if __name__ == "__main__":` block
 # =============================================================================
 
 def test_method_validate_does_not_run_main_block(client, tmp_path, monkeypatch):
@@ -300,8 +319,8 @@ def test_method_validate_does_not_run_main_block(client, tmp_path, monkeypatch):
         "    main()\n"
     )
 
-    monkeypatch.setenv("WFC_CANVAS_PROJECT_ROOT", str(tmp_path))
-    canvas_server._method_validate_cache.clear()
+    pin_project_root(monkeypatch, tmp_path)
+    registry_routes._method_validate_cache.clear()
 
     resp = client.post(
         "/api/registry/methods/validate",
@@ -323,7 +342,7 @@ def test_method_detail_returns_files_and_contract(client, tmp_path, monkeypatch)
     (method_dir / "tile_export.py").write_text("def main():\n    pass\n")
     (method_dir / "method.yaml").write_text("name: tile_export\n")
 
-    monkeypatch.setenv("WFC_CANVAS_PROJECT_ROOT", str(tmp_path))
+    pin_project_root(monkeypatch, tmp_path)
 
     resp = client.get("/api/registry/methods/preprocessing/tile_export/detail")
     assert resp.status_code == 200
@@ -346,10 +365,6 @@ def test_method_detail_returns_files_and_contract(client, tmp_path, monkeypatch)
 
 
 # =============================================================================
-# T8: detail endpoint rejects method_dir that escapes the project root
-# =============================================================================
-
-# =============================================================================
 # T9: GET /api/fs/browse — project-root-scoped dir listing
 # =============================================================================
 
@@ -359,7 +374,7 @@ def test_fs_browse_lists_project_root_contents(client, tmp_path, monkeypatch):
     (tmp_path / "methods" / "transform").mkdir()
     (tmp_path / "README.md").write_text("hi\n")
 
-    monkeypatch.setenv("WFC_CANVAS_PROJECT_ROOT", str(tmp_path))
+    pin_project_root(monkeypatch, tmp_path)
 
     resp = client.get("/api/fs/browse")
     assert resp.status_code == 200
@@ -380,7 +395,7 @@ def test_fs_browse_lists_project_root_contents(client, tmp_path, monkeypatch):
 
 def test_fs_browse_rejects_traversal(client, tmp_path, monkeypatch):
     """`..` escapes the project root -> 400."""
-    monkeypatch.setenv("WFC_CANVAS_PROJECT_ROOT", str(tmp_path))
+    pin_project_root(monkeypatch, tmp_path)
 
     resp = client.get("/api/fs/browse?path=../../../etc")
     assert resp.status_code == 400
@@ -398,7 +413,7 @@ def test_method_detail_rejects_path_traversal(client, db_engine, tmp_path, monke
         session.add(meth)
         session.commit()
 
-    monkeypatch.setenv("WFC_CANVAS_PROJECT_ROOT", str(tmp_path))
+    pin_project_root(monkeypatch, tmp_path)
 
     resp = client.get("/api/registry/methods/preprocessing/tile_export/detail")
     assert resp.status_code == 400
@@ -423,50 +438,23 @@ packages:
 
 def _seed_env_manifest_and_blob(tmp_path):
     """Write a .wfc/envs.json with a captured pixi env ('demo') + an
-    uncaptured byo env ('byo_box'), and stage the pixi source blob into the
-    DVC cache so the /packages and /envs endpoints can read it back.
+    uncaptured byo env ('byo_box') through the production serialization
+    helper. The demo env's pixi source blob lands in the DVC cache via the
+    production source_fingerprint path, so the /packages and /envs
+    endpoints read back exactly what registration would have staged.
 
     Returns the demo env's source_fingerprint md5.
     """
-    import hashlib
-    import json
+    from tests.fixtures.conftest import write_env_record
 
-    from wfc.env_packages import PIP_FREEZE_DELIMITER
-
-    blob = _DEMO_PIXI_LOCK + PIP_FREEZE_DELIMITER + ""
-    md5 = hashlib.md5(blob.encode("utf-8")).hexdigest()
-    cache_dir = tmp_path / ".dvc" / "cache" / "files" / "md5" / md5[:2]
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    (cache_dir / md5[2:]).write_bytes(blob.encode("utf-8"))
-
-    manifest = {
-        "schema_version": 1,
-        "envs": {
-            "demo": {
-                "backend": "pixi",
-                "source": "pixi.toml",
-                "container": "demo@sha256:" + "a" * 64,
-                "env_fingerprint": "e" * 32,
-                "built_at": "2026-06-27T00:00:00Z",
-                "built_from_lock": "pixi.lock",
-                "source_fingerprint": md5,
-            },
-            "byo_box": {
-                "backend": "byo",
-                "source": "docker://reg/img@sha256:" + "b" * 64,
-                "container": "docker://reg/img@sha256:" + "b" * 64,
-                "env_fingerprint": "f" * 32,
-                "built_at": "2026-06-27T00:00:00Z",
-                "built_from_lock": None,
-                "source_fingerprint": None,
-            },
-        },
-    }
-    (tmp_path / ".wfc").mkdir(parents=True, exist_ok=True)
-    (tmp_path / ".wfc" / "envs.json").write_text(
-        json.dumps(manifest), encoding="utf-8"
+    demo = write_env_record(
+        tmp_path, "demo", backend="pixi", digest="a" * 64,
+        lock_content=_DEMO_PIXI_LOCK,
     )
-    return md5
+    write_env_record(
+        tmp_path, "byo_box", backend="byo", image="reg/img", digest="b" * 64,
+    )
+    return demo["source_fingerprint"]
 
 
 def test_list_envs_reshaped_row_carries_backend_run_stats_and_has_packages(
@@ -475,10 +463,10 @@ def test_list_envs_reshaped_row_carries_backend_run_stats_and_has_packages(
     """List rows report backend + has_packages + run stats, sourced from the
     env manifest and Run rows (the reshaped row, no fingerprint history)."""
     from datetime import datetime
-    from wfc.models import Run
+    from wfc.persistence import Run
 
     _seed_env_manifest_and_blob(tmp_path)
-    monkeypatch.setenv("WFC_CANVAS_PROJECT_ROOT", str(tmp_path))
+    pin_project_root(monkeypatch, tmp_path)
 
     with Session(db_engine) as session:
         m1 = session.exec(select(Method).where(Method.name == "tile_export")).first()
@@ -496,7 +484,7 @@ def test_list_envs_reshaped_row_carries_backend_run_stats_and_has_packages(
     envs = client.get("/api/registry/envs").json()["envs"]
     assert len(envs) == 1
     row = envs[0]
-    assert row["spec"] == "container:demo"
+    assert row["spec"] == REGISTRY_ENV
     assert set(row["methods"]) == {"preprocessing.tile_export", "preprocessing.normalize"}
     assert row["backend"] == "pixi"
     assert row["has_packages"] is True
@@ -511,7 +499,7 @@ def test_env_packages_endpoint_captured_vs_byo_and_agrees_with_list(
     and an honest empty state for a byo env; has_packages on the list row
     agrees with /packages captured for the same spec."""
     _seed_env_manifest_and_blob(tmp_path)
-    monkeypatch.setenv("WFC_CANVAS_PROJECT_ROOT", str(tmp_path))
+    pin_project_root(monkeypatch, tmp_path)
 
     captured = client.get("/api/registry/envs/container:demo/packages").json()
     assert captured["captured"] is True
@@ -527,17 +515,24 @@ def test_env_packages_endpoint_captured_vs_byo_and_agrees_with_list(
 
     # Agreement: the list row's has_packages matches /packages captured.
     row = client.get("/api/registry/envs").json()["envs"][0]
-    assert row["spec"] == "container:demo"
+    assert row["spec"] == REGISTRY_ENV
     assert row["has_packages"] == captured["captured"]
 
 
 def test_env_blob_serves_content_and_guards_md5(client, tmp_path, monkeypatch):
-    """Blob endpoint reads the DVC cache and rejects malformed md5."""
-    monkeypatch.setenv("WFC_CANVAS_PROJECT_ROOT", str(tmp_path))
+    """Blob endpoint reads the DVC cache; a malformed md5 is a 400 and an
+    absent blob a 404, each with its detail string."""
+    pin_project_root(monkeypatch, tmp_path)
     md5 = "d" * 32
     cache_dir = tmp_path / ".dvc" / "cache" / "files" / "md5" / md5[:2]
     cache_dir.mkdir(parents=True)
     (cache_dir / md5[2:]).write_text("env blob contents\npackage==1.0\n", encoding="utf-8")
 
     assert "env blob contents" in client.get(f"/api/registry/envs/blob/{md5}").text
-    assert client.get("/api/registry/envs/blob/not-a-valid-md5").status_code == 400
+    malformed = client.get("/api/registry/envs/blob/not-a-valid-md5")
+    assert malformed.status_code == 400
+    assert malformed.json()["detail"] == "malformed md5 (expect 32 lowercase hex)"
+    absent = "e" * 32
+    missing = client.get(f"/api/registry/envs/blob/{absent}")
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == f"blob not found: {absent}"

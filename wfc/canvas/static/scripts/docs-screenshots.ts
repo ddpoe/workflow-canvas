@@ -11,20 +11,22 @@
  *     been run so History has content.
  *
  *   npx tsx scripts/docs-screenshots.ts --cache-sequence [dir] [port]
- *     Scaffold a FRESH demo project (default: a sibling of the repo's
- *     temp dir on port 8501), run the demo pipeline twice, and capture
+ *     Scaffold a FRESH demo project (default: a new directory under the
+ *     OS temp dir, on port 8501; the dir must be outside this repo), run
+ *     the demo pipeline twice, and capture
  *     the Lineages view after each run: first run (everything executes,
  *     no CACHED pills) and second run (every step cache-hits).  Leaves
  *     any canvas on other ports untouched.
  *
  * Overview shots are full-viewport; detail shots (inspector, variables
- * panel, run detail panel) are element crops so they stay readable at
+ * panel, run detail panel on its Artifacts and Overview tabs) are element crops so they stay readable at
  * doc-page width.  Everything is captured at 2x device scale.
  */
 import { chromium, type Locator, type Page } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -157,6 +159,18 @@ async function captureMain(base: string): Promise<void> {
   await settle(page);
   await shot(page.locator('.detail-panel'), 'run-detail-panel.png');
 
+  // ---- Run detail overview of a sample-reading run (panel crop) -
+  // preprocess reads its sample directly, so its overview lists the read
+  // under the parent-chip row.
+  console.log('Detail overview…');
+  await page.locator('.tree-card', { hasText: 'preprocess' }).first().click();
+  await settle(page, 400);
+  await page.locator('.detail-panel button', { hasText: 'Overview' }).first().click();
+  await page.getByTestId('sample-read').first().waitFor({ timeout: 15_000 })
+    .catch(() => console.warn('  ! no sample-read line detected'));
+  await settle(page);
+  await shot(page.locator('.detail-panel'), 'run-detail-overview.png');
+
   await browser.close();
 }
 
@@ -177,14 +191,30 @@ async function runPipelineAndWait(
   );
   await settle(page);
   if (prepare) await prepare(page);
-  // Submit, then confirm in the Runs Preview panel ("Run N jobs").  The
-  // preview renders asynchronously, so wait for the confirm button and
-  // verify the run actually started (Stop button appears); retry once.
+  // Run. With parameter rows still unlocked (opening the inspector leaves
+  // rows editing) Run opens the lock summary, and the run starts only when
+  // it is confirmed. Verify the run actually started (Stop button appears);
+  // retry once.
   for (let attempt = 0; ; attempt++) {
+    const submitted = page
+      .waitForResponse(
+        r => r.url().endsWith('/api/workflow/run') && r.request().method() === 'POST',
+        { timeout: 30_000 },
+      )
+      .catch(() => null);
     await page.locator('.btn-run').click();
-    const confirm = page.locator('button', { hasText: /Run \d+ job/ }).first();
-    await confirm.waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {});
-    if (await confirm.isVisible().catch(() => false)) await confirm.click();
+    const summary = page.getByTestId('lock-summary');
+    await summary.waitFor({ state: 'visible', timeout: 3_000 }).catch(() => {});
+    if (await summary.isVisible().catch(() => false)) {
+      await summary.getByTestId('lock-summary-confirm').click();
+    }
+    // A refused submission (e.g. the clean-tree gate's 409) must fail
+    // loudly, not leave the poll below waiting 15 minutes for runs.
+    const res = await submitted;
+    if (res && !res.ok()) {
+      await page.screenshot({ path: path.join(OUT, '_debug-run-refused.png') });
+      throw new Error(`Run refused: HTTP ${res.status()} ${await res.text()}`);
+    }
     const started = await page
       .locator('button', { hasText: 'Stop' })
       .first()
@@ -221,12 +251,12 @@ async function captureCacheSequence(dir: string, port: number): Promise<void> {
   const base = `http://localhost:${port}`;
   fs.mkdirSync(dir, { recursive: true });
   console.log(`Scaffolding fresh demo in ${dir} (port ${port})…`);
-  // wfc demo requires an initialised project; init non-interactively with
-  // the archive kept inside the scratch dir so cleanup is one rmdir.
+  // wfc demo requires an initialised project; init non-interactively. The
+  // archive sits beside the scratch dir: wfc init refuses one inside the project.
   await new Promise<void>((resolve, reject) => {
     const init = spawn(
       'poetry',
-      ['run', 'wfc', 'init', '--dir', dir, '--archive', path.join(dir, '.archive'), '--yes'],
+      ['run', 'wfc', 'init', '--dir', dir, '--archive', `${path.resolve(dir)}-archive`, '--yes'],
       { cwd: REPO_ROOT, shell: true, stdio: 'inherit' },
     );
     init.on('exit', code => (code === 0 ? resolve() : reject(new Error(`wfc init exited ${code}`))));
@@ -250,10 +280,6 @@ async function captureCacheSequence(dir: string, port: number): Promise<void> {
 
     const browser = await chromium.launch();
     const page = await browser.newPage({ viewport: VIEWPORT, deviceScaleFactor: 2 });
-    // doRun() asks via window.confirm to lock rows still in edit mode
-    // (opening the inspector leaves rows editing); Playwright dismisses
-    // native dialogs by default, which silently cancels the run.
-    page.on('dialog', d => { d.accept().catch(() => {}); });
 
     console.log('First run (everything executes)…');
     await runPipelineAndWait(page, base, { success: 15, cached: 0 });
@@ -263,8 +289,8 @@ async function captureCacheSequence(dir: string, port: number): Promise<void> {
     // Second run changes one param on the terminal plot step: the 12
     // unchanged upstream jobs cache-hit and the 3 plot jobs re-execute,
     // so the new chains show CACHED upstream feeding a fresh node.  The
-    // unchanged summarize chains re-run entirely from cache and collapse
-    // into the "fully-cached paths hidden · Show" count line.
+    // unchanged summarize chains re-run entirely from cache, and each one
+    // joins the executed row it reused, labelled CACHED.
     console.log('Second run (upstream cache-hits, changed plot re-executes)…');
     await runPipelineAndWait(page, base, { success: 30, cached: 12 }, async p => {
       await p.locator('.svelte-flow__node', { hasText: 'plot' }).first().click();
@@ -292,7 +318,17 @@ async function main(): Promise<void> {
   fs.mkdirSync(OUT, { recursive: true });
   const args = process.argv.slice(2);
   if (args[0] === '--cache-sequence') {
-    const dir = args[1] ?? path.join(REPO_ROOT, '.demo-cache-seq');
+    // The scratch project must sit OUTSIDE this repo: inside it, `wfc init`
+    // and method registration commit onto the repo's branch, and the PNGs
+    // this script writes dirty the tracked tree, so the clean-tree gate
+    // refuses the second run.
+    const dir = path.resolve(
+      args[1] ?? path.join(os.tmpdir(), `wfc-docs-cache-seq-${Date.now()}`),
+    );
+    const rel = path.relative(REPO_ROOT, dir);
+    if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
+      throw new Error(`--cache-sequence dir must be outside the repo (${REPO_ROOT}): ${dir}`);
+    }
     const port = args[2] ? parseInt(args[2], 10) : 8501;
     await captureCacheSequence(dir, port);
   } else {

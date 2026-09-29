@@ -1,6 +1,6 @@
-# Tier-1 user-env image for ADR-020 integration tests.
+# Tier-1 user-env image for integration tests.
 #
-# Installs ONLY the pure-stdlib `wfc-client` package so a Tier-1 user method
+# Installs ONLY the `wfc-client` package (one small dependency) so a Tier-1 user method
 # can `import wfc_client as wfc` and call `@wfc.method` / `ctx.save_artifact`.
 # The full `wfc` engine is deliberately absent: under thin-container dispatch
 # the host `wfc run-step` runs the method script directly via the env's
@@ -14,7 +14,7 @@ FROM python:3.11-slim
 WORKDIR /build
 
 # Copy the standalone wfc-client package (nested poetry package at
-# wfc-client/ since the 0.1.0 PyPI restructure) and install it (zero deps).
+# wfc-client/) and install it (one small dependency).
 COPY wfc-client ./wfc-client
 RUN pip install ./wfc-client
 

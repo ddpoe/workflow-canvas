@@ -24,4 +24,4 @@ params:
     description: "Drop rows whose value is missing/non-numeric"
 
 executor: python
-env: container:fixture-env
+env: fixture-env

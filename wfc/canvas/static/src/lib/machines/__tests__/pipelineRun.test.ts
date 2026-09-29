@@ -35,8 +35,8 @@ function startWith({
       pollNodeStatus: (poll ?? noopSSE) as never,
       streamingActor: noopSSE as never,
       // The `preflight → submitting` transition is gated on this actor
-      // resolving — replaces the legacy `requestCommitAll` action spy.
-      // Tests that just want submit to fire pass an immediate-resolve.
+      // resolving. Tests that just want submit to fire pass an
+      // immediate-resolve.
       awaitAllCommitted: fromPromise(async () => {
         onCommitAll?.();
       }),
@@ -85,9 +85,9 @@ describe('pipelineRunActor', () => {
 
     // After submitting.onDone, every spawned child should have received
     // a `RUN` event (jobId attached) and be sitting in `queued`. This is
-    // the load-bearing assertion masked by the iteration-1 test gap —
-    // without RUN at submitting.onDone, children stay in idle and silently
-    // drop polling-emitted HEARTBEAT/RUN_OK/RUN_FAILED events.
+    // the load-bearing assertion — without RUN at submitting.onDone,
+    // children stay in idle and silently drop polling-emitted
+    // HEARTBEAT/RUN_OK/RUN_FAILED events.
     {
       const refs = actor.getSnapshot().context.nodeRefs;
       expect(refs['a'].getSnapshot().value).toBe('queued');
@@ -98,7 +98,7 @@ describe('pipelineRunActor', () => {
     // Polling-driven heartbeat → child flips to `running`, then RUN_OK
     // → `succeeded`. Asserting the child reaches a terminal happy-path
     // state (not just that the parent reaches `done`) is what catches
-    // the missing-RUN bug.
+    // a missing RUN cascade.
     pollSendBack!({
       type: 'NODE_HEARTBEAT',
       nodeId: 'a',
@@ -191,8 +191,7 @@ describe('pipelineRunActor', () => {
     });
 
     const refs = actor.getSnapshot().context.nodeRefs;
-    // Faulty must reach `failed` — the load-bearing assertion the
-    // iteration-1 test gap masked. RUN_FAILED arriving in `idle` would
+    // Faulty must reach `failed` — RUN_FAILED arriving in `idle` would
     // be silently dropped without the `submitting.onDone → RUN`
     // cascade.
     const faultySnap = refs['faulty'].getSnapshot();
@@ -209,8 +208,8 @@ describe('pipelineRunActor', () => {
   it('USER_STOP arriving in `submitting` reaches `done` (click-window)', async () => {
     // The Toolbar's Stop button is reachable any time `runState.running`
     // is true — including the sub-second window between RUN_CLICKED and
-    // polling start. Before the top-level USER_STOP handler, this
-    // event was silently dropped from `preflight` and `submitting`,
+    // polling start. Without the top-level USER_STOP handler, this
+    // event would be silently dropped from `preflight` and `submitting`,
     // leaving the actor wedged once polling started against a
     // cancelled-on-the-server job.
     //
@@ -247,7 +246,7 @@ describe('pipelineRunActor', () => {
     actor.stop();
   });
 
-  it('run-readiness rejection (Docker down) surfaces a kind-tagged pipelineError (D-6)', async () => {
+  it('run-readiness rejection (Docker down) surfaces a kind-tagged pipelineError', async () => {
     // The submission gate rejects with a SubmitError carrying {kind, message,
     // hint}. onError must preserve kind + hint so the pipeline-error card can
     // render the Docker readiness affordance instead of a generic 'unknown'.
@@ -279,14 +278,13 @@ describe('pipelineRunActor', () => {
   });
 
   it('re-run from `done` lands a second submission (RUN_CLICKED in done)', async () => {
-    // Regression: after run #1 reached `done`, RUN_CLICKED was dropped
-    // because preflight's entry called `.stop()` on the still-tracked
-    // spawned children. xstate v5 throws "A non-root actor cannot be
-    // stopped directly" from there, which aborts the entry mid-action
-    // and silently reverts the transition — the inspector showed the
-    // RUN_CLICKED event but no follow-up snapshot. Reassigning
-    // `nodeRefs` to a fresh object is enough; xstate auto-stops the
-    // orphaned children.
+    // After run #1 reaches `done`, RUN_CLICKED must start run #2. If
+    // preflight's entry called `.stop()` on the still-tracked spawned
+    // children, xstate v5 would throw "A non-root actor cannot be
+    // stopped directly", abort the entry mid-action and silently revert
+    // the transition — the inspector would show the RUN_CLICKED event
+    // but no follow-up snapshot. Reassigning `nodeRefs` to a fresh
+    // object is enough; xstate auto-stops the orphaned children.
     let pollSendBack: ((evt: EventObject) => void) | null = null;
     let submitCalls = 0;
 

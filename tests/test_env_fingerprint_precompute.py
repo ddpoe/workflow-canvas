@@ -1,9 +1,9 @@
 """Subsystem test: container-branch capture_env_content is canonical and
 deterministic.
 
-Covers the precompute *write* path used by wfc.envs.register to populate
+Covers the precompute *write* path used by wfc.environments.register to populate
 ``env_fingerprint`` at registration time. The runtime *read* path (looking
-up a method's container at run-step time) is Cycle D.
+up a method's container) happens at run-step time.
 """
 
 from __future__ import annotations
@@ -23,8 +23,7 @@ from axiom_annotations import workflow
             "changes — fingerprint must track image identity"
 )
 def test_env_fingerprint_precompute_canonical_and_sensitive_to_digest(tmp_path):
-    from wfc.version import capture_env_content
-
+    from wfc.environments.fingerprint import capture_env_content
     # Need .wfc/ for downstream store_env_content; capture_env_content itself
     # does not touch disk for the container branch, but keep the layout
     # consistent.
@@ -34,9 +33,9 @@ def test_env_fingerprint_precompute_canonical_and_sensitive_to_digest(tmp_path):
     spec_a_again = "container:image-io@sha256:" + ("a" * 64)
     spec_b = "container:image-io@sha256:" + ("b" * 64)
 
-    blob_a = capture_env_content(spec_a, tmp_path)
-    blob_a_again = capture_env_content(spec_a_again, tmp_path)
-    blob_b = capture_env_content(spec_b, tmp_path)
+    blob_a = capture_env_content(spec_a)
+    blob_a_again = capture_env_content(spec_a_again)
+    blob_b = capture_env_content(spec_b)
 
     # Canonical JSON: parseable, sorted keys, no spaces.
     parsed = json.loads(blob_a)
@@ -60,8 +59,7 @@ def test_env_fingerprint_precompute_canonical_and_sensitive_to_digest(tmp_path):
 def test_container_spec_malformed_rejected(tmp_path):
     """Missing @sha256 marker must raise ValueError, not silently produce
     a garbage fingerprint."""
-    from wfc.version import capture_env_content
-
+    from wfc.environments.fingerprint import capture_env_content
     (tmp_path / ".wfc").mkdir()
     with pytest.raises(ValueError, match="container env spec"):
-        capture_env_content("container:image-io-no-digest", tmp_path)
+        capture_env_content("container:image-io-no-digest")

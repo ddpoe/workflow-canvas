@@ -1,0 +1,175 @@
+{
+  "id": "fan-in-chain",
+  "case": "collapse-propagation",
+  "note": "Collapse propagates down the chain with one bundle; the client takes the bundle from the first fan-in selector in the document, the same answer here.",
+  "document": {
+    "name": "fan-in-chain",
+    "nodes": [
+      {
+        "id": "s",
+        "type": "input_selector",
+        "method": "",
+        "module": "",
+        "params": {},
+        "samples": [
+          "a",
+          "b"
+        ],
+        "source": "registered",
+        "fan_mode": "in"
+      },
+      {
+        "id": "m1",
+        "type": "method",
+        "method": "merge",
+        "module": "mod",
+        "params": {}
+      },
+      {
+        "id": "m2",
+        "type": "method",
+        "method": "filter",
+        "module": "mod",
+        "params": {}
+      },
+      {
+        "id": "m3",
+        "type": "method",
+        "method": "filter",
+        "module": "mod",
+        "params": {}
+      }
+    ],
+    "links": [
+      {
+        "source": "s",
+        "target": "m1",
+        "targetHandle": "sources"
+      },
+      {
+        "source": "m1",
+        "target": "m2",
+        "targetHandle": "data"
+      },
+      {
+        "source": "m2",
+        "target": "m3",
+        "targetHandle": "data"
+      }
+    ],
+    "samples": [
+      "a",
+      "b"
+    ]
+  },
+  "contract_map": {
+    "mod.filter": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/filter/filter.py",
+      "env": "container:base"
+    },
+    "mod.plot": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/plot/plot.py",
+      "env": "container:base"
+    },
+    "mod.qc": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/qc/qc.py",
+      "env": "container:base"
+    },
+    "mod.merge": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "sources": {
+          "required": true
+        }
+      },
+      "script_path": "methods/merge/merge.py",
+      "env": "container:base"
+    },
+    "mod.join": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        },
+        "other": {
+          "required": true
+        }
+      },
+      "script_path": "methods/join/join.py",
+      "env": "container:base"
+    }
+  },
+  "reference_outputs": {},
+  "expect": {
+    "collapsed": [
+      "m1",
+      "m2",
+      "m3"
+    ],
+    "bundle": [
+      "a",
+      "b"
+    ],
+    "rows": [
+      {
+        "node": "m1",
+        "sample": "__all__",
+        "variant": "default",
+        "reused": false
+      },
+      {
+        "node": "m2",
+        "sample": "__all__",
+        "variant": "default",
+        "reused": false
+      },
+      {
+        "node": "m3",
+        "sample": "__all__",
+        "variant": "default",
+        "reused": false
+      }
+    ]
+  },
+  "client": {
+    "answers": true
+  }
+}

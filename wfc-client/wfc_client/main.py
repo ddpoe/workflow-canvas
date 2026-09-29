@@ -5,15 +5,19 @@ registry, builds a :class:`RunContext`, calls the function with ``ctx``,
 and finalizes (writes the ``_wfc_results.json`` manifest). There is no
 return-value parsing — the function's return value is ignored.
 
-Pure stdlib.
+The standard library plus one small dependency: ``axiom-annotations``,
+whose markers narrate the four steps below.
 """
 
 from __future__ import annotations
+
+from axiom_annotations import Step, task
 
 from .context import RunContext
 from .decorator import _registry
 
 
+@task(purpose="Run the module's one @wfc.method function and write its results manifest")
 def run() -> None:
     """Run the single ``@wfc.method``-decorated function in this module.
 
@@ -26,6 +30,9 @@ def run() -> None:
         RuntimeError: If zero or more than one ``@wfc.method`` function is
             registered in this module.
     """
+    口 = Step(step_num=1, name="Find the method function",
+             purpose="Require exactly one @wfc.method in the module registry")
+
     if len(_registry) == 0:
         raise RuntimeError(
             "wfc.run() found no @wfc.method function. Decorate exactly one "
@@ -41,6 +48,18 @@ def run() -> None:
         )
 
     func = _registry[0]
+
+    口 = Step(step_num=2, name="Build the run context",
+             purpose="Read the WFC_* env vars into a RunContext")
+
     ctx = RunContext()
+
+    口 = Step(step_num=3, name="Call the method",
+             purpose="Hand the context to the user's function; its return value is ignored")
+
     func(ctx)
+
+    口 = Step(step_num=4, name="Write the results manifest",
+             purpose="Write _wfc_results.json with the recorded outputs and metrics")
+
     ctx._finalize()

@@ -1,5 +1,5 @@
 {
-  "_comment": "Minimal 2-node pipeline to validate Gap 7: multi-output method (train_classifier) feeding a multi-input method (plot_decision_boundary) via named source_slot/target_slot links.",
+  "_comment": "Minimal 2-node pipeline to validate multi-output method (train_classifier) feeding a multi-input method (plot_decision_boundary) via named source_slot/target_slot links.",
   "nodes": [
     {
       "id": "classifier",

@@ -9,68 +9,30 @@ flight (the end-of-run pass archives on its own).
 import threading
 
 import pytest
-from fastapi.testclient import TestClient
 from sqlmodel import select
 
 from axiom_annotations import workflow
 
+from tests.fixtures.routes import canvas_client, completed_run
+
 
 @pytest.fixture
 def client(tmp_project, monkeypatch):
-    from wfc.canvas import server
-
-    monkeypatch.setenv("WFC_CANVAS_PROJECT_ROOT", str(tmp_project))
-    server._active_jobs.clear()
-    server._archive_job["thread"] = None
-    server._archive_job["progress"] = None
-    return TestClient(server.app, raise_server_exceptions=False)
-
-
-def _seed_unarchived_run(tmp_project, n_outputs=2, name="arch_mod"):
-    from wfc.database import get_session
-    from wfc.models import Module, Method, Run, RunOutput
-
-    (tmp_project / ".dvc" / "cache" / "files" / "md5").mkdir(
-        parents=True, exist_ok=True
-    )
-    with get_session() as session:
-        mod = Module(name=name)
-        session.add(mod)
-        session.commit()
-        session.refresh(mod)
-
-        meth = Method(name=f"{name}_meth", module_id=mod.id, env="container:demo")
-        session.add(meth)
-        session.commit()
-        session.refresh(meth)
-
-        run = Run(method_id=meth.id, sample="s1", status="completed")
-        session.add(run)
-        session.commit()
-        session.refresh(run)
-        run_id = run.id
-
-    for i in range(n_outputs):
-        f = tmp_project / f"{name}_{i}.parquet"
-        f.write_bytes(f"content-{i}".encode())
-        with get_session() as session:
-            session.add(RunOutput(
-                run_id=run_id, output_name=f.name,
-                artifact_path=str(f), artifact_type="module_file",
-            ))
-            session.commit()
-    return run_id
+    return canvas_client(tmp_project, monkeypatch)
 
 
 @workflow(purpose="archive-status reports unarchived counts; POST cache/archive clears them")
-def test_archive_status_counts_and_manual_archive(client, tmp_project):
-    """Seeded NULL-hash outputs show up in archive-status; a manual archive
-    pass clears the counts and writes hashes."""
-    from wfc.canvas import server
-    from wfc.database import get_session
-    from wfc.models import RunOutput
+def test_archive_status_counts_and_manual_archive(client, tmp_project, monkeypatch):
+    """A run's NULL-hash outputs, as the record phase leaves them, show up in
+    archive-status; a manual archive pass clears the counts and writes hashes."""
+    from wfc.canvas import state
+    from wfc.persistence import get_session, RunOutput
 
-    run_id = _seed_unarchived_run(tmp_project, n_outputs=2)
+    run_id = completed_run(
+        tmp_project, monkeypatch=monkeypatch, method="arch_meth",
+        module="arch_mod", sample="s1",
+        outputs={"o0": ".parquet", "o1": ".parquet"},
+    ).run_id
 
     body = client.get("/api/wfc/archive-status").json()
     assert body["state"] == "idle"
@@ -82,8 +44,8 @@ def test_archive_status_counts_and_manual_archive(client, tmp_project):
     resp = client.post("/api/wfc/cache/archive")
     assert resp.status_code == 200
 
-    server._archive_job["thread"].join(timeout=30)
-    assert not server._archive_job["thread"].is_alive()
+    state._archive_job["thread"].join(timeout=30)
+    assert not state._archive_job["thread"].is_alive()
 
     body = client.get("/api/wfc/archive-status").json()
     assert body["state"] == "idle"
@@ -101,16 +63,16 @@ def test_archive_status_counts_and_manual_archive(client, tmp_project):
 def test_cache_archive_409_while_pipeline_running(client):
     """POST cache/archive is rejected while a pipeline run thread is alive,
     and no archive job is started."""
-    from wfc.canvas import server
+    from wfc.canvas import state
 
     release = threading.Event()
     t = threading.Thread(target=release.wait, daemon=True)
     t.start()
-    server._active_jobs["pipe-1"] = {"thread": t}
+    state._active_jobs["pipe-1"] = {"thread": t}
     try:
         resp = client.post("/api/wfc/cache/archive")
         assert resp.status_code == 409
-        assert server._archive_job["thread"] is None
+        assert state._archive_job["thread"] is None
 
         body = client.get("/api/wfc/archive-status").json()
         assert body["pipeline_running"] is True

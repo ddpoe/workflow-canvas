@@ -1,14 +1,14 @@
-"""Layer B — imaging marquee: end-to-end skip-link provenance (US-1, US-2).
+"""Imaging marquee: end-to-end skip-link provenance.
 
 The 7-node imaging DAG is the load-bearing system-level integrity test. It runs
 the full skip-link topology containerized via ``run_pipeline`` and proves two
 invariants that the provenance primitives never prove together:
 
-  US-1 (bytes survive the round-trip): for every produced output, after the
+  Bytes survive the round-trip: for every produced output, after the
         deferred-archive pass, RunOutput.content_hash equals md5(staging bytes)
         equals md5(the DVC cache file). Nothing is silently re-hashed or swapped.
 
-  US-2 (input slot resolves to its wired node): export_final fans in THREE
+  Input slot resolves to its wired node: export_final fans in THREE
         slots (measurements immediate, stitched 3-hop skip, masks 2-hop skip).
         The completed fixture scripts tag each output row by the ``source_slot``
         it arrived through and carry the upstream lineage chain. We assert all
@@ -37,10 +37,11 @@ from sqlmodel import select
 
 from axiom_annotations import workflow, Step
 
-from wfc.cli import run_pipeline
-from wfc.database import get_session
-from wfc.models import Method, Run, RunOutput
-from wfc.provenance import _cache_path, archive_outputs, hash_path
+from wfc.execution import run_pipeline
+from wfc.persistence import get_session, Method, Run, RunOutput
+from wfc.identity import hash_path
+from wfc.storage import archive_outputs
+from wfc.storage.cache import _cache_path
 from tests.fixtures.conftest import create_sample_csv as _create_sample_csv
 from tests.conftest import requires_docker
 
@@ -107,8 +108,8 @@ def _node_run_output(node_method: str) -> RunOutput:
 
 
 @workflow(
-    purpose="Imaging marquee: end-to-end byte integrity (US-1) + correct skip-link "
-            "source attribution (US-2) across the 7-node fan-in DAG",
+    purpose="Imaging marquee: end-to-end byte integrity + correct skip-link "
+            "source attribution across the 7-node fan-in DAG",
     inputs="7-node imaging DAG with 4 skip-links, run containerized via run_pipeline",
     outputs="every output's content_hash == md5(staging) == md5(cache); export_final "
             "rows correctly attributed to each wired slot with distinguishable skip-link content",
@@ -134,10 +135,10 @@ def test_imaging_skip_link_provenance(imaging_pipeline_factory, register_imaging
         archive=False,
     )
 
-    s = Step(step_num=3, name="US-1: archive then verify byte integrity",
+    s = Step(step_num=3, name="Archive then verify byte integrity",
              purpose="content_hash == md5(staging bytes) == md5(cache file) for every output")
     # NULL content_hash is the live deferred-archiving state; run the archive
-    # pass BEFORE asserting integrity (per the pitch's edge case).
+    # pass BEFORE asserting integrity.
     archive_outputs(project_dir)
     with get_session() as session:
         outputs = session.exec(
@@ -161,7 +162,7 @@ def test_imaging_skip_link_provenance(imaging_pipeline_factory, register_imaging
             f"{output_name}: md5(cache file) != content_hash"
         )
 
-    s = Step(step_num=4, name="US-2: export_final attributes every wired slot correctly",
+    s = Step(step_num=4, name="export_final attributes every wired slot correctly",
              purpose="all 3 slots present; the two skip-link sources carry distinguishable lineage")
     final_ro = _node_run_output("export_final")
     final_path = Path(final_ro.artifact_path)

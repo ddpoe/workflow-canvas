@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * ADR-015 Phase D Layer 1: OpenAPI -> TS codegen entrypoint.
+ * OpenAPI -> TS codegen entrypoint.
  *
  * Reads the offline OpenAPI snapshot produced by `dump-openapi.py`
  * and runs `openapi-typescript` against it, writing the generated
@@ -8,10 +8,10 @@
  *
  * Why offline-first: the frontend codegen runs in CI / `prebuild`
  * without spinning up FastAPI. The snapshot is committed to the repo
- * (Architect decision D-3) so contract drift surfaces as a PR diff.
+ * so contract drift surfaces as a PR diff.
  *
  * Refresh flow:
- *   1. Edit a Pydantic model in wfc/canvas/server.py
+ *   1. Edit a Pydantic model in wfc/canvas/routes/ or wfc/canvas/models.py
  *   2. `poetry run python wfc/canvas/static/scripts/dump-openapi.py`
  *   3. `npm run codegen`
  *   4. Commit both the snapshot and the regenerated types together.

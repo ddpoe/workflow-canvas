@@ -1,4 +1,4 @@
-"""Tier 3 integration smoke test for ADR-019 Cycle D container dispatch.
+"""Tier 3 integration smoke test for container dispatch.
 
 End-to-end: builds a minimal Docker image containing the ``wfc`` package,
 registers it as a container env, materializes a one-method pipeline, and
@@ -18,8 +18,8 @@ The ``minimal_image`` session-scoped fixture lives in
 (``test_containerized_pipeline_runs.py``); the image is built exactly once per
 session.
 
-Satisfies: US-1 end-to-end (WFC_RUN_DIR host->/work translation, --user
-discipline, bind-mount semantics against real Docker).
+Exercises end-to-end: WFC_RUN_DIR host->/work translation, --user
+discipline, bind-mount semantics against real Docker.
 """
 from __future__ import annotations
 
@@ -32,39 +32,24 @@ from pathlib import Path
 
 import pytest
 
-from tests.fixtures.conftest import register_test_method
+from tests.conftest import requires_docker
+from tests.fixtures.conftest import (
+    register_sample_row,
+    register_test_method,
+    sample_source_dir,
+)
+from wfc.storage import restore_sample
 
 
-def _docker_available() -> bool:
-    """True iff ``docker`` is on PATH and ``docker info`` succeeds."""
-    if shutil.which("docker") is None:
-        return False
-    try:
-        result = subprocess.run(
-            ["docker", "info"],
-            capture_output=True,
-            timeout=10,
-        )
-        return result.returncode == 0
-    except (subprocess.SubprocessError, OSError):
-        return False
-
-
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.skipif(
-        not _docker_available(),
-        reason="Docker not reachable on PATH",
-    ),
-]
+pytestmark = [pytest.mark.integration, requires_docker]
 
 
 def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path:
     """Create a tmp wfc project: git repo, envs.json, registered method, pipeline.
 
     Uses :func:`register_test_method` to route registration through the
-    production code path (``wfc.init.init_project`` + ``wfc.register.register_module``
-    + ``wfc.register.register_method``). This is the same path ``wfc register``
+    production code path (``wfc.init.init_project`` + ``wfc.registration.register_module``
+    + ``wfc.registration.register_method``). This is the same path ``wfc register``
     would take, so the on-disk state and DB rows match production semantics.
     """
     proj = tmp_path / "proj"
@@ -100,38 +85,26 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
     monkeypatch.setenv("WFC_PROJECT_ROOT", str(proj))
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{proj / '.wfc' / 'wfc.db'}")
 
-    # Container env manifest. Image ref must be digest-pinned per ADR-019.
-    # Write this BEFORE register_test_method runs, because _resolve_env
+    # Container env manifest. Image ref must be digest-pinned.
+    # Write this BEFORE register_test_method runs, because check_method_env
     # (called by register_method) validates the manifest entry's container
     # ref shape.
     wfc_dir = proj / ".wfc"
     wfc_dir.mkdir(exist_ok=True)
-    container_ref = f"docker://local/wfc-test-minimal@sha256:{image_digest}"
-    (wfc_dir / "envs.json").write_text(json.dumps({
-        "schema_version": 1,
-        "envs": {
-            "smoke-env": {
-                "backend": "pixi",
-                # Fixture image is plain python:3.11-slim; record the
-                # interpreter so dispatch skips the pixi default path.
-                "python": "python",
-                "source": "pixi.toml",
-                "container": container_ref,
-                "env_fingerprint": image_digest,
-                "built_from_lock": "pixi.lock",
-                "built_at": "2026-05-17T00:00:00Z",
-            }
-        },
-    }))
+    from tests.fixtures.conftest import write_env_record
+    # byo attach of the locally built image (raw docker build, no pixi/conda
+    # source); the image has the interpreter on PATH.
+    write_env_record(proj, "smoke-env", image="local/wfc-test-minimal",
+                     digest=image_digest)
 
     # Method: writes "hello-from-container" to WFC_RUN_DIR/output.txt.
-    # method.yaml uses env: container:smoke-env so _resolve_env (called by
+    # method.yaml uses env: smoke-env so check_method_env (called by
     # register_method) routes through the manifest lookup path.
     #
     # The inputs.trigger slot is declared optional to satisfy register_method's
     # contract-validation invariant ("every method must declare at least one
     # input slot"). The pipeline JSON below provides no upstream link to
-    # trigger, so WFC_INPUT_PATHS will be "{}" at run time — preserving Task 7's
+    # trigger, so WFC_INPUT_PATHS will be "{}" at run time — preserving the
     # single-node-no-real-inputs intent.
     method_dir = proj / "methods" / "smoke"
     method_dir.mkdir(parents=True)
@@ -157,7 +130,7 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
         "    required: true\n"
         "params: {}\n"
         "executor: local\n"
-        "env: container:smoke-env\n"
+        "env: smoke-env\n"
     )
 
     # Register the method via the production code path.
@@ -168,15 +141,21 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
         method_name="smoke",
     )
 
-    # Sample data: a placeholder file under data/samples/s1/. This satisfies
-    # run-step's D-2 root-input-required invariant: the method node needs
-    # either --ref-input or an upstream input_selector with sample data. The
-    # method itself doesn't read this file (WFC_INPUT_PATHS["trigger"] is
-    # unused by smoke.py) — the file just exists so the runtime accepts the
-    # method node as a valid root.
-    sample_dir = proj / "data" / "samples" / "s1"
-    sample_dir.mkdir(parents=True, exist_ok=True)
-    (sample_dir / "trigger.txt").write_text("trigger")
+    # Sample data: the user's own file, outside the project, registered the
+    # way `wfc register-sample` registers one. This satisfies run-step's
+    # root-input-required invariant: the method node needs either --ref-input
+    # or an upstream input_selector with sample data. The method itself
+    # doesn't read the file (WFC_INPUT_PATHS["trigger"] is unused by
+    # smoke.py) — it just has to be under data/samples/ for the runtime to
+    # accept the method node as a valid root.
+    source = sample_source_dir(proj) / "s1" / "trigger.txt"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("trigger")
+    register_sample_row(proj, "s1", source)
+    # This drives run-step directly, so there is no Snakemake restore_sample
+    # rule to materialize the bytes — call the production restore, which is
+    # the only sanctioned writer under data/samples/.
+    restore_sample("s1", project_root=proj)
 
     # Pipeline: input_selector -> method. The input_selector is a system
     # node that declares the sample list; run-step resolves the upstream
@@ -189,8 +168,6 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
             {
                 "id": "sel",
                 "type": "input_selector",
-                "method": "",
-                "module": "",
                 "samples": ["s1"],
             },
             {

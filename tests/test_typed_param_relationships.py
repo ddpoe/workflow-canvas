@@ -1,22 +1,22 @@
-"""Behavior tests for typed-param-relationships (ADR-015).
+"""Behavior tests for typed-param-relationships.
 
-Track 1 (column_of_input) and Track 2 (Pipeline Variables, server-side
+column_of_input resolution and Pipeline Variables (server-side
 substitution + editable sidecar). These are subsystem-level behavior
-tests, not regression locks.
+tests, not snapshots of current output.
 """
 from __future__ import annotations
 
 import pytest
 
-from wfc.canvas.wfc_provider import resolve_variables, UnknownVariableError
+from wfc.graph import resolve_variables, UnknownVariableError
 from wfc.contracts import resolve_columns, parse_method_yaml
 
 
-# ── US-3: Variable substitution ──────────────────────────────────────────
+# ── Variable substitution ──────────────────────────────────────────
 
 
 def test_resolve_variables_substitutes_var_refs_in_node_params():
-    """US-3: post-substitution dict has literals; no $var keys remain."""
+    """Post-substitution dict has literals; no $var keys remain."""
     pipeline = {
         "nodes": [
             {"id": "n1", "method": "m", "params": {"label_col": {"$var": "lab"}}},
@@ -42,7 +42,7 @@ def test_resolve_variables_substitutes_in_param_sets():
 
 
 def test_resolve_variables_unknown_name_raises():
-    """US-3: unknown variable → UnknownVariableError carrying the name."""
+    """Unknown variable → UnknownVariableError carrying the name."""
     pipeline = {
         "nodes": [{"id": "n1", "method": "m", "params": {"x": {"$var": "missing"}}}],
         "variables": {},
@@ -63,7 +63,7 @@ def test_resolve_variables_dict_whole_value_splice():
 
 
 def test_resolve_variables_cache_equiv_to_literal():
-    """US-3: literal pipeline and var-refs resolving to same value produce
+    """Literal pipeline and var-refs resolving to same value produce
     identical post-substitution dicts (so cache keys hash identically)."""
     literal = {
         "nodes": [{"id": "n1", "method": "m", "params": {"x": "label"}}],
@@ -77,7 +77,7 @@ def test_resolve_variables_cache_equiv_to_literal():
 
 
 def test_resolve_variables_rejects_nested_var_refs():
-    """Edge case 9: a variable's value cannot itself be a $var ref."""
+    """A variable's value cannot itself be a $var ref."""
     pipeline = {
         "nodes": [{"id": "n1", "method": "m", "params": {"x": {"$var": "a"}}}],
         "variables": {"a": {"value": {"$var": "b"}}, "b": {"value": "literal"}},
@@ -86,11 +86,11 @@ def test_resolve_variables_rejects_nested_var_refs():
         resolve_variables(pipeline)
 
 
-# ── US-1: column_of_input resolution against contracts ──────────────────
+# ── column_of_input resolution against contracts ──────────────────
 
 
 def test_resolve_columns_strict_plus_from_params_union():
-    """Track 1 reuses ADR-005's resolve_columns. Verify the union semantics."""
+    """column_of_input reuses the shared resolve_columns. Verify the union semantics."""
     spec = {
         "strict": ["a", "b"],
         "from_params": [
@@ -101,7 +101,7 @@ def test_resolve_columns_strict_plus_from_params_union():
     assert out == {"a", "b", "R1_p27", "R1_CycD1"}
 
 
-# ── US-5: parse_method_yaml producer side reuses ADR-005 vocab unchanged ─
+# ── parse_method_yaml producer side reuses the shared vocab unchanged ─
 
 
 def test_parse_method_yaml_passes_through_columns_unchanged(tmp_path):
@@ -110,7 +110,7 @@ def test_parse_method_yaml_passes_through_columns_unchanged(tmp_path):
     method_dir = tmp_path / "my_method"
     method_dir.mkdir()
     (method_dir / "method.yaml").write_text(
-        # ADR-019 Cycle H: every method.yaml must name a built container env.
+        # Every method.yaml must name a built container env.
         "env: image-io\n"
         "inputs:\n"
         "  data:\n"

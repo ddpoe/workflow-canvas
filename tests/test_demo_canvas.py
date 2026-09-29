@@ -1,4 +1,4 @@
-"""Canvas pre-wiring + inline-image render gate (US-1 / US-2).
+"""Canvas pre-wiring + inline-image render gate.
 
 - ``GET /api/pipelines/demo`` returns ``<project_root>/demo-pipeline.json``
   and 404s when absent (inert in a normal project).
@@ -16,23 +16,26 @@ from axiom_annotations import workflow
 from fastapi import HTTPException
 from sqlmodel import Session, SQLModel, create_engine
 
+from tests.fixtures.fakes import bind_provider
+
 
 def test_demo_pipeline_endpoint_404_then_serves(tmp_path, monkeypatch):
     """Tier 1: 404 without a scaffolded demo; parsed JSON once present."""
-    import wfc.canvas.server as server
+    import wfc.canvas.routes.history as history_routes
+    import wfc.canvas.state as state
 
     class _StubProvider:
         project_root = str(tmp_path)
 
-    monkeypatch.setattr(server, "_wfc_provider", _StubProvider())
+    bind_provider(monkeypatch, _StubProvider())
 
     with pytest.raises(HTTPException) as exc:
-        server.get_demo_pipeline()
+        history_routes.get_demo_pipeline()
     assert exc.value.status_code == 404
 
     doc = {"name": "demo", "nodes": [], "links": [], "samples": []}
     (tmp_path / "demo-pipeline.json").write_text(json.dumps(doc))
-    assert server.get_demo_pipeline() == doc
+    assert history_routes.get_demo_pipeline() == doc
 
 
 @workflow(purpose="is_image is true for exactly the browser-renderable set and "
@@ -44,7 +47,7 @@ def test_is_image_truth_table(tmp_path, monkeypatch):
     (project_root / ".wfc").mkdir()
     db_url = f"sqlite:///{project_root / '.wfc' / 'wfc.db'}"
     monkeypatch.setenv("DATABASE_URL", db_url)
-    from wfc.database import reset_engine
+    from wfc.persistence import reset_engine
     reset_engine()
     engine = create_engine(db_url)
     SQLModel.metadata.create_all(engine)
@@ -59,7 +62,7 @@ def test_is_image_truth_table(tmp_path, monkeypatch):
     for ext in renderable + non_renderable:
         (staging / f"art.{ext}").write_bytes(b"content-" + ext.encode())
 
-    from wfc.models import Method, Module, Run, RunOutput
+    from wfc.persistence import Method, Module, Run, RunOutput
     with Session(engine) as session:
         module = Module(name="m", description="x")
         session.add(module); session.commit(); session.refresh(module)
@@ -69,19 +72,19 @@ def test_is_image_truth_table(tmp_path, monkeypatch):
         session.add(run); session.commit(); session.refresh(run)
         for ext in renderable + non_renderable:
             session.add(RunOutput(
-                run_id=run.id, output_name=f"art_{ext}",
+                run_id=run.id, slot=f"art_{ext}", output_name=f"art_{ext}",
                 artifact_path=str(staging / f"art.{ext}"),
                 artifact_type="method_file",
             ))
         session.add(RunOutput(
-            run_id=run.id, output_name="figdir",
+            run_id=run.id, slot="figdir", output_name="figdir",
             artifact_path=str(dir_art), artifact_type="method_directory",
         ))
         session.commit()
         run_id = run.id
     engine.dispose()
 
-    from wfc.provenance import archive_outputs
+    from wfc.storage import archive_outputs
     archive_outputs(project_root, run_id=run_id)
 
     provider = WfcProvider(str(project_root))

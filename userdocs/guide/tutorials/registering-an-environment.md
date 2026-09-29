@@ -1,83 +1,116 @@
-<!-- generated from pm_mvp::docs.consumer.tutorials.registering-an-environment @ a10b5b449f12; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.tutorials.registering-an-environment @ eceeb6e5726e; do not edit -->
 
 # Tutorial: Registering an Environment
 
 ## Overview
 
-Every method in a pipeline runs inside its own container environment. That isolation is what makes results reproducible: a method always sees exactly the dependencies you declared for it, never whatever happens to be installed on the machine that launched the run, and never the dependencies of a *different* method in the same pipeline. Two methods that need conflicting versions of the same library coexist happily because each runs in a separate container.
+Every method runs inside a container built from an environment (env) you register. The env holds your method's dependencies; each method names its own env, so two methods that need conflicting library versions can sit in the same pipeline.
 
-This tutorial walks the whole flow end to end:
+This tutorial walks the flow end to end:
 
-1. **Declare and build** an environment with `wfc register-env`, choosing a backend that says where its package list comes from.
-2. **Reference it** from a method by naming it in the method's `method.yaml` under the `env:` key.
-3. **Develop against it** interactively with `wfc jupyter`, `wfc shell`, and `wfc exec`.
+1. **Build** an env with `wfc register-env`.
+2. **Reference it** from a method's `method.yaml` under `env:`.
+3. **Work inside it** with `wfc jupyter`, `wfc shell` and `wfc exec`.
 
-A few things to keep in mind before you start. Docker is a hard requirement: there is no host-Python execution path, so a method cannot run until you have built a container env for it and Docker is running. An environment is built once and reused; you only rebuild when its dependencies change. And your environment contains only *your* dependencies plus Python — Workflow Canvas itself is never installed into it.
+You need Docker installed and running: methods run only in containers. An env is built once and reused; you rebuild it only when its dependencies change. The env holds your dependencies and nothing from Workflow Canvas itself.
 
-If you have not set a project up yet, run `wfc init` first (see [Getting Started](../tutorials/getting-started.md)); it scaffolds a runnable project so you have somewhere to register environments and methods. Then come back here.
+If you have not set up a project yet, create one first (see [Getting Started](getting-started.md)): `wfc init --dir wfc_project_root`, then `cd wfc_project_root`. Every command on this page runs from the project root.
 
 ## Why environments exist
 
-Reproducibility and isolation are the two problems an environment solves.
+An env gives each method a fixed, isolated software stack.
 
-**Reproducibility.** When `wfc register-env` builds an image, it resolves and records the image's content digest. From then on the method runs against that exact, digest-pinned image — not a floating tag that silently changes when an upstream base image is republished. A run you do today and a run someone else does next month against the same env get bit-for-bit the same software stack.
+**Fixed.** `wfc register-env` records the built image by its content digest, and every run of a method uses that exact image. A run today and a run next month against the same env use the same software.
 
-**Isolation.** Each method names its own env, so a pipeline can mix a method that needs an old NumPy with one that needs a brand-new PyTorch without either stepping on the other. There is no shared, mutable "project Python" they all draw from.
+**Isolated.** Each method names its own env, so one method can use an old NumPy and another a new PyTorch in the same pipeline.
 
-Because the environment is the software half of what makes a step reproducible, it also feeds the cache: when Workflow Canvas decides whether a step can be skipped, the environment's fingerprint is one of the inputs to that decision. Change the env and dependent steps re-run. You can read more about that in [Caching & Reproducibility](../explanation/caching-and-reproducibility.md).
+The env is also part of each step's cache key: rebuild an env and the steps that use it run again instead of reusing earlier results. See [Caching & Reproducibility](../explanation/caching-and-reproducibility.md).
 
-## Choosing a backend
+## Building an env
 
-`wfc register-env <name>` builds a container image and writes a manifest entry to `.wfc/envs.json`. The backend you choose tells the builder *where the package list comes from*; it does not change the fact that the result is always a container image.
+`wfc register-env <name>` builds a container image and records it in `.wfc/envs.json` under `<name>`. The backend says where the package list comes from:
 
 | Backend | Where packages come from |
 |---|---|
-| `pixi` | A pixi project's locked environment (`pixi.lock` + `pixi.toml`). |
 | `conda` | A conda environment's explicit package list. |
-| `byo` | Bring your own pre-built image, referenced by digest with `--image docker://...@sha256:...`. No build happens — Workflow Canvas just records the reference. |
+| `pixi` | A pixi project's lock file (`pixi.lock`, plus `pixi.toml` when it sits beside the lock). |
+| `byo` | An image you already have ("bring your own"). Nothing is built; wfc records the image by its digest. |
 
-The simplest path is to capture from an environment you already have running locally:
+There are three ways to give it a source.
+
+**Capture an env you already have installed.** Name it with a typed spec; the backend follows from the prefix:
 
 ```bash
-# Capture from a live conda env named cell_pose
 wfc register-env cell_pose conda:cell_pose
-
-# Capture from a pixi project's env
-wfc register-env analysis pixi:wcia:hello
+wfc register-env hello pixi:myproject:hello
 ```
 
-When you pass a positional spec like `conda:cell_pose` or `pixi:wcia:hello`, the CLI resolves that live env, reads its package list (plus a `pip freeze` to catch any ad-hoc installs you layered on top), stages everything into the build context, and infers the backend from the prefix. The captured package list is stored on the manifest record, and you can read it back in the canvas **Envs** tab — expand an env to see its installed `name==version` packages, tagged by source (conda/pixi/pip).
+The command is `wfc register-env <name> <spec>`: `<name>` is the name methods will use for the env, and `<spec>` is the installed env to capture (`conda:<env>` or `pixi:<project>:<env>`).
 
-If you would rather build from a checked-in lock file than from whatever is currently installed, use file-mode and name the backend explicitly:
+wfc reads the env's package list and its `pip freeze`, so packages you added with `pip install` are included. Conda envs are found under your conda installation (or the `[conda] root` in `wf-canvas.toml`). A pixi spec `pixi:<project>:<env>` is found under the `[pixi] root` directory in `wf-canvas.toml`, where pixi keeps each project's envs; for a pixi project whose envs live in its own folder, build from its lock file instead.
+
+Images run Linux, and a conda capture copies the exact packages installed on your computer, so capture conda envs on Linux. On Windows or macOS, build from a pixi lock file whose project includes the `linux-64` platform, as in [Your First Pipeline](getting-started.md).
+
+**Build from a lock file** under version control:
 
 ```bash
-# Build from a lock file under version control
-wfc register-env analysis --backend pixi --from envs/analysis/pixi.lock
-
-# Bring your own image, pinned by digest
-wfc register-env vendor --backend byo --image docker://ghcr.io/org/img@sha256:...
+wfc register-env default --backend pixi --from envs/analysis/pixi.lock
+wfc register-env analysis --backend conda --from envs/analysis/explicit-list.txt
 ```
 
-The input modes are mutually exclusive: a positional spec, `--from`, and a bare `--backend` are three different sources, and combining them errors before Docker is ever invoked. Pass `--force` to overwrite an env that already exists under the same name. To preview the generated Dockerfile without running a build, add `--dry-run` — it writes the Dockerfile to `.wfc/build/<name>/Dockerfile` and exits without touching Docker.
+**Use an existing image:**
 
-For a `byo` image whose Python is not on the container's `PATH`, pass `--python <path>` (e.g. `--python /opt/venv/bin/python`) to record the exact interpreter `wfc run-step` should launch method scripts under. Without it, `byo` defaults to bare `python`; `pixi` and `conda` backends already record their own known interpreter path automatically, so `--python` there is only for overriding that default.
+```bash
+wfc register-env vendor --backend byo --image docker://ghcr.io/org/img:1.4
+```
 
-The `pixi`, `conda`, and `byo` words name *build backends only*. They are not values you can put in a method's `env:` field — see the next section for what goes there.
+wfc pulls the image if it is not already local and records it by digest.
 
-For the complete flag table (`--image`, `--base-image`, and the rest) and the companion `wfc list-envs` / `wfc show-env` / `wfc delete-env` commands, see [CLI Reference](../reference/cli-reference.md).
+On success the command prints the recorded image reference. Check your envs with `wfc list-envs` and `wfc show-env <name>`.
+
+**Pixi env names.** For the pixi backend, the name you give `register-env` is the pixi environment wfc installs from the lock, so it must be an environment the lock defines. Most pixi projects have one, called `default`. If the name does not match, the command stops before building:
+
+```text
+ERROR: pixi.lock has no environment named 'analysis' — it has: default. ...
+```
+
+**Rebuilding.** Add `--force` to replace an existing env of the same name, for example after you change its dependencies. Methods that use the env pick up the new image at their next run; you do not register them again.
+
+**Previewing.** Add `--dry-run` to a `--from` command to write the generated Dockerfile to `.wfc/build/<name>/Dockerfile` without building.
+
+**Interpreter.** wfc records which interpreter runs your method scripts. Conda and pixi envs record their env's Python; a `byo` env uses `python` from the image's `PATH`. Pass `--interpreter <path>` to set a different one, for example `--interpreter /opt/venv/bin/python`.
+
+The words `conda`, `pixi` and `byo` name build backends only. A method refers to an env by its name, as the next section shows. For every `register-env` flag and the `list-envs`, `show-env` and `delete-env` commands, see the [CLI Reference](../reference/cli-reference.md).
+
+The canvas shows an env's installed packages: open the **Registry** tab, choose **Envs**, and expand an env. The list shows envs that registered methods use; conda and pixi envs list their packages, and `byo` envs have no package list.
+
+### R and bash environments
+
+Methods can be R or bash scripts. Build the env as usual and set `--interpreter`, since the recorded default is Python:
+
+| Language | Build | Interpreter |
+|---|---|---|
+| R | conda or pixi env with conda-forge `r-base` and your packages | `--interpreter /opt/conda/bin/Rscript` (conda), or `/opt/.pixi/envs/<name>/bin/Rscript` (pixi) |
+| R | `byo` with a date-pinned [rocker](https://rocker-project.org/) image | `--interpreter Rscript` |
+| bash | any backend | `--interpreter /bin/bash` |
+
+```bash
+wfc register-env r-analysis conda:r-analysis --interpreter /opt/conda/bin/Rscript
+
+wfc register-env r-analysis --backend byo \
+  --image docker://rocker/r-ver:4.3.2 --interpreter Rscript
+```
+
+If you use system R with `install.packages()`, move your package list to conda-forge: `dplyr` becomes `r-dplyr`, and Bioconductor packages are available as `bioconductor-*`. Create a conda env with them and capture it with the first command above.
+
+Capture records what conda or pixi installed plus the `pip freeze`. Packages installed another way, such as `install.packages()` inside the live env, are not in the image. With a `byo` image, everything in the image is what runs.
 
 ## Referencing an env from a method
 
-Once an env is built, a method opts into it by naming it in `method.yaml`. There are exactly three valid forms for the `env:` value:
-
-| `env:` value | Meaning |
-|---|---|
-| `<name>` | The env registered under this name in `.wfc/envs.json`. The everyday form. |
-| `container:<name>` | Identical to the bare name; the `container:` prefix is accepted purely for readability. |
-| `container:docker://<ref>@sha256:<hex>` | A per-method escape hatch that pins a specific image by digest, with no manifest lookup. Use this for a one-off bring-your-own image. |
+A method names its env in `method.yaml` with the `env:` key, using the name you registered:
 
 ```yaml
-# method.yaml
+# src/segmentation/segment/method.yaml
 inputs:
   images:
     type: directory
@@ -87,30 +120,27 @@ outputs:
 env: cell_pose
 ```
 
-**A method with no `env:` field is an error.** There is no default environment and nothing is inherited — every method must explicitly name a built container env. The older runtime specs `inherit`, `pixi:<name>`, and `conda:<name>` are no longer accepted as `env:` values; if you write one, registration fails. (Those same words still name *build backends* for `wfc register-env`, which is a different thing — declaring how to build an image, not which image a method runs in.)
+`env:` is required, and its value is an env name only (letters, digits, `_` and `-`). There is no default env.
 
-The env must exist *before* you register the method. Registration validates that the named env is present in `.wfc/envs.json` and holds a digest-pinned image record, and fails fast if it does not:
+Build the env before you register the method. Registration checks that the name is in `.wfc/envs.json`; if it is not, registration stops and lists the envs you have. From the project root:
 
 ```bash
-wfc register-env cell_pose conda:cell_pose      # build the env first
-wfc register-method modules/segmentation/segment --module segmentation
+wfc register-env cell_pose conda:cell_pose
+wfc register-method src/segmentation/segment --module segmentation
 ```
 
-One more invariant worth internalizing: your environment never contains Workflow Canvas. Whatever backend you build with, the image holds only your declared dependencies plus Python. Your method reaches the framework through environment variables and files the runner sets up (`WFC_RUN_DIR`, `WFC_INPUT_PATHS`, `WFC_PARAMS`, and friends), not through an import. If you want the `@wfc.method` decorator ergonomics, add the small pure-stdlib `wfc-client` package to your env's dependencies like any other library — even then, the full framework stays out of your environment. See [Authoring a Method Script](../tutorials/authoring-a-method-script.md) for both styles.
+`wfc register-method <method-dir> --module <module>` takes the method's directory (here under `src/<module>/<method>/`) and the module it belongs to; [Registering Modules, Methods, and Samples](../how-to/registration.md) covers registering the module first.
+
+Your method reaches Workflow Canvas through environment variables and files set up for each run (`WFC_RUN_DIR`, `WFC_INPUT_PATHS`, `WFC_PARAMS` and others), not through an import. To use the `@wfc.method` decorator, add the small `wfc-client` package to your env like any other library. See [Authoring a Method Script](authoring-a-method-script.md) for both styles.
+
 
 ## The ephemeral-container model
 
-Understanding how containers are used at run time is what makes day-to-day work feel cheap rather than slow.
+Every step runs in a fresh container started from the env's image and removed when the step ends. Nothing carries over between steps or runs.
 
-Every step runs in a **fresh** container. The runner does the equivalent of `docker run --rm` for each step: a new container is started from your env's digest-pinned image, the step executes, and the container is thrown away. Nothing carries over from one step to the next, and nothing carries over between runs.
-
-Three consequences fall out of that, and they are the practical things to remember:
-
-- **In-session `pip install`s do not persist.** If you open a shell into the env and `pip install something`, that package lives only in that throwaway container. The next pipeline step starts clean from the image and will not see it. To make a dependency permanent, add it to the env's source and rebuild with `wfc register-env ... --force`.
-- **Your scripts are bind-mounted, not baked into the image.** The project directory is mounted into the container at run time, so the container always sees the script files as they are on disk *right now*. Editing a method script is free — save the file and the next step picks it up. You do **not** rebuild the image to change code.
-- **You rebuild only when dependencies change.** Because code is mounted and the image holds only dependencies, the image stays valid as long as your declared packages stay the same. Add, remove, or bump a dependency and you rebuild; touch only your own `.py` files and you do not.
-
-This split — dependencies baked into the image, code mounted live — is the whole reason the loop is fast: the expensive thing (building the dependency stack) happens once, and the thing you do constantly (editing code) costs nothing.
+- **Packages installed inside a container do not last.** A `pip install` in a shell session is gone when the container exits. To add a dependency, add it to the env's source and rebuild with `wfc register-env <name> ... --force`.
+- **Your project directory is mounted into the container at `/work`.** Your scripts are not baked into the image, so changing code needs no rebuild: edit the script, then run `wfc register-method` again (see [Registering Modules, Methods, and Samples](../how-to/registration.md)).
+- **Rebuild only when dependencies change.** The image holds dependencies; your code stays on disk.
 
 ## Requesting GPUs
 
@@ -122,33 +152,31 @@ env: deep-learning
 gpus: true
 ```
 
-At dispatch time the runner injects `--gpus all` into the `docker run` invocation for that step, exposing the host's GPUs to the container. This requires the host to have working GPU support for Docker (the NVIDIA container runtime); the flag only hands the GPUs through — it does not install drivers. Methods that omit `gpus` (or set it to `false`) run without GPU access, which is the default.
+Each step of that method then runs with the host's GPUs available (`docker run --gpus all`). The host needs working GPU support for Docker, such as the NVIDIA container runtime. Methods without `gpus: true` run without GPU access.
 
 ## Working inside an environment
 
-While you are developing a method it helps to get *inside* its environment interactively, with the exact image and the exact `/work` bind-mount that production runs use. Three commands give you that, each launching an ephemeral container of the env's image:
+To work inside an env while you develop a method, start a container of its image with your project mounted at `/work`, the same way pipeline steps run:
 
-- **`wfc jupyter <env>`** — launches Jupyter Lab inside the container. The host URL with its access token is printed on startup; open it in a browser. Pass `--port` to pin the host port, otherwise the first free port in 8888–8999 is chosen for you.
-- **`wfc shell <env>`** — drops you into an interactive shell inside the container (`bash` if available, otherwise `sh`). Good for poking around the filesystem or trying a command.
-- **`wfc exec <env> <cmd...>`** — runs a single command in the container and returns. The output streams back, so it composes with pipes and redirects: `wfc exec myenv cat /work/notes.txt > notes.txt`.
+- **`wfc jupyter <env>`** starts Jupyter Lab in the container. Open the URL with its token that Jupyter prints. Use `--port` to pick the host port; otherwise the first free port from 8888 to 8999 is used. The env must include `jupyterlab`.
+- **`wfc shell <env>`** opens an interactive shell (`bash`, or `sh` if the image has no bash).
+- **`wfc exec <env> <cmd...>`**, where `<env>` is the env's name and `<cmd...>` is the command and its arguments, runs one command and returns its output, so it works with pipes and redirects: `wfc exec myenv cat /work/notes.txt > notes.txt`.
 
-All three honor the same ephemeral rule as pipeline steps: each invocation is a fresh container, and anything you install inside it (a `pip install`, a scratch file outside `/work`) vanishes when the session ends. Use them to *explore and test*; make changes permanent by editing your declared dependencies and rebuilding the env, or by editing your bind-mounted scripts on disk.
+Each command starts a fresh container. Anything you install, or write outside `/work`, is gone when it exits. To add a dependency, add it to the env's source and rebuild with `--force`. To change a method, edit its script in your project, then run `wfc register-method` again.
 
-## Docker readiness and getting runnable
+## Checking Docker
 
-Because execution is container-only, Docker is not optional — a method cannot run at all without it. There is no host-Python fallback to dodge this with. If the Docker daemon is missing or stopped, the failure surfaces when you try to build or run: `wfc register-env` and `wfc run-step` exit with an actionable error rather than silently degrading.
+Methods run only in containers, so Docker must be installed and running. If it is not, `wfc register-env` and pipeline runs stop with an error that says so.
 
-`wfc init` is what gets a fresh project to a runnable state before you start building envs: it scaffolds the project layout, the local database, and configuration. Run it first in a new project (see [Getting Started](../tutorials/getting-started.md)). `wfc doctor` pre-flights the three things a project needs to run — git, the DVC output archive, and Docker readiness — and reports them in one place, so "why won't this run?" has a single door. Run it any time: it prints a health table and exits non-zero if anything is broken, which makes it equally useful at your terminal and as a CI gate. Build- and run-time commands still surface their own actionable errors when the Docker daemon is missing or stopped.
-
-One note on durability worth knowing early: the run outputs that get archived are stored as content-addressed blobs, and the index that maps those blobs back to meaningful results lives in `.wfc/wfc.db`. That database is deliberately *not* tracked in git (it is mutable state, not source). So if you care about recovering archived outputs later, back up the `.wfc/` directory — the blobs alone are not interpretable without the index.
+`wfc doctor` checks what a project needs to run — git, the DVC archive, Docker and your registered samples — and prints a table. It exits non-zero if anything fails, so you can also use it in CI.
 
 ## Next steps
 
-You now have the full environment loop: build an env with `wfc register-env`, point a method at it via `env:` in `method.yaml`, develop against it with `wfc jupyter` / `wfc shell` / `wfc exec`, and rebuild only when dependencies change.
+You can now build an env with `wfc register-env`, point a method at it with `env:` in `method.yaml`, work inside it with `wfc jupyter`, `wfc shell` and `wfc exec`, and rebuild it with `--force` when dependencies change.
 
 Where to go next:
 
-- **[Authoring a Method Script](../tutorials/authoring-a-method-script.md)** — write the method that runs in this environment, in either the `@wfc.method` decorator style or the plain env-var + file contract.
-- **[CLI Reference](../reference/cli-reference.md)** — the complete flag tables for `register-env`, `list-envs`, `show-env`, `delete-env`, and the dev-loop commands.
-- **[Caching & Reproducibility](../explanation/caching-and-reproducibility.md)** — how the environment's fingerprint feeds the cache and decides when a step re-runs.
-- **[Getting Started](../tutorials/getting-started.md)** — if you have not yet scaffolded a project with `wfc init`.
+- **[Authoring a Method Script](authoring-a-method-script.md)**: write the method that runs in this env.
+- **[Registering Modules, Methods, and Samples](../how-to/registration.md)**: register the method and the data it runs on.
+- **[CLI Reference](../reference/cli-reference.md)**: every flag for `register-env`, `list-envs`, `show-env`, `delete-env` and the dev-loop commands.
+- **[Caching & Reproducibility](../explanation/caching-and-reproducibility.md)**: how the env feeds each step's cache key.

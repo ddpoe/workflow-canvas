@@ -18,13 +18,13 @@ import pytest
 
 from axiom_annotations import workflow, Step
 
-from wfc.cli import run_pipeline
+from wfc.execution import run_pipeline
 from tests.fixtures.conftest import create_sample_csv as _create_sample_csv
 from tests.conftest import requires_docker
 
 WFC_ROOT = Path(__file__).resolve().parent.parent.parent
 
-# ADR-019 Cycle H: these tests execute pipelines end-to-end through the
+# these tests execute pipelines end-to-end through the
 # container dispatch path (register_fixture_methods builds a real image).
 # Deselected from the default suite (integration) and skipped without Docker.
 pytestmark = [pytest.mark.integration, requires_docker]
@@ -118,8 +118,7 @@ def test_script_crash(pipeline_factory, register_fixture_methods):
     )
     # The upstream transform_1 output must survive the downstream crash: its
     # RunOutput row exists and its staging artifact is still on disk.
-    from wfc.database import get_session
-    from wfc.models import Method, Run, RunOutput
+    from wfc.persistence import get_session, Method, Run, RunOutput
     from sqlmodel import select
     with get_session() as session:
         rows = session.exec(
@@ -225,7 +224,7 @@ def test_missing_output(pipeline_factory, register_fixture_methods):
 
 
 # =============================================================================
-# Negative/edge (US-6): non-zero method exit (no Python exception raised)
+# Negative/edge: non-zero method exit (no Python exception raised)
 # =============================================================================
 
 @workflow(
@@ -275,4 +274,102 @@ def test_nonzero_method_exit_fails_pipeline(pipeline_factory, register_fixture_m
     assert faulty_outcomes, "no faulty_1 outcome recorded for non-zero exit"
     assert all(o["status"] == "failed" for o in faulty_outcomes), (
         f"non-zero method exit not recorded as failed: {faulty_outcomes}"
+    )
+
+
+@workflow(
+    purpose="A node downstream of a failed node gets a first-class cancelled "
+            "Run row after a real keep-going pipeline run",
+)
+def test_downstream_of_failed_node_records_cancelled_run(
+    pipeline_factory, register_fixture_methods
+):
+    """Downstream cancellation: faulty crashes mid-chain; the node behind it
+    never runs and must be recorded as a cancelled Run row.
+
+    Pipeline topology: input_selector -> transform -> faulty(mode=crash)
+    -> transform_2. The run fails; the pipeline-end walk must write a Run
+    row for transform_2 with status='cancelled', the pipeline.json node id
+    as node_id, and cancelled_due_to_run_id pointing at faulty_1's failed
+    run — validating the node-id stamp against a real Snakemake run rather
+    than hand-staged rows.
+    """
+    project_dir = register_fixture_methods
+
+    s = Step(
+        step_num=1,
+        name="Create sample data and build pipeline",
+        purpose="Create sample CSV and build a pipeline with a node downstream "
+                "of the faulty one: input_selector -> transform -> "
+                "faulty(mode=crash) -> transform_2",
+    )
+    _create_sample_csv(project_dir, "sample_a", num_rows=3)
+
+    pipeline_path = pipeline_factory(
+        name="downstream_cancel",
+        nodes=[
+            {"id": "selector_1", "type": "input_selector",
+             "samples": ["sample_a"]},
+            {"id": "transform_1", "method": "transform", "module": "test_pipeline",
+             "params": {"suffix": "_t"}},
+            {"id": "faulty_1", "method": "faulty", "module": "test_pipeline",
+             "params": {"failure_mode": "crash"}},
+            {"id": "transform_2", "method": "transform", "module": "test_pipeline",
+             "params": {"suffix": "_u"}},
+        ],
+        links=[
+            {"source": "selector_1", "target": "transform_1"},
+            {"source": "transform_1", "target": "faulty_1"},
+            {"source": "faulty_1", "target": "transform_2"},
+        ],
+        samples=[],
+    )
+
+    s = Step(
+        step_num=2,
+        name="Run pipeline with keep-going expecting failure",
+        purpose="Execute with --keep-going; faulty_1 fails, transform_2 is "
+                "never attempted, run_pipeline raises",
+    )
+    with pytest.raises(RuntimeError, match="Snakemake pipeline failed"):
+        run_pipeline(
+            pipeline_path=str(pipeline_path),
+            project_root=str(project_dir),
+            wfc_root=str(WFC_ROOT),
+            cores=1,
+            archive=False,
+            keep_going=True,
+        )
+
+    s = Step(
+        step_num=3,
+        name="Verify downstream node has a cancelled Run row",
+        purpose="transform_2 must have a Run row with status='cancelled', the "
+                "pipeline.json node id as node_id, and cancelled_due_to_run_id "
+                "pointing at faulty_1's failed run",
+    )
+    from wfc.persistence import get_session, Run
+    from sqlmodel import select
+    with get_session() as session:
+        failed = session.exec(
+            select(Run).where(Run.status == "failed", Run.node_id == "faulty_1")
+        ).all()
+        cancelled = session.exec(
+            select(Run).where(Run.status == "cancelled")
+        ).all()
+    assert len(failed) == 1, (
+        f"expected exactly one failed run with node_id='faulty_1', got "
+        f"{[(r.id, r.node_id, r.status) for r in failed]}"
+    )
+    assert cancelled, (
+        "no cancelled Run rows written for the skipped downstream node"
+    )
+    assert [r.node_id for r in cancelled] == ["transform_2"], (
+        f"expected exactly one cancelled row with node_id='transform_2', got "
+        f"{[(r.id, r.node_id) for r in cancelled]}"
+    )
+    assert cancelled[0].cancelled_due_to_run_id == failed[0].id, (
+        f"cancelled row must point at the failed faulty_1 run "
+        f"(id={failed[0].id}), got "
+        f"cancelled_due_to_run_id={cancelled[0].cancelled_due_to_run_id}"
     )

@@ -7,6 +7,8 @@ Provides:
         (sha256 hex, without the ``sha256:`` prefix). Shared across all
         integration test files in a single session so the image build cost
         is paid exactly once.
+    client_image: session-scoped fixture that builds the wfc-client image
+        from tests/fixtures/Dockerfile.client.
 """
 from __future__ import annotations
 
@@ -14,15 +16,6 @@ import subprocess
 from pathlib import Path
 
 import pytest
-
-
-# Tag includes a registry-host segment ("local/") so the digest-pinned ref
-# "docker://local/wfc-test-minimal@sha256:<hex>" satisfies the strict shape
-# that wfc.envs.validate_container_ref enforces (host + "/" + path + "@sha256").
-# docker run still resolves this against the locally-built image because the
-# tag is applied to the image when we build it below.
-IMAGE_TAG = "local/wfc-test-minimal:latest"
-IMAGE_REPO = "local/wfc-test-minimal"
 
 
 @pytest.fixture(scope="session")
@@ -49,7 +42,7 @@ def minimal_image(fixture_container_image: str) -> str:
     return fixture_container_image
 
 
-# Tier-1 image: host wfc + the pure-stdlib wfc-client (ADR-020). Built from
+# Tier-1 image: host wfc + the pure-stdlib wfc-client. Built from
 # tests/fixtures/Dockerfile.client. Used by the Tier-1 end-to-end test, where
 # a user method does `import wfc_client as wfc`. The Tier-2 parity test
 # deliberately uses minimal_image (no wfc-client) instead.

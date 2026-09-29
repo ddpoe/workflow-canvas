@@ -11,6 +11,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "test:e2e:gallery": "playwright test",
     "codegen": "node scripts/codegen.mjs",
     "prebuild": "node scripts/codegen.mjs",
     "gen-mermaid": "tsx scripts/gen-machine-mermaid.ts"

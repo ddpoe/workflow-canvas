@@ -22,7 +22,7 @@ import {
   type ActorRefFrom,
 } from 'xstate';
 import { makeNodeRunMachine, type NodeRunActor } from './nodeRun.machine';
-import type { RunTally, PipelineError } from '../types';
+import type { RunTally, PipelineError } from '../shared/types';
 
 // ── Input / Context ────────────────────────────────────────────────────
 
@@ -276,9 +276,7 @@ export function makePipelineRunMachine() {
 
       preflight: {
         // Spawn a per-node actor for every canvas node, then await the
-        // param-editor aggregator's `allCommitted` transition. The
-        // invoke replaces the legacy `requestCommitAll() + setTimeout(0)`
-        // microtask race (0.2.8) with a typed transition: the
+        // param-editor aggregator's `allCommitted` transition: the
         // pipelineRunActor stays in `preflight` until every editing
         // paramEditor / variant child has reached a settled state.
         entry: [
@@ -318,10 +316,9 @@ export function makePipelineRunMachine() {
           // If the aggregator stub rejects (shouldn't happen — the real
           // one resolves via subscription), fall through to submitting
           // anyway. The rest of preflight is structural; the worst case
-          // is a row submits with stale value, which is no worse than
-          // the legacy behavior. Log a diagnostic so future debugging
-          // has a trace when the await stub rejects (matches the
-          // console.warn convention used elsewhere — historyApi.ts).
+          // is a row submits with a stale value. Log a diagnostic so a
+          // rejected await leaves a trace (matches the console.warn
+          // convention used elsewhere — historyApi.ts).
           onError: {
             target: 'submitting',
             actions: ({ event }) => {
@@ -381,7 +378,7 @@ export function makePipelineRunMachine() {
                   typeof (err as { message: unknown }).message === 'string'
                     ? (err as { message: string }).message
                     : String(err ?? 'submit failed');
-                // Preserve the kind/hint from a run-readiness rejection (D-6)
+                // Preserve the kind/hint from a run-readiness rejection
                 // so the card renders the Docker/git affordance; fall back to
                 // 'unknown' for plain submit/validate errors.
                 const eo = (err && typeof err === 'object') ? err as Record<string, unknown> : {};

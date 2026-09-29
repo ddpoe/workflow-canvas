@@ -1,14 +1,14 @@
 """Tier 3 integration tests for ``wfc demo`` scaffold shape and teardown precision.
 
-Uses the ``WFC_DEMO_IMAGE`` seam (D-B3): the scaffold registers the
-session-built ``local/wfc-test-client`` image instead of building the real
-demo image (``pip install workflow-canvas==0.5.0`` cannot succeed before the
-release exists on PyPI). Every registration step remains the genuine
+Uses the ``WFC_DEMO_IMAGE`` seam: the scaffold registers the session-built
+``local/wfc-test-client`` image instead of building the real demo image,
+which installs a released ``workflow-canvas`` from PyPI rather than the
+checkout under test. Every registration step remains the genuine
 production path — env probe/digest-pin, module/method/sample registration,
 git commit, DVC cache.
 
 Demo/user RUN rows are created via the ORM rather than executing the full
-15-job container pipeline (D-B5): the teardown logic under test operates on
+15-job container pipeline: the teardown logic under test operates on
 DB rows, and executing containers adds minutes without covering more of the
 deletion logic.
 """
@@ -25,21 +25,10 @@ from axiom_annotations import Step, workflow
 from wfc.demo.scaffold import _project_env, run_demo
 from wfc.demo.remove import remove_demo
 
-
-def _docker_available() -> bool:
-    if shutil.which("docker") is None:
-        return False
-    try:
-        result = subprocess.run(["docker", "info"], capture_output=True, timeout=10)
-        return result.returncode == 0
-    except (subprocess.SubprocessError, OSError):
-        return False
+from tests.conftest import requires_docker
 
 
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.skipif(not _docker_available(), reason="Docker not reachable"),
-]
+pytestmark = [pytest.mark.integration, requires_docker]
 
 CLIENT_REF = "docker://local/wfc-test-client:latest"
 
@@ -73,7 +62,7 @@ def _q(proj: Path, sql: str) -> list[tuple]:
         con.close()
 
 
-@workflow(purpose="US-1 scaffold shape: a real `wfc demo` populates the project "
+@workflow(purpose="Scaffold shape: a real `wfc demo` populates the project "
                   "through the genuine registration path")
 def test_demo_scaffold_shape(tmp_path, monkeypatch, client_image):
     口 = Step(step_num=1, name="Init and scaffold",
@@ -91,7 +80,8 @@ def test_demo_scaffold_shape(tmp_path, monkeypatch, client_image):
         f"SELECT name FROM methods WHERE module_id={mods[0][0]} ORDER BY name",
     )
     assert {m[0] for m in methods} == {
-        "preprocess", "filter_cells", "label", "summarize", "plot",
+        "__demo__preprocess", "__demo__filter_cells", "__demo__label",
+        "__demo__summarize", "__demo__plot",
     }
     contracts = _q(
         proj,
@@ -112,23 +102,30 @@ def test_demo_scaffold_shape(tmp_path, monkeypatch, client_image):
     env = manifest["envs"]["__demo__env"]
     assert env["backend"] == "byo"
     assert "@sha256:" in env["container"]
+    # The staged directory is methods/<registered name>/ — the prefix is what
+    # keeps the demo out of the flat snapshot namespace a user shares.
     for m in ("preprocess", "filter_cells", "label", "summarize", "plot"):
-        assert (proj / "methods" / m / "method.yaml").exists()
+        assert (proj / "methods" / f"__demo__{m}" / "method.yaml").exists()
+        assert (proj / "methods" / f"__demo__{m}" / f"{m}.py").exists()
+        assert not (proj / "methods" / m).exists()
     assert (proj / "demo-pipeline.json").exists()
     assert (proj / "data" / "samples" / "__demo__ctrl_01" / "ctrl_01.csv").exists()
 
 
-@workflow(purpose="US-3 teardown precision: `wfc demo --remove` deletes every "
-                  "demo entity and run but leaves overlapping user entities "
-                  "intact with zero orphaned rows")
+@workflow(purpose="The demo takes no name a user wants: with the demo "
+                  "installed, a user can still register their own "
+                  "`preprocess`, both coexist, and `wfc demo --remove` "
+                  "deletes every demo entity and run while leaving the "
+                  "user's intact with zero orphaned rows")
 def test_demo_teardown_precision_with_user_overlap(tmp_path, monkeypatch, client_image):
-    口 = Step(step_num=1, name="Scaffold demo then register overlapping user entities",
-             purpose="User module my-analysis with a method NAMED preprocess, a "
-                     "user sample, and a user env coexist with the demo")
+    口 = Step(step_num=1, name="Scaffold demo then register a user method named preprocess",
+             purpose="The demo's methods are registered as __demo__<name>, so "
+                     "the bare name is still free: registering my-analysis/"
+                     "preprocess alongside the installed demo must succeed")
     proj = _init_project(tmp_path)
     _scaffold_demo(proj, monkeypatch)
 
-    from wfc.envs import register as register_env
+    from wfc.environments import register as register_env
 
     register_env(
         name="user-env", backend="byo",
@@ -143,29 +140,35 @@ def test_demo_teardown_precision_with_user_overlap(tmp_path, monkeypatch, client
     (staging / "method.yaml").write_text(
         "inputs:\n  data:\n    type: .csv\n    required: true\n"
         "outputs:\n  clean:\n    type: .csv\n    required: true\n"
-        "params: {}\nexecutor: local\nenv: container:user-env\n"
+        "params: {}\nexecutor: local\nenv: user-env\n"
     )
     user_csv = proj / "user_input.csv"
     user_csv.write_text("id,v\n1,2\n")
 
     with _project_env(proj):
-        from wfc.cli import register_sample
-        from wfc.register import register_method, register_module
+        from wfc.registration import register_sample
+        from wfc.registration import register_method, register_module
 
         register_module(name="my-analysis", contracts=[])
+        # The load-bearing call: before the demo's methods were prefixed this
+        # raised, because __demo__ already held `preprocess` and
+        # register_method refuses a name another module holds (they would
+        # share the methods/preprocess/ snapshot).
         register_method(
             method_dir=staging, module_name="my-analysis",
             method_name="preprocess",
         )
         register_sample(name="my_sample", source_path=user_csv, project_root=proj)
 
-        口 = Step(step_num=2, name="Create demo and user run rows via the ORM",
-                 purpose="Demo runs with children + a cache chain, and a user "
-                         "run whose FKs point INTO the demo set (D-5)")
+        口 = Step(step_num=2, name="Assert coexistence, then create run rows via the ORM",
+                 purpose="Both methods hold their own row and their own "
+                         "snapshot directory; then demo runs with children + "
+                         "a cache chain, and a user run whose FKs point INTO "
+                         "the demo set")
         from sqlmodel import select
 
-        from wfc.database import get_session
-        from wfc.models import (
+        from wfc.persistence import get_session
+        from wfc.persistence import (
             Method, Module, Run, RunAnnotation, RunInput, RunOutput,
         )
 
@@ -175,7 +178,8 @@ def test_demo_teardown_precision_with_user_overlap(tmp_path, monkeypatch, client
             ).one()
             demo_label = session.exec(
                 select(Method).where(
-                    Method.module_id == demo_mod.id, Method.name == "label"
+                    Method.module_id == demo_mod.id,
+                    Method.name == "__demo__label",
                 )
             ).one()
             user_mod = session.exec(
@@ -186,6 +190,15 @@ def test_demo_teardown_precision_with_user_overlap(tmp_path, monkeypatch, client
                     Method.module_id == user_mod.id, Method.name == "preprocess"
                 )
             ).one()
+            # Coexistence: the demo's preprocess and the user's are separate
+            # rows under separate names, so they snapshot into separate dirs.
+            demo_pre = session.exec(
+                select(Method).where(
+                    Method.module_id == demo_mod.id,
+                    Method.name == "__demo__preprocess",
+                )
+            ).one()
+            assert demo_pre.id != user_pre.id
 
             r1 = Run(method_id=demo_label.id, status="completed", sample="__demo__ctrl_01")
             session.add(r1); session.commit(); session.refresh(r1)
@@ -206,6 +219,11 @@ def test_demo_teardown_precision_with_user_overlap(tmp_path, monkeypatch, client
                                   artifact_path="clean.csv", artifact_type="method_file"))
             session.commit()
             user_run_id = u1.id
+
+    # Separate snapshot directories, the thing the prefix actually buys: the
+    # user owns methods/preprocess/, the demo owns methods/__demo__preprocess/.
+    assert (proj / "methods" / "preprocess" / "preprocess.py").exists()
+    assert (proj / "methods" / "__demo__preprocess" / "preprocess.py").exists()
 
     口 = Step(step_num=3, name="Remove the demo",
              purpose="Tag/module-cascade teardown with --yes")
@@ -239,11 +257,11 @@ def test_demo_teardown_precision_with_user_overlap(tmp_path, monkeypatch, client
     assert "__demo__env" not in manifest["envs"]
     assert "user-env" in manifest["envs"]
 
-    # Files: user's methods/preprocess snapshot survives (claimed by the
-    # surviving method row); other demo method dirs and demo files are gone.
-    assert (proj / "methods" / "preprocess").exists()
-    for m in ("filter_cells", "label", "summarize", "plot"):
-        assert not (proj / "methods" / m).exists()
+    # Files: the user's methods/preprocess/ snapshot is untouched — teardown
+    # deletes by the __demo__ tag, and the user's directory never carried it.
+    assert (proj / "methods" / "preprocess" / "preprocess.py").exists()
+    for m in ("preprocess", "filter_cells", "label", "summarize", "plot"):
+        assert not (proj / "methods" / f"__demo__{m}").exists()
     assert not (proj / "demo-pipeline.json").exists()
     assert not list((proj / "data" / "samples").glob("__demo__*"))
 

@@ -1,70 +1,102 @@
-<!-- generated from pm_mvp::docs.consumer.how-to.registration @ 3cfeb140bae3; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.how-to.registration @ a17f4f921d1b; do not edit -->
 
 # Registering Modules, Methods, and Samples
 
 ## Registering a Module
 
-A **module** is a logical grouping of related methods that share a common contract (the required outputs and metrics every method in the module must provide).
+A **module** groups related methods and can declare outputs and metrics that every method in it must provide. Run every command on this page from the project root (for example `wfc_project_root/`).
+
+### Suggested layout
+
+Keep your own code under `src/`, one directory per module and one per method:
+
+```
+wfc_project_root/
+  src/
+    my_analysis/
+      module.yaml
+      preprocess/
+        preprocess.py
+        method.yaml
+```
+
+wfc keeps its own registered copy of each method in `methods/<name>/`; don't author there.
 
 ### Command
 
 ```bash
-wfc register-module --name my_analysis \
-  [--module-dir modules/my_analysis] \
-  [--description "My analysis module"] \
-  [--contracts '[{"type": "output", "name": "normalized", "value_type": "csv", "required": true}]']
+wfc register-module --name my_analysis --module-dir src/my_analysis [--description "My analysis module"]
 ```
 
-### Two ways to supply contracts
+`--module-dir` is the directory holding the module's `module.yaml`.
 
-| Source | When used |
-|---|---|
-| `module.yaml` inside `--module-dir` | File is parsed automatically via `parse_module_yaml()` |
-| `--contracts` CLI flag (JSON) | Required when no `--module-dir` or no `module.yaml` |
+### Declaring the module's contract
 
-### What happens in the database
+Put a `module.yaml` in the module's directory:
 
-1. A **Module** row is upserted (matched by name).
-2. One **ModuleContract** row is created for each contract entry. Module contracts declare the module's required *outputs* and *metrics* (each row has a `type` of `output` or `metric`, a `name`, an optional `value_type`, and a `required` flag). At method registration, the framework checks that each method's declared outputs include every output the module marks `required` — module contracts are an output/metric guarantee, not an input-slot spec.
+```yaml
+# src/my_analysis/module.yaml
+description: Normalize and score expression data
+contracts:
+  - type: output
+    name: normalized
+    value_type: .csv
+    required: true
+  - type: metric
+    name: mcc
+    value_type: float
+    required: true
+```
 
-Modules are idempotent to re-register -- calling the command again with the same name updates the existing row.
+A module with no contract needs only the `description:` line. You can instead pass the contract with `--contracts`, as inline JSON or the path to a JSON file; `--contracts` takes precedence over `module.yaml`.
 
-Names beginning with `__demo__` are reserved for the bundled demo: `register-module`, `register-method`, `register-sample`, `register-env`, and the Canvas Registry all refuse them, so that `wfc demo --remove` can safely identify demo-owned entries.
+When a method registers into the module, its `method.yaml` must declare every output the module marks `required`.
+
+Run the command again with the same name to update the module's description and contract.
+
 
 ## Registering a Method
 
-A **method** is a single analysis step -- a public Python function that lives in a directory under a module. (The function may optionally use the `@wfc.method` decorator from `wfc-client`, but plain public functions are discovered and tracked all the same.)
+A **method** is one analysis step: a script (Python, R or bash) plus a `method.yaml` that declares its inputs, outputs, parameters and env. Each step runs in a container: a packaged copy of the software and dependencies your method needs, which wfc calls an environment, or env (see [How the Pieces Fit Together](../explanation/how-the-pieces-fit-together.md)).
 
 ### Command
 
 ```bash
-wfc register-method modules/my_analysis/preprocess --module my_analysis
+wfc register-method <method-dir> --module <module>
+wfc register-method src/my_analysis/preprocess --module my_analysis
 ```
 
-### What the command does (step by step)
+`<method-dir>` is the directory holding the script and `method.yaml`; `<module>` is the registered module the method joins. The method's name defaults to the directory name; set it with `--name`.
 
-1. **Locate and scan script** -- finds `{method_name}.py` in the given directory and AST-parses it to extract function signatures.
-2. **Resolve module** -- looks up the parent module in the database (raises `ValueError` if not found).
-3. **Upsert Method row** -- creates or updates the method record, storing the script path and resolved environment name (from `method.yaml`; a method must name a built container env via `env:`).
-4. **Sync tracked functions and parameters** -- clears existing `TrackedFunction` and `ParamDef` rows for this method, then inserts fresh rows from the AST scan results. Each tracked function gets an ordinal and its parameters are stored with name, type annotation, and default value.
-5. **Store method contract** -- records `input_slots`, `output_slots`, `params_schema`, and `executor` from `method.yaml`. At least one input slot must be declared (raises `ValueError` otherwise).
-6. **Validate against module contract** -- checks that the method's declared outputs satisfy the parent module's required outputs.
-7. **Git commit** -- commits the method directory to version control so the code version is captured in the cache key.
-8. **Copy source snapshot** -- copies source files to `methods/{method_name}/` so the code fingerprint is always computed from the registered copy.
+### Before you register
 
-### `save_artifact` static validation (Tier-1 only)
+- The module is registered.
+- The directory has a `method.yaml` with an `env:` naming a registered env (see [Registering an Environment](../tutorials/registering-an-environment.md)) and at least one input.
+- If the module's contract has required outputs, `method.yaml` declares them.
+- The project is a git repository (`wfc init` sets this up).
 
-When a method uses the `@wfc.method` decorator, registration additionally AST-scans the decorated function body for `ctx.save_artifact("<name>", ...)` calls and cross-checks the literal output names against `method.yaml` `outputs:`. A required output with no matching `save_artifact` call, or a `save_artifact` name not declared in `method.yaml`, fails registration with a clear error -- so output-name typos are caught at registration, not at run time. Dynamic (non-literal) names produce a warning rather than an error, and the scan is function-body-only (saves inside helper functions are not followed). This check applies only to decorated Tier-1 methods; a plain env-var + file method declares its outputs purely through `method.yaml`.
+wfc finds the script by `--script <file>`, then the `script:` key in `method.yaml`, then a single file named `<name>.py`, `<name>.R`, `<name>.r` or `<name>.sh`. If it finds more than one candidate, registration stops and asks you to set `script:`.
 
-### Key constraints
+### What registration does
 
-- Every method must declare at least one input slot.
-- Method outputs must satisfy the parent module's contract (required outputs must be present).
-- The `@wfc.method` decorator is optional. AST discovery picks up every public (non-underscore) function in the script automatically; `@wfc.method` (from the `wfc-client` package) is ergonomic Tier-1 sugar, not a requirement for a function to be discovered or tracked.
+- Records the method, its contract from `method.yaml`, and its env.
+- For a Python script, scans its public functions and their parameters.
+- Commits the method directory to git.
+- Copies the method's scripts and `method.yaml` into `methods/<name>/`. wfc fingerprints this copy to decide whether a step's earlier result can be reused.
+
+If any check fails, the command prints the reason and exits with an error.
+
+To change a method, edit its script or `method.yaml` in `src/<module>/<method>/`, then run `wfc register-method` again.
+
+### Checking `save_artifact` names
+
+For a script that uses the `@wfc.method` decorator, registration also checks each `ctx.save_artifact("<name>", ...)` call against the outputs in `method.yaml`. A saved name that `method.yaml` does not declare, or a required output that is never saved, stops registration, so a typo in an output name shows up now instead of at run time.
+
+The `@wfc.method` decorator is optional. Plain scripts that read the `WFC_*` environment variables register the same way; see [Authoring a Method Script](../tutorials/authoring-a-method-script.md).
 
 ## Registering a Sample
 
-A **sample** is a data file (typically CSV) that serves as the root input to a pipeline.
+A **sample** is a data file or a directory of files that a pipeline starts from.
 
 ### Command
 
@@ -72,44 +104,49 @@ A **sample** is a data file (typically CSV) that serves as the root input to a p
 wfc register-sample --name CFPAC_ERKi --source /data/raw/cfpac_erki.csv
 ```
 
-### Prerequisites
+`--source` can be a file or a directory. Sample names must be unique; registering a name that already exists is refused.
 
-DVC must be configured. Your `.wfc/wf-canvas.toml` must include a `[dvc]` section with a `url` field (a directory path such as `url = "/data/wfc-archive"`, or a remote scheme like `s3://...`); `wfc init` creates and mirrors it automatically when `auto_init = true`. Registration raises `DvcNotConfiguredError` if the section is missing, if `url` is unset, or if `.dvc/config` declares no remotes.
+The project needs its DVC archive set up, which `wfc init` does. If it is not set up, registration stops with an error naming what is missing in `.wfc/wf-canvas.toml`.
 
-### What the command does
+### What registration does
 
-1. **Content-hash** -- computes an MD5 hash of the source file via `hash_path()`.
-2. **DVC cache store** -- copies the file into the DVC content-addressed cache (`cache_file()`).
-3. **DB row** -- creates a `Sample` row storing `file_size`, `file_mtime`, `registration_mode`, and `content_hash`.
-4. **Remote push** -- if a DVC remote is configured, the sample's cache object is pushed to it. In standalone CLI mode the push is synchronous (failures are logged as a warning, leaving the sample in the local cache); inside a running pipeline the push is enqueued onto the background push worker instead.
+wfc hashes the source, stores its content in the project's DVC cache, and pushes it to the archive. The source file stays where it is, and the sample is identified by its content hash from then on.
 
-### Important: `data/samples/` is ephemeral
+### Adding a description
 
-The `data/samples/` directory is an **ephemeral workspace**, not a permanent copy destination. The DVC cache is the sole authoritative store. Before pipeline execution, `wfc restore-sample` materializes the file from the cache into the workspace. The `registered_path` on the Sample row records where the file *will be* restored, not where it currently lives.
+Pass `--manifest <file>` to attach a description. The file is a small YAML file:
 
-Only `"copy"` mode is currently implemented; `"link"` mode raises `NotImplementedError`.
+```yaml
+description: CFPAC cells treated with ERK inhibitor, replicate 1
+```
+
+The description is shown when you pick samples in the canvas. It does not change the sample's identity.
 
 ### Restoring samples
+
+Pipelines copy each sample they need from the cache into `data/samples/` when they run, so you do not copy data there yourself. To restore one by hand:
 
 ```bash
 wfc restore-sample --name CFPAC_ERKi
 ```
 
-Looks up `Sample.content_hash`, calls `restore_from_cache()` (with integrity verification), and falls back to `pull_cache()` if the local cache is empty. The `restore_sample` Snakemake rule integrates this into the DAG for lazy, on-demand restore during pipeline execution.
+wfc takes the sample from the local cache, or pulls it from the archive if the cache does not have it, and checks its content hash.
 
 ## Registering from the Canvas
 
-Everything above can also be done in the browser, without the CLI. In the Canvas Registry view, click **+ Register** and pick what you're registering -- a module, a method, or a sample.
+You can also register modules, methods and samples in the canvas. Open the **Registry** tab, choose the **Modules**, **Methods** or **Samples** list, and click **+ Register**. The dialog has a switch for module, method or sample.
 
-**Browse for the path.** Use the **Browse…** button to select the directory or file from your project root instead of typing the path by hand.
+- **Module:** enter a name and an optional description. The module is registered with no contract; to add one, write a `module.yaml` and run `wfc register-module` again.
+- **Method:** enter the method directory, or click **Browse…** to pick it from the project, and choose the module. The method name is optional and defaults to the directory name.
+- **Sample:** enter a name and the absolute path to the source file.
 
-**Dry Run first.** Click **Dry Run** to run the same pre-checks registration performs -- without saving anything. The modal shows each check as pass, warning, or fail (contract parsing, environment presence, the AST scan), so you can see exactly what will be validated before you commit.
+Click **Dry run** to run the same checks as registration without saving anything. Each check is listed as passed, warning or failed. Click **Register** to save. If the server refuses, the error appears in the dialog and nothing is saved.
 
-**Register.** When the pre-checks look right, click **Register** to commit. If the server reports an error or a failing pre-check, it appears in a banner at the top of the modal and nothing is persisted.
-
-This registers exactly what the CLI commands above do -- use whichever fits your workflow.
+Envs are registered from the command line with `wfc register-env`.
 
 ## Next Steps
 
-- **[Run & Inspect Results](../how-to/run-and-inspect-results.md)** -- learn how to browse runs, trace lineage, and view outputs after pipeline execution.
-- **[Canvas Visual Builder](../how-to/canvas.md)** -- use the visual Pipeline Builder and Run History interface.
+- **[Registering an Environment](../tutorials/registering-an-environment.md)**: build the env a method names.
+- **[Build, Run and Inspect in the Canvas](canvas.md)**: build a pipeline from your registered methods and samples, run it, and look at its results and History.
+- **[Run and Inspect from the Command Line](run-and-inspect-results.md)**: run, inspect and export results from the command line.
+

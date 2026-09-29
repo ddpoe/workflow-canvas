@@ -1,0 +1,222 @@
+{
+  "id": "padded-axis",
+  "case": "expansion-variant-axis",
+  "note": "The two-node probe: the axis is [default, relaxed, strict]; the swept node runs its box params under default and the unswept node runs once per name (12 rows). Every row is unique: m2's chain differs under each name.",
+  "document": {
+    "name": "padded-axis",
+    "nodes": [
+      {
+        "id": "s",
+        "type": "input_selector",
+        "method": "",
+        "module": "",
+        "params": {},
+        "samples": [
+          "s1",
+          "s2"
+        ],
+        "source": "registered",
+        "fan_mode": "out"
+      },
+      {
+        "id": "m1",
+        "type": "method",
+        "method": "filter",
+        "module": "mod",
+        "params": {
+          "q": 0.7
+        }
+      },
+      {
+        "id": "m2",
+        "type": "method",
+        "method": "plot",
+        "module": "mod",
+        "params": {}
+      }
+    ],
+    "links": [
+      {
+        "source": "s",
+        "target": "m1",
+        "targetHandle": "data"
+      },
+      {
+        "source": "m1",
+        "target": "m2",
+        "targetHandle": "data"
+      }
+    ],
+    "samples": [
+      "s1",
+      "s2"
+    ],
+    "param_sets": {
+      "m1": {
+        "strict": {
+          "q": 0.9
+        },
+        "relaxed": {
+          "q": 0.5
+        }
+      }
+    }
+  },
+  "contract_map": {
+    "mod.filter": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/filter/filter.py",
+      "env": "container:base"
+    },
+    "mod.plot": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/plot/plot.py",
+      "env": "container:base"
+    },
+    "mod.qc": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/qc/qc.py",
+      "env": "container:base"
+    },
+    "mod.merge": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "sources": {
+          "required": true
+        }
+      },
+      "script_path": "methods/merge/merge.py",
+      "env": "container:base"
+    },
+    "mod.join": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        },
+        "other": {
+          "required": true
+        }
+      },
+      "script_path": "methods/join/join.py",
+      "env": "container:base"
+    }
+  },
+  "reference_outputs": {},
+  "expect": {
+    "collapsed": [],
+    "bundle": [],
+    "rows": [
+      {
+        "node": "m1",
+        "sample": "s1",
+        "variant": "default",
+        "reused": false
+      },
+      {
+        "node": "m1",
+        "sample": "s1",
+        "variant": "relaxed",
+        "reused": false
+      },
+      {
+        "node": "m1",
+        "sample": "s1",
+        "variant": "strict",
+        "reused": false
+      },
+      {
+        "node": "m1",
+        "sample": "s2",
+        "variant": "default",
+        "reused": false
+      },
+      {
+        "node": "m1",
+        "sample": "s2",
+        "variant": "relaxed",
+        "reused": false
+      },
+      {
+        "node": "m1",
+        "sample": "s2",
+        "variant": "strict",
+        "reused": false
+      },
+      {
+        "node": "m2",
+        "sample": "s1",
+        "variant": "default",
+        "reused": false
+      },
+      {
+        "node": "m2",
+        "sample": "s1",
+        "variant": "relaxed",
+        "reused": false
+      },
+      {
+        "node": "m2",
+        "sample": "s1",
+        "variant": "strict",
+        "reused": false
+      },
+      {
+        "node": "m2",
+        "sample": "s2",
+        "variant": "default",
+        "reused": false
+      },
+      {
+        "node": "m2",
+        "sample": "s2",
+        "variant": "relaxed",
+        "reused": false
+      },
+      {
+        "node": "m2",
+        "sample": "s2",
+        "variant": "strict",
+        "reused": false
+      }
+    ]
+  },
+  "client": {
+    "answers": true
+  }
+}

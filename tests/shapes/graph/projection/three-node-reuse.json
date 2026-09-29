@@ -1,0 +1,260 @@
+{
+  "id": "three-node-reuse",
+  "case": "expansion-variant-axis",
+  "note": "Three nodes, two swept on different names: 15 rows per sample. m1 under high and low is padded to its box params with no upstream method step, identical to its default row (reused: identity is by value); every m2 and m3 row differs on its chain.",
+  "document": {
+    "name": "three-node-reuse",
+    "nodes": [
+      {
+        "id": "s",
+        "type": "input_selector",
+        "method": "",
+        "module": "",
+        "params": {},
+        "samples": [
+          "s1"
+        ],
+        "source": "registered",
+        "fan_mode": "out"
+      },
+      {
+        "id": "m1",
+        "type": "method",
+        "method": "filter",
+        "module": "mod",
+        "params": {
+          "t": 0.5
+        }
+      },
+      {
+        "id": "m2",
+        "type": "method",
+        "method": "qc",
+        "module": "mod",
+        "params": {
+          "h": 5
+        }
+      },
+      {
+        "id": "m3",
+        "type": "method",
+        "method": "plot",
+        "module": "mod",
+        "params": {}
+      }
+    ],
+    "links": [
+      {
+        "source": "s",
+        "target": "m1",
+        "targetHandle": "data"
+      },
+      {
+        "source": "m1",
+        "target": "m2",
+        "targetHandle": "data"
+      },
+      {
+        "source": "m2",
+        "target": "m3",
+        "targetHandle": "data"
+      }
+    ],
+    "samples": [
+      "s1"
+    ],
+    "param_sets": {
+      "m1": {
+        "strict": {
+          "t": 1
+        },
+        "relaxed": {
+          "t": 0
+        }
+      },
+      "m2": {
+        "high": {
+          "h": 9
+        },
+        "low": {
+          "h": 1
+        }
+      }
+    }
+  },
+  "contract_map": {
+    "mod.filter": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/filter/filter.py",
+      "env": "container:base"
+    },
+    "mod.plot": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/plot/plot.py",
+      "env": "container:base"
+    },
+    "mod.qc": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/qc/qc.py",
+      "env": "container:base"
+    },
+    "mod.merge": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "sources": {
+          "required": true
+        }
+      },
+      "script_path": "methods/merge/merge.py",
+      "env": "container:base"
+    },
+    "mod.join": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        },
+        "other": {
+          "required": true
+        }
+      },
+      "script_path": "methods/join/join.py",
+      "env": "container:base"
+    }
+  },
+  "reference_outputs": {},
+  "expect": {
+    "collapsed": [],
+    "bundle": [],
+    "rows": [
+      {
+        "node": "m1",
+        "sample": "s1",
+        "variant": "default",
+        "reused": false
+      },
+      {
+        "node": "m1",
+        "sample": "s1",
+        "variant": "high",
+        "reused": true
+      },
+      {
+        "node": "m1",
+        "sample": "s1",
+        "variant": "low",
+        "reused": true
+      },
+      {
+        "node": "m1",
+        "sample": "s1",
+        "variant": "relaxed",
+        "reused": false
+      },
+      {
+        "node": "m1",
+        "sample": "s1",
+        "variant": "strict",
+        "reused": false
+      },
+      {
+        "node": "m2",
+        "sample": "s1",
+        "variant": "default",
+        "reused": false
+      },
+      {
+        "node": "m2",
+        "sample": "s1",
+        "variant": "high",
+        "reused": false
+      },
+      {
+        "node": "m2",
+        "sample": "s1",
+        "variant": "low",
+        "reused": false
+      },
+      {
+        "node": "m2",
+        "sample": "s1",
+        "variant": "relaxed",
+        "reused": false
+      },
+      {
+        "node": "m2",
+        "sample": "s1",
+        "variant": "strict",
+        "reused": false
+      },
+      {
+        "node": "m3",
+        "sample": "s1",
+        "variant": "default",
+        "reused": false
+      },
+      {
+        "node": "m3",
+        "sample": "s1",
+        "variant": "high",
+        "reused": false
+      },
+      {
+        "node": "m3",
+        "sample": "s1",
+        "variant": "low",
+        "reused": false
+      },
+      {
+        "node": "m3",
+        "sample": "s1",
+        "variant": "relaxed",
+        "reused": false
+      },
+      {
+        "node": "m3",
+        "sample": "s1",
+        "variant": "strict",
+        "reused": false
+      }
+    ]
+  },
+  "client": {
+    "answers": true
+  }
+}

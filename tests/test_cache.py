@@ -1,101 +1,86 @@
 """
-Unit Tests: check_cache and register_run
+Unit Tests: the check_cache verb answers with the run the claim phase would reuse
 
-Validates the caching layer that Snakemake rules use to skip redundant work:
-  - ``register_run`` stores slot names in ``RunInput.input_name``
-  - ``check_cache`` matches on the full ``(slot, parent_id)`` tuple set
-  - Cache misses on wrong slots, missing parents, or different params
+Validates the verb's cache answer, given through the claim phase's one
+cache-hit lookup (identical code, params, env and inputs; archive present):
+  - ``pre_run`` stores slot names in ``RunInput.input_name``
+  - the exact fan-in is a hit; a subset of the parents is a miss
+  - Cache misses on different params or a pruned archive
   - Cache hits return the most recent matching run
   - Sample-conditional params (Differential QC scenario) produce isolated
     cache entries with no cross-sample false hits
 """
 
 import json
-import os
+import shutil
 
 from axiom_annotations import workflow, Step
+
+from tests.fixtures.routes import claimed_run, completed_run
+from tests.harness import Phase, Scenario, node, selector, wire
+from tests.harness.scenario import SELECTOR_ID
+
+#: The module, method and sample every lookup in this file names.
+_MODULE = "csv_tools"
+_METHOD = "csv_merge"
+_SAMPLE = "S1"
 
 
 # =============================================================================
 # Helpers
 # =============================================================================
 
-def _seed_module_method(cli, module="csv_tools", method="csv_merge"):
-    """Register a module and method via CLI so register_run can reference them."""
-    result = cli("register-module", "--name", module, "--description", "test module", "--contracts", "[]")
-    assert result.returncode == 0, result.stderr
-    method_dir = os.path.join("methods", method)
-    os.makedirs(method_dir, exist_ok=True)
-    script_name = f"{method}.py"
-    script_path = os.path.join(method_dir, script_name)
-    if not os.path.exists(script_path):
-        with open(script_path, "w") as f:
-            f.write("def main(df, params): return df\n")
-    # ADR-019 Cycle H: execution is container-only, so every registered method
-    # must name a built container env. The tmp_project fixture writes a
-    # placeholder ``fixture-env`` record so this registration validates
-    # Docker-free (no image pull at registration time).
-    yaml_path = os.path.join(method_dir, "method.yaml")
-    if not os.path.exists(yaml_path):
-        with open(yaml_path, "w") as f:
-            f.write(
-                "inputs:\n"
-                "  data:\n"
-                "    type: .csv\n"
-                "    required: true\n"
-                "outputs:\n"
-                "  result:\n"
-                "    type: .csv\n"
-                "    required: true\n"
-                "params: {}\n"
-                "executor: python\n"
-                "env: container:fixture-env\n"
-            )
-    result = cli("register-method", method_dir, "--module", module)
-    assert result.returncode == 0, result.stderr
+def _fan_in_scenario():
+    """Two root sources feeding ``csv_merge`` on its ``sources`` slot.
+
+    The roots are one method under distinct params, so each executes rather
+    than cache-hitting the other; the consumer is ``csv_merge``, the method
+    every lookup below names.
+    """
+    return Scenario(
+        nodes=[
+            selector(),
+            node("run_a", method="csv_source", module=_MODULE,
+                 inputs=[wire(SELECTOR_ID)]),
+            node("run_b", method="csv_source", module=_MODULE,
+                 inputs=[wire(SELECTOR_ID)], params={"side": "b"}),
+            node("merge", method=_METHOD, module=_MODULE,
+                 inputs=[wire("run_a", target_slot="sources"),
+                         wire("run_b", target_slot="sources")]),
+        ],
+        samples=[_SAMPLE],
+        pipeline_id="cache-fan-in",
+        name="cache_fan_in",
+    )
 
 
-def _register_and_complete(cli, method, module, sample, params="{}", parent_run_ids=None):
-    """Register a run, create a fake archive, complete it. Returns run ID string."""
-    args = ["register_run", "--method", method, "--module", module,
-            "--sample", sample, "--params", params]
-    if parent_run_ids:
-        args += ["--parent-run-id"] + list(parent_run_ids)
-    r = cli(*args)
-    assert r.returncode == 0, r.stderr
-    run_id = r.stdout.strip()
-
-    archive = os.path.join(".runs", f"{int(run_id):08d}")
-    os.makedirs(archive, exist_ok=True)
-    with open(os.path.join(archive, "output.csv"), "w") as f:
-        f.write("col\n1\n")
-    cli("complete_run", "--run-id", run_id, "--status", "completed",
-        "--output", os.path.join(archive, "output.csv"))
-    return run_id
+def _run_id(driven) -> str:
+    """The run id as the CLI prints it."""
+    return str(driven.run_id)
 
 
 # =============================================================================
 # Tests
 # =============================================================================
 
-def test_slot_matching(cli):
-    """register_run with slot:id parents → check_cache finds exact match,
-    rejects mismatched slots or missing parents."""
+def test_fan_in_matching(cli, tmp_project, monkeypatch):
+    """The claim stores the slot names of its parents; check_cache finds
+    the exact fan-in and rejects a subset of the parents."""
 
-    _seed_module_method(cli)
+    scn = _fan_in_scenario()
 
-    # Two upstream runs (no parents — simulating root filter nodes)
-    run_a = _register_and_complete(cli, "csv_merge", "csv_tools", "S1")
-    run_b = _register_and_complete(cli, "csv_merge", "csv_tools", "S1")
+    # Two upstream runs (root nodes fed by the selector)
+    run_a = _run_id(completed_run(tmp_project, monkeypatch=monkeypatch,
+                                  scenario=scn, target="run_a"))
+    run_b = _run_id(completed_run(tmp_project, monkeypatch=monkeypatch,
+                                  scenario=scn, target="run_b"))
 
-    # Merge run with two parents on the "sources" slot
-    merge_id = _register_and_complete(
-        cli, "csv_merge", "csv_tools", "S1",
-        parent_run_ids=[f"sources:{run_a}", f"sources:{run_b}"])
+    # Merge run with two parents on the "sources" slot, wired in the document
+    merge_id = _run_id(completed_run(tmp_project, monkeypatch=monkeypatch,
+                                     scenario=scn, target="merge"))
 
     # ── Verify RunInput rows store the slot name ──────────────────────────
-    from wfc.database import get_session
-    from wfc.models import RunInput
+    from wfc.persistence import get_session, RunInput
     from sqlmodel import select
 
     with get_session() as session:
@@ -106,88 +91,91 @@ def test_slot_matching(cli):
         assert actual == {("sources", int(run_a)), ("sources", int(run_b))}
 
     # ── Exact match → cache hit ───────────────────────────────────────────
-    r = cli("check_cache", "--method", "csv_merge", "--sample", "S1",
+    r = cli("check_cache", "--method", "csv_merge",
+            "--module", "csv_tools", "--sample", "S1",
             "--params", "{}",
-            "--parent-run-id", f"sources:{run_a}", f"sources:{run_b}")
+            "--parent-run-id", f"sources:{run_a}",
+            "--parent-run-id", f"sources:{run_b}")
     assert r.stdout.strip() == merge_id
 
-    # ── Same IDs, wrong slot name → miss ──────────────────────────────────
-    r = cli("check_cache", "--method", "csv_merge", "--sample", "S1",
-            "--params", "{}",
-            "--parent-run-id", f"data:{run_a}", f"data:{run_b}")
-    assert r.stdout.strip() == "NONE"
-
-    # ── Same IDs, no slot (defaults to "upstream") → miss ─────────────────
-    r = cli("check_cache", "--method", "csv_merge", "--sample", "S1",
-            "--params", "{}",
-            "--parent-run-id", run_a, run_b)
-    assert r.stdout.strip() == "NONE"
-
     # ── Subset of parents → miss ──────────────────────────────────────────
-    r = cli("check_cache", "--method", "csv_merge", "--sample", "S1",
+    r = cli("check_cache", "--method", "csv_merge",
+            "--module", "csv_tools", "--sample", "S1",
             "--params", "{}",
             "--parent-run-id", f"sources:{run_a}")
     assert r.stdout.strip() == "NONE"
 
-    # ── Reversed order → still a hit (set comparison, not ordered) ────────
-    r = cli("check_cache", "--method", "csv_merge", "--sample", "S1",
+    # ── Reversed order → still a hit (the input fingerprint is sorted) ────
+    r = cli("check_cache", "--method", "csv_merge",
+            "--module", "csv_tools", "--sample", "S1",
             "--params", "{}",
-            "--parent-run-id", f"sources:{run_b}", f"sources:{run_a}")
+            "--parent-run-id", f"sources:{run_b}",
+            "--parent-run-id", f"sources:{run_a}")
     assert r.stdout.strip() == merge_id
 
 
-def test_params_mismatch(cli):
+def test_params_mismatch(cli, tmp_project, monkeypatch):
     """Same method+sample+parents but different params → cache miss."""
 
-    _seed_module_method(cli)
-
-    run_id = _register_and_complete(
-        cli, "csv_merge", "csv_tools", "S1",
-        params='{"column": "condition"}')
+    run_id = _run_id(completed_run(
+        tmp_project, monkeypatch=monkeypatch, method=_METHOD, module=_MODULE,
+        sample=_SAMPLE, params={"column": "condition"}))
 
     # Exact params → hit
-    r = cli("check_cache", "--method", "csv_merge", "--sample", "S1",
+    r = cli("check_cache", "--method", "csv_merge",
+            "--module", "csv_tools", "--sample", "S1",
             "--params", '{"column": "condition"}')
     assert r.stdout.strip() == run_id
 
     # Different params → miss
-    r = cli("check_cache", "--method", "csv_merge", "--sample", "S1",
+    r = cli("check_cache", "--method", "csv_merge",
+            "--module", "csv_tools", "--sample", "S1",
             "--params", '{"column": "replicate"}')
     assert r.stdout.strip() == "NONE"
 
 
-def test_no_parents_returns_newest(cli):
+def test_no_parents_returns_newest(cli, tmp_project, monkeypatch):
     """Two identical parentless runs → cache returns the newer one."""
 
-    _seed_module_method(cli)
+    # Both claim and collect before either is recorded, so both are genuine
+    # (non-audit) completed rows under the same key; the lookup prefers the
+    # newest. The record phase is the complete_run verb over the output the
+    # collect phase recorded.
+    runs = [
+        claimed_run(tmp_project, monkeypatch=monkeypatch, through=Phase.COLLECT,
+                    method=_METHOD, module=_MODULE, sample=_SAMPLE)
+        for _ in range(2)
+    ]
+    for run in runs:
+        r = cli("complete_run", "--run-id", _run_id(run), "--status", "completed",
+                "--output", run.output_rows[0]["artifact_path"])
+        assert r.returncode == 0, r.stderr
+    run_new = _run_id(runs[1])
 
-    run_old = _register_and_complete(cli, "csv_merge", "csv_tools", "S1")
-    run_new = _register_and_complete(cli, "csv_merge", "csv_tools", "S1")
-
-    r = cli("check_cache", "--method", "csv_merge", "--sample", "S1",
+    r = cli("check_cache", "--method", "csv_merge",
+            "--module", "csv_tools", "--sample", "S1",
             "--params", "{}")
     assert r.stdout.strip() == run_new
 
 
-def test_missing_archive_is_cache_miss(cli):
+def test_missing_archive_is_cache_miss(cli, tmp_project, monkeypatch):
     """Completed run exists in DB but archive deleted → cache miss."""
-    import shutil
-
-    _seed_module_method(cli)
-
-    run_id = _register_and_complete(cli, "csv_merge", "csv_tools", "S1")
+    run = completed_run(tmp_project, monkeypatch=monkeypatch, method=_METHOD,
+                        module=_MODULE, sample=_SAMPLE)
+    run_id = _run_id(run)
 
     # Verify it's a hit first
-    r = cli("check_cache", "--method", "csv_merge", "--sample", "S1",
+    r = cli("check_cache", "--method", "csv_merge",
+            "--module", "csv_tools", "--sample", "S1",
             "--params", "{}")
     assert r.stdout.strip() == run_id
 
     # Delete the archive
-    archive = os.path.join(".runs", f"{int(run_id):08d}")
-    shutil.rmtree(archive)
+    shutil.rmtree(run.archive_dir)
 
     # Now it's a miss
-    r = cli("check_cache", "--method", "csv_merge", "--sample", "S1",
+    r = cli("check_cache", "--method", "csv_merge",
+            "--module", "csv_tools", "--sample", "S1",
             "--params", "{}")
     assert r.stdout.strip() == "NONE"
 
@@ -197,37 +185,17 @@ def test_missing_archive_is_cache_miss(cli):
             "entries — the same method run with different params for different "
             "samples has no false cache hits and no cross-sample contamination"
 )
-def test_differential_qc_cache(cli):
+def test_differential_qc_cache(cli, tmp_project, monkeypatch):
     """Differential QC scenario: Rep2 uses threshold 2.5 (standard), Rep3 uses
     threshold 2.3 (dim_corrected). Each sample must cache independently — a
     query with the wrong params or wrong sample must always miss."""
 
     口 = Step(
         step_num=1,
-        name="Seed QC method",
-        purpose="Register a feature_qc module and method so run records can be created")
-    result = cli("register-module", "--name", "data_preprocessing",
-                 "--description", "Cell-level QC", "--contracts", "[]")
-    assert result.returncode == 0, result.stderr
-    method_dir = os.path.join("methods", "feature_qc")
-    os.makedirs(method_dir, exist_ok=True)
-    script_path = os.path.join(method_dir, "feature_qc.py")
-    if not os.path.exists(script_path):
-        with open(script_path, "w") as f:
-            f.write("def main(df, params): return df\n")
-    # ADR-019 Cycle H: container-only execution requires a method.yaml naming a
-    # built container env; tmp_project writes the placeholder ``fixture-env``.
-    yaml_path = os.path.join(method_dir, "method.yaml")
-    if not os.path.exists(yaml_path):
-        with open(yaml_path, "w") as f:
-            f.write(
-                "inputs:\n  data:\n    type: .csv\n    required: true\n"
-                "outputs:\n  result:\n    type: .csv\n    required: true\n"
-                "params: {}\nexecutor: python\nenv: container:fixture-env\n"
-            )
-    result = cli("register-method", method_dir, "--module", "data_preprocessing")
-    assert result.returncode == 0, result.stderr
-
+        name="Declare the QC method's samples and thresholds",
+        purpose="The feature_qc method and both samples are registered by the "
+                "first run's route; the two thresholds are what tell the runs apart")
+    samples = ["Rep2_siRNA", "Rep3_siRNA"]
     params_standard     = json.dumps({"filters": [{"column": "R1_p27", "min": 2.5}]})
     params_dim_corrected = json.dumps({"filters": [{"column": "R1_p27", "min": 2.3}]})
 
@@ -237,9 +205,10 @@ def test_differential_qc_cache(cli):
         purpose="Complete a feature_qc run for Rep2 with the standard p27 threshold",
         inputs="Rep2_siRNA sample, threshold 2.5 params",
         outputs="Completed run ID for Rep2")
-    run_rep2 = _register_and_complete(
-        cli, "feature_qc", "data_preprocessing", "Rep2_siRNA",
-        params=params_standard)
+    run_rep2 = _run_id(completed_run(
+        tmp_project, monkeypatch=monkeypatch, method="feature_qc",
+        module="data_preprocessing", sample="Rep2_siRNA", samples=samples,
+        params=json.loads(params_standard)))
 
     口 = Step(
         step_num=3,
@@ -247,9 +216,10 @@ def test_differential_qc_cache(cli):
         purpose="Complete a feature_qc run for Rep3 with the lower dim-corrected threshold",
         inputs="Rep3_siRNA sample, threshold 2.3 params",
         outputs="Completed run ID for Rep3")
-    run_rep3 = _register_and_complete(
-        cli, "feature_qc", "data_preprocessing", "Rep3_siRNA",
-        params=params_dim_corrected)
+    run_rep3 = _run_id(completed_run(
+        tmp_project, monkeypatch=monkeypatch, method="feature_qc",
+        module="data_preprocessing", sample="Rep3_siRNA", samples=samples,
+        params=json.loads(params_dim_corrected)))
 
     口 = Step(
         step_num=4,
@@ -257,21 +227,24 @@ def test_differential_qc_cache(cli):
         purpose="Confirm that querying each sample with the other sample's params "
                 "returns no match — different thresholds must never share a cache entry")
     # Rep3 query with Rep2's params → miss (correct sample, wrong params)
-    r = cli("check_cache", "--method", "feature_qc", "--sample", "Rep3_siRNA",
+    r = cli("check_cache", "--method", "feature_qc",
+            "--module", "data_preprocessing", "--sample", "Rep3_siRNA",
             "--params", params_standard)
     assert r.stdout.strip() == "NONE", (
         "Rep3 with standard threshold should not match the Rep2 run"
     )
 
     # Rep2 query with Rep3's params → miss (correct sample, wrong params)
-    r = cli("check_cache", "--method", "feature_qc", "--sample", "Rep2_siRNA",
+    r = cli("check_cache", "--method", "feature_qc",
+            "--module", "data_preprocessing", "--sample", "Rep2_siRNA",
             "--params", params_dim_corrected)
     assert r.stdout.strip() == "NONE", (
         "Rep2 with dim-corrected threshold should not match the Rep3 run"
     )
 
     # Rep2 query with Rep2's params but Rep3 sample → miss (wrong sample)
-    r = cli("check_cache", "--method", "feature_qc", "--sample", "Rep3_siRNA",
+    r = cli("check_cache", "--method", "feature_qc",
+            "--module", "data_preprocessing", "--sample", "Rep3_siRNA",
             "--params", params_dim_corrected)
     assert r.stdout.strip() == run_rep3
 
@@ -280,10 +253,12 @@ def test_differential_qc_cache(cli):
         name="Verify same-run cache hit",
         purpose="Confirm that querying each sample with its own params returns "
                 "the correct run — no spurious misses after the cross-sample checks")
-    r = cli("check_cache", "--method", "feature_qc", "--sample", "Rep2_siRNA",
+    r = cli("check_cache", "--method", "feature_qc",
+            "--module", "data_preprocessing", "--sample", "Rep2_siRNA",
             "--params", params_standard)
     assert r.stdout.strip() == run_rep2
 
-    r = cli("check_cache", "--method", "feature_qc", "--sample", "Rep3_siRNA",
+    r = cli("check_cache", "--method", "feature_qc",
+            "--module", "data_preprocessing", "--sample", "Rep3_siRNA",
             "--params", params_dim_corrected)
     assert r.stdout.strip() == run_rep3

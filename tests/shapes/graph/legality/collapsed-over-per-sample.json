@@ -1,0 +1,167 @@
+{
+  "id": "collapsed-over-per-sample",
+  "case": "legality-collapsed-over-per-sample",
+  "note": "m3 collapses through m2 and also consumes per-sample m1: validation lets it through, the load refuses it because bundling an upstream method's per-sample outputs is not supported.",
+  "document": {
+    "name": "collapsed-over-per-sample",
+    "nodes": [
+      {
+        "id": "a",
+        "type": "input_selector",
+        "method": "",
+        "module": "",
+        "params": {},
+        "samples": [
+          "s1",
+          "s2"
+        ],
+        "source": "registered",
+        "fan_mode": "out"
+      },
+      {
+        "id": "b",
+        "type": "input_selector",
+        "method": "",
+        "module": "",
+        "params": {},
+        "samples": [
+          "s1",
+          "s2"
+        ],
+        "source": "registered",
+        "fan_mode": "in"
+      },
+      {
+        "id": "m1",
+        "type": "method",
+        "method": "filter",
+        "module": "mod",
+        "params": {}
+      },
+      {
+        "id": "m2",
+        "type": "method",
+        "method": "merge",
+        "module": "mod",
+        "params": {}
+      },
+      {
+        "id": "m3",
+        "type": "method",
+        "method": "join",
+        "module": "mod",
+        "params": {}
+      }
+    ],
+    "links": [
+      {
+        "source": "a",
+        "target": "m1",
+        "targetHandle": "data"
+      },
+      {
+        "source": "b",
+        "target": "m2",
+        "targetHandle": "sources"
+      },
+      {
+        "source": "m1",
+        "target": "m3",
+        "targetHandle": "data"
+      },
+      {
+        "source": "m2",
+        "target": "m3",
+        "targetHandle": "other"
+      }
+    ],
+    "samples": [
+      "s1",
+      "s2"
+    ]
+  },
+  "contract_map": {
+    "mod.filter": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/filter/filter.py",
+      "env": "container:base"
+    },
+    "mod.plot": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/plot/plot.py",
+      "env": "container:base"
+    },
+    "mod.qc": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/qc/qc.py",
+      "env": "container:base"
+    },
+    "mod.merge": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "sources": {
+          "required": true
+        }
+      },
+      "script_path": "methods/merge/merge.py",
+      "env": "container:base"
+    },
+    "mod.join": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        },
+        "other": {
+          "required": true
+        }
+      },
+      "script_path": "methods/join/join.py",
+      "env": "container:base"
+    }
+  },
+  "reference_outputs": {},
+  "package": {
+    "validation": "accept",
+    "load": "refuse"
+  },
+  "client": {
+    "answers": false,
+    "reason": "the client previews only the duplicate-slot rule"
+  }
+}

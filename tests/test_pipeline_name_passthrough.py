@@ -12,12 +12,18 @@ from __future__ import annotations
 import json
 
 from wfc.canvas.wfc_provider import WfcProvider
-from wfc.database import get_session
-from wfc.models import Method, Module, Run
+from wfc.persistence import get_session, Method, Module, Run
 
 
-def test_get_all_runs_surfaces_pipeline_name(tmp_project):
-    named_pid = "pipe-named"
+def test_get_all_runs_surfaces_none_for_pipeline_without_sidecar(tmp_project):
+    """Legacy fallback: a run whose pipeline has no on-disk record at all
+    surfaces ``pipelineName`` None, so the frontend falls back to the short
+    pipeline id instead of inventing a label from a child run.
+
+    The positive writer-reader path (a real submission writing the sidecar
+    that the provider then reads back) is exercised in
+    tests/test_canvas_pipeline_document_endpoint.py.
+    """
     unnamed_pid = "pipe-unnamed"
 
     with get_session() as s:
@@ -34,21 +40,12 @@ def test_get_all_runs_surfaces_pipeline_name(tmp_project):
         s.add(meth)
         s.commit()
         s.refresh(meth)
-        for pid in (named_pid, unnamed_pid):
-            s.add(Run(method_id=meth.id, sample="S1", pipeline_id=pid, status="completed"))
+        s.add(Run(method_id=meth.id, sample="S1", pipeline_id=unnamed_pid, status="completed"))
         s.commit()
 
-    # Named pipeline: sidecar carries the Builder toolbar name. The
-    # unnamed pipeline gets no on-disk record at all (legacy shape).
-    sidecar_dir = tmp_project / ".runs" / "pipelines" / named_pid
-    sidecar_dir.mkdir(parents=True)
-    (sidecar_dir / "pipeline.editable.json").write_text(
-        json.dumps({"name": "demo", "nodes": [], "links": [], "samples": []})
-    )
-
+    # No .runs/pipelines/<pid>/ record on disk for this pipeline (legacy shape).
     prov = WfcProvider(str(tmp_project))
     prov.load()
     by_pid = {r["pipelineId"]: r for r in prov.get_all_runs()}
 
-    assert by_pid[named_pid]["pipelineName"] == "demo"
     assert by_pid[unnamed_pid]["pipelineName"] is None

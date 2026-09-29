@@ -1,100 +1,107 @@
-<!-- generated from pm_mvp::docs.consumer.reference.method-yaml-schema @ d47432fe64a3; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.reference.method-yaml-schema @ d5f407d65d06; do not edit -->
 
 # Reference: method.yaml Schema
 
 ## Overview
 
-`method.yaml` is the contract file that sits next to a method script. It declares what the method reads (`inputs`), what it writes (`outputs`), the knobs it accepts (`params`), the language it runs (`executor`), the container environment it runs in (`env`), and whether it needs a GPU (`gpus`). The canvas reads it to draw input/output slots and parameter widgets; the engine reads it to validate wiring, check column contracts, and dispatch the run in the right container.
+`method.yaml` sits next to a method script in the method's directory (for example `src/my_analysis/filter_data/method.yaml`) and declares what the method reads (`inputs`), what it writes (`outputs`), the parameters it accepts (`params`), and the container environment it runs in (`env`). The canvas reads it to draw slots and parameter editors; `wfc register-method` reads it to check the method and wire it into pipelines.
 
-A method without a `method.yaml` cannot be registered: `wfc register-method` rejects it, because execution is container-only and the `env:` key in `method.yaml` is what names the method's container. Every method therefore has a `method.yaml` with at least `env:`; the other keys below are optional.
+Every method needs a `method.yaml` with an `env` and at least one input slot. `wfc register-method` refuses a method without them.
 
-This page is the canonical field-by-field reference. The tutorials [Authoring a Method Script](../tutorials/authoring-a-method-script.md) and [Writing Contracts](../tutorials/writing-contracts.md) introduce these keys in context and link back here for the exact fields rather than repeating the tables.
+The tutorials [Authoring a Method Script](../tutorials/authoring-a-method-script.md) and [Writing Contracts](../tutorials/writing-contracts.md) introduce these keys in context. This page lists every key.
 
 ## Top-level keys
 
 | Key | Type | Required | Purpose |
 |---|---|---|---|
-| `inputs` | mapping | no | One entry per input slot the method reads. |
-| `outputs` | mapping | no | One entry per output slot the method writes. |
-| `params` | mapping | no | One entry per tunable parameter. |
-| `executor` | string | no (default `python`) | The interpreter/runner for the script. |
-| `env` | string | **yes** | Name of a built container environment (see the executor/env/gpus section). A method with no `env` is rejected at registration. |
-| `gpus` | bool | no (default `false`) | When `true`, the container is launched with `--gpus all`. |
+| `inputs` | mapping | **yes** (at least one slot) | One entry per input slot. |
+| `outputs` | mapping | no | One entry per output slot. |
+| `params` | mapping | no | One entry per parameter. |
+| `env` | string | **yes** | Name of an environment registered with `wfc register-env`. |
+| `gpus` | bool | no (default `false`) | `true` launches the container with `--gpus all`. |
+| `executor` | string | no (default `local`) | How the method is dispatched. `local` runs it in a local Docker container. |
+| `script` | string | no | The script's filename, when it is not `{method_name}.<ext>`. |
+| `helpers` | list of strings | no | The exact set of helper files that belong to the method. |
 
-Missing sections default to empty mappings, and `executor` defaults to `python`. `env` is the one key with no default: every method must name an environment that has already been built.
+## Slot names
+
+Input and output slot names are how pipelines wire nodes together. A slot name cannot contain `:`, `=` or whitespace.
+
+## What moves the cache key
+
+After you edit `method.yaml` or the script, run `wfc register-method` again. A run is reused from the cache only when the method's code and the parts of `method.yaml` that change what a run produces are unchanged. Changing an input slot name, an output slot's name or `type`, `script`, `executor` or `gpus` makes the next run recompute. Editing descriptions, `columns` blocks or the `params` declarations does not; parameter values are part of the key on their own. See [Caching and Reproducibility](../explanation/caching-and-reproducibility.md).
 
 ## inputs and outputs
 
-Each entry under `inputs` and `outputs` is a named slot. The name is how the slot is referenced when wiring nodes together in a pipeline.
+Each entry under `inputs` and `outputs` is a named slot.
 
 ### Input slot fields
 
 | Field | Type | Default | Purpose |
 |---|---|---|---|
-| `type` | string | *(optional)* | File extension the slot carries (e.g. `.csv`, `.h5ad`). Advisory for inputs — present if you want canvas type-display; not enforced at registration. |
-| `required` | bool | `true` | When `true`, the pipeline fails to load if nothing is wired into this slot. |
-| `multiple` | bool | `false` | When `true`, the slot accepts a list of upstream files (fan-in). |
-| `description` | string | `""` | Human-readable label shown in the canvas. |
-| `columns` | mapping | none | Column-presence contract for tabular slots (see the column-contracts section). |
+| `type` | string | none | File extension the slot carries (`csv`, `.h5ad`), or `dir` for a directory. Used for display in the canvas. A value that doesn't follow the convention below prints a warning at registration. |
+| `required` | bool | `true` | A required input that nothing feeds is flagged before the step runs. Set `false` for an optional input. |
+| `multiple` | bool | `false` | Marks the slot as taking several files; the Registry shows it as `multi`. Bundling samples into one run is set on the Input Selector (see [Fan out and fan in](../how-to/canvas.md#fan-out-and-fan-in)). |
+| `description` | string | `""` | Label shown in the canvas. |
+| `columns` | mapping | none | Declared columns, for tabular slots (see Column contracts below). |
+
+An input can receive a file or a directory. A directory sample or a directory output from an upstream step arrives as the path of that directory.
 
 ### Output slot fields
 
 | Field | Type | Default | Purpose |
 |---|---|---|---|
-| `type` | string | *(required)* | File extension for the slot output. Must be a leading-dot extension (e.g. `.csv`, `.h5ad`, `.parquet`) or the directory marker `dir` / `directory`. |
-| `multiple` | bool | `false` | When `true`, the slot produces N files (fan-out). |
-| `description` | string | `""` | Human-readable label shown in the canvas. |
-| `columns` | mapping | none | Column-presence contract for tabular slots (a soft check on outputs). |
-| `contents` | list of mappings | none | Content assertions for `directory` slots (glob patterns, `min_count`, per-file columns). |
+| `type` | string | **required** | File extension of the output, or `dir` / `directory` for a directory. |
+| `description` | string | `""` | Label shown in the canvas. |
+| `columns` | mapping | none | Declared columns, for tabular slots (see Column contracts below). |
 
-### Type convention
+Every declared output must exist when the method exits, or the step fails naming the missing slot.
 
-The output slot `type` field **is** the file extension, declared verbatim. The engine concatenates it directly onto the slot name to produce the output filename — `<slot_name><type>` (e.g. slot `scores` with `type: .csv` → `scores.csv`).
+### Output types and file names
 
-Valid values:
-- **Dotted extension** — any value starting with `.` and at least two characters long: `.csv`, `.h5ad`, `.parquet`, `.tar.gz`, `.pkl`, `.json`, `.png`, etc. Compound extensions work by verbatim concatenation.
-- **Directory marker** — `dir` or `directory` (case-insensitive). Both are accepted; the engine normalises to the canonical `directory`. A directory slot gets no extension (the bare slot name).
+An output's `type` is its file extension. The leading dot is optional: `type: csv` and `type: .csv` are the same. When a method writes its outputs straight into the run directory, wfc looks for the slot name plus the extension: slot `scores` with `type: csv` is `scores.csv`. Compound extensions work the same way (`type: tar.gz` gives `scores.tar.gz`). The value is used exactly as written, so `type: anndata` means a file named `<slot>.anndata`.
 
-Invalid values are rejected at registration time with a clear `ValueError` naming the slot and showing the accepted convention. There is no silent `.csv` default and no semantic-type→extension translation: declaring `type: anndata`, `type: csv` (no dot), or omitting `type` on an output slot all raise at registration.
+A missing or empty output `type` is refused at registration.
 
-Input slots follow the same convention when `type` is present, but validation is advisory (a warning, not a registration failure) so that optional type annotations don't block wiring.
+`dir` or `directory` declares a directory output, found under the bare slot name. The directory must contain at least one file, and cannot contain a symlink or two names that differ only by case.
 
-### Canvas display
+A method that uses the `wfc-client` decorator, or writes `_wfc_results.json` itself, can save each output under any file name; wfc finds it by slot. Two slots cannot be saved to the same file.
 
-The slot colour in the canvas is derived client-side from the `type` value — common extensions have curated colours; any other extension gets a deterministic HSL hash colour so distinct extensions are visually distinct.
+The canvas shows slot types without the leading dot (`csv`, `tar.gz`).
 
 ## params
 
-Each entry under `params` declares a tunable value the method reads at runtime. Params appear as editable widgets in the canvas inspector and are passed to the method through the run parameters.
+Each entry under `params` declares a parameter. The canvas inspector shows an editor for each one, and the values set on a node reach the method as `ctx.params` or `WFC_PARAMS`.
 
 ### Param fields
 
 | Field | Type | Default | Purpose |
 |---|---|---|---|
-| `type` | string | `"str"` | One of `str`, `int`, `float`, `bool`, `list`, `dict`. |
-| `required` | bool | `true` | When `true`, the run fails if no value is supplied. |
-| `default` | any | none | Value used when the param is not overridden. |
-| `description` | string | `""` | Human-readable label shown in the canvas. |
+| `type` | string | `str` | One of `str`, `int`, `float`, `bool`, `list`, `dict`, `any`. Picks the editor in the canvas; `any` accepts any value. Common spellings are accepted, case-insensitive: `string`/`text` → `str`, `integer` → `int`, `number`/`double` → `float`, `boolean` → `bool`, `dictionary`/`map`/`mapping`/`object` → `dict`. Any other value is refused at registration, naming the parameter. |
+| `default` | any | none | The value shown in the canvas for an unset parameter. A parameter you leave unset is left out of the params the method receives, so the script applies its own default. Keep the two the same. |
+| `required` | bool | `false` | When `true`, the canvas marks the parameter with `*` and won't run the pipeline while it has neither a value nor a `default`. |
+| `description` | string | `""` | Label shown in the canvas. |
+| `constraints` | mapping | none | Limits the canvas editor: `enum` (a list of allowed values, shown as a dropdown), `min` and `max` (numeric bounds, shown beside the name and checked as you type). |
 
 ### Column-picker fields
 
-Two optional fields turn a plain `str` param into a column-aware picker in the canvas inspector. They are pass-through YAML keys — nothing else in the method changes.
+Two optional fields turn a `str` parameter that names a column into a column picker in the inspector.
 
 | Field | Type | Purpose |
 |---|---|---|
-| `column_of_input` | string | Names an input slot on this method. The inspector resolves that slot's upstream column contract and offers the columns as dropdown options (with a free-text fallback). Use it for a param that names a column the method *reads*. |
-| `new_column` | bool | When `true`, the inspector always renders a plain text field and suppresses any dropdown. Use it for a param that names a column the method *produces*. |
+| `column_of_input` | string | Names an input slot of this method. The inspector offers the columns declared by whatever feeds that slot as a dropdown, and still accepts free text. Use it for a parameter that names a column the method reads. |
+| `new_column` | bool | When `true`, the inspector always shows a plain text field. Use it for a parameter that names a column the method creates. It wins over `column_of_input`. |
 
-When both are present on the same param, `new_column: true` wins and the field stays free-text. If the upstream has no resolvable columns, the dropdown is simply empty and a free-text hint is shown — no error.
+When the upstream declares no columns, the dropdown is empty and you type the name.
 
 ## Column contracts (columns:)
 
-For `csv` and `parquet` slots you can declare which columns must be present using a `columns` mapping on the slot. This lets the engine catch a mis-wired pipeline before any step runs, and lets the canvas surface column hints.
+A `columns` block on a tabular slot declares which columns the slot carries. The canvas uses it to fill column pickers, and pipeline load uses it to catch mis-wired steps.
 
 ```yaml
 inputs:
   data:
-    type: .csv
+    type: csv
     columns:
       strict: ["cell_index", "condition", "proliferative"]
       from_params:
@@ -105,73 +112,94 @@ inputs:
 
 | Key | Purpose |
 |---|---|
-| `strict` | Exact column names that must all be present. |
-| `from_params` | Column names derived from the run's params. Each entry has `params` (a list of param names) and a `pattern` with positional `{}` placeholders; the placeholders are filled from the param values, taking the cartesian product when a param is list-valued. Useful when the required columns depend on the parameters chosen at run time. |
-| `patterns` | fnmatch-style globs (for example `*_intensity`); at least one column must match each pattern. |
+| `strict` | A list of exact column names. |
+| `from_params` | Column names built from parameter values. Each entry has `params` (a list of parameter names) and `pattern`, a string with one `{}` per parameter. When a parameter holds a list, every combination is produced. |
+| `patterns` | A list of glob patterns such as `*_intensity`, shown as hints. |
 
-### Hard input gate, soft output check
+When a pipeline loads, the declared columns of connected slots are compared and a mismatch is reported as a warning. wfc does not open your data files to check their actual columns.
 
-Column validation behaves differently on the two sides of a method:
+A malformed block (for example `patterns` written as a single string instead of a list) is refused at registration, naming the slot. [Writing Contracts](../tutorials/writing-contracts.md) explains how to design these declarations.
 
-- On an **input** slot, the contract is a **hard gate**. If a required column is missing, the step is blocked and the run fails with a clear message.
-- On an **output** slot, the contract is a **soft check**. A mismatch produces a warning but does not fail the run, because a method may legitimately add or rename columns.
+## env, gpus, and executor
 
-At registration and pipeline-load time, `strict` columns are also cross-checked between connected steps so an incompatible wiring is caught statically. The full mental model for designing these contracts lives in [Writing Contracts](../tutorials/writing-contracts.md).
-
-## executor, env, and gpus
-
-These three keys control how the method is run.
-
-### executor
-
-`executor` names the interpreter for the script. It defaults to `python`. Methods in other languages set it to the appropriate runner; the script still talks to the engine through the environment-variable and file contract, so any language works.
+These keys control where and how the method runs.
 
 ### env
 
-`env` is required and names a container environment that has already been built. Execution is container-only — there is no host-Python fallback and no inherited default — so a `method.yaml` with no `env` is rejected at registration time.
+`env` names the container environment the method runs in. Register the environment first with `wfc register-env <name>`, then write its name here:
 
-Build an environment once with `wfc register-env <name>`, then name it here. The `env` value can take three forms:
+```yaml
+env: my-analysis   # registered with: wfc register-env my-analysis
+```
 
-| Spec | Meaning |
-|---|---|
-| `<name>` | A container image registered in `.wfc/envs.json` under that name. |
-| `container:<name>` | Identical to the bare name; the `container:` prefix is accepted for clarity. |
-| `container:docker://<ref>@sha256:<hex>` | A digest-pinned image used directly, with no manifest lookup. The escape hatch for bring-your-own images. |
+The value is the bare environment name: letters, digits, `_` and `-`. How the image is built (a pixi or conda lock, a live environment, or your own image) is chosen when you run `wfc register-env`, not in `method.yaml`. If the name is not a registered environment, `wfc register-method` refuses the method and lists the environments that are registered.
 
-**`env` is not where you describe how to build the image.** The build backends — `pixi:<project>`, `conda:<name>`, and bring-your-own — are arguments to `wfc register-env`, which produces the named image. By the time a method references an env, that work is already done, so the keywords `inherit`, `pixi:`, and `conda:` are *not* valid `env` values in `method.yaml`; using them raises an error. The environment your method runs in contains only your declared dependencies plus Python — the full `wfc` package is never installed into it.
+The method script runs under the environment's interpreter. For an R or bash method, register the environment with `--interpreter` pointing at `Rscript` or `bash` inside the image. See [Registering an Environment](../tutorials/registering-an-environment.md).
 
 ### gpus
 
-Set `gpus: true` to request a GPU. At dispatch the container is launched with `--gpus all`. It defaults to `false`, so methods opt in explicitly. Registering and building environments is covered step by step in [Registering an Environment](../tutorials/registering-an-environment.md).
+`gpus: true` launches the method's container with `--gpus all`. The default is `false`.
+
+### executor
+
+`executor` selects how the method is dispatched. `local`, the default, runs it in a local Docker container, so you can leave the key out.
+
+## script and helpers
+
+### script
+
+A method script can be Python (`.py`), R (`.R` or `.r`) or bash (`.sh`). By default `wfc register-method` looks in the method directory for `{method_name}.<ext>` and needs exactly one match; if it finds none, or more than one, it stops and lists what it looked for or found.
+
+Set `script:` to name the file yourself:
+
+```yaml
+script: run_analysis.R
+```
+
+The file must be inside the method directory and have one of the extensions above. The `--script` flag on `wfc register-method` overrides `script:` for a single registration.
+
+### helpers
+
+Without `helpers:`, every `.py`, `.R`, `.r` and `.sh` file in the method directory and its subfolders counts as part of the method: all of them are copied at registration, and when you edit any of them and run `wfc register-method` again, the next run recomputes.
+
+Set `helpers:` to list the method's helper files exactly:
+
+```yaml
+helpers:
+  - utils.R
+  - ../shared/plotting.R
+```
+
+Paths are relative to the method directory and may point elsewhere in the project with `../`. With `helpers:` set, the method is the main script plus the listed files, and registration refuses a method directory that holds any other script file. Each listed file must exist and have a recognized extension.
 
 ## Worked examples
 
 ### Minimal method.yaml
 
-The smallest contract that still carries slot metadata: one input, one output, and the required `env`.
+One input, one output, and the environment.
 
 ```yaml
 inputs:
   data:
-    type: .csv
+    type: csv
     description: "Labeled cell CSV"
 
 outputs:
   predictions:
-    type: .csv
+    type: csv
     description: "Per-cell predictions"
 
-env: my-analysis   # built once with: wfc register-env my-analysis
+env: my-analysis
 ```
 
 ### Full method.yaml
 
-A complete contract exercising column validation, a column-picker param, a container env, and a GPU request:
+Column declarations, constrained and column-picker parameters, an R script with a shared helper, a directory output, and a GPU.
 
 ```yaml
 inputs:
   data:
-    type: .csv
+    type: csv
     required: true
     description: "Labeled cell CSV"
     columns:
@@ -180,34 +208,38 @@ inputs:
 
 outputs:
   predictions:
-    type: .csv
-    required: true
+    type: csv
     description: "Per-cell predictions"
-  model:
-    type: .pkl
-    required: true
-    description: "Trained classifier"
+  plots:
+    type: dir
+    description: "One PNG per condition"
 
 params:
   threshold:
     type: float
-    required: false
     default: 0.5
+    constraints: {min: 0, max: 1}
     description: "Decision threshold"
+  method:
+    type: str
+    default: logistic
+    constraints: {enum: [logistic, forest]}
   label_column:
     type: str
     required: true
+    column_of_input: data        # dropdown of the columns feeding `data`
     description: "Name of the label column"
-    column_of_input: data        # offer columns from the `data` input slot
   score_column:
     type: str
     required: true
-    description: "Name to give the new score column"
-    new_column: true             # always free-text
+    new_column: true             # always free text
+    description: "Name for the new score column"
 
-executor: python
-env: container:my-gpu-analysis   # built with: wfc register-env my-gpu-analysis
-gpus: true                       # launch the container with --gpus all
+script: classify.R
+helpers:
+  - ../shared/io.R
+env: my-r-gpu-env                # registered with: wfc register-env ... --interpreter /opt/conda/bin/Rscript
+gpus: true
 ```
 
 ## Next steps

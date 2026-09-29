@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "wfc-client"
-version = "0.1.0"
-description = "Pure-stdlib Tier-1 sugar for writing Workflow Canvas (wfc) methods"
+version = "0.2.0"
+description = "Tier-1 sugar for writing Workflow Canvas (wfc) methods, with one small dependency"
 authors = ["Dante <dantepoe@noboundssolutions.com>"]
 readme = "README.md"
 license = "MIT"
@@ -14,7 +14,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -23,10 +22,12 @@ classifiers = [
 ]
 packages = [{ include = "wfc_client" }]
 
-# Zero third-party dependencies by design (ADR-020): wfc-client is a
-# metadata recorder that imports only the Python standard library.
+# One small dependency by design (ADR-020): wfc-client is a metadata recorder
+# that imports the Python standard library plus axiom-annotations, whose
+# workflow markers narrate `wfc.run()`. Nothing else, and nothing scientific.
 [tool.poetry.dependencies]
-python = ">=3.8"
+python = ">=3.9"
+axiom-annotations = ">=0.1.0,<0.2.0"
 
 [build-system]
 requires = ["poetry-core"]

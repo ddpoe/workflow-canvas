@@ -1,13 +1,16 @@
-"""Subsystem + E2E tests for ADR-019 Cycle B Dockerfile generation.
+"""Subsystem + E2E tests for Dockerfile generation.
 
-Covers (per Architect test plan):
-  - US-2 Tier 2: pixi Dockerfile pins base by digest.
-  - US-3 Tier 2: pixi Dockerfile orders `pip install --no-deps` after
-    `pixi install --locked` (discipline invariant from ADR-019
-    §dockerfile-generation).
-  - US-1+5 Tier 3: CLI `register-env --dry-run` writes the Dockerfile,
-    prints the path, never invokes docker, and the manifest is unchanged.
-    Non-dry-run path errors with the Cycle-C-deferred message.
+Covers:
+  - pixi Dockerfile pins its base image by digest.
+  - pixi Dockerfile orders `pip install --no-deps` after `pixi install --locked`
+    (the layer-ordering discipline invariant).
+  - CLI `register-env --dry-run` writes the Dockerfile, prints the path, never
+    invokes docker, and leaves the manifest unchanged (the non-dry-run path
+    proceeds to a real docker build).
+
+These are string-level generator assertions. Actual image buildability is owned
+by tests/integration/test_pixi_dockerfile_builds.py — do not read the string
+asserts here as build guarantees.
 """
 
 from __future__ import annotations
@@ -15,60 +18,65 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-from pathlib import Path
 
 import pytest
 
 from axiom_annotations import workflow, Step
+
+from tests.fixtures.fakes import (
+    fake_subprocess_run,
+    stub_docker_image_inspect,
+    stub_docker_pull,
+    stub_interactive_prompt,
+    stub_readiness_probes,
+)
 
 
 VALID_FREEZE = "numpy==1.26.4\npandas==2.2.1\n"
 
 
 # ---------------------------------------------------------------------------
-# Tier 2: pixi generator — base-image digest pin (US-2)
+# Tier 2: pixi generator — base-image digest pin
 # ---------------------------------------------------------------------------
 
 @workflow(purpose="Pixi-backend Dockerfile pins the build-time base image by "
-                  "digest (ADR-019 decision #11 — pixi/conda are pinned).")
+                  "digest (pixi/conda are pinned).")
 def test_pixi_dockerfile_pins_base_digest():
-    from wfc.dockerfiles.pixi import generate
+    from wfc.environments.dockerfiles.pixi import generate
 
     dockerfile = generate(
         env_name="image-io",
-        pixi_lock_path=Path("/proj/pixi.lock"),
         pip_freeze_content=VALID_FREEZE,
     )
 
-    # First FROM line must be FROM ghcr.io/prefix-dev/pixi@sha256:<64hex>.
+    # First FROM line must be FROM ghcr.io/prefix-dev/pixi[:tag]@sha256:<64hex>
+    # — a human-readable tag is allowed, the digest pin is mandatory.
     # Skip the `# syntax=docker/dockerfile:...` BuildKit directive that
-    # precedes FROM (ADR-019 §dockerfile-generation 2026-05-17 amendment).
+    # precedes FROM.
     first = next(
         ln for ln in dockerfile.splitlines() if ln.strip().startswith("FROM")
     )
     assert re.match(
-        r"^FROM ghcr\.io/prefix-dev/pixi@sha256:[0-9a-f]{64}$",
+        r"^FROM ghcr\.io/prefix-dev/pixi(:[\w][\w.\-]*)?@sha256:[0-9a-f]{64}$",
         first,
     ), first
 
-    # BuildKit directive + at least one cache mount (ADR-019 layer-caching).
+    # BuildKit directive + at least one cache mount (layer-caching).
     assert "# syntax=docker/dockerfile:" in dockerfile
     assert "--mount=type=cache" in dockerfile
 
 
 # ---------------------------------------------------------------------------
-# Tier 2: pixi generator — discipline invariant (US-3)
+# Tier 2: pixi generator — discipline invariant
 # ---------------------------------------------------------------------------
 
 @workflow(purpose="Pixi Dockerfile orders `pixi install --locked` BEFORE the "
-                  "`pip install --no-deps` layer (ADR-019 §dockerfile-generation "
-                  "invariant).")
+                  "`pip install --no-deps` layer (invariant).")
 def test_pixi_dockerfile_no_deps_pip_layer_after_pixi_install():
-    from wfc.dockerfiles.pixi import generate
+    from wfc.environments.dockerfiles.pixi import generate
 
     dockerfile = generate(
         env_name="image-io",
-        pixi_lock_path=Path("/proj/pixi.lock"),
         pip_freeze_content=VALID_FREEZE,
     )
     lines = dockerfile.splitlines()
@@ -86,24 +94,80 @@ def test_pixi_dockerfile_no_deps_pip_layer_after_pixi_install():
     assert pip_no_deps_idx is not None, "missing `pip install --no-deps` line"
     assert pip_no_deps_idx > pixi_install_idx, (
         f"pip --no-deps layer (line {pip_no_deps_idx}) must come AFTER "
-        f"pixi install --locked (line {pixi_install_idx}); ADR-019 invariant "
+        f"pixi install --locked (line {pixi_install_idx}); the invariant "
         f"is that the locked env is installed first, then the unconstrained "
         f"freeze is layered on with --no-deps."
     )
 
     # The recipe also ends with a chmod that opens read-permissions for the
-    # --user-mismatched runtime (ADR-019 decision #9 pair).
+    # --user-mismatched runtime.
     assert any("chmod -R a+rX" in ln for ln in lines), (
-        "missing chmod -R a+rX line that pairs with the --user runtime fix"
+        "missing chmod -R a+rX line that lets a --user runtime read the env"
     )
 
-    # BuildKit directive + at least one cache mount (ADR-019 layer-caching).
+    # BuildKit directive + at least one cache mount (layer-caching).
     assert "# syntax=docker/dockerfile:" in dockerfile
     assert "--mount=type=cache" in dockerfile
 
 
 # ---------------------------------------------------------------------------
-# Tier 3: CLI dry-run writes Dockerfile; non-dry-run errors (US-1 + US-5)
+# Tier 1: pixi lock validation — register-time guard before any docker work
+# ---------------------------------------------------------------------------
+
+_SINGLE_ENV_LOCK = """\
+version: 6
+environments:
+  default:
+    packages:
+      linux-64: []
+"""
+
+
+def test_validate_lock_rejects_env_name_missing_from_lock():
+    """The env name is installed verbatim via `pixi install --environment`,
+    so a name the lock does not define must fail upfront, naming the
+    lock's actual environment keys."""
+    from wfc.environments.dockerfiles.pixi import validate_lock_for_env
+
+    with pytest.raises(ValueError) as exc:
+        validate_lock_for_env(_SINGLE_ENV_LOCK, "myname")
+
+    msg = str(exc.value)
+    assert "myname" in msg
+    assert "default" in msg
+
+
+def test_validate_lock_rejects_newer_lock_format_version():
+    """A lock written by a newer local pixi than the pinned in-container
+    build tool fails upfront with both versions named, instead of a
+    cryptic in-container pixi parse error mid-build."""
+    from wfc.environments.dockerfiles.bases import PIXI_LOCK_MAX_VERSION
+    from wfc.environments.dockerfiles.pixi import validate_lock_for_env
+
+    newer = PIXI_LOCK_MAX_VERSION + 1
+    lock = f"version: {newer}\nenvironments:\n  default:\n    packages: {{}}\n"
+
+    with pytest.raises(ValueError) as exc:
+        validate_lock_for_env(lock, "default")
+
+    msg = str(exc.value)
+    assert str(newer) in msg
+    assert f"lock version: {PIXI_LOCK_MAX_VERSION}" in msg
+
+
+def test_validate_lock_accepts_matching_env_and_tolerates_missing_version():
+    """A lock that defines the requested env at a supported format version
+    passes; a lock with no version key is left for the build to judge."""
+    from wfc.environments.dockerfiles.pixi import validate_lock_for_env
+
+    validate_lock_for_env(_SINGLE_ENV_LOCK, "default")
+    validate_lock_for_env(
+        "environments:\n  default:\n    packages: {}\n", "default"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tier 3: CLI dry-run writes Dockerfile without invoking docker
 # ---------------------------------------------------------------------------
 
 @workflow(
@@ -120,7 +184,7 @@ def test_dry_run_writes_dockerfile_no_docker_invoked(
     # tmp_project is already a git repo (per the git_project fixture). Skip
     # the registry prompt by stubbing input() to an empty string; the test
     # does not exercise the registry path.
-    monkeypatch.setattr("builtins.input", lambda *a, **kw: "")
+    stub_interactive_prompt(monkeypatch, "")
     init_project(tmp_project)
 
     # Snapshot the manifest before the dry-run.
@@ -139,14 +203,16 @@ def test_dry_run_writes_dockerfile_no_docker_invoked(
             docker_calls.append(list(argv))
         return real_run(cmd, *args, **kwargs)
 
-    monkeypatch.setattr(subprocess, "run", _spy_run)
+    fake_subprocess_run(monkeypatch, _spy_run)
 
     口 = Step(step_num=2, name="Run register-env --dry-run",
              purpose="Should write .wfc/build/foo/Dockerfile and print the path")
+    lock_path = tmp_project / "pixi.lock"
+    lock_path.write_text("version: 6\n", encoding="utf-8")
     result = cli(
         "register-env", "foo",
+        "--from", str(lock_path),
         "--backend", "pixi",
-        "--pixi-env", "foo",
         "--dry-run",
     )
     assert result.returncode == 0, result.stderr
@@ -171,8 +237,8 @@ def test_dry_run_writes_dockerfile_no_docker_invoked(
         "manifest was mutated during --dry-run"
     )
 
-    # Cycle C: the non-dry-run path now invokes docker, so we don't
-    # exercise it here — see tests/test_register_env_pixi_flow.py and
+    # the non-dry-run path invokes docker, so it is not
+    # exercised here — see tests/test_register_env_pixi_flow.py and
     # tests/test_register_env_byo_digest_resolve.py for the full path
     # with docker_runner mocked.
 
@@ -193,26 +259,28 @@ def test_register_env_genuine_build_error_surfaces_raw_not_reframed(
     does not swallow unrelated Docker errors into the one-door message.
     """
     from wfc.init import init_project
-    monkeypatch.setattr("builtins.input", lambda *a, **kw: "")
+    stub_interactive_prompt(monkeypatch, "")
     init_project(tmp_project)
 
     # Daemon UP: the pre-gate is a pass-through, so the build path runs.
-    from wfc import preflight
-    monkeypatch.setattr(
-        preflight, "check_docker",
-        lambda *a, **k: preflight.CheckResult("docker", "ok", "ok"),
-    )
+    stub_readiness_probes(monkeypatch, git=None, docker="ok")
 
-    # A genuine `docker build` failure deep in registration (NOT a daemon-down
-    # shape) — the kind of error the reframe must NOT swallow.
-    raw_error = "failed to build image: layer sha256:deadbeef not found"
+    # A genuine docker failure deep in registration (NOT a daemon-down shape) —
+    # the kind of error the reframe must NOT swallow. Patch only the docker
+    # boundary: the byo path probes with image_inspect and, on a miss, pulls.
+    # Make the probe miss and the pull fail, so the REAL register() runs and
+    # propagates the raw pull error through the CLI.
+    raw_error = "failed to pull image: manifest for example.com/foo not found"
 
-    import wfc.envs as envs_mod
 
-    def _boom(*args, **kwargs):
+    def _inspect_miss(*args, **kwargs):
+        raise RuntimeError("no such image locally")
+
+    def _pull_boom(*args, **kwargs):
         raise RuntimeError(raw_error)
 
-    monkeypatch.setattr(envs_mod, "register", _boom)
+    stub_docker_image_inspect(monkeypatch, _inspect_miss)
+    stub_docker_pull(monkeypatch, _pull_boom)
 
     result = cli(
         "register-env", "foo",

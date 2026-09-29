@@ -24,4 +24,4 @@ outputs:
 params: {}
 
 executor: local
-env: container:client-env
+env: client-env

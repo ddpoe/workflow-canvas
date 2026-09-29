@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use Workflow Canvas in your research, please cite it as below."
+title: "Workflow Canvas"
+abstract: >-
+  Reproducible computational pipelines with containerized methods,
+  content-addressed caching, run lineage, and a visual pipeline builder;
+  compiles to Snakemake.
+type: software
+authors:
+  - family-names: Poe
+    given-names: Dante
+license: BSD-3-Clause
+repository-code: "https://github.com/ddpoe/workflow-canvas"
+url: "https://workflow-canvas.readthedocs.io"
+keywords:
+  - workflow
+  - pipeline
+  - reproducibility
+  - provenance
+  - lineage
+  - snakemake
+  - scientific computing

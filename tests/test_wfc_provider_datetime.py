@@ -1,12 +1,11 @@
 """
 Datetime/ISO-string -> epoch-ms parity for the ORM history reader.
 
-The ORM read conversion introduced new datetime-handling logic: the raw
-sqlite3 reader received timestamps as ISO **strings** (via ``_iso_to_epoch_ms``),
-whereas SQLModel hands the same columns back as Python ``datetime`` objects.
-``WfcProvider._to_epoch_ms`` must produce the **same** epoch-ms for both shapes,
-or ``timestamp`` / ``duration`` / ``archivedAt`` would silently diverge between
-the old and new read paths.
+A timestamp reaches ``WfcProvider._to_epoch_ms`` either as an ISO **string**
+(converted via ``_iso_to_epoch_ms``) or as the Python ``datetime`` object
+SQLModel hands back for the same column. ``_to_epoch_ms`` must produce the
+**same** epoch-ms for both shapes, or ``timestamp`` / ``duration`` /
+``archivedAt`` would silently diverge by input shape.
 
 Tier 1: plain pytest — a tight edge-case unit on the conversion primitive.
 """

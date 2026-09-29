@@ -1,0 +1,200 @@
+{
+  "id": "selective",
+  "case": "expansion-selective",
+  "note": "Explicit combinations apply to every step alike, verbatim and in document order.",
+  "document": {
+    "name": "selective",
+    "nodes": [
+      {
+        "id": "s",
+        "type": "input_selector",
+        "method": "",
+        "module": "",
+        "params": {},
+        "samples": [
+          "s1",
+          "s2"
+        ],
+        "source": "registered",
+        "fan_mode": "out"
+      },
+      {
+        "id": "m1",
+        "type": "method",
+        "method": "filter",
+        "module": "mod",
+        "params": {
+          "p": 0
+        }
+      },
+      {
+        "id": "m2",
+        "type": "method",
+        "method": "plot",
+        "module": "mod",
+        "params": {}
+      }
+    ],
+    "links": [
+      {
+        "source": "s",
+        "target": "m1",
+        "targetHandle": "data"
+      },
+      {
+        "source": "m1",
+        "target": "m2",
+        "targetHandle": "data"
+      }
+    ],
+    "samples": [
+      "s1",
+      "s2"
+    ],
+    "param_sets": {
+      "m1": {
+        "v1": {
+          "p": 1
+        },
+        "s2__o1": {
+          "p": 9
+        }
+      }
+    },
+    "explicit_combos": [
+      {
+        "sample": "s1",
+        "variant": "v1"
+      },
+      {
+        "sample": "s2",
+        "variant": "v1"
+      },
+      {
+        "sample": "s2",
+        "variant": "s2__o1"
+      }
+    ]
+  },
+  "contract_map": {
+    "mod.filter": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/filter/filter.py",
+      "env": "container:base"
+    },
+    "mod.plot": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/plot/plot.py",
+      "env": "container:base"
+    },
+    "mod.qc": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/qc/qc.py",
+      "env": "container:base"
+    },
+    "mod.merge": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "sources": {
+          "required": true
+        }
+      },
+      "script_path": "methods/merge/merge.py",
+      "env": "container:base"
+    },
+    "mod.join": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        },
+        "other": {
+          "required": true
+        }
+      },
+      "script_path": "methods/join/join.py",
+      "env": "container:base"
+    }
+  },
+  "reference_outputs": {},
+  "expect": {
+    "collapsed": [],
+    "bundle": [],
+    "rows": [
+      {
+        "node": "m1",
+        "sample": "s1",
+        "variant": "v1",
+        "reused": false
+      },
+      {
+        "node": "m1",
+        "sample": "s2",
+        "variant": "v1",
+        "reused": false
+      },
+      {
+        "node": "m1",
+        "sample": "s2",
+        "variant": "s2__o1",
+        "reused": false
+      },
+      {
+        "node": "m2",
+        "sample": "s1",
+        "variant": "v1",
+        "reused": false
+      },
+      {
+        "node": "m2",
+        "sample": "s2",
+        "variant": "v1",
+        "reused": false
+      },
+      {
+        "node": "m2",
+        "sample": "s2",
+        "variant": "s2__o1",
+        "reused": false
+      }
+    ]
+  },
+  "client": {
+    "answers": true
+  }
+}

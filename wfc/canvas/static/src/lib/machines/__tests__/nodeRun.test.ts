@@ -1,7 +1,7 @@
 /**
  * Vitest suite for the per-node lifecycle machine.
  *
- * Asserts each transition documented in ADR-016's nodeRunActor state map.
+ * Asserts each transition in the nodeRunActor state map.
  * Uses `setup({ actors: { streamingActor: ... } })` to inject a no-op
  * stub so the test never opens an EventSource. Impossible transitions
  * (e.g. `idle → succeeded`) are covered by xstate's strict mode rather
@@ -57,8 +57,8 @@ describe('nodeRunActor', () => {
     actor.send({
       type: 'RUN_OK',
       tally: { running: 0, completed: 3, failed: 1 },
-      // ADR-015 Phase D Pass 1.5 (D-B2): RUN_OK now carries an
-      // optional error_message. The polling bridge populates it when
+      // RUN_OK carries an optional error_message. The polling bridge
+      // populates it when
       // mapping a backend `mixed` status; the machine assigns it into
       // context so the Inspector's node-error-box can render the
       // failed-sample error string.
@@ -119,7 +119,7 @@ describe('nodeRunActor', () => {
     actor.stop();
   });
 
-  // ADR-015 Phase D Bug 4 Path B: running.CACHE_HIT routes to `cached`
+  // running.CACHE_HIT routes to `cached`
   // and the streaming child is torn down on state exit (xstate v5
   // invoke semantics).  The streaming child stub captures its dispose
   // callback so we can assert it was called.

@@ -1,12 +1,12 @@
 """
-Single-selector fan-in tests (PEV cycle 2026-04-18-fan-in-single-selector).
+Single-selector fan-in tests.
 
 Validates that a pipeline with a fan_mode="in" Input Selector:
   - Sets StepDef.sample_collapsed=True and collapsed_samples on the
     direct consumer and every downstream step (contagious collapse).
   - _output_path emits the literal "__all__" as the sample segment.
   - _input_path on the collapsed consumer emits per-sample restore sentinels.
-  - expand_variant_combos emits exactly one combo per variant with sample="__all__".
+  - expand_step_combos emits exactly one row per variant with sample="__all__".
   - /api/workflow/validate rejects unsupported shapes (multi-upstream fan-in,
     empty-sample-list fan-in).
   - End-to-end: a Snakefile generated from a fan-in pipeline names "__all__"
@@ -23,27 +23,50 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from axiom_annotations import workflow, Step
 
-from wfc.canvas.server import validate_workflow, PipelineInput, PipelineNode, PipelineLink, _enrich_pipeline
-from wfc.snakemake_gen import (
-    StepDef, PipelineDef, load_pipeline, generate_snakefile,
-    expand_variant_combos, _output_path, _input_path,
+from wfc.canvas.models import PipelineInput, PipelineNode, PipelineLink
+from wfc.canvas.submission import _enrich_pipeline
+from wfc.graph import (
+    StepDef, PipelineDef, load_pipeline, expand_step_combos, validate_structure,
 )
+from wfc.execution import load_pipeline_from_path
+from wfc.orchestration.snakemake import generate_snakefile, _output_path, _input_path
 
-# Re-export fixture infra so pytest discovers `pipeline_factory` and
-# `register_fixture_methods` in this module's scope (used by the
-# Tier 3 subprocess test below).
-from tests.fixtures.conftest import (  # noqa: F401
-    register_fixture_methods,
-    pipeline_factory,
-)
 from tests.conftest import requires_docker
+from tests.fixtures.conftest import FIXTURE_ENV_NAME
+from tests.fixtures.fakes import spy_directory_listings
+from tests.harness import (
+    Behavior,
+    Scenario,
+    build_project,
+    node,
+    run_target,
+    selector,
+    wire,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+#: The literal contract map the structural core reads for this module's
+#: shapes: csv_merge registered, no slot declarations.
+CSV_TOOLS_CONTRACTS = {"csv_tools.csv_merge": {"input_slots": {}, "output_slots": {}}}
+
+
+def _load(pipeline_json: dict):
+    """The Graph load on literal values: no contract map, no reference outputs."""
+    return load_pipeline(pipeline_json, contract_map={}, reference_outputs={})
+
+#: The bundled target every collapsed fan-in in this module expands to.
+BUNDLE = ("merge", "__all__", "default")
+
+#: Three data rows per sample, so a merge of three samples is nine rows and
+#: a fan-in that delivered only its first member is distinguishable.
+THREE_ROW_SAMPLE_CSV = "id,value\n0,0\n1,10\n2,20\n"
 
 
 # ---------------------------------------------------------------------------
@@ -57,12 +80,35 @@ def _write_pipeline(tmp_path: Path, pipeline_json: dict) -> Path:
     return p
 
 
+def _fan_in_scenario(**kwargs) -> Scenario:
+    """A fan-in selector over three samples feeding one method's `sources` slot.
+
+    The `.sample_ready` sentinel the DVC restore rule leaves in each sample
+    directory is declared too: the runtime resolver walks the directory and
+    skips dotfiles, and with no dotfile present there is nothing to skip.
+
+    Args:
+        **kwargs: Any :class:`~tests.harness.Scenario` field to override.
+
+    Returns:
+        The scenario.
+    """
+    return Scenario(
+        nodes=[
+            selector(fan_mode="in"),
+            node("merge", inputs=[wire("sel", target_slot="sources")]),
+        ],
+        samples=["s1", "s2", "s3"],
+        sample_ready_sentinel=True,
+        **kwargs,
+    )
+
+
 def _minimal_fan_in_pipeline(samples: list[str]) -> dict:
     """Pipeline: selector(fan_mode=in, samples) -> merge."""
     return {
         "nodes": [
             {"id": "sel-1", "type": "input_selector",
-             "method": "", "module": "",
              "params": {}, "samples": samples,
              "fan_mode": "in"},
             {"id": "merge-1", "type": "method",
@@ -78,7 +124,7 @@ def _minimal_fan_in_pipeline(samples: list[str]) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# US-1 plumbing: fan_mode survives Pydantic round-trip + enrichment
+# plumbing: fan_mode survives Pydantic round-trip + enrichment
 # ---------------------------------------------------------------------------
 
 
@@ -89,7 +135,7 @@ def test_fan_mode_roundtrip_through_pydantic_and_enrich(tmp_path, monkeypatch):
     db_path.parent.mkdir(parents=True, exist_ok=True)
     url = f"sqlite:///{db_path}"
     monkeypatch.setenv("DATABASE_URL", url)
-    from wfc.database import reset_engine
+    from wfc.persistence import reset_engine
     reset_engine()
     engine = create_engine(url)
     SQLModel.metadata.create_all(engine)
@@ -119,25 +165,25 @@ def test_fan_mode_roundtrip_through_pydantic_and_enrich(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# US-1 engine: load_pipeline marks the consumer sample_collapsed
+# engine: load_pipeline marks the consumer sample_collapsed
 # ---------------------------------------------------------------------------
 
 
 @workflow(purpose="load_pipeline sets sample_collapsed=True and collapsed_samples on the direct consumer of a fan-in selector")
 def test_load_pipeline_marks_consumer_collapsed(tmp_path):
     pipeline_json = _minimal_fan_in_pipeline(["s1", "s2", "s3"])
-    path = _write_pipeline(tmp_path, pipeline_json)
-
-    pipeline = load_pipeline(path)
+    pipeline = _load(pipeline_json)
     assert len(pipeline.steps) == 1
     merge = pipeline.steps[0]
     assert merge.node_id == "merge-1"
     assert merge.sample_collapsed is True
     assert merge.collapsed_samples == ["s1", "s2", "s3"]
+    # The fan-in slot survives the selector link's removal, with no upstreams.
+    assert merge.inputs == {"sources": []}
 
 
 # ---------------------------------------------------------------------------
-# US-2: collapse propagates downstream (selector -> merge -> filter -> qc)
+# collapse propagates downstream (selector -> merge -> filter -> qc)
 # ---------------------------------------------------------------------------
 
 
@@ -146,7 +192,6 @@ def test_collapse_propagates_through_chain(tmp_path):
     pipeline_json = {
         "nodes": [
             {"id": "sel", "type": "input_selector",
-             "method": "", "module": "",
              "samples": ["a", "b", "c"], "fan_mode": "in"},
             {"id": "merge", "method": "csv_merge", "module": "csv_tools",
              "script": "modules/_builtin/csv_merge/csv_merge.py", "params": {}, "env": "container:demo"},
@@ -162,8 +207,7 @@ def test_collapse_propagates_through_chain(tmp_path):
         ],
         "samples": [],
     }
-    path = _write_pipeline(tmp_path, pipeline_json)
-    pipeline = load_pipeline(path)
+    pipeline = _load(pipeline_json)
 
     by_id = {s.node_id: s for s in pipeline.steps}
     for nid in ("merge", "filter", "qc"):
@@ -174,7 +218,7 @@ def test_collapse_propagates_through_chain(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# US-1: _output_path and _input_path for collapsed steps
+# _output_path and _input_path for collapsed steps
 # ---------------------------------------------------------------------------
 
 
@@ -189,7 +233,7 @@ def test_output_path_collapsed_uses_all_sentinel():
     )
     step_map = {"merge": step}
     out = _output_path("merge", step_map, pipeline_id="pid")
-    # ADR-018: outputs are sentinels, not real workspace files.
+    # outputs are sentinels, not real workspace files.
     assert out == ".runs/sentinels/pid/merge/__all__/{variant}/.complete"
     # Sanity: a non-collapsed step still uses the {sample} wildcard.
     step2 = StepDef(
@@ -204,13 +248,11 @@ def test_output_path_collapsed_uses_all_sentinel():
 
 @workflow(purpose="_input_path on a collapsed root consumer returns a slot-keyed list of per-sample restore sentinels")
 def test_input_path_collapsed_root_emits_sentinels(tmp_path):
-    # Route through load_pipeline (not a hand-built StepDef) so the test
-    # would actually catch the slot-name propagation bug: the selector->
-    # method link is filtered out of slot_map because the source is a
-    # system node, and earlier versions of this test hid that by
-    # pre-populating inputs={"sources": []} on the fixture.
-    path = _write_pipeline(tmp_path, _minimal_fan_in_pipeline(["s1", "s2", "s3"]))
-    pipeline = load_pipeline(path)
+    # Route through load_pipeline (not a hand-built StepDef) so the slot
+    # name must really propagate: the selector->method link is filtered
+    # out of slot_map because the source is a system node, and a fixture
+    # pre-populating inputs={"sources": []} would hide a missing slot name.
+    pipeline = _load(_minimal_fan_in_pipeline(["s1", "s2", "s3"]))
     step_map = {s.node_id: s for s in pipeline.steps}
 
     merge_step = step_map["merge-1"]
@@ -232,12 +274,12 @@ def test_input_path_collapsed_root_emits_sentinels(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# US-2: expand_variant_combos for collapsed pipelines
+# expand_step_combos for collapsed pipelines
 # ---------------------------------------------------------------------------
 
 
-@workflow(purpose="expand_variant_combos over a collapsed pipeline yields exactly one combo per variant, each with sample='__all__'")
-def test_expand_variant_combos_collapsed_one_per_variant():
+@workflow(purpose="expand_step_combos over a collapsed pipeline yields exactly one row per variant, each with sample='__all__'")
+def test_expand_step_combos_collapsed_one_per_variant():
     collapsed = StepDef(
         method_name="csv_merge", module_name="csv_tools",
         script_path="modules/_builtin/csv_merge/csv_merge.py",
@@ -245,40 +287,22 @@ def test_expand_variant_combos_collapsed_one_per_variant():
         sample_collapsed=True, collapsed_samples=["a", "b", "c"],
     )
     resolved = {"merge": {"v1": {}, "v2": {}}}
-    combos = expand_variant_combos(
+    combos = [combo for _, combo in expand_step_combos(
         [collapsed], samples=["a", "b", "c"],
         resolved_params=resolved, explicit_combos=None,
-    )
+    )]
     assert len(combos) == 2
     assert all(c["sample"] == "__all__" for c in combos)
     assert {c["variant"] for c in combos} == {"v1", "v2"}
 
 
 # ---------------------------------------------------------------------------
-# US-3: validation rejects unsupported fan-in shapes
+# validation rejects unsupported fan-in shapes
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def validate_db(tmp_path, monkeypatch):
-    """Empty SQLite DB so ``validate_workflow``'s ``get_session()`` resolves
-    deterministically in isolation.
-
-    These tests assert validation *errors* (fan-in shape rejection), not DB
-    contents, so an empty schema is sufficient. Without this the tests only
-    pass via engine state leaked from earlier tests in the module.
-    """
-    db_path = tmp_path / ".wfc" / "wfc.db"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
-    from wfc.database import reset_engine
-    reset_engine()
-    yield
-    reset_engine()
-
-
 @workflow(purpose="validate_workflow rejects a method node with multiple upstreams when any upstream is a fan-in selector")
-def test_validate_rejects_multi_upstream_with_fan_in(validate_db):
+def test_validate_rejects_multi_upstream_with_fan_in():
     pipeline = PipelineInput(
         nodes=[
             PipelineNode(id="sel-a", type="input_selector",
@@ -294,7 +318,7 @@ def test_validate_rejects_multi_upstream_with_fan_in(validate_db):
         ],
         samples=["s1", "s2"],
     )
-    result = validate_workflow(pipeline)
+    result = validate_structure(pipeline.model_dump(), CSV_TOOLS_CONTRACTS)
     assert result["valid"] is False
     # The error should name both the selector and the consumer.
     joined = " | ".join(result["errors"])
@@ -303,7 +327,7 @@ def test_validate_rejects_multi_upstream_with_fan_in(validate_db):
 
 
 @workflow(purpose="validate_workflow rejects an input_selector with fan_mode='in' and an empty sample list")
-def test_validate_rejects_fan_in_empty_samples(validate_db):
+def test_validate_rejects_fan_in_empty_samples():
     pipeline = PipelineInput(
         nodes=[
             PipelineNode(id="sel", type="input_selector",
@@ -314,13 +338,13 @@ def test_validate_rejects_fan_in_empty_samples(validate_db):
         links=[PipelineLink(source="sel", target="m")],
         samples=[],
     )
-    result = validate_workflow(pipeline)
+    result = validate_structure(pipeline.model_dump(), CSV_TOOLS_CONTRACTS)
     assert result["valid"] is False
     assert any("sel" in e for e in result["errors"])
 
 
 # ---------------------------------------------------------------------------
-# US-1 + US-2 (Tier 3): End-to-end Snakefile for a fan-in pipeline
+# Tier 3: End-to-end Snakefile for a fan-in pipeline
 # ---------------------------------------------------------------------------
 
 
@@ -331,7 +355,6 @@ def test_end_to_end_fan_in_snakefile(tmp_path, wfc_root):
     pipeline_json = {
         "nodes": [
             {"id": "sel", "type": "input_selector",
-             "method": "", "module": "",
              "samples": ["s1", "s2", "s3"], "fan_mode": "in"},
             {"id": "merge", "method": "csv_merge", "module": "csv_tools",
              "script": "modules/_builtin/csv_merge/csv_merge.py",
@@ -351,18 +374,16 @@ def test_end_to_end_fan_in_snakefile(tmp_path, wfc_root):
     # NB: NO pre-staging of data/samples/<s>/ -- the generator must not
     # inspect the filesystem. Per-sample data files are resolved at
     # execution time by wfc run-step's --collapsed-sample handler (after
-    # restore_sample populates the directories). PEV cycle
-    # 2026-05-02-snakemake-gen-collapsed-fanin-fix removed the previous
-    # iterdir() call from _generate_rule.
+    # restore_sample populates the directories).
 
     _ = Step(step_num=2, name="load_pipeline + generate_snakefile",
              purpose="Round-trip through the engine")
-    pipeline = load_pipeline(path)
+    pipeline = load_pipeline_from_path(path)
     snakefile = generate_snakefile(pipeline, wfc_root, pipeline_id="fan-pid")
 
     _ = Step(step_num=3, name="Assert __all__ baked into downstream paths",
              purpose="Both merge and filter should carry the collapsed sentinel in their output paths")
-    # ADR-018: Snakemake-visible outputs are sentinels.
+    # Snakemake-visible outputs are sentinels.
     assert ".runs/sentinels/fan-pid/merge/__all__/{variant}/.complete" in snakefile
     assert ".runs/sentinels/fan-pid/filter/__all__/{variant}/.complete" in snakefile
 
@@ -385,14 +406,14 @@ def test_end_to_end_fan_in_snakefile(tmp_path, wfc_root):
     # via --collapsed-sample <s>. The runtime resolver then walks
     # data/samples/<s>/ per sample and merges the per-sample data files
     # into the fan-in slot. Without this, wfc run-step sees an empty
-    # slot_paths dict and the D-2 root-node guard fires with "root node
+    # slot_paths dict and the root-node guard fires with "root node
     # has no input data". Each sample must be named.
     for sample in ("s1", "s2", "s3"):
         assert f"--collapsed-sample {sample}" in merge_rule, (
             f"Expected --collapsed-sample {sample} in the merge shell "
             f"command; got:\n{merge_rule}"
         )
-    # Generator no longer emits per-sample --ref-input flags for the
+    # The generator emits no per-sample --ref-input flags for the
     # collapsed root -- runtime resolves the data file paths.
     assert "--ref-input sources=" not in merge_rule
 
@@ -402,11 +423,11 @@ def test_end_to_end_fan_in_snakefile(tmp_path, wfc_root):
 
 
 # ---------------------------------------------------------------------------
-# Legacy regression: pipelines without input_selector unchanged
+# Pipelines without an input_selector collapse nothing
 # ---------------------------------------------------------------------------
 
 
-@workflow(purpose="Pipelines with no input_selector produce the same Snakefile structure as before — sample_collapsed stays False everywhere")
+@workflow(purpose="Pipelines with no input_selector collapse nothing — sample_collapsed stays False everywhere and every rule keeps its sample wildcard")
 def test_legacy_no_input_selector_unchanged(tmp_path, wfc_root):
     pipeline = PipelineDef(
         steps=[
@@ -421,7 +442,7 @@ def test_legacy_no_input_selector_unchanged(tmp_path, wfc_root):
     assert all(not s.sample_collapsed for s in pipeline.steps)
 
     snakefile = generate_snakefile(pipeline, wfc_root, pipeline_id="legacy")
-    # ADR-018: Snakemake-visible outputs are sentinels.
+    # Snakemake-visible outputs are sentinels.
     assert ".runs/sentinels/legacy/preprocess/{sample}/{variant}/.complete" in snakefile
     assert ".runs/sentinels/legacy/filter/{sample}/{variant}/.complete" in snakefile
     # rule all uses sample=SAMPLES for non-collapsed leaf.
@@ -431,22 +452,29 @@ def test_legacy_no_input_selector_unchanged(tmp_path, wfc_root):
 
 
 # ---------------------------------------------------------------------------
-# US-4: NID versioning works for ("__all__", method) groups
+# NID versioning works for ("__all__", method) groups
 # ---------------------------------------------------------------------------
 
 
 @workflow(purpose="NID allocator versions three runs with sample='__all__' as v1, v2, v3 in chronological order — no schema changes required")
-def test_nid_all_sample_group_sequential(tmp_path):
+def test_nid_all_sample_group_sequential(tmp_path, monkeypatch):
     """Three runs for same method with sample='__all__' get v1, v2, v3."""
     import sqlite3
+    from wfc import layout
     from wfc.canvas.wfc_provider import WfcProvider
+    from wfc.persistence import reset_engine
+
+    # The provider reads through the process engine: bind this project's
+    # database with the override and a reset, as the harness does.
+    monkeypatch.setenv("DATABASE_URL", layout.database_url(tmp_path))
+    reset_engine()
 
     db_path = tmp_path / ".wfc" / "wfc.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     # Build the schema from the ORM models (single source of truth) so it
-    # tracks wfc/models.py -- the provider reads run_inputs.input_name, which
-    # the old hand-rolled DDL omitted.
-    import wfc.models  # noqa: F401  -- register tables on SQLModel.metadata
+    # tracks wfc/persistence/schema.py -- the provider reads columns such as
+    # run_inputs.input_name that a hand-rolled DDL would have to keep in step.
+    import wfc.persistence  # noqa: F401  -- register tables on SQLModel.metadata
     from sqlmodel import SQLModel, create_engine
     engine = create_engine(f"sqlite:///{db_path}")
     SQLModel.metadata.create_all(engine)
@@ -475,72 +503,88 @@ def test_nid_all_sample_group_sequential(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# D-6 Caveat #3: cache-key stability under permutation; sensitivity to content
+# Bundle membership reaches the cache key
 # ---------------------------------------------------------------------------
 
 
-@workflow(purpose="Cache key for a fan-in bundle is stable under sample-list permutation and changes when any sample's (size, mtime) changes")
-def test_bundle_cache_key_permutation_and_sensitivity(tmp_path, monkeypatch):
-    """Two assertions:
-      (a) swap one sample's (size, mtime) -> bundle cache key changes
-      (b) permute the sample-id input order -> bundle cache key unchanged
+@workflow(purpose="A collapsed root's bundled sample SET reaches its cache "
+                  "key: two same-size bundles differing in one member "
+                  "compute different keys")
+def test_bundle_membership_swap_moves_the_cache_key(git_project, monkeypatch):
+    """`{s1, s2}` and `{s1, s3}` are the same size and must not share a key.
+
+    Cardinality alone does not separate them — the parts list keeps
+    duplicates, so `{s1, s2}` vs `{s1, s2, s3}` would differ on count
+    whatever the content is. A same-size swap only moves the key if the
+    members hash distinctly, which is what per-sample content buys.
     """
-    from sqlmodel import SQLModel, Session, create_engine
-    from wfc.models import Sample
-    from wfc.version import build_input_fingerprint
+    from wfc.execution.claim import input_fingerprint_from_rows
 
-    db_path = tmp_path / ".wfc" / "wfc.db"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    url = f"sqlite:///{db_path}"
-    monkeypatch.setenv("DATABASE_URL", url)
+    build_project(
+        Scenario(samples=["s1", "s2", "s3"]),
+        root=git_project, monkeypatch=monkeypatch,
+    )
 
-    from wfc.database import reset_engine
-    reset_engine()
+    assert input_fingerprint_from_rows(
+        [], [("data", "s1"), ("data", "s2")], step="bundle_root") != \
+        input_fingerprint_from_rows(
+            [], [("data", "s1"), ("data", "s3")], step="bundle_root"), (
+        "a same-size membership swap must move the bundle's cache key; "
+        "identical sample content would collapse both bundles onto one key"
+    )
 
-    engine = create_engine(url)
-    SQLModel.metadata.create_all(engine)
 
-    with Session(engine) as session:
-        s_a = Sample(
-            name="a", source_path="/a.csv",
-            registered_path="data/samples/a/a.csv",
-            file_type="csv", file_size=100, file_mtime=1.0,
-        )
-        s_b = Sample(
-            name="b", source_path="/b.csv",
-            registered_path="data/samples/b/b.csv",
-            file_type="csv", file_size=200, file_mtime=2.0,
-        )
-        s_c = Sample(
-            name="c", source_path="/c.csv",
-            registered_path="data/samples/c/c.csv",
-            file_type="csv", file_size=300, file_mtime=3.0,
-        )
-        session.add_all([s_a, s_b, s_c])
-        session.commit()
-        a_id, b_id, c_id = s_a.id, s_b.id, s_c.id
+# ---------------------------------------------------------------------------
+# Cache-key stability under permutation; sensitivity to content
+# ---------------------------------------------------------------------------
+
+
+@workflow(purpose="Cache key for a fan-in bundle is stable under sample-list "
+                  "permutation and changes when any member sample's content "
+                  "hash changes")
+def test_bundle_cache_key_permutation_and_sensitivity(git_project, monkeypatch):
+    """Two assertions:
+      (a) move one member's content hash -> bundle cache key changes
+      (b) permute the sample-id input order -> bundle cache key unchanged
+
+    (b) is the load-bearing one: the digest sorts its parts, and DB row
+    order is not guaranteed, so without the sort the same bundle would key
+    differently run to run. (a) pins that the sort has not flattened the
+    bundle into something insensitive to its members.
+    """
+    from wfc.persistence import get_session, Sample
+    from wfc.execution.claim import input_fingerprint_from_rows
+
+    project = build_project(
+        Scenario(samples=["a", "b", "c"]),
+        root=git_project, monkeypatch=monkeypatch,
+    )
+    a_id = project.sample_ids["a"]
+    bundle = [("data", "a"), ("data", "b"), ("data", "c")]
 
     # Baseline key over [a, b, c].
-    baseline = build_input_fingerprint([], sample_ids=[a_id, b_id, c_id])
+    baseline = input_fingerprint_from_rows([], bundle, step="bundle_root")
 
     # (b) Permute order -> same key.
-    permuted = build_input_fingerprint([], sample_ids=[c_id, a_id, b_id])
+    permuted = input_fingerprint_from_rows(
+        [], [("data", "c"), ("data", "a"), ("data", "b")], step="bundle_root")
     assert baseline == permuted, (
         "cache key must be stable under sample-list permutation"
     )
 
-    # (a) Swap one sample's (size, mtime) -> key changes.
-    with Session(engine) as session:
+    # (a) Move one member's content hash -> key changes. Re-registering
+    # edited content is what a user does; the row is moved directly here
+    # because the claim reads the row, and the row is the whole input.
+    with get_session() as session:
         row = session.get(Sample, a_id)
         assert row is not None
-        row.file_size = 999
-        row.file_mtime = 42.0
+        row.content_hash = "9" * 32
         session.add(row)
         session.commit()
 
-    swapped = build_input_fingerprint([], sample_ids=[a_id, b_id, c_id])
+    swapped = input_fingerprint_from_rows([], bundle, step="bundle_root")
     assert swapped != baseline, (
-        "cache key must change when a sample's (size, mtime) changes"
+        "cache key must change when a member sample's content hash changes"
     )
 
 
@@ -549,9 +593,9 @@ def test_bundle_cache_key_permutation_and_sensitivity(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_expand_variant_combos_rejects_explicit_combos_on_collapsed():
+def test_expand_step_combos_rejects_explicit_combos_on_collapsed():
     """If a caller supplies explicit_combos AND the pipeline contains any
-    sample_collapsed step, expand_variant_combos must raise ValueError.
+    sample_collapsed step, expand_step_combos must raise ValueError.
 
     Silently returning the caller's combos would bake real sample names
     into combos while the collapsed step's output path has the literal
@@ -564,7 +608,7 @@ def test_expand_variant_combos_rejects_explicit_combos_on_collapsed():
         sample_collapsed=True, collapsed_samples=["s1", "s2"],
     )
     with pytest.raises(ValueError, match="fan-in"):
-        expand_variant_combos(
+        expand_step_combos(
             [collapsed],
             samples=["s1", "s2"],
             resolved_params={"merge": {"v1": {}}},
@@ -573,7 +617,7 @@ def test_expand_variant_combos_rejects_explicit_combos_on_collapsed():
 
 
 # ---------------------------------------------------------------------------
-# Regression (PEV cycle 2026-05-02): generator must not inspect filesystem
+# Generator must not inspect the filesystem during generate_snakefile
 # ---------------------------------------------------------------------------
 
 
@@ -585,41 +629,31 @@ def test_generate_snakefile_collapsed_fanin_no_filesystem_inspection(
     per-sample identities from step.collapsed_samples (the pipeline
     contract) rather than from a Path.iterdir() walk over data/samples/.
 
-    Why this test exists: prior to this fix _generate_rule called
-    iterdir() at Snakefile-generation time. restore_sample is itself a
-    Snakemake rule whose outputs don't exist yet at that moment, so the
-    walk silently no-op'd and the resulting Snakefile dropped the
-    per-sample --ref-input flags. wfc run-step then errored at runtime
-    with "root node has no input data".
+    Why this test exists: restore_sample is itself a Snakemake rule whose
+    outputs don't exist yet at Snakefile-generation time, so a walk over
+    data/samples/ at that moment finds nothing, the Snakefile carries no
+    per-sample inputs, and wfc run-step errors at runtime with "root node
+    has no input data".
 
-    The guard installed here makes any iterdir() call from the generator
-    fail loudly, so a future regression to filesystem inspection is
-    caught immediately.
+    The guard installed here records every iterdir() call the generator
+    makes, and any walk over data/samples/ fails the test.
     """
     pipeline_json = _minimal_fan_in_pipeline(["s1", "s2", "s3"])
     path = _write_pipeline(tmp_path, pipeline_json)
 
-    # Crucially: NO data/samples/<s>/ directories pre-staged. The fix
+    # Crucially: NO data/samples/<s>/ directories pre-staged. Generation
     # must work for the realistic case where samples live only in the
     # DVC cache until restore_sample materializes them at runtime.
 
-    # Guard: any iterdir() call during generate_snakefile is a regression.
-    import pathlib
-    original_iterdir = pathlib.Path.iterdir
-    iterdir_calls: list[str] = []
+    # Guard: record every iterdir() call made during generate_snakefile.
+    # Every listing proceeds, so a failure can show *what* was walked; the
+    # assertion below runs after generation completes.
+    iterdir_calls = spy_directory_listings(monkeypatch)
 
-    def _forbidden_iterdir(self):
-        iterdir_calls.append(str(self))
-        # Allow the call to proceed so the test can show *what* was
-        # walked when it fails, but raise after generation completes.
-        return original_iterdir(self)
-
-    monkeypatch.setattr(pathlib.Path, "iterdir", _forbidden_iterdir)
-
-    pipeline = load_pipeline(path)
+    pipeline = load_pipeline_from_path(path)
     snakefile = generate_snakefile(pipeline, wfc_root, pipeline_id="no-stage")
 
-    # Filter calls to those that touched data/samples/<s>/ (the bug).
+    # Filter calls to those that touched data/samples/<s>/ (the forbidden walk).
     # Other iterdir() calls in the generator (e.g. walking modules/) are
     # legitimate and out of scope.
     sample_walks = [c for c in iterdir_calls if "data" in c and "samples" in c]
@@ -643,128 +677,26 @@ def test_generate_snakefile_collapsed_fanin_no_filesystem_inspection(
 
 @workflow(purpose="wfc run-step's runtime fallback resolves per-sample data files for a collapsed-fan-in root and raises a meaningful error when a sample dir is missing")
 def test_run_step_collapsed_sample_fallback_resolves_per_sample_dirs(
-    tmp_path, monkeypatch, capsys
+    git_project, tmp_path, monkeypatch, capsys
 ):
     """When wfc run-step is invoked with --sample __all__ and one
     --collapsed-sample <s> per bundled sample, it walks each sample's
     data/samples/<s>/ directory at execution time and merges the
     per-sample data files into the fan-in slot.
 
-    This test drives the input-resolution branch directly without a
-    full Snakemake invocation -- it monkeypatches the pre_run/method
-    subprocess pieces and inspects the slot_paths the resolver builds.
+    Driven on the harness's stub rung: every phase of run_step runs for
+    real against a real database and only the method process is faked at
+    the dispatch boundary, so the resolved slot_paths are the ones the
+    dispatch phase was actually handed.
     """
-    from sqlmodel import SQLModel, create_engine
-
-    # Stand up an isolated DB so pre_run can register a row.
-    db_path = tmp_path / ".wfc" / "wfc.db"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    url = f"sqlite:///{db_path}"
-    monkeypatch.setenv("DATABASE_URL", url)
-    from wfc.database import reset_engine
-    reset_engine()
-    engine = create_engine(url)
-    SQLModel.metadata.create_all(engine)
-
-    # Project root for the run: data/samples lives here. Create the
-    # .wfc/wf-canvas.toml marker so wfc.database.project_root() resolves.
-    project_root = tmp_path / "proj"
-    project_root.mkdir()
-    (project_root / ".wfc").mkdir()
-    (project_root / ".wfc" / "wf-canvas.toml").write_text("")
-    monkeypatch.setenv("WFC_PROJECT_ROOT", str(project_root))
-    monkeypatch.chdir(project_root)
-
-    # Pre-stage three sample data files (simulating the post-restore_sample
-    # state). The runtime fallback should pick the first non-dotfile in
-    # each directory.
-    for s in ("s1", "s2", "s3"):
-        sd = project_root / "data" / "samples" / s
-        sd.mkdir(parents=True)
-        (sd / ".sample_ready").touch()  # sentinel must be skipped
-        (sd / "data.csv").write_text(f"sample,{s}\n")
-
-    # Author a fan-in pipeline JSON that the runtime can introspect.
-    # ADR-019 Cycle H: run_step is container-only and resolves the node's
-    # env to a built container image BEFORE the input-resolution branch this
-    # test exercises. Give merge-1 a manifest-backed container env and write a
-    # placeholder ``fixture-env`` record so resolution passes without a Docker
-    # build (the actual ``docker run`` is short-circuited by the
-    # ``_run_method_subprocess`` monkeypatch below).
-    pipeline_dict = _minimal_fan_in_pipeline(["s1", "s2", "s3"])
-    for n in pipeline_dict["nodes"]:
-        if n["id"] == "merge-1":
-            n["env"] = "fixture-env"
-    (project_root / ".wfc" / "envs.json").write_text(json.dumps({
-        "schema_version": 1,
-        "envs": {
-            "fixture-env": {
-                "backend": "pixi",
-                "source": "pixi.toml",
-                "container": "docker://local/wfc-test-minimal@sha256:" + "a" * 64,
-                "env_fingerprint": "a" * 64,
-                "built_from_lock": "pixi.lock",
-                "built_at": "2026-06-23T00:00:00Z",
-            }
-        },
-    }))
-    pipeline_path = tmp_path / "pipe.json"
-    pipeline_path.write_text(json.dumps(pipeline_dict))
-
-    # The host-side pre-flight (thin-container dispatch) verifies the method
-    # script exists before any docker invocation — write a stub at the
-    # project-root-relative script path the run_step call below names.
-    stub_script = project_root / "modules" / "_builtin" / "csv_merge" / "csv_merge.py"
-    stub_script.parent.mkdir(parents=True, exist_ok=True)
-    stub_script.write_text("# stub\n")
-
-    # Patch the slow/heavy pieces of run_step. We only care about the
-    # input resolution branch -- short-circuit pre_run, the subprocess,
-    # complete_run, and DVC.
-    from wfc import cli as wfc_cli
-
-    captured: dict[str, dict] = {}
-
-    def fake_pre_run(**kwargs):
-        return ("NEW", 1)
-
-    class _FakeResult:
-        returncode = 0
-
-    def fake_subprocess(cmd, cwd, env, stdout_log, stderr_log):
-        # Capture the slot_paths the resolver wrote into _run_context.json.
-        run_dir = wfc_cli._run_archive_dir(int(env["WFC_RUN_ID"]))
-        ctx = json.loads((run_dir / "_run_context.json").read_text())
-        captured["slot_paths"] = ctx["slot_paths"]
-        # Touch the declared output so the slot-scanner doesn't fail.
-        out = run_dir / "output.parquet"
-        out.write_text("ok")
-        # Touch metrics.
-        (run_dir / "metrics.json").write_text("{}")
-        return _FakeResult()
-
-    def fake_complete_run(**kwargs):
-        return None
-
-    monkeypatch.setattr(wfc_cli, "pre_run", fake_pre_run)
-    monkeypatch.setattr(wfc_cli, "_run_method_subprocess", fake_subprocess)
-    monkeypatch.setattr(wfc_cli, "complete_run", fake_complete_run)
-
-    rc = wfc_cli.run_step(
-        node_id="merge-1",
-        sample="__all__",
-        variant="default",
-        method_name="csv_merge",
-        module_name="csv_tools",
-        script_path="modules/_builtin/csv_merge/csv_merge.py",
-        pipeline_json=str(pipeline_path),
-        pipeline_id="pid-1",
-        collapsed_samples=["s1", "s2", "s3"],
+    obs = run_target(_fan_in_scenario(), "merge",
+                     root=git_project, monkeypatch=monkeypatch)
+    assert obs.exit_code(BUNDLE) == 0, (
+        "run_step should succeed with all sample dirs populated"
     )
-    assert rc == 0, "run_step should succeed with all sample dirs populated"
 
-    slot_paths = captured["slot_paths"]
-    # The link target_slot is "sources" (from _minimal_fan_in_pipeline).
+    slot_paths = obs.phase_args("dispatch", BUNDLE)["slot_paths"]
+    # The link target_slot is "sources" (from _fan_in_scenario).
     assert "sources" in slot_paths, (
         f"Expected 'sources' key (the fan-in target_slot); got {slot_paths}"
     )
@@ -772,38 +704,30 @@ def test_run_step_collapsed_sample_fallback_resolves_per_sample_dirs(
     assert len(paths) == 3
     # Order must match collapsed_samples order (cache-key stability).
     for i, s in enumerate(("s1", "s2", "s3")):
-        assert f"data{os.sep}samples{os.sep}{s}{os.sep}data.csv" in paths[i] \
-            or f"data/samples/{s}/data.csv" in paths[i], (
+        assert Path(paths[i]).resolve() == obs.project.sample_file(s).resolve(), (
             f"Path {i} should reference sample {s}; got {paths[i]}"
         )
 
-    # Now: drop one sample directory and rerun -- the resolver must
+    # Now: drop one sample directory -- the resolver must
     # raise a meaningful error rather than silently dropping the sample.
-    import shutil
-    shutil.rmtree(project_root / "data" / "samples" / "s2")
+    capsys.readouterr()
+    failed = run_target(_fan_in_scenario(missing_samples=("s2",)), "merge",
+                        root=tmp_path / "missing_sample_project",
+                        monkeypatch=monkeypatch)
 
-    rc2 = wfc_cli.run_step(
-        node_id="merge-1",
-        sample="__all__",
-        variant="default",
-        method_name="csv_merge",
-        module_name="csv_tools",
-        script_path="modules/_builtin/csv_merge/csv_merge.py",
-        pipeline_json=str(pipeline_path),
-        pipeline_id="pid-2",
-        collapsed_samples=["s1", "s2", "s3"],
+    assert failed.exit_code(BUNDLE) == 1, (
+        "run_step should fail when a bundled sample dir is missing"
     )
-    assert rc2 == 1, "run_step should fail when a bundled sample dir is missing"
     err = capsys.readouterr().err
     assert "s2" in err, f"Error must name the missing sample; got: {err}"
     assert "collapsed-fan-in root" in err or "restore_sample" in err
 
 
 # ---------------------------------------------------------------------------
-# Tier 3 (PEV cycle 2026-05-02): subprocess-level integration test.
+# Tier 3: subprocess-level integration test.
 #
 # Closes the gap that direct in-process run_step() calls miss:
-# the Tier 2 test above invokes wfc.cli.run_step() Python-to-Python with
+# the Tier 2 test above invokes wfc.execution.run_step() Python-to-Python with
 # collapsed_samples already in the call signature, which short-circuits
 # the argparse parser, the subprocess invocation chain, and the
 # generator-output -> CLI-input handoff. This test:
@@ -812,8 +736,8 @@ def test_run_step_collapsed_sample_fallback_resolves_per_sample_dirs(
 #      `shell:` line for the collapsed root rule.
 #   3. Stages per-sample data files (simulating post-restore_sample state).
 #   4. subprocess.run([sys.executable, "-m", "wfc", "run-step", *args])
-#   5. Asserts exit 0 + the merged output file exists in the expected
-#      .runs/workspace/... path AND contains rows from all 3 samples.
+#   5. Asserts exit 0 + the merged output file recorded as the run's
+#      RunOutput artifact exists AND contains rows from all 3 samples.
 #
 # Catches: argparse flag-name typos, missing action="append", generator
 # slot-name -> CLI parser mismatch, subprocess cwd/env breakage.
@@ -872,63 +796,50 @@ def _extract_wfc_run_step_argv(snakefile: str, rule_name: str) -> list[str]:
 @pytest.mark.integration
 @requires_docker
 def test_run_step_subprocess_collapsed_fanin_end_to_end(
-    pipeline_factory, register_fixture_methods
+    git_project, monkeypatch, fixture_container_image
 ):
-    project_dir = register_fixture_methods
-
     _ = Step(
-        step_num=1, name="Stage per-sample data files",
-        purpose="Simulate post-restore_sample on-disk state. Files are "
-                "written to data/samples/<s>/data.csv WITHOUT calling the "
-                "real DVC restore_sample rule -- this matches what the "
-                "runtime resolver in wfc.cli.run_step expects to see.",
+        step_num=1, name="Declare the fan-in scenario and build the project",
+        purpose="A single fan-in selector (3 samples) feeding the `merge` "
+                "method via target_slot='sources'. Each sample's data file "
+                "carries 3 rows and the `.sample_ready` sentinel the real "
+                "restore rule leaves behind, so the runtime resolver's "
+                "dotfile skip is exercised and a merge of the whole bundle "
+                "is 9 rows. The env record is pinned to the session-built "
+                "image, so the methods run in real containers.",
     )
-    # Each sample contributes 3 rows; merge should produce 9 total.
-    from tests.fixtures.conftest import create_sample_csv
-    for sample in ("s1", "s2", "s3"):
-        create_sample_csv(project_dir, sample, num_rows=3)
-        # The .sample_ready sentinel exists in the real runtime to gate
-        # Snakemake dependency ordering. The runtime resolver skips dotfiles,
-        # so this sentinel must NOT be picked up as the sample data file.
-        (project_dir / "data" / "samples" / sample / ".sample_ready").write_text("")
-
-    _ = Step(
-        step_num=2, name="Build fan-in pipeline JSON",
-        purpose="Single fan-in selector (3 samples) feeding the `merge` "
-                "fixture method via target_slot='sources'. NO pre-staging "
-                "beyond the sample CSVs above -- the generator must not "
-                "inspect the filesystem.",
-    )
-    pipeline_path = pipeline_factory(
-        name="fan_in_subproc",
+    scn = Scenario(
         nodes=[
-            {"id": "selector_1", "type": "input_selector",
-             "samples": ["s1", "s2", "s3"], "fan_mode": "in"},
-            {"id": "merge_1", "method": "merge", "module": "test_pipeline",
-             "params": {}, "env": "container:fixture-env"},
+            selector("selector_1", fan_mode="in"),
+            node("merge_1", method="merge",
+                 inputs=[wire("selector_1", target_slot="sources")],
+                 outputs={"merged": ".csv"},
+                 behavior=Behavior(concat_input="sources")),
         ],
-        links=[
-            {"source": "selector_1", "target": "merge_1",
-             "target_slot": "sources"},
-        ],
-        samples=[],
+        samples=["s1", "s2", "s3"],
+        sample_ready_sentinel=True,
+        sample_content=THREE_ROW_SAMPLE_CSV,
+        env_name=FIXTURE_ENV_NAME,
+        image_digest=fixture_container_image,
     )
+    project = build_project(scn, root=git_project, monkeypatch=monkeypatch)
+    project_dir = project.root
 
     _ = Step(
-        step_num=3, name="Generate Snakefile and extract wfc run-step argv",
+        step_num=2, name="Generate Snakefile and extract wfc run-step argv",
         purpose="The generator's literal CLI emission is the integration "
                 "boundary the in-process Tier 2 tests skip. Parsing the "
                 "shell line gives us the exact argv a real Snakemake "
                 "invocation would hand to `python -m wfc run-step`.",
     )
-    pipeline = load_pipeline(pipeline_path)
-    pipeline_id = "subproc-pid"
+    pipeline = load_pipeline_from_path(project.pipeline_json)
+    pipeline_id = project.pipeline_id
     snakefile = generate_snakefile(
         pipeline, str(project_dir), pipeline_id=pipeline_id,
     )
     argv = _extract_wfc_run_step_argv(snakefile, "merge_1")
     # Sanity: the generator must have emitted one --collapsed-sample per bundle
-    # member. If a regression renames the flag (--collapsed_sample) or drops
+    # member. If a change renames the flag (--collapsed_sample) or drops
     # action="append", argparse below will reject the invocation.
     assert argv.count("--collapsed-sample") == 3, (
         f"Expected 3 --collapsed-sample flags in generator argv; got: {argv}"
@@ -938,12 +849,12 @@ def test_run_step_subprocess_collapsed_fanin_end_to_end(
     # Must also carry --pipeline-json + --pipeline-id so the runtime can
     # introspect the topology (fan-in target_slot resolution).
     extra_args = [
-        "--pipeline-json", str(pipeline_path),
+        "--pipeline-json", str(project.pipeline_json),
         "--pipeline-id", pipeline_id,
     ]
 
     _ = Step(
-        step_num=4, name="Invoke `python -m wfc run-step` as a real subprocess",
+        step_num=3, name="Invoke `python -m wfc run-step` as a real subprocess",
         purpose="Drives the full argparse + run_step path with cwd at the "
                 "project root and WFC_PROJECT_ROOT/DATABASE_URL inherited.",
     )
@@ -955,8 +866,8 @@ def test_run_step_subprocess_collapsed_fanin_end_to_end(
     pipeline_log_dir = project_dir / ".runs" / "logs" / pipeline_id
     pipeline_log_dir.mkdir(parents=True, exist_ok=True)
     env["PIPELINE_LOG_DIR"] = str(pipeline_log_dir)
-    # Make sure the worktree's wfc package wins on PYTHONPATH so `-m wfc`
-    # resolves to the source we just edited (not an installed wheel).
+    # Make sure the checkout's wfc package wins on PYTHONPATH so `-m wfc`
+    # resolves to this source tree (not an installed wheel).
     env["PYTHONPATH"] = str(PROJECT_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
 
     cmd = [sys.executable, "-m", "wfc", *argv, *extra_args]
@@ -970,16 +881,15 @@ def test_run_step_subprocess_collapsed_fanin_end_to_end(
     )
 
     _ = Step(
-        step_num=5, name="Verify merged output exists with all 3 samples' rows",
+        step_num=4, name="Verify merged output exists with all 3 samples' rows",
         purpose="Confirms the runtime fan-in resolver routed each sample's "
-                "data.csv into the 'sources' slot and the merge method "
+                "data file into the 'sources' slot and the merge method "
                 "concatenated them. Without this, exit 0 alone could still "
                 "mask a silently-empty fan-in slot.",
     )
-    # ADR-018: workspace dir is gone. Locate the merge run's output via
-    # RunOutput.artifact_path (the run-archive path is the source of truth).
-    from wfc.database import get_session
-    from wfc.models import Method, Run, RunOutput
+    # Locate the merge run's output via RunOutput.artifact_path (the
+    # run-archive path is the source of truth).
+    from wfc.persistence import get_session, Method, Run, RunOutput
     from sqlmodel import select
     with get_session() as session:
         stmt = (
@@ -1005,3 +915,70 @@ def test_run_step_subprocess_collapsed_fanin_end_to_end(
         f"Either the runtime resolver dropped samples or the merge method "
         f"only saw one slot entry."
     )
+
+
+# ---------------------------------------------------------------------------
+# One rule decides who carries the bundle
+# ---------------------------------------------------------------------------
+
+
+@workflow(purpose="One predicate decides which steps carry the fan-in bundle: "
+                  "the collapsed root's generated rule waits on the bundle's "
+                  "sentinels and its shell names every bundled sample, the "
+                  "chain-collapsed consumer's rule does neither, and the test "
+                  "harness's run_step driver splits the same way -- so a green "
+                  "harness scenario is evidence about production's cache key")
+def test_one_predicate_decides_who_carries_the_bundle():
+    from wfc import layout
+    from wfc.orchestration.snakemake import _generate_rule
+    from tests.harness.drivers import _step_kwargs
+
+    pipeline_json = {
+        "nodes": [
+            {"id": "sel", "type": "input_selector",
+             "samples": ["a", "b", "c"], "fan_mode": "in"},
+            {"id": "merge", "method": "csv_merge", "module": "csv_tools",
+             "script": "modules/_builtin/csv_merge/csv_merge.py",
+             "params": {}, "env": "container:demo"},
+            {"id": "filter", "method": "csv_filter", "module": "csv_tools",
+             "script": "modules/_builtin/csv_filter/csv_filter.py",
+             "params": {}, "env": "container:demo"},
+        ],
+        "links": [
+            {"source": "sel", "target": "merge", "target_slot": "sources"},
+            {"source": "merge", "target": "filter"},
+        ],
+        "samples": [],
+    }
+    pipeline = _load(pipeline_json)
+    step_map = {s.node_id: s for s in pipeline.steps}
+
+    # Both steps are collapsed and both carry the sample list -- collapse is
+    # contagious. That is precisely why the raw field is not the rule.
+    assert step_map["filter"].sample_collapsed is True
+    assert step_map["filter"].collapsed_samples == ["a", "b", "c"]
+
+    # The generator: the root names every bundled sample on its shell line
+    # and waits on the bundle's sentinels; the chain consumer does neither.
+    root_rule = "\n".join(_generate_rule(step_map["merge"], step_map, "pipe-bundle"))
+    chain_rule = "\n".join(_generate_rule(step_map["filter"], step_map, "pipe-bundle"))
+    for s in ("a", "b", "c"):
+        assert f"--collapsed-sample {s}" in root_rule, root_rule
+    assert "--collapsed-sample" not in chain_rule, chain_rule
+
+    assert _input_path("merge", step_map, "pipe-bundle") == {
+        "sources": [layout.sample_ready_sentinel_relpath(s) for s in ("a", "b", "c")]
+    }
+    chain_inputs = _input_path("filter", step_map, "pipe-bundle")
+    assert "sample_ready" not in str(chain_inputs), chain_inputs
+
+    # The harness driver reads the same predicate, so the two rungs hand
+    # run_step the same bundle for the same step.
+    project = SimpleNamespace(pipeline_json="pipeline.json",
+                              pipeline_id="pipe-bundle")
+    root_kwargs = _step_kwargs(project, step_map["merge"],
+                               ("merge", "__all__", "default"))
+    chain_kwargs = _step_kwargs(project, step_map["filter"],
+                                ("filter", "__all__", "default"))
+    assert root_kwargs["collapsed_samples"] == ["a", "b", "c"]
+    assert chain_kwargs["collapsed_samples"] is None

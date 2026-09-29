@@ -11,7 +11,13 @@ Failure modes (set via params["failure_mode"]):
   - "missing_output": exits cleanly without producing the declared output file
   - "succeed": behaves like transform (reads input, writes output)
 
-Reads WFC_RUN_DIR, WFC_INPUT_PATHS, and WFC_PARAMS from environment.
+Per-sample failure (params["crash_samples"], comma-separated sample names):
+when WFC_SAMPLE names one of them the method crashes before the failure_mode
+branch runs. A pipeline that carries a sample-collapsed step cannot use a
+per-sample variant override to fail one sample, so this is how one sample
+fails while its siblings succeed.
+
+Reads WFC_RUN_DIR, WFC_INPUT_PATHS, WFC_PARAMS, and WFC_SAMPLE from environment.
 """
 
 import csv
@@ -28,6 +34,14 @@ def main():
     failure_mode = params.get("failure_mode", "crash")
 
     print(f"faulty: starting (failure_mode={failure_mode!r})")
+
+    crash_samples = [
+        s.strip() for s in str(params.get("crash_samples", "")).split(",") if s.strip()
+    ]
+    sample = os.environ.get("WFC_SAMPLE", "")
+    if sample and sample in crash_samples:
+        print(f"faulty: sample {sample!r} is listed in crash_samples", file=sys.stderr)
+        raise RuntimeError(f"faulty: intentional crash for sample {sample!r}")
 
     if failure_mode == "crash":
         print("faulty: preparing to crash in 3... 2... 1...")

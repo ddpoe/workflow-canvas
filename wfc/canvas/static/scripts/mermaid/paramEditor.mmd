@@ -4,15 +4,23 @@ title: paramEditor
 stateDiagram-v2
   [*] --> viewing
   viewing --> editing: EDIT
+  viewing --> bound: BIND_VARIABLE
+  viewing --> bound: (always)
+  bound --> viewing: UNBIND_VARIABLE
+  bound --> editing: EDIT
+  bound --> viewing: RESET_TO
   editing --> committing: COMMIT
   editing --> viewing: CANCEL
   editing --> viewing: RESET_TO
+  editing --> bound: BIND_VARIABLE
   committing --> committed: onDone
   committing --> invalid: onDone
   committing --> invalid: onError
   committed --> editing: EDIT
   committed --> viewing: RESET_TO
+  committed --> bound: BIND_VARIABLE
   invalid --> editing: CHANGE_VALUE
   invalid --> committing: COMMIT
   invalid --> viewing: CANCEL
   invalid --> viewing: RESET_TO
+  invalid --> bound: BIND_VARIABLE

@@ -1,9 +1,10 @@
-"""AST validation of ctx.save_artifact() at register-method (ADR-020, Tier-1).
+"""AST validation of ctx.save_artifact() at register-method (Tier-1).
 
-Tier 2 subsystem tests for wfc.method_ast.validate_save_artifacts: missing
+Tier 2 subsystem tests for wfc.registration.validate_save_artifacts: missing
 required save errors, unknown literal name errors, dynamic name warns,
 reachable `if` save is accepted, unreachable `if False:` save warns.
-Body-only (helper-function saves are a documented v1 limitation).
+Body-only: only the decorated function's body is scanned, so saves made in
+helper functions are not seen.
 """
 
 import textwrap
@@ -12,7 +13,7 @@ import pytest
 
 from axiom_annotations import workflow, Step
 
-from wfc.method_ast import validate_save_artifacts
+from wfc.registration import validate_save_artifacts
 
 
 def _write(tmp_path, body: str):

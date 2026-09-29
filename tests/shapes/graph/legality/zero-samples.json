@@ -1,0 +1,125 @@
+{
+  "id": "zero-samples",
+  "case": "legality-zero-samples",
+  "note": "No selector and a reference whose run carries no sample: refused at load.",
+  "document": {
+    "name": "zero-samples",
+    "nodes": [
+      {
+        "id": "r1",
+        "type": "run_reference",
+        "method": "",
+        "module": "",
+        "params": {},
+        "run_id": "7"
+      },
+      {
+        "id": "m1",
+        "type": "method",
+        "method": "filter",
+        "module": "mod",
+        "params": {}
+      }
+    ],
+    "links": [
+      {
+        "source": "r1",
+        "target": "m1",
+        "sourceHandle": "out",
+        "targetHandle": "data"
+      }
+    ],
+    "samples": []
+  },
+  "contract_map": {
+    "mod.filter": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/filter/filter.py",
+      "env": "container:base"
+    },
+    "mod.plot": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/plot/plot.py",
+      "env": "container:base"
+    },
+    "mod.qc": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/qc/qc.py",
+      "env": "container:base"
+    },
+    "mod.merge": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "sources": {
+          "required": true
+        }
+      },
+      "script_path": "methods/merge/merge.py",
+      "env": "container:base"
+    },
+    "mod.join": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        },
+        "other": {
+          "required": true
+        }
+      },
+      "script_path": "methods/join/join.py",
+      "env": "container:base"
+    }
+  },
+  "reference_outputs": {
+    "r1": {
+      "output_paths": {
+        "out": "/runs/7/out.csv"
+      },
+      "sample": ""
+    }
+  },
+  "package": {
+    "validation": "accept",
+    "load": "refuse"
+  },
+  "client": {
+    "answers": false,
+    "reason": "the client previews only the duplicate-slot rule"
+  }
+}

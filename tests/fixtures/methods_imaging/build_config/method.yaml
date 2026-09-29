@@ -13,4 +13,4 @@ outputs:
     description: "Stage-tagged config CSV"
 
 executor: python
-env: container:fixture-env
+env: fixture-env

@@ -1,6 +1,6 @@
 /**
- * ADR-015 Phase D Pass 1: parameterized Vitest test that drives every
- * row of the polling-driven behavior catalog through the bridge layer.
+ * Parameterized Vitest test that drives every row of the
+ * polling-driven behavior catalog through the bridge layer.
  *
  * For each catalog row, every per-node entry of every timeline frame
  * is fed through `runStatusToNodeState` and the resulting event
@@ -10,8 +10,8 @@
  * than a vague mapping-test breakage.
  *
  * Counterpart: `tests/e2e/behaviors.spec.ts` runs the same catalog
- * through the canvas DOM — together they cover Tier 2 (bridge) and
- * Tier 3 (UI) for every polling row of the bug-class table.
+ * through the canvas DOM — together they cover the bridge layer and
+ * the UI layer for every polling row of the catalog.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -20,7 +20,7 @@ import {
 } from '../../__fixtures__/timelines';
 import { runStatusToNodeState, type RunStatusEvent } from '../services';
 
-describe('behavior catalog — bridge layer (Tier 2)', () => {
+describe('behavior catalog — bridge layer', () => {
   for (const [name, row] of Object.entries(behaviorCatalog)) {
     if (row.skipVitest) {
       it.skip(`${name} — skipped (no polling timeline)`, () => {});
@@ -55,14 +55,9 @@ describe('behavior catalog — bridge layer (Tier 2)', () => {
     });
   }
 
-  it('catalog ships exactly the canonical 13 rows', () => {
-    // Pass 1 (8): cancelledByUpstreamFailure, failedWithTraceback,
-    // tallyProgression, queuedBehindRunning, errorMidGraph, mixedStatus,
-    // partialCacheHit, zeroJobDAG.
-    // Pass 2 (4 new): streamingConnecting, liveLogLineAppend,
-    // faultOnStream, cancelledByUserMidRun.
-    // Pass 3 (1 new): faultMidStream — paced streaming-then-crash
-    // distinct from faultOnStream's instant-crash recording.
+  it('catalog ships exactly the canonical 14 rows', () => {
+    // faultMidStream is a paced streaming-then-crash recording,
+    // distinct from faultOnStream's instant crash.
     expect(Object.keys(behaviorCatalog).sort()).toEqual(
       [
         'cancelledByUpstreamFailure',
@@ -75,6 +70,7 @@ describe('behavior catalog — bridge layer (Tier 2)', () => {
         'mixedStatus',
         'partialCacheHit',
         'queuedBehindRunning',
+        'refusedAtClaim',
         'streamingConnecting',
         'tallyProgression',
         'zeroJobDAG',
@@ -83,7 +79,7 @@ describe('behavior catalog — bridge layer (Tier 2)', () => {
   });
 
   it('every non-skipped row references a known fixtureKey', () => {
-    // App.svelte::seedFixture only knows these keys; a typo here would
+    // seed.ts::seedFixture only knows these keys; a typo here would
     // surface as an empty canvas in the Playwright spec — catch it at
     // the Vitest layer instead.
     const known = new Set([

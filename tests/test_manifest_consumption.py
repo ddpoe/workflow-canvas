@@ -1,4 +1,4 @@
-"""Host-side manifest reader + archive parity (ADR-020 single results channel).
+"""Host-side manifest reader + archive parity (single results channel).
 
 Tier 2 subsystem tests: the host reads ``_wfc_results.json`` into output
 paths + metrics, resolves run-dir-relative paths, rejects escapes, and the

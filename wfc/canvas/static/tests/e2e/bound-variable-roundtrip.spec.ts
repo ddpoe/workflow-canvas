@@ -1,14 +1,14 @@
 /**
- * ADR-017 Track 2 Phase D — load-roundtrip smoke (US-4 acceptance).
+ * Bound-variable load-roundtrip smoke.
  *
- * Two tests covering the full US-4 flow:
+ * Two tests covering the full flow:
  *
- *   - Test 1 (existing direct-rehydration smoke): Drives loadPipeline via
+ *   - Test 1 (direct-rehydration smoke): Drives loadPipeline via
  *     the `?fixture=bound-variable` bootstrap. Proves the rehydration-and-
  *     rendering layer in isolation: variables panel, bind chip, resolved
  *     value display.
  *
- *   - Test 2 (full click→fetch→parse path, Reviewer iter 1 addition):
+ *   - Test 2 (full click→fetch→parse path):
  *     Mocks /api/workflow/{pipeline_id}/editable + history runs, navigates
  *     to History tab via `?fixture=bound-variable-history`, clicks
  *     "Open pipeline in Canvas" on a PipelineRow, switches to Builder,
@@ -20,7 +20,7 @@
  */
 import { expect, test, type Page } from '@playwright/test';
 
-test.describe('Bound variable round-trip (US-4 smoke)', () => {
+test.describe('Bound variable round-trip (smoke)', () => {
   test('loadPipeline with variables + $var ref renders bound chip in Inspector and variable in panel', async ({ page }) => {
     // Stub /api/wfc/* endpoints so the dev toolbar / status banners
     // don't block startup.
@@ -61,7 +61,7 @@ test.describe('Bound variable round-trip (US-4 smoke)', () => {
     await expect(chip).toContainText('"p27":"X"');
   });
 
-  // Reviewer iter 1 issue 3: full click → fetch → parse path. Mocks the
+  // Full click → fetch → parse path. Mocks the
   // /api/workflow/{id}/editable endpoint, /api/wfc/runs (so the History tab
   // shows a PipelineRow), and /api/modules (so InspectorPanel knows the
   // bound param's contract type). Drives a real PipelineRow click.
@@ -130,6 +130,10 @@ test.describe('Bound variable round-trip (US-4 smoke)', () => {
       user: 'tester',
       favorite: false,
       pipelineId: PIPE_ID,
+      // Without pipelineName the Pipelines view titles the row
+      // `PIPE_ID.slice(0, 8)` = "pipeline" (historyStore.ts::pipelineRuns),
+      // so `hasText: PIPE_ID` never matches.
+      pipelineName: PIPE_ID,
       scriptPath: null,
     };
     await page.route('**/api/wfc/runs', async (r) => r.fulfill({

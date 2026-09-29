@@ -1,8 +1,8 @@
-<!-- generated from pm_mvp::docs.consumer.overview.what-is-workflow-canvas @ 7cf5388eb12d; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.overview.what-is-workflow-canvas @ cd47468b649c; do not edit -->
 
 # What is Workflow Canvas?
 
-## What Workflow Canvas is
+## Why Workflow Canvas
 
 If you run your own multi-step analysis in Python, you know the failure mode: scripts multiply, and months later you can't say for certain which code, which inputs, and which environment produced a given figure or dataset — and neither can whoever inherits the project. Re-running redoes work that never changed. And the usual fix is its own burden: making your analysis reproducible and orchestrated this way normally means adopting infrastructure tools — a workflow engine and its language, containers, a provenance system — and taking on the job of learning and running them. That's a second job on top of the science.
 
@@ -21,6 +21,7 @@ wfc demo
 That spins up the exact pipeline shown above on your machine — see [Exploring the Demo](tutorials/wfc-demo.md) for the tour. You'll need [Docker](https://docs.docker.com/get-started/get-docker/) running — every step executes in a container — plus Python 3.11+ and git; see [Installation](tutorials/getting-started.md#installation) for the details.
 
 **Workflow Canvas hands you that stack, pre-built.** You describe each analysis step once — a contract saying what it takes in and what it produces — and Workflow Canvas takes it from there: it orchestrates the runs, isolates each step in its own container, skips work that hasn't changed, and records every run in a queryable database you can trace any result back through. You get workflow orchestration and a full provenance layer without learning a workflow language or building the infrastructure yourself — that engineering is part of what Workflow Canvas brings.
+Methods can be written in Python, R, or bash — `wfc` detects the language from the script's file extension and runs it inside your declared container environment; the same input/output/parameter contract works across all three.
 
 ## Who it's for
 
@@ -79,7 +80,6 @@ tutorials/writing-contracts
 how-to/registration
 how-to/canvas
 how-to/run-and-inspect-results
-how-to/sweep-parameters-and-fan-out
 ```
 
 ```{toctree}
@@ -87,6 +87,7 @@ how-to/sweep-parameters-and-fan-out
 :maxdepth: 2
 :hidden:
 
+explanation/how-the-pieces-fit-together
 explanation/project-anatomy
 explanation/how-a-run-executes
 explanation/storage-and-provenance

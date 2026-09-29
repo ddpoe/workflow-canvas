@@ -1,5 +1,5 @@
 /**
- * Shared helpers for the ADR-015 Phase D Playwright flow tests.
+ * Shared helpers for the Playwright flow tests.
  *
  * Each spec calls `seedAndRun(page, fixtureKey, timeline)` to:
  *   1. Install route-replay interceptors against the timeline
@@ -7,8 +7,8 @@
  *      pre-built pipeline appropriate for the spec
  *   3. Click Run and wait for the actor tree to start ticking
  *
- * The `?fixture=...` querystring is consumed by `App.svelte` (see
- * the small bootstrap branch added in this cycle) and seeds the
+ * The `?fixture=...` querystring is consumed by `App.svelte` (through
+ * `seedFixtureFromQuery` in `src/lib/__fixtures__/seed.ts`) and seeds the
  * `nodes` / `edges` stores synchronously before mount, so route-replay
  * can drive the actor tree without UI gymnastics.
  */

@@ -1,16 +1,17 @@
-"""Host-side reader for the ``_wfc_results.json`` results manifest (ADR-020).
+"""Host-side reader for the ``_wfc_results.json`` results manifest.
 
-This is Phase 2 (archive) input parsing. After a container exits, the host
+Execution's collect phase calls this after a container exits: the host
 reads ``${run_dir}/_wfc_results.json`` — the single results channel for
 both declared outputs and metrics — resolving each manifest-relative
 output path against ``run_dir`` and validating it sits inside ``run_dir``.
 
-It does **not** hash, cache, or write DB rows. The existing row-based
-``wfc/provenance.py::archive_outputs`` sweep handles ADR-018 hashing and
-DVC caching after ``run_step`` populates ``RunOutput`` rows from this data.
+It does **not** hash, cache, or write DB rows. The row-based
+``wfc.storage.archive.archive_outputs`` sweep handles hashing and DVC
+caching after the collect phase writes ``RunOutput`` rows from this data.
 
-Tier 2 (no manifest): ``read_results_manifest`` returns ``None`` and the
-caller falls back to scanning ``run_dir`` for declared output filenames.
+No manifest (a method that does not write one): ``read_results_manifest``
+returns ``None`` and the caller falls back to scanning ``run_dir`` for
+declared output filenames.
 
 Pure host-side function — no container, no Docker, runnable in isolation.
 """
@@ -22,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # Filename of the single results channel written by wfc-client (or by hand
-# in a pure Tier-2 method that wants to record metrics).
+# in a method without wfc-client that wants to record metrics).
 RESULTS_FILENAME = "_wfc_results.json"
 
 
@@ -49,8 +50,8 @@ def read_results_manifest(run_dir: "Path | str") -> "ManifestResults | None":
 
     Returns:
         A :class:`ManifestResults` with resolved absolute output paths and
-        metrics, or ``None`` when no manifest is present (Tier-2 mode — the
-        caller scans ``run_dir`` for declared outputs instead).
+        metrics, or ``None`` when no manifest is present (the caller scans
+        ``run_dir`` for declared outputs instead).
 
     Raises:
         ValueError: If the manifest is malformed, an output path resolves

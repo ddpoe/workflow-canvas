@@ -7,8 +7,8 @@
 FROM python:3.11-slim
 
 # The demo methods are Tier-1 scripts: they `import wfc_client as wfc` for
-# the @wfc.method authoring sugar. wfc-client is a pure-stdlib package,
-# pinned to the version installed on the host. ({wfc_client_version} is
+# the @wfc.method authoring sugar. wfc-client carries one small dependency
+# (axiom-annotations) and is pinned to the host's version. ({wfc_client_version} is
 # filled in by `wfc demo` from the installed package metadata.)
 RUN pip install --no-cache-dir wfc-client=={wfc_client_version}
 

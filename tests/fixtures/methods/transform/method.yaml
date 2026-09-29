@@ -20,4 +20,4 @@ params:
     description: "Suffix appended to new column name"
 
 executor: python
-env: container:fixture-env
+env: fixture-env

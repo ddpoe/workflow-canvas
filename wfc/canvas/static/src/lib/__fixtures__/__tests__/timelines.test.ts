@@ -1,9 +1,9 @@
 /**
- * ADR-015 Phase D US-2 contract test.
+ * Contract test for the shared timeline fixtures.
  *
  * Each timeline is typed against the GENERATED `WorkflowStatusResponse`
  * from `src/lib/types/api.ts`, so renaming/removing a field in
- * `wfc/canvas/server.py::NodeRunState` makes this test fail at tsc
+ * `wfc/canvas/routes/runs.py::NodeRunState` makes this test fail at tsc
  * time.  The runtime assertions below are deliberately structural —
  * they catch a malformed fixture frame, but the type contract is the
  * load-bearing guarantee.

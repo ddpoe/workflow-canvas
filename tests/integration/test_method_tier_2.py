@@ -1,4 +1,4 @@
-"""Tier 3 integration test: Tier-2 parity with the Tier-1 client method (ADR-020).
+"""Tier 3 integration test: Tier-2 parity with the Tier-1 client method.
 
 Runs the *equivalent* of the Tier-1 ``qc`` method WITHOUT ``wfc-client`` —
 plain env-vars (``WFC_RUN_DIR`` / ``WFC_INPUT_PATHS`` / ``WFC_PARAMS``) and
@@ -29,31 +29,16 @@ from pathlib import Path
 
 import pytest
 
-from tests.fixtures.conftest import register_test_method
+from tests.conftest import requires_docker
+from tests.fixtures.conftest import (
+    register_sample_row,
+    register_test_method,
+    sample_source_dir,
+)
+from wfc.storage import restore_sample
 
 
-def _docker_available() -> bool:
-    """True iff ``docker`` is on PATH and ``docker info`` succeeds."""
-    if shutil.which("docker") is None:
-        return False
-    try:
-        result = subprocess.run(
-            ["docker", "info"],
-            capture_output=True,
-            timeout=10,
-        )
-        return result.returncode == 0
-    except (subprocess.SubprocessError, OSError):
-        return False
-
-
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.skipif(
-        not _docker_available(),
-        reason="Docker not reachable on PATH",
-    ),
-]
+pytestmark = [pytest.mark.integration, requires_docker]
 
 
 # A plain Tier-2 qc method: WFC_* env vars + file outputs only, NO wfc-client
@@ -123,7 +108,7 @@ outputs:
     required: true
 params: {}
 executor: local
-env: container:minimal-env
+env: minimal-env
 """
 
 _SAMPLE_CSV = "id,value\n1,10\n2,20\n3,not_a_number\n"
@@ -160,23 +145,11 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
 
     wfc_dir = proj / ".wfc"
     wfc_dir.mkdir(exist_ok=True)
-    container_ref = f"docker://local/wfc-test-minimal@sha256:{image_digest}"
-    (wfc_dir / "envs.json").write_text(json.dumps({
-        "schema_version": 1,
-        "envs": {
-            "minimal-env": {
-                "backend": "pixi",
-                # Fixture image is plain python:3.11-slim; record the
-                # interpreter so dispatch skips the pixi default path.
-                "python": "python",
-                "source": "pixi.toml",
-                "container": container_ref,
-                "env_fingerprint": image_digest,
-                "built_from_lock": "pixi.lock",
-                "built_at": "2026-06-24T00:00:00Z",
-            }
-        },
-    }))
+    from tests.fixtures.conftest import write_env_record
+    # byo attach of the locally built image (raw docker build, no pixi/conda
+    # source); the image has the interpreter on PATH.
+    write_env_record(proj, "minimal-env", image="local/wfc-test-minimal",
+                     digest=image_digest)
 
     method_dir = proj / "methods" / "qc"
     method_dir.mkdir(parents=True)
@@ -190,17 +163,20 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
         method_name="qc",
     )
 
-    sample_dir = proj / "data" / "samples" / "s1"
-    sample_dir.mkdir(parents=True, exist_ok=True)
-    (sample_dir / "data.csv").write_text(_SAMPLE_CSV)
+    source_dir = sample_source_dir(proj) / "s1"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    (source_dir / "data.csv").write_text(_SAMPLE_CSV)
+    register_sample_row(proj, "s1", source_dir / "data.csv")
+    # run-step drives this directly, so no Snakemake restore_sample rule
+    # materializes the bytes: call the production restore, the only
+    # sanctioned writer under data/samples/.
+    restore_sample("s1", project_root=proj)
 
     pipeline = {
         "nodes": [
             {
                 "id": "sel",
                 "type": "input_selector",
-                "method": "",
-                "module": "",
                 "samples": ["s1"],
             },
             {
@@ -243,9 +219,8 @@ def test_tier2_no_manifest_archives_identically(
     same declared output filenames yield the same RunOutput row set and the
     same content-addressed cache entries.
     """
-    from wfc.database import get_session, reset_engine
-    from wfc.models import Run, RunOutput
-    from wfc.provenance import archive_outputs
+    from wfc.persistence import get_session, reset_engine, Run, RunOutput
+    from wfc.storage import archive_outputs
     from sqlmodel import select
 
     proj = _materialize_project(tmp_path, minimal_image, monkeypatch)

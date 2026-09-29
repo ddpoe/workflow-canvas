@@ -2,7 +2,7 @@
 
 This is the one test file that mocks the subprocess boundary directly — it
 covers the spawn itself (now ``subprocess.Popen``, streaming). All other
-Cycle C tests mock the ``wfc.docker_runner`` functions instead.
+tests mock the ``wfc.environments.docker`` functions instead.
 """
 
 from __future__ import annotations
@@ -11,6 +11,8 @@ import io
 import subprocess
 
 import pytest
+
+from tests.fixtures.fakes import fake_docker_build_process
 
 from axiom_annotations import workflow
 
@@ -36,19 +38,13 @@ def test_docker_build_sets_buildkit_env(monkeypatch, tmp_path):
     """Mock subprocess.Popen; assert env kwarg has BuildKit set AND
     preserves a sentinel env var the caller has in os.environ.
     """
-    from wfc import docker_runner
+    from wfc.environments import docker as docker_runner
 
     # Plant a sentinel in os.environ so we can verify it survived the merge.
     monkeypatch.setenv("WFC_TEST_SENTINEL", "preserved")
 
     captured = {}
-
-    def fake_popen(cmd, env=None, **kwargs):
-        captured["cmd"] = cmd
-        captured["env"] = env
-        return _FakePopen(returncode=0)
-
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    fake_docker_build_process(monkeypatch, returncode=0, captured=captured)
 
     docker_runner.build(tmp_path, "myimage:tag")
 
@@ -68,13 +64,10 @@ def test_docker_build_raises_runtimeerror_on_nonzero(monkeypatch, tmp_path):
     """Non-zero docker exit must raise RuntimeError with the build-output
     tail surfaced (the real error text, not a wrapped CalledProcessError).
     """
-    from wfc import docker_runner
+    from wfc.environments import docker as docker_runner
 
     output = "#4 [2/3] COPY app /app\nCOPY failed: file not found\n"
-    monkeypatch.setattr(
-        subprocess, "Popen",
-        lambda cmd, env=None, **kwargs: _FakePopen(returncode=1, output=output),
-    )
+    fake_docker_build_process(monkeypatch, returncode=1, output=output)
 
     with pytest.raises(RuntimeError, match="COPY failed"):
         docker_runner.build(tmp_path, "myimage:tag")
@@ -96,6 +89,6 @@ def test_docker_build_raises_runtimeerror_on_nonzero(monkeypatch, tmp_path):
     ],
 )
 def test_parse_build_step(line, expected):
-    from wfc.docker_runner import _parse_build_step
+    from wfc.environments.docker import _parse_build_step
 
     assert _parse_build_step(line) == expected

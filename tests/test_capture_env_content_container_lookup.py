@@ -1,11 +1,12 @@
-"""resolve_env_fingerprint manifest-lookup branch is subprocess- and write-free.
+"""resolve_env_fingerprint answers only from a registered container env.
 
-US-4 acceptance: when env_spec resolves to a manifest entry with a non-empty
-``container`` field, resolve_env_fingerprint returns the precomputed
-``env_fingerprint`` verbatim with no subprocess invocation and no cache
-write (re-storing the fingerprint string would hash the hash). All other
-specs go through capture_env_content + store_env_content, whose behavior
-is pinned here too.
+When env_spec names a manifest entry with a non-empty ``container``
+field, resolve_env_fingerprint returns the precomputed ``env_fingerprint``
+verbatim with no subprocess invocation and no cache write (re-storing the
+fingerprint string would hash the hash). Any other name is refused before
+anything is captured or stored: the error names the env as not registered
+and points at ``wfc register-env``. capture_env_content's
+``container:<image>@sha256:<hex>`` precompute path is pinned here too.
 """
 from __future__ import annotations
 
@@ -13,6 +14,9 @@ import json
 from pathlib import Path
 
 import pytest
+
+from tests.fixtures.fakes import fake_subprocess_run, refusing_process
+from axiom_annotations import workflow
 
 
 def _write_manifest(project_dir: Path, name: str, container: str, fingerprint: str) -> None:
@@ -42,18 +46,13 @@ def test_container_lookup_returns_precomputed_fingerprint_no_subprocess(tmp_path
     """
     import subprocess as _sp
 
-    from wfc.version import resolve_env_fingerprint
-
+    from wfc.environments.fingerprint import resolve_env_fingerprint
     fingerprint = "deadbeef" * 8
     container = "docker://ghcr.io/dante/image-io@sha256:" + ("a" * 64)
     _write_manifest(tmp_path, "image-io", container, fingerprint)
 
-    def boom(*args, **kwargs):
-        raise AssertionError(
-            "subprocess.run must not be called for container-env runtime lookup"
-        )
-
-    monkeypatch.setattr(_sp, "run", boom)
+    fake_subprocess_run(monkeypatch, refusing_process(
+        "subprocess.run must not be called for container-env runtime lookup"))
 
     result = resolve_env_fingerprint("image-io", tmp_path)
     assert result == fingerprint
@@ -61,81 +60,48 @@ def test_container_lookup_returns_precomputed_fingerprint_no_subprocess(tmp_path
 
 
 def test_container_spec_string_branch_still_works(tmp_path):
-    """Regression: the existing ``container:<image>@sha256:<hex>`` spec-string
-    branch (Cycle C precompute write path) is unchanged by the new lookup
-    branch."""
-    from wfc.version import capture_env_content
-
+    """The ``container:<image>@sha256:<hex>`` spec-string branch (precompute
+    write path) captures a container blob, independent of the manifest
+    lookup branch."""
+    from wfc.environments.fingerprint import capture_env_content
     (tmp_path / ".wfc").mkdir()
     spec = "container:image-io@sha256:" + ("a" * 64)
-    blob = capture_env_content(spec, tmp_path)
+    blob = capture_env_content(spec)
     parsed = json.loads(blob)
     assert parsed["type"] == "container"
 
 
-def test_pixi_branch_still_calls_subprocess(tmp_path, monkeypatch):
-    """Regression: pixi env spec MUST still shell out — only container
-    envs short-circuit. We assert this by patching subprocess.run with a
-    sentinel and confirming the call happens (we then short-circuit the
-    rest with an early raise to avoid running real pixi)."""
+@workflow(purpose="A name with no registered container env (deleted from the "
+                  "manifest after its method registered, or recorded without a "
+                  "container) is refused: the error names the env as not "
+                  "registered and points at `wfc register-env`, with no capture "
+                  "subprocess and no cache write")
+def test_fingerprint_refuses_a_name_with_no_registered_container_env(tmp_path, monkeypatch):
+    """Both kinds of unregistered name get the same refusal."""
     import subprocess as _sp
 
-    from wfc import version as version_mod
-
-    called = {"count": 0}
-
-    # We don't have a real pixi env, so we instead patch the helpers used
-    # by the pixi branch to raise a specific error, then assert that the
-    # container-lookup branch did NOT swallow the call. The signal is that
-    # capture_env_content raises (not silently returns).
-    def fake_lock(*args, **kwargs):
-        called["count"] += 1
-        raise RuntimeError("pixi-branch reached")
-
-    # capture_env_content does ``from .env_introspect import pixi_lock_section``
-    # inside the function body, so patch the source module.
-    from wfc import env_introspect as _ei
-    monkeypatch.setattr(_ei, "pixi_lock_section", fake_lock, raising=True)
-    # Make read_config return a sensible pixi_root so we reach pixi_lock_section.
-    monkeypatch.setattr(
-        "wfc.init.read_config",
-        lambda d: {"pixi_root": str(tmp_path), "conda_root": ""},
-    )
-
-    (tmp_path / ".wfc").mkdir()
-    with pytest.raises(RuntimeError, match="pixi-branch reached"):
-        version_mod.capture_env_content("pixi:image-io", tmp_path)
-    assert called["count"] == 1
-
-
-def test_manifest_lookup_falls_through_when_container_field_absent(tmp_path):
-    """A manifest entry MUST have ``container`` set non-empty for the
-    short-circuit to fire. Manifest entry with no container → fall through
-    to capture_env_content's dispatch (which will raise ValueError for the
-    bare name because it's not a typed backend spec)."""
-    from wfc.version import resolve_env_fingerprint
-
-    # Write a manifest entry with container="" so the lookup branch skips.
+    from wfc.environments.fingerprint import resolve_env_fingerprint
     _write_manifest(tmp_path, "broken-env", container="", fingerprint="x" * 64)
-    # The bare name "broken-env" is not a typed backend (pixi:/conda:/container:),
-    # so we expect the existing unknown-backend ValueError.
-    with pytest.raises(ValueError, match="Unknown env backend"):
-        resolve_env_fingerprint("broken-env", tmp_path)
+
+    fake_subprocess_run(monkeypatch, refusing_process(
+        "an unregistered env must be refused without a capture subprocess"))
+
+    # "deleted-env" has no record at all; "broken-env" has one with no container.
+    for name in ("deleted-env", "broken-env"):
+        with pytest.raises(ValueError, match="not registered") as excinfo:
+            resolve_env_fingerprint(name, tmp_path)
+        message = str(excinfo.value)
+        assert name in message
+        assert "wfc register-env" in message
+    assert not (tmp_path / ".dvc").exists()
 
 
-def test_resolve_direct_ref_spec_equals_capture_plus_store(tmp_path):
-    """Typed specs are unaffected by the manifest short-circuit: for a
-    direct-ref container spec, resolve_env_fingerprint returns exactly
-    store_env_content(capture_env_content(...)) — cache keys preserved."""
-    from wfc.version import (
-        capture_env_content,
-        resolve_env_fingerprint,
-        store_env_content,
-    )
-
+def test_fingerprint_surfaces_an_unreadable_manifest(tmp_path):
+    """A manifest that cannot be read raises its own error, naming the
+    file, rather than reporting the env as unregistered."""
+    from wfc.environments.fingerprint import resolve_env_fingerprint
     (tmp_path / ".wfc").mkdir()
-    spec = "container:image-io@sha256:" + ("a" * 64)
+    (tmp_path / ".wfc" / "envs.json").write_text("{not json")
+    with pytest.raises(ValueError, match="envs.json: not valid JSON"):
+        resolve_env_fingerprint("image-io", tmp_path)
 
-    resolved = resolve_env_fingerprint(spec, tmp_path)
-    expected = store_env_content(capture_env_content(spec, tmp_path), tmp_path)
-    assert resolved == expected

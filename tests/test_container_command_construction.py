@@ -1,6 +1,6 @@
-"""Tier 1 tests: container_runner argv assembly is pure and deterministic.
+"""Tier 1 tests: the container argv builders are pure and deterministic.
 
-Covers the boundary discipline encoded in ``wfc.container_runner``:
+Covers the boundary discipline encoded in ``wfc.environments.argv``:
 
   - ``build_docker_command`` emits the exact ``docker run --rm --user
     <uid>:<gid>`` argv shape, including the two bind-mounts
@@ -11,9 +11,8 @@ Covers the boundary discipline encoded in ``wfc.container_runner``:
     ``--bind`` flags, ``--pwd /work``, optional ``--nv``, and never a
     ``--user`` flag (user namespaces handle UID/GID on cluster nodes).
 
-These are forward-port hooks: the cycle ships Apptainer with full unit
-coverage even though no v1 caller invokes it (ADR-019 amendment 2026-05-17
-carved cluster dispatch out of v1).
+The Apptainer builder has full unit coverage even though no caller invokes
+it: dispatch rejects the cluster executor (``executor=slurm``).
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from wfc.container_runner import build_apptainer_command, build_docker_command
+from wfc.environments.argv import build_apptainer_command, build_docker_command
 
 
 IMAGE_REF = "ghcr.io/dante/image-io@sha256:" + ("a" * 64)

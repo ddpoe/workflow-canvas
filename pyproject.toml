@@ -1,14 +1,45 @@
 [tool.poetry]
 name = "workflow-canvas"
-version = "0.5.0"
-description = "Workflow Canvas — DB + wfc CLI + Snakemake execution"
+version = "0.6.0"
+description = "Reproducible computational pipelines with containerized methods, content-addressed caching, run lineage, and a visual pipeline builder; compiles to Snakemake"
 authors = ["Dante <dantepoe@noboundssolutions.com>"]
 license = "BSD-3-Clause"
+readme = "README.md"
+homepage = "https://workflow-canvas.readthedocs.io"
+documentation = "https://workflow-canvas.readthedocs.io"
+repository = "https://github.com/ddpoe/workflow-canvas"
+keywords = [
+  "workflow",
+  "pipeline",
+  "reproducibility",
+  "provenance",
+  "lineage",
+  "snakemake",
+  "dvc",
+  "containers",
+  "bioinformatics",
+  "scientific-computing",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Environment :: Web Environment",
+  "Intended Audience :: Science/Research",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Topic :: Scientific/Engineering",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+  "Topic :: System :: Distributed Computing",
+]
 packages = [{include = "wfc"}]
 include = [
   { path = "wfc/canvas/static/dist/**/*", format = ["sdist", "wheel"] },
   { path = "wfc/demo/assets/**/*", format = ["sdist", "wheel"] }
 ]
+
+[tool.poetry.urls]
+Changelog = "https://github.com/ddpoe/workflow-canvas/blob/main/CHANGELOG.md"
+Issues = "https://github.com/ddpoe/workflow-canvas/issues"
 
 [tool.poetry.dependencies]
 python = ">=3.11,<3.13"
@@ -21,26 +52,41 @@ pyarrow = ">=14.0"
 axiom-annotations = "^0.1.0"
 dvc = "^3.67.1"
 wfc-client = ">=0.1.0,<0.2.0"
+# The canvas is a default dependency: `pip install workflow-canvas` then
+# `wfc canvas` works.
+fastapi = ">=0.110"
+uvicorn = {version = ">=0.27", extras = ["standard"]}
+psutil = ">=5.9"
+# DVC's remote plugins, each behind its own extra (a local remote needs none).
+dvc-s3 = {version = "*", optional = true}
+dvc-ssh = {version = "*", optional = true}
+dvc-gs = {version = "*", optional = true}
+dvc-azure = {version = "*", optional = true}
+
+[tool.poetry.extras]
+s3 = ["dvc-s3"]
+ssh = ["dvc-ssh"]
+gcs = ["dvc-gs"]
+azure = ["dvc-azure"]
+remotes = ["dvc-s3", "dvc-ssh", "dvc-gs", "dvc-azure"]
 
 [tool.poetry.group.dev.dependencies]
-axiom-graph = {version = "^2.1.1", extras = ["viz", "js"]}
+axiom-graph = {version = "^2.4.1", extras = ["viz", "js"]}
 pytest = ">=9.0.2,<10"
 pytest-html = ">=4.0"
 mkdocs = "^1.6.1"
 mkdocs-material = "^9.7.6"
 matplotlib = "^3.10.8"
-
-[tool.poetry.group.api.dependencies]
-fastapi = ">=0.110"
-uvicorn = {version = ">=0.27", extras = ["standard"]}
-psutil = ">=5.9"
+moto = {version = ">=5.0", extras = ["server"]}
 
 [tool.poetry.group.docs.dependencies]
 sphinx = ">=8.0,<9.0"
-sphinx-rtd-theme = ">=2.0"
+sphinx-book-theme = ">=1.1"
 sphinx-design = ">=0.6"
 sphinxcontrib-mermaid = ">=1.0"
 myst-parser = "^5.1.0"
+sphinx-sitemap = ">=2.6"
+sphinxext-opengraph = ">=0.9"
 
 [tool.poetry.scripts]
 workflow-canvas = "wfc.__main__:main"
@@ -52,9 +98,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["tests/e2e"]
 markers = [
-    "e2e: end-to-end feature specification tests",
     "slow: tests that invoke real subprocesses",
     "integration: marks tests as requiring Docker (deselect with -m 'not integration')",
 ]

@@ -8,7 +8,7 @@
  * elapsed since the previous call.  The final frame is repeated
  * (terminal sticks) for any further polling.
  *
- * ADR-015 Phase D Pass 2: an optional `sseStream` fixture lets the
+ * An optional `sseStream` fixture lets the
  * SSE log-streaming endpoint be replayed event-by-event with delayMs
  * pacing.  Playwright's `route.fulfill()` cannot stream a body, so
  * paced delivery is implemented in the page context: an init-script
@@ -170,7 +170,7 @@ export async function setupRouteReplay(
     await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
   });
 
-  // Cancel endpoint (Pass 2): default mock acknowledges the cancel.  Spec
+  // Cancel endpoint: default mock acknowledges the cancel.  Spec
   // assertions can intercept this route to count calls.
   await page.route('**/api/workflow/cancel/**', async (route: Route) => {
     await route.fulfill({
@@ -190,7 +190,6 @@ export async function setupRouteReplay(
         body: JSON.stringify({
           job_id: jobId,
           overall_status: 'running',
-          steps: {},
           node_states: {},
           thread_alive: true,
           log: '',

@@ -1,4 +1,4 @@
-# Contract for the demo `label` method:
+# Contract for the demo `__demo__label` method:
 #   inputs.data      <-> ctx.input("data")
 #   outputs.labeled  <-> ctx.save_artifact("labeled", ...)
 #   params.*         <-> ctx.params[...]  (threshold is required — the demo
@@ -8,7 +8,7 @@ inputs:
   data:
     type: .csv
     required: true
-    description: "Quality-filtered cells from filter_cells"
+    description: "Quality-filtered cells from __demo__filter_cells"
 
 outputs:
   labeled:
@@ -28,4 +28,4 @@ params:
     description: "Name of the added label column"
 
 executor: local
-env: container:__demo__env
+env: __demo__env

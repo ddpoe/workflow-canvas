@@ -18,15 +18,14 @@ from sqlmodel import select
 
 from axiom_annotations import workflow, Step
 
-from wfc.cli import run_pipeline
-from wfc.database import get_session
-from wfc.models import Run, RunOutput
+from wfc.execution import run_pipeline
+from wfc.persistence import get_session, Run, RunOutput
 from tests.fixtures.conftest import create_sample_csv as _create_sample_csv
 from tests.conftest import requires_docker
 
 WFC_ROOT = Path(__file__).resolve().parent.parent.parent
 
-# ADR-019 Cycle H: these tests execute pipelines end-to-end through the
+# these tests execute pipelines end-to-end through the
 # container dispatch path (register_fixture_methods builds a real image).
 # Deselected from the default suite (integration) and skipped without Docker.
 pytestmark = [pytest.mark.integration, requires_docker]
@@ -38,9 +37,9 @@ def _find_run_output_path(
     sample: str,
     output_name: str,
 ) -> Path:
-    """Locate RunOutput.artifact_path (ADR-018: workspace is gone)."""
+    """Locate a node's output through its RunOutput.artifact_path."""
     # Join Method.name -- Run.nf_process_name may not be tagged with node_id.
-    from wfc.models import Method
+    from wfc.persistence import Method
     with get_session() as session:
         stmt = (
             select(RunOutput, Run, Method)
@@ -107,7 +106,7 @@ def test_input_selector_pipeline(pipeline_factory, register_fixture_methods):
     s = Step(
         step_num=3,
         name="Verify output exists for selected sample",
-        purpose="ADR-018: sentinel + RunOutput row for transform_1 / sel_sample",
+        purpose="sentinel + RunOutput row for transform_1 / sel_sample",
     )
     sentinels = list(project_dir.rglob(".runs/sentinels/*/transform_1/sel_sample/default/.complete"))
     assert len(sentinels) == 1, f"Expected 1 sentinel for sel_sample, found {len(sentinels)}"
@@ -151,8 +150,8 @@ def test_run_reference_pipeline(pipeline_factory, register_fixture_methods):
     """Run reference provides a prior run's output as input to a downstream step.
 
     Pipeline: input_selector -> transform (run 1) -> FINISH,
-    then run_reference(pointing to transform output) -> transform_2.
-    The run_reference node's output_path points directly to the prior output.
+    then run_reference(naming the transform run) -> transform_2.
+    The reference names the run; its outgoing link names the output.
     """
     project_dir = register_fixture_methods
 
@@ -184,23 +183,36 @@ def test_run_reference_pipeline(pipeline_factory, register_fixture_methods):
         archive=False,
     )
 
-    # ADR-018: find the transform output via RunOutput row (workspace is gone)
+    # find the transform output via its RunOutput row
     prior_output = _find_run_output_path(
         nf_process_name="transform", sample="ref_sample", output_name="output.csv",
     )
     assert prior_output.exists(), f"Initial transform output missing: {prior_output}"
 
+    # Resolve the prior run's DB id so the run_reference below points at it by
+    # run_id — the production Canvas shape. generate_snakefile then DB-resolves
+    # the artifact path through resolve_run_reference_outputs, and the link's
+    # source slot picks which of the run's outputs feeds the consumer.
+    from wfc.persistence import Method
+    with get_session() as session:
+        prior_run = session.exec(
+            select(Run)
+            .join(Method, Run.method_id == Method.id)
+            .where(Method.name == "transform")
+            .where(Run.sample == "ref_sample")
+        ).all()[-1]
+        prior_run_id = prior_run.id
+
     s = Step(
         step_num=2,
         name="Build pipeline with run reference",
-        purpose="Create a pipeline where run_reference points to the prior transform output",
+        purpose="Create a pipeline where run_reference points to the prior transform run by id",
     )
     pipeline_path = pipeline_factory(
         name="runref",
         nodes=[
             {"id": "runref_1", "type": "run_reference",
-             "run_id": "", "output_slot": "output",
-             "output_path": str(prior_output)},
+             "run_id": str(prior_run_id)},
             {"id": "transform_2", "method": "transform", "module": "test_pipeline",
              "params": {"suffix": "_ref"}},
         ],
@@ -209,7 +221,7 @@ def test_run_reference_pipeline(pipeline_factory, register_fixture_methods):
             # --ref-input data=<path> rather than --ref-input run_ref_0=<path>
             # (transform's method.yaml declares its input slot as "data").
             {"source": "runref_1", "target": "transform_2",
-             "target_slot": "data"},
+             "source_slot": "output", "target_slot": "data"},
         ],
         samples=["ref_sample"],
     )
@@ -262,34 +274,72 @@ def test_run_reference_pipeline(pipeline_factory, register_fixture_methods):
 
 
 # =============================================================================
-# Negative/edge (US-6)
+# Negative/edge
 # =============================================================================
 
 @workflow(
-    purpose="Negative/edge: run_reference pointing at a missing output_path FAILs the pipeline",
+    purpose="Negative/edge: a run_reference whose recorded artifact is gone from disk FAILs the pipeline",
 )
 def test_run_reference_bad_path_fails(pipeline_factory, register_fixture_methods):
-    """A run_reference whose output_path does not exist must fail, not silently
+    """A reference to a run whose recorded file is gone must fail, not silently
     feed an empty/garbage input downstream.
 
-    The reference points at a path that was never produced. The runtime must
-    refuse to resolve it — wrong bytes (or no bytes) are never served as if valid.
+    The referenced run really happened and its output record still names the
+    file it wrote; the file itself is then removed. The runtime must refuse
+    to resolve it — wrong bytes (or no bytes) are never served as if valid.
     """
     project_dir = register_fixture_methods
     _create_sample_csv(project_dir, "bad_ref_sample", num_rows=3)
 
-    missing_path = str(project_dir / "does_not_exist" / "phantom.csv")
+    initial_pipeline_path = pipeline_factory(
+        name="bad_ref_initial",
+        nodes=[
+            {"id": "selector_1", "type": "input_selector",
+             "samples": ["bad_ref_sample"]},
+            {"id": "transform_1", "method": "transform", "module": "test_pipeline",
+             "params": {"suffix": "_init"}},
+        ],
+        links=[
+            {"source": "selector_1", "target": "transform_1"},
+        ],
+        samples=[],
+    )
+    run_pipeline(
+        pipeline_path=str(initial_pipeline_path),
+        project_root=str(project_dir),
+        wfc_root=str(WFC_ROOT),
+        cores=1,
+        archive=False,
+    )
+
+    prior_output = _find_run_output_path(
+        nf_process_name="transform", sample="bad_ref_sample",
+        output_name="output.csv",
+    )
+    from wfc.persistence import Method
+    with get_session() as session:
+        prior_run = session.exec(
+            select(Run)
+            .join(Method, Run.method_id == Method.id)
+            .where(Method.name == "transform")
+            .where(Run.sample == "bad_ref_sample")
+        ).all()[-1]
+        prior_run_id = prior_run.id
+
+    # The record stays; the file it names does not.
+    prior_output.unlink()
+
     pipeline_path = pipeline_factory(
         name="badref",
         nodes=[
             {"id": "runref_1", "type": "run_reference",
-             "run_id": "", "output_slot": "output",
-             "output_path": missing_path},
+             "run_id": str(prior_run_id)},
             {"id": "transform_2", "method": "transform", "module": "test_pipeline",
              "params": {"suffix": "_ref"}},
         ],
         links=[
-            {"source": "runref_1", "target": "transform_2", "target_slot": "data"},
+            {"source": "runref_1", "target": "transform_2",
+             "source_slot": "output", "target_slot": "data"},
         ],
         samples=["bad_ref_sample"],
     )
@@ -345,7 +395,7 @@ def test_input_selector_empty_samples(pipeline_factory, register_fixture_methods
         pass  # acceptable: nothing-to-run is allowed to surface as an error
 
     with get_session() as session:
-        from wfc.models import Method
+        from wfc.persistence import Method
         rows = session.exec(
             select(RunOutput)
             .join(Run, RunOutput.run_id == Run.id)

@@ -1,4 +1,4 @@
-"""wfc-client — pure-stdlib Tier-1 sugar for writing wfc methods.
+"""wfc-client — Tier-1 sugar for writing wfc methods.
 
 Usage::
 
@@ -15,8 +15,9 @@ Usage::
         wfc.run()
 
 This package is a strict subset focused on the canonical Tier-2 env-var +
-file contract (ADR-020). It has zero third-party dependencies and never
-imports the full ``wfc`` package, pandas, or sqlmodel. It is a metadata
+file contract (ADR-020). It carries one small dependency,
+``axiom-annotations`` (the workflow markers), and never imports the full
+``wfc`` package, pandas, or sqlmodel. It is a metadata
 recorder: it never copies, reads, or serializes your data bytes.
 """
 

@@ -1,12 +1,12 @@
 """
-Regression tests for project-root resolution (bug: wfc subprocesses inherit
-foreign cwd from Snakemake under Windows UNC paths and try to mkdir
-``C:\\Windows\\.wfc``).
+Tests for project-root resolution.
 
-The fix introduces ``wfc.database.project_root()``: an explicit resolver that
-prefers ``WFC_PROJECT_ROOT`` env var, falls back to walking upward for the
-``.wfc/wf-canvas.toml`` marker, and raises if neither succeeds. ``_default_db_url``
-and ``runs_dir`` route through it instead of ``Path.cwd()``.
+wfc subprocesses can inherit a foreign cwd from Snakemake (under Windows UNC
+paths it is ``C:\\Windows``), so no project path may be derived from the cwd.
+``wfc.persistence.project_root()`` is the explicit resolver: it prefers the
+``WFC_PROJECT_ROOT`` env var, falls back to walking upward for the
+``.wfc/wf-canvas.toml`` marker, and raises if neither succeeds.
+``_default_db_url`` routes through it, never through ``Path.cwd()``.
 """
 
 import os
@@ -16,12 +16,17 @@ from pathlib import Path
 
 import pytest
 
-from wfc.database import (
+from tests.fixtures.fakes import (
+    stub_cache_writers,
+    stub_dvc_setup,
+    stub_sample_health_loader,
+)
+
+from wfc.persistence import (
     project_root,
-    _default_db_url,
-    runs_dir,
     reset_engine,
 )
+from wfc.persistence.engine import _default_db_url
 
 
 def _make_project(root: Path) -> Path:
@@ -36,7 +41,7 @@ def _make_project(root: Path) -> Path:
 
 @pytest.fixture(autouse=True)
 def _clear_env(monkeypatch):
-    """Each test starts with a clean env — no inherited PM_* / DATABASE_URL."""
+    """Each test starts with a clean env — no inherited WFC_PROJECT_ROOT / DATABASE_URL."""
     monkeypatch.delenv("WFC_PROJECT_ROOT", raising=False)
     monkeypatch.delenv("DATABASE_URL", raising=False)
     reset_engine()
@@ -89,12 +94,12 @@ class TestProjectRootResolver:
 
 
 # =============================================================================
-# _default_db_url and runs_dir route through project_root
+# _default_db_url routes through project_root
 # =============================================================================
 
 class TestDatabaseRoutesThroughProjectRoot:
     def test_default_db_url_uses_project_root_not_cwd(self, tmp_path, monkeypatch):
-        """The exact bug: cwd is foreign (e.g. C:\\Windows under cmd.exe UNC
+        """cwd is foreign (e.g. C:\\Windows under cmd.exe UNC
         rejection), but WFC_PROJECT_ROOT points at the real project. The DB URL
         must point inside the project, and no stray .wfc/ may appear under cwd.
         """
@@ -111,34 +116,21 @@ class TestDatabaseRoutesThroughProjectRoot:
         assert not (foreign / ".wfc").exists(), \
             "must not create .wfc/ under foreign cwd"
 
-    def test_runs_dir_uses_project_root_not_cwd(self, tmp_path, monkeypatch):
-        proj = _make_project(tmp_path / "real_project")
-        foreign = tmp_path / "foreign_cwd"
-        foreign.mkdir()
-        monkeypatch.chdir(foreign)
-        monkeypatch.setenv("WFC_PROJECT_ROOT", str(proj))
-
-        d = runs_dir()
-
-        assert d == proj.resolve() / ".runs"
-        assert d.exists()
-        assert not (foreign / ".runs").exists()
-
 
 # =============================================================================
 # End-to-end: real subprocess inherits foreign cwd + WFC_PROJECT_ROOT
 # =============================================================================
 
 class TestCLIRoutesThroughProjectRoot:
-    """Regression for the second wave of the UNC-cwd bug: wfc.cli functions
-    computed their own `project_root = Path.cwd()` and passed that into the
+    """The functions behind CLI commands resolve the project root through
+    wfc.persistence.project_root(), never Path.cwd(), before handing it to the
     DVC/provenance layer. On Windows-UNC-cmd.exe scenarios cwd is C:\\Windows,
-    which caused `wfc restore-sample` to raise FileNotFoundError:
+    and a cwd-derived root makes `wfc restore-sample` fail with
     'No wfc project found at C:\\Windows'.
 
     These tests simulate the scenario by chdir-ing to a foreign tmp directory
     and setting WFC_PROJECT_ROOT to point at the real project, then verifying
-    that the cli functions resolve the project root via wfc.database.project_root()
+    that the functions resolve the project root via wfc.persistence.project_root()
     and hand the real path to the layers they delegate to.
     """
 
@@ -156,10 +148,8 @@ class TestCLIRoutesThroughProjectRoot:
     ):
         """restore_sample must pass the real project_root — not Path.cwd() —
         into provenance.restore_from_cache / pull_cache."""
-        from unittest.mock import patch
-        from wfc.models import Sample
-        from wfc.database import get_session
-        from wfc.cli import restore_sample
+        from wfc.persistence import Sample, get_session
+        from wfc.storage import restore_sample
 
         proj, foreign = self._setup_foreign_cwd(tmp_path, monkeypatch)
 
@@ -167,7 +157,7 @@ class TestCLIRoutesThroughProjectRoot:
             session.add(Sample(
                 name="sample_x",
                 source_path="/orig/data.csv",
-                registered_path=str(proj / "data" / "samples" / "sample_x" / "data.csv"),
+                registered_path="data/samples/sample_x/data.csv",
                 file_type="csv",
                 registration_mode="copy",
                 content_hash="abc123",
@@ -180,8 +170,8 @@ class TestCLIRoutesThroughProjectRoot:
             seen_roots.append(project_root)
             return True
 
-        with patch("wfc.provenance.restore_from_cache", side_effect=fake_restore):
-            restore_sample(name="sample_x")
+        stub_cache_writers(monkeypatch, restore_from_cache=fake_restore)
+        restore_sample(name="sample_x")
 
         assert seen_roots, "restore_from_cache was not called"
         assert Path(seen_roots[0]).resolve() == proj.resolve()
@@ -190,18 +180,16 @@ class TestCLIRoutesThroughProjectRoot:
     def test_restore_sample_creates_sentinel_under_project_root(
         self, tmp_path, monkeypatch
     ):
-        """After a successful restore, wfc.cli.restore_sample must touch
+        """After a successful restore, wfc.storage.restore_sample must touch
         ``<project_root>/data/samples/<name>/.sample_ready`` so the Snakemake
         rule's declared output appears. The parent directory must be created
-        if missing (ADR-009 doesn't materialize data/samples/<name>/ eagerly).
+        if missing (init doesn't materialize data/samples/<name>/ eagerly).
 
-        This replaces the old inline ``python -c 'Path(...).touch()'`` in the
-        generated shell rule, which was cwd-dependent (broke under Windows UNC
-        cmd.exe cwd rewrites) and didn't mkparents."""
-        from unittest.mock import patch
-        from wfc.models import Sample
-        from wfc.database import get_session
-        from wfc.cli import restore_sample
+        Writing the sentinel here, from the resolved project root, keeps it
+        independent of the shell rule's cwd, which Windows UNC cmd.exe
+        rewrites."""
+        from wfc.persistence import Sample, get_session
+        from wfc.storage import restore_sample
 
         proj, foreign = self._setup_foreign_cwd(tmp_path, monkeypatch)
 
@@ -209,7 +197,7 @@ class TestCLIRoutesThroughProjectRoot:
             session.add(Sample(
                 name="sample_sentinel",
                 source_path="/orig/data.csv",
-                registered_path=str(proj / "data" / "samples" / "sample_sentinel" / "data.csv"),
+                registered_path="data/samples/sample_sentinel/data.csv",
                 file_type="csv",
                 registration_mode="copy",
                 content_hash="abc123",
@@ -223,8 +211,9 @@ class TestCLIRoutesThroughProjectRoot:
             "parent dir must not pre-exist — restore_sample is required to mkparents"
         )
 
-        with patch("wfc.provenance.restore_from_cache", return_value=True):
-            restore_sample(name="sample_sentinel")
+        stub_cache_writers(monkeypatch,
+                           restore_from_cache=lambda *a, **k: True)
+        restore_sample(name="sample_sentinel")
 
         assert expected_sentinel.exists(), (
             f"sentinel not created at expected path {expected_sentinel}"
@@ -237,9 +226,8 @@ class TestCLIRoutesThroughProjectRoot:
         self, tmp_path, monkeypatch
     ):
         """register_sample's default project_root must come from
-        wfc.database.project_root(), not Path.cwd()."""
-        from unittest.mock import patch
-        from wfc.cli import register_sample
+        wfc.persistence.project_root(), not Path.cwd()."""
+        from wfc.registration import register_sample
 
         proj, foreign = self._setup_foreign_cwd(tmp_path, monkeypatch)
         src = tmp_path / "input.csv"
@@ -251,24 +239,20 @@ class TestCLIRoutesThroughProjectRoot:
             seen_roots.append(project_root)
             raise SystemExit(0)  # bail out — we only care about the root arg
 
-        with patch("wfc.provenance.ensure_dvc_ready", side_effect=fake_ensure_dvc_ready):
-            with pytest.raises(SystemExit):
-                register_sample(name="sample_y", source_path=src)
+        stub_dvc_setup(monkeypatch, ensure_ready=fake_ensure_dvc_ready)
+        with pytest.raises(SystemExit):
+            register_sample(name="sample_y", source_path=src)
 
         assert seen_roots, "ensure_dvc_ready was not called"
         assert Path(seen_roots[0]).resolve() == proj.resolve()
-
-    # ADR-018: restore_output deleted (cache is authoritative; resolve_input
-    # returns the cache path directly).  The equivalent project-root contract
-    # is exercised in tests/test_resolve.py.
 
 
 @pytest.mark.slow
 def test_subprocess_with_foreign_cwd_honors_env_var(tmp_path):
     """Spawn a real python subprocess with cwd=foreign tempdir and
-    WFC_PROJECT_ROOT=real project. Importing wfc.database and calling
+    WFC_PROJECT_ROOT=real project. Importing wfc.persistence and calling
     _default_db_url must use the project, not cwd. Mirrors the Snakemake
-    shell-rule scenario from the bug report.
+    shell-rule scenario.
     """
     proj = _make_project(tmp_path / "real_project")
     foreign = tmp_path / "foreign_cwd"
@@ -279,8 +263,8 @@ def test_subprocess_with_foreign_cwd_honors_env_var(tmp_path):
     env.pop("DATABASE_URL", None)
 
     code = (
-        "from wfc.database import _default_db_url, runs_dir; "
-        "print(_default_db_url()); print(runs_dir())"
+        "from wfc.persistence.engine import _default_db_url; "
+        "print(_default_db_url())"
     )
     result = subprocess.run(
         [sys.executable, "-c", code],
@@ -294,6 +278,178 @@ def test_subprocess_with_foreign_cwd_honors_env_var(tmp_path):
     out = result.stdout.strip().splitlines()
     expected_db = (proj.resolve() / ".wfc" / "wfc.db")
     assert str(expected_db) in out[0]
-    assert str(proj.resolve() / ".runs") in out[1]
     assert not (foreign / ".wfc").exists()
-    assert not (foreign / ".runs").exists()
+
+
+# =============================================================================
+# use_project(): another project bound for a block
+# =============================================================================
+
+def test_use_project_binds_database_and_root_together_then_restores(
+    tmp_path, monkeypatch
+):
+    """Tier 1: inside ``use_project`` the process writes the other project's
+    database and resolves the other project's root; on exit it is back on the
+    project it held, with the same engine and none of the block's rows."""
+    from sqlmodel import Session, select
+
+    from wfc import layout
+    from wfc.persistence import (
+        Sample,
+        bootstrap_engine,
+        get_engine,
+        get_session,
+        use_project,
+    )
+
+    home = _make_project(tmp_path / "home").resolve()
+    other = _make_project(tmp_path / "other").resolve()
+    monkeypatch.setenv("WFC_PROJECT_ROOT", str(home))
+    home_engine = get_engine()
+
+    with use_project(other):
+        assert project_root() == other
+        with get_session() as session:
+            session.add(Sample(
+                name="s1", source_path="s1.csv",
+                registered_path="data/samples/s1/s1.csv", file_type="csv",
+            ))
+            session.commit()
+
+    assert project_root() == home
+    assert get_engine() is home_engine
+    with get_session() as session:
+        assert session.exec(select(Sample)).all() == []
+    other_engine = bootstrap_engine(layout.database_url(other))
+    try:
+        with Session(other_engine) as session:
+            assert [s.name for s in session.exec(select(Sample))] == ["s1"]
+    finally:
+        other_engine.dispose()
+
+
+# =============================================================================
+# check_samples(): the rows and the files come from the SAME project
+# =============================================================================
+
+def test_check_samples_reads_the_rows_of_the_project_it_was_given(
+    tmp_path, monkeypatch
+):
+    """``check_samples(other)`` reports ``other``'s registry, not the process's.
+
+    Every other input the check has is path-resolved against its argument —
+    the config probe, and the cache-presence test each verdict turns on — so
+    reading rows from the process-bound engine paired one project's registry
+    with another project's files. ``wfc init`` builds the new project's
+    database through a one-off engine and disposes of it, leaving the process
+    bound wherever it was, so ``wfc init --dir <elsewhere>`` run from outside
+    a project reported on a database it had not created.
+
+    A row is written into one project's database to prove the later read
+    reached that database and not the other — the reason this module holds
+    its SAMPLE_ROW_ALLOWLIST entry.
+    """
+    from wfc import layout
+    from wfc.execution.readiness import check_samples
+    from wfc.persistence import Sample, bootstrap_engine, get_session
+
+    home = _make_project(tmp_path / "home").resolve()
+    other = _make_project(tmp_path / "other").resolve()
+    monkeypatch.setenv("WFC_PROJECT_ROOT", str(home))
+
+    with get_session() as session:
+        session.add(Sample(
+            name="home_s", source_path="home_s.csv",
+            registered_path="data/samples/home_s/home_s.csv",
+            file_type="csv", content_hash="a" * 32,
+        ))
+        session.commit()
+    bootstrap_engine(layout.database_url(other)).dispose()
+
+    assert "1 registered" in check_samples(home).message
+
+    result = check_samples(other)
+    assert "No samples registered" in result.message, (
+        "check_samples(other) reported the process-bound project's rows; the "
+        f"row source and the path source must be the same project. Got: {result}"
+    )
+    assert result.status == "ok", result
+
+
+def test_check_samples_outside_a_project_fails_and_touches_nothing(
+    tmp_path, monkeypatch
+):
+    """No project, no registry to read, and no database created on the way out."""
+    from wfc.execution.readiness import check_samples
+
+    home = _make_project(tmp_path / "home").resolve()
+    monkeypatch.setenv("WFC_PROJECT_ROOT", str(home))
+    bare = tmp_path / "bare"
+    bare.mkdir()
+
+    result = check_samples(bare)
+
+    assert result.status == "fail", result
+    assert "No wfc project here" in result.message
+    assert "wfc init" in result.fix_hint
+    assert not (bare / ".wfc").exists()
+
+
+def test_check_samples_reports_a_missing_registry_rather_than_creating_one(
+    tmp_path, monkeypatch
+):
+    """Binding the project must not make a health check create the database.
+
+    ``use_project`` bootstraps the schema, so binding unconditionally would
+    have the check CREATE the registry it came to report on and then call it
+    empty. The path is tested first and the absence is reported as it is.
+    """
+    from wfc import layout
+    from wfc.execution.readiness import check_samples
+
+    home = _make_project(tmp_path / "home").resolve()
+    monkeypatch.setenv("WFC_PROJECT_ROOT", str(home))
+    fresh = _make_project(tmp_path / "fresh").resolve()
+
+    result = check_samples(fresh)
+
+    assert result.status == "warn", result
+    assert "does not exist" in result.message
+    assert "wfc init" in result.fix_hint
+    assert not layout.db_path(fresh).exists(), (
+        "the check created the database it came to report on"
+    )
+
+
+def test_check_samples_warn_does_not_blame_a_database_that_is_fine(
+    tmp_path, monkeypatch
+):
+    """The failed-read hint must not send the user after a healthy file.
+
+    A read can fail while the database file is perfectly fine (here, a schema
+    mismatch), so the hint points at the raised message as the cause and names
+    the file only as what was read. A false accusation about a specific file
+    is worse than no hint at all.
+    """
+    from wfc import layout
+    from wfc.execution.readiness import check_samples
+    from wfc.persistence import bootstrap_engine
+
+
+    proj = _make_project(tmp_path / "proj").resolve()
+    bootstrap_engine(layout.database_url(proj)).dispose()
+    monkeypatch.setenv("WFC_PROJECT_ROOT", str(proj))
+
+    def _boom(session, project_dir):
+        raise RuntimeError("no such column: sample.push_status")
+
+    stub_sample_health_loader(monkeypatch, _boom)
+
+    result = check_samples(proj)
+
+    assert result.status == "warn", result
+    assert "no such column" in result.message
+    assert layout.db_path(proj).exists(), "the database file itself is fine"
+    assert "message above" in result.fix_hint, result.fix_hint
+    assert "names the failure" in result.fix_hint, result.fix_hint
+    assert str(layout.db_path(proj)) in result.fix_hint

@@ -1,14 +1,14 @@
-# Contract for the demo `plot` method:
+# Contract for the demo `__demo__plot` method:
 #   inputs.data     <-> ctx.input("data")
 #   outputs.figure  <-> ctx.save_artifact("figure", ...)  (a .png artifact)
 #   params.*        <-> ctx.params[...]
 # No threshold param on purpose: the figure colours by the label column the
-# upstream `label` method wrote.
+# upstream `__demo__label` method wrote.
 inputs:
   data:
     type: .csv
     required: true
-    description: "Labelled cells from label"
+    description: "Labelled cells from __demo__label"
 
 outputs:
   figure:
@@ -29,4 +29,4 @@ params:
     description: "Number of histogram bins"
 
 executor: local
-env: container:__demo__env
+env: __demo__env

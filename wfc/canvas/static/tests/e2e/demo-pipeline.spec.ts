@@ -1,5 +1,5 @@
 /**
- * Browser smoke (a) for the wfc demo cycle: `?pipeline=demo` paints the
+ * Browser smoke for the wfc demo: `?pipeline=demo` paints the
  * five-method demo pipeline with METHOD-SPECIFIC slots.
  *
  * The load path under test is App.svelte's demo branch: fetch
@@ -14,15 +14,24 @@ import { expect, test, type Page } from '@playwright/test';
 
 // Mirror of wfc/demo/assets/pipeline.json (inline: specs cannot read
 // package assets from the Vite server).
+//
+// The scaffold registers every demo entity under the reserved `__demo__`
+// prefix. It rewrites the five assets/methods/<name>/ directory names as it
+// registers them, but it copies THIS asset verbatim (shutil.copy2), so the
+// file on disk already carries the prefixed names. Mirror what the demo
+// *registers* — wfc/demo/scaffold.py::DEMO_METHODS — not what the asset
+// file says, or these assertions go green against a rendering the product
+// no longer produces. tests/test_demo_spec_mirror.py gates both this mirror
+// and the asset against that one oracle.
 const DEMO_PIPELINE = {
   name: 'demo',
   nodes: [
     { id: 'node_1', type: 'input_selector', method: '', module: '', params: {}, samples: ['__demo__ctrl_01', '__demo__treat_01', '__demo__treat_02'], source: 'registered', fan_mode: 'out', keep_going: true, position: { x: 40, y: 220 } },
-    { id: 'node_2', type: 'method', method: 'preprocess', module: '__demo__', params: { drop_na: true, value_column: 'intensity' }, position: { x: 300, y: 220 } },
-    { id: 'node_3', type: 'method', method: 'filter_cells', module: '__demo__', params: { min_quality: 0.5 }, position: { x: 560, y: 220 } },
-    { id: 'node_4', type: 'method', method: 'label', module: '__demo__', params: { threshold: 150, label_column: 'label' }, position: { x: 820, y: 220 } },
-    { id: 'node_5', type: 'method', method: 'summarize', module: '__demo__', params: { group_by: 'label' }, position: { x: 1080, y: 100 } },
-    { id: 'node_6', type: 'method', method: 'plot', module: '__demo__', params: { value_column: 'intensity', bins: 20 }, position: { x: 1080, y: 340 } },
+    { id: 'node_2', type: 'method', method: '__demo__preprocess', module: '__demo__', params: { drop_na: true, value_column: 'intensity' }, position: { x: 300, y: 220 } },
+    { id: 'node_3', type: 'method', method: '__demo__filter_cells', module: '__demo__', params: { min_quality: 0.5 }, position: { x: 560, y: 220 } },
+    { id: 'node_4', type: 'method', method: '__demo__label', module: '__demo__', params: { threshold: 150, label_column: 'label' }, position: { x: 820, y: 220 } },
+    { id: 'node_5', type: 'method', method: '__demo__summarize', module: '__demo__', params: { group_by: 'label' }, position: { x: 1080, y: 100 } },
+    { id: 'node_6', type: 'method', method: '__demo__plot', module: '__demo__', params: { value_column: 'intensity', bins: 20 }, position: { x: 1080, y: 340 } },
   ],
   links: [
     { source: 'node_1', target: 'node_2', sourceHandle: 'output', targetHandle: 'data' },
@@ -35,31 +44,35 @@ const DEMO_PIPELINE = {
 };
 
 // /api/modules raw shape (Sidebar.svelte transforms it into ModuleDef[]).
+// The method KEYS carry the `__demo__` prefix — they are the registered
+// names `loadPipeline` looks a node's `method` up by. The slot names inside
+// each method do NOT: slots are the method's contract, untouched by the
+// demo's namespacing.
 const MODULES = {
   __demo__: {
     description: 'Demo module',
     methods: {
-      preprocess: {
+      __demo__preprocess: {
         inputs: { data: { type: 'csv', required: true } },
         outputs: { clean: { type: 'csv' } },
         params_schema: { drop_na: { type: 'bool', default: true }, value_column: { type: 'str', default: 'intensity' } },
       },
-      filter_cells: {
+      __demo__filter_cells: {
         inputs: { data: { type: 'csv', required: true } },
         outputs: { filtered: { type: 'csv' } },
         params_schema: { min_quality: { type: 'float', required: true }, max_area: { type: 'float' } },
       },
-      label: {
+      __demo__label: {
         inputs: { data: { type: 'csv', required: true } },
         outputs: { labeled: { type: 'csv' } },
         params_schema: { threshold: { type: 'float', required: true }, label_column: { type: 'str', default: 'label' } },
       },
-      summarize: {
+      __demo__summarize: {
         inputs: { data: { type: 'csv', required: true } },
         outputs: { summary: { type: 'csv' } },
         params_schema: { group_by: { type: 'str', default: 'label' } },
       },
-      plot: {
+      __demo__plot: {
         inputs: { data: { type: 'csv', required: true } },
         outputs: { figure: { type: 'png' } },
         params_schema: { value_column: { type: 'str', default: 'intensity' }, bins: { type: 'int', default: 20 } },
@@ -90,7 +103,14 @@ test.describe('?pipeline=demo pre-wiring (smoke)', () => {
 
     // Six nodes total: input_selector + five methods.
     await expect(page.locator('.svelte-flow__node')).toHaveCount(6, { timeout: 15_000 });
-    for (const label of ['preprocess', 'filter_cells', 'label', 'summarize', 'plot']) {
+    // `loadPipeline` labels a method node after the document's `method`, and
+    // CustomNode renders that label verbatim — so the prefix is visible on
+    // the card. Asserting the bare names would still pass by substring, and
+    // would not notice the demo dropping the prefix.
+    for (const label of [
+      '__demo__preprocess', '__demo__filter_cells', '__demo__label',
+      '__demo__summarize', '__demo__plot',
+    ]) {
       await expect(page.locator('.svelte-flow__node', { hasText: label }).first()).toBeVisible();
     }
 

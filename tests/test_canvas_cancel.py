@@ -1,4 +1,4 @@
-"""ADR-015 Phase D Pass 2: backend cancel endpoint tests (US-6).
+"""Backend cancel endpoint tests.
 
 Covers:
 - ``cancel_pipeline()`` flips ``running`` rows to ``cancelled`` with the
@@ -23,6 +23,8 @@ Covers:
 """
 from __future__ import annotations
 
+from tests.conftest import pin_project_root
+
 import subprocess
 import sys
 import time
@@ -32,67 +34,74 @@ from pathlib import Path
 import psutil
 import pytest
 from fastapi.testclient import TestClient
-from sqlmodel import SQLModel, Session, create_engine, select
+from sqlmodel import Session, create_engine, select
 
-from wfc.canvas.server import app, _active_jobs
-from wfc.cli import cancel_pipeline
-from wfc.models import Run
+from wfc.canvas.server import app
+from wfc.canvas.state import _active_jobs
+from wfc.execution.lifecycle import cancel_pipeline
+from wfc.persistence import Run
 from tests.conftest import requires_docker
-from tests.fixtures.conftest import _write_fixture_env_manifest
+from tests.fixtures.conftest import (
+    FIXTURE_ENV_NAME,
+    create_sample_csv,
+    project_archive_dir,
+    write_env_record,
+)
+from tests.fixtures.routes import (
+    build_project_snapshot,
+    canvas_client,
+    claimed_run,
+    restore_project_snapshot,
+)
+from tests.harness import Scenario, node
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
+CANCEL_MODULE = "cancel_test_mod"
+CANCEL_METHOD = "cancel_test_method"
+CANCEL_SAMPLE = "s1"
 
-@pytest.fixture
-def db_engine(tmp_path, monkeypatch):
-    """In-memory SQLite engine with the Run table."""
-    db_path = tmp_path / ".wfc" / "wfc.db"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    url = f"sqlite:///{db_path}"
-    monkeypatch.setenv("DATABASE_URL", url)
 
-    from wfc.database import reset_engine
+@pytest.fixture(scope="module")
+def cancel_project(tmp_path_factory):
+    """The one-method project the cancel tests serve, built once by registration.
+
+    Yields:
+        The ``ProjectSnapshot``: the built project, its ``DATABASE_URL``,
+        the live database file and the pristine copy.
+    """
+    from wfc.persistence import reset_engine
+
+    root = tmp_path_factory.mktemp("canvas_cancel_project")
+    snapshot = build_project_snapshot(
+        Scenario(nodes=[node(CANCEL_METHOD, module=CANCEL_MODULE)],
+                 samples=[CANCEL_SAMPLE]),
+        root,
+    )
+    yield snapshot
     reset_engine()
 
-    engine = create_engine(url)
-    SQLModel.metadata.create_all(engine)
+
+@pytest.fixture
+def db_engine(cancel_project, monkeypatch):
+    """A pristine copy of the harness-built database, pinned for one test."""
+    from wfc.persistence import reset_engine
+
+    restore_project_snapshot(cancel_project, monkeypatch)
+
+    engine = create_engine(cancel_project.database_url)
     yield engine
+    engine.dispose()
+    reset_engine()
 
 
 @pytest.fixture
-def client(db_engine, tmp_path, monkeypatch):
-    monkeypatch.setenv("WFC_CANVAS_PROJECT_ROOT", str(tmp_path))
-    _active_jobs.clear()
-    return TestClient(app, raise_server_exceptions=False)
-
-
-def _seed_running_run(engine, pipeline_id: str) -> int:
-    """Insert a stub `running` Run row tied to ``pipeline_id``."""
-    with Session(engine) as session:
-        # Run requires method_id; create a fake one inline for these tests.
-        from wfc.models import Module, Method
-        mod = session.exec(select(Module)).first()
-        if mod is None:
-            mod = Module(name="cancel_test_mod", description="")
-            session.add(mod)
-            session.flush()
-        meth = session.exec(select(Method)).first()
-        if meth is None:
-            meth = Method(name="cancel_test_method", module_id=mod.id, script_path="x.py", env="container:demo")
-            session.add(meth)
-            session.flush()
-        run = Run(
-            method_id=meth.id,
-            sample="s1",
-            pipeline_id=pipeline_id,
-            status="running",
-        )
-        session.add(run)
-        session.commit()
-        return run.id
+def client(db_engine, cancel_project, monkeypatch):
+    """FastAPI test client over the harness-built project ``db_engine`` pinned."""
+    return canvas_client(cancel_project.project.root, monkeypatch)
 
 
 # ---------------------------------------------------------------------------
@@ -100,11 +109,13 @@ def _seed_running_run(engine, pipeline_id: str) -> int:
 # ---------------------------------------------------------------------------
 
 
-def test_cancel_pipeline_flips_running_rows(db_engine):
+def test_cancel_pipeline_flips_running_rows(db_engine, cancel_project, monkeypatch):
     """``cancel_pipeline`` flips every running row to cancelled with the
-    canonical message and an idempotent second call is a no-op (US-6)."""
+    canonical message and an idempotent second call is a no-op."""
     pipeline_id = "p-cancel-1"
-    run_id = _seed_running_run(db_engine, pipeline_id)
+    run_id = claimed_run(cancel_project.project.root, monkeypatch=monkeypatch,
+                         method=CANCEL_METHOD, module=CANCEL_MODULE,
+                         sample=CANCEL_SAMPLE, pipeline_id=pipeline_id).run_id
 
     n = cancel_pipeline(pipeline_id)
     assert n == 1
@@ -127,11 +138,15 @@ def test_cancel_endpoint_404_for_unknown_job(client):
     assert res.status_code == 404
 
 
-def test_cancel_endpoint_idempotent_on_terminal_pipeline(client, db_engine):
+def test_cancel_endpoint_idempotent_on_terminal_pipeline(
+    client, db_engine, cancel_project, monkeypatch,
+):
     """When the recorded Popen is missing/terminal, the endpoint returns
     200 with ``noop: True`` and still flips rows defensively."""
     pipeline_id = "p-idempotent"
-    _seed_running_run(db_engine, pipeline_id)
+    claimed_run(cancel_project.project.root, monkeypatch=monkeypatch,
+                method=CANCEL_METHOD, module=CANCEL_MODULE, sample=CANCEL_SAMPLE,
+                pipeline_id=pipeline_id)
     # Simulate a job entry whose process already exited.
     _active_jobs[pipeline_id] = {
         "thread": None,
@@ -206,37 +221,47 @@ def test_cancel_endpoint_kills_real_snakemake_subprocess_tree(
     capture its live rule-executor children mid-run, then cancel and
     assert every captured PID is gone.
 
-    This is the load-bearing US-6 assertion: on Windows, terminating the
+    This is the load-bearing assertion: on Windows, terminating the
     Snakemake parent alone leaves rule-executor (``python -m wfc
     run-step``) descendants orphaned. The production code uses
     ``psutil.Process(pid).children(recursive=True)`` plus
     ``terminate``/``kill`` to flush the whole tree; this test would
-    regress to a false pass if anyone removed that recursive walk
+    fail if anyone removed that recursive walk
     (the simple sibling test has no descendants to leave behind, so it
-    cannot detect that regression alone).
+    cannot detect that change alone).
 
     The test uses the heartbeat fixture method (~5s of timed stdout
     ticks) so we have a deterministic window to grab live children.
     """
-    from wfc.canvas.server import app, _active_jobs
+    from wfc.canvas.server import app
+    from wfc.canvas.state import _active_jobs
     from wfc.contracts import parse_method_yaml
-    from wfc.database import reset_engine
+    from wfc.persistence import reset_engine
     from wfc.init import init_project
-    from wfc.register import register_method, register_module
+    from wfc.registration import register_method, register_module
 
     project_dir = git_project
     monkeypatch.chdir(project_dir)
     monkeypatch.setenv("WFC_PROJECT_ROOT", str(project_dir))
-    monkeypatch.setenv("WFC_CANVAS_PROJECT_ROOT", str(project_dir))
     db_path = project_dir / ".wfc" / "wfc.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
 
-    init_project(project_dir)
-    # ADR-019 Cycle H: execution is container-only. The heartbeat fixture method
-    # declares ``env: container:fixture-env``; write the env manifest pointing at
+    # init_project BEFORE pin_project_root, not after: pin_project_root writes
+    # the bare resolver marker, and init_project's config step is idempotent —
+    # an existing wf-canvas.toml is reused verbatim. Called the other way round
+    # the project keeps the stub, which carries no [dvc] section, so
+    # ensure_dvc_ready refuses and no sample can be registered at all.
+    #
+    # Explicit out-of-tree archive: the default resolves to
+    # ~/.wfc/archives/<project> and init_dvc pre-creates it.
+    init_project(project_dir, archive=str(project_archive_dir(project_dir)),
+                 assume_yes=True)
+    pin_project_root(monkeypatch, project_dir)
+    # Execution is container-only. The heartbeat fixture method
+    # declares ``env: fixture-env``; write the env manifest pointing at
     # the session-built image so registration validates and run-step dispatches
     # into the real container (whose subprocess tree this test then cancels).
-    _write_fixture_env_manifest(project_dir, fixture_container_image)
+    write_env_record(project_dir, FIXTURE_ENV_NAME, digest=fixture_container_image)
     reset_engine()
 
     register_module(name="test_pipeline", contracts=[])
@@ -258,10 +283,15 @@ def test_cancel_endpoint_kills_real_snakemake_subprocess_tree(
         method_name="heartbeat",
     )
 
-    # Stage a sample CSV so input_selector has data to feed in.
-    sample_dir = project_dir / "data" / "samples" / "sample_a"
-    sample_dir.mkdir(parents=True, exist_ok=True)
-    (sample_dir / "data.csv").write_text("id,value\n1,10\n2,20\n3,30\n")
+    # Register the sample the way a user does: the CSV is staged outside the
+    # project (create_sample_csv puts it under <project>-sources/) and
+    # registered from there, so the bytes land in the DVC cache and the row
+    # records data/samples/sample_a/data.csv as where the run's restore_sample
+    # rule will materialize them. Writing the file there by hand instead left
+    # input_selector pointing at a sample wfc never registered -- a project no
+    # user can produce, and one that keeps passing after registration or
+    # restore breaks.
+    create_sample_csv(project_dir, "sample_a")
 
     _active_jobs.clear()
     client = TestClient(app, raise_server_exceptions=False)
@@ -275,8 +305,6 @@ def test_cancel_endpoint_kills_real_snakemake_subprocess_tree(
             {
                 "id": "node_selector",
                 "type": "input_selector",
-                "method": "",
-                "module": "",
                 "params": {},
                 "samples": ["sample_a"],
                 "source": "registered",

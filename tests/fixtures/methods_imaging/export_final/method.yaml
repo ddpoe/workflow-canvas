@@ -1,4 +1,4 @@
-# 3-slot skip-level fan-in — the marquee Phase 1 test case.
+# 3-slot skip-level fan-in.
 # measurements: immediate from quantify
 # stitched:     3 hops upstream (skip) from stitch
 # masks:        2 hops upstream (skip) from segment
@@ -22,4 +22,4 @@ outputs:
     required: true
 
 executor: python
-env: container:fixture-env
+env: fixture-env

@@ -1,14 +1,11 @@
 /**
- * Parent aggregator for per-row paramEditor / variant actors
- * (ADR-016 Phase 2 expand, cycle decision D-3).
+ * Parent aggregator for per-row paramEditor / variant actors.
  *
- * Replaces the legacy `commitAllSignal` writable + `dirtyParams` Set
- * pair from `stores.ts`. Each `ValueList.svelte` row registers its
- * paramEditorActor (or variantActor) here on mount; the aggregator
- * holds a lookup of registered children so the Run-button preflight
- * can fan COMMIT out to every editing child and `await` all of them
- * settling — replacing the 0.2.8 `setTimeout(0)` microtask race with
- * an explicit transition.
+ * Each `ValueList.svelte` row registers its paramEditorActor (or
+ * variantActor) here on mount; the aggregator holds a lookup of
+ * registered children so the Run-button preflight can fan COMMIT out
+ * to every editing child and `await` all of them settling through an
+ * explicit transition.
  *
  * State map:
  *
@@ -20,9 +17,9 @@
  * fires COMMIT_ALL on every preflight, so the aggregator must be
  * reusable across many runs in one session.
  *
- * Why an aggregator instead of flat siblings? See cycle D-3:
+ * Why an aggregator instead of flat siblings?
  *
- *   - Mirrors Phase 1's pipelineRunActor → nodeRunActor parent-child.
+ *   - Mirrors the pipelineRunActor → nodeRunActor parent-child shape.
  *   - Stately Inspector renders one `paramEditorAggregator` root with
  *     all per-row children nested under it.
  *   - The Run-button preflight invokes a tiny `awaitAllCommitted` actor
@@ -101,6 +98,33 @@ export function isChildSettled(actor: ChildActor): boolean {
   return true;
 }
 
+const EDITING_VALUES = new Set(['editing', 'invalid', 'addingVariant', 'editingValue']);
+
+/**
+ * Whether a child's move from one state to the next settles it for a
+ * COMMIT_ALL pulse: the one rule the runtime bridge (`root.ts`) applies
+ * to decide when to send CHILD_SETTLED.
+ *
+ * A commit attempt ends when the child leaves `committing`, whatever the
+ * outcome: `committed`, or back to `invalid` / `editingValue` when the
+ * value is refused. Counting a refusal as settled is what keeps a Lock
+ * All or a Run from waiting forever on a row that cannot be locked; the
+ * caller then finds the row still dirty and names it. A child that
+ * leaves an editing state some other way (a cancel) settles too.
+ *
+ * Args:
+ *     prev: The child's previous state value.
+ *     next: The child's current state value.
+ *
+ * Returns:
+ *     True when the move settles the child.
+ */
+export function childSettledBetween(prev: unknown, next: unknown): boolean {
+  if (next === 'committing') return false;
+  if (prev === 'committing') return true;
+  return EDITING_VALUES.has(prev as string) && !EDITING_VALUES.has(next as string);
+}
+
 export function makeParamEditorAggregatorMachine() {
   return setup({
     types: {} as {
@@ -129,22 +153,23 @@ export function makeParamEditorAggregatorMachine() {
           return next;
         },
       }),
-      // Send COMMIT to every editing child and seed `pending` with their
-      // IDs. Children settle asynchronously via CHILD_SETTLED.
+      // Send COMMIT to every editing child and seed `pending` with the
+      // ones that started a commit. Children settle asynchronously via
+      // CHILD_SETTLED. A child that did not enter `committing` (it
+      // ignores COMMIT, e.g. a variant row still in `addingVariant`, or
+      // it has stopped) is never waited on: it stays dirty, and the
+      // caller names it as a row that could not be locked.
       commitAllChildren: assign({
         pending: ({ context }) => {
           const pending = new Set<string>();
           for (const [id, child] of Object.entries(context.children)) {
-            if (isChildEditing(child)) {
-              pending.add(id);
-              try {
-                child.send({ type: 'COMMIT' });
-              } catch {
-                // Child may have stopped between register and commit
-                // (HMR, fast unmount). Treat as already-settled.
-                pending.delete(id);
-              }
+            if (!isChildEditing(child)) continue;
+            try {
+              child.send({ type: 'COMMIT' });
+            } catch {
+              continue;
             }
+            if (child.getSnapshot().value === 'committing') pending.add(id);
           }
           return pending;
         },

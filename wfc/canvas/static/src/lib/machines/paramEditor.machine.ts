@@ -1,27 +1,22 @@
 /**
- * Per-row param-editor lifecycle machine (ADR-016 Phase 2).
+ * Per-row param-editor lifecycle machine.
  *
- * Replaces the implicit edit-mode boolean + `dirtyParams` Set + ad-hoc
- * `commitAllSignal` counter that ValueList.svelte was using. Each canvas
- * row now spawns its own `paramEditorActor`, so:
+ * Each canvas row spawns its own `paramEditorActor`, so:
  *
- *   - Cross-row bleed (0.2.7) is structurally impossible — every row's
+ *   - Cross-row bleed is structurally impossible — every row's
  *     state lives in a separate actor with its own context. Two rows
  *     editing simultaneously cannot share `editing` / `validationError`
  *     under any name.
- *   - Commit-before-run (0.2.8) becomes an explicit transition into the
- *     `committed` final state instead of a microtask poke at a global
- *     counter. The Run-button's preflight (post-spike) awaits that
- *     transition rather than reading `dirtyParams.size`.
+ *   - Commit-before-run is an explicit transition into the `committed`
+ *     state. The Run button's preflight awaits that transition.
  *
  * Lifetime: one per visible row. Spawned by ValueList on mount, stopped
- * on unmount. Per ADR-016 §future-phase-2 + Phase 2 cycle decision D-4,
- * paramEditorActors live in their own inspector tree root — they are
- * NOT children of `pipelineRunActor` (run lifecycle and edit lifecycle
- * are conceptually unrelated; nesting would conflate them in the
- * inspector view).
+ * on unmount. paramEditorActors live in their own inspector tree root —
+ * they are NOT children of `pipelineRunActor` (run lifecycle and edit
+ * lifecycle are conceptually unrelated; nesting would conflate them in
+ * the inspector view).
  *
- * State map (matches ADR sketch):
+ * State map:
  *
  *   viewing -- EDIT --> editing
  *   editing -- CHANGE_VALUE --> editing            (draft updates)
@@ -34,7 +29,7 @@
  *   committed -- EDIT --> editing                  (re-open after commit)
  *   * -- RESET_TO --> viewing                      (parent forces value)
  *
- * Pipeline Variables (ADR-017 / D-4) extension:
+ * Pipeline Variables extension:
  *
  *   viewing -- BIND_VARIABLE { name } --> bound     (assigns boundVariable)
  *   editing -- BIND_VARIABLE { name } --> bound     (assigns boundVariable;
@@ -60,12 +55,13 @@
  *
  * `committed` is NOT a `final` state — re-edit is a normal user flow,
  * and locking the actor at first commit would force one actor per
- * commit cycle. ADR sketch lists `committed` as a "final" outcome of
- * the commit transition, not a terminal of the actor's lifecycle.
+ * commit cycle. `committed` is the outcome of the commit transition,
+ * not a terminal of the actor's lifecycle.
  *
- * Tests in `__tests__/paramEditor.test.ts` cover every transition that
- * matters for the 0.2.7 / 0.2.8 bug scenarios + the optional-numeric
- * blank-commit precedent (0.2.13).
+ * Tests in `__tests__/paramEditor.test.ts` cover cross-row isolation,
+ * invalid re-edit, blank commits on optional numeric params and
+ * variable binding; `__tests__/paramEditorAggregator.test.ts` covers
+ * commit-before-run.
  */
 import { fromPromise, setup, assign, type ActorRefFrom } from 'xstate';
 
@@ -88,9 +84,8 @@ export type ParamEditorType =
 
 export interface ParamEditorContext {
   // Identity. `nodeId` plus `paramName` is the spawn key. `dirtyKeySuffix`
-  // is preserved verbatim from the legacy `markDirty` path so per-sample
-  // override rows (which reuse the same nodeId+paramName) get a unique
-  // identity in inspector breadcrumbs.
+  // gives per-sample override rows (which reuse the same nodeId+paramName)
+  // a unique identity in inspector breadcrumbs.
   nodeId: string;
   paramName: string;
   dirtyKeySuffix: string;
@@ -104,13 +99,13 @@ export interface ParamEditorContext {
   currentValue: unknown;
   draftValue: string | boolean;
   validationError: string | null;
-  // Pipeline Variables (ADR-017): when non-null, this row is bound to
+  // Pipeline Variables: when non-null, this row is bound to
   // a pipeline variable by name. The literal `currentValue` is preserved
   // as the unbind fallback. UI reads `boundVariable` from the snapshot
   // to render the `→ varname` chip; aggregator commits with currentValue
   // (variable substitution happens server-side at submission).
   boundVariable: string | null;
-  // Picker open-state lives on the actor (D-4): ValueList sends
+  // Picker open-state lives on the actor: ValueList sends
   // OPEN_BIND_PICKER / CLOSE_BIND_PICKER instead of holding a local Svelte flag.
   bindPickerOpen: boolean;
 }
@@ -149,10 +144,8 @@ export interface ParamEditorInput {
 // route into one of two target states based on a payload field) — the
 // underlying coerce is synchronous.
 //
-// Output shape mirrors the legacy `ValueList.svelte::coerce()` return
-// type: `{ ok: true, value }` or `{ ok: false, error }`. Behavior must
-// preserve the 0.2.13 precedent: blank input on an optional numeric
-// param coerces to `null`, NOT `invalid`.
+// Output shape: `{ ok: true, value }` or `{ ok: false, error }`. Blank
+// input on an optional numeric param coerces to `null`, NOT `invalid`.
 
 export interface CoerceInput {
   raw: string | boolean;
@@ -190,7 +183,7 @@ export function coerceParamValue(input: CoerceInput): CoerceResult {
   }
   if (paramType === 'int' || paramType === 'float') {
     const raw_s = String(raw).trim();
-    // 0.2.13 precedent: optional numeric blank coerces to null.
+    // Optional numeric blank coerces to null.
     if (raw_s === '') {
       if (required) return { ok: false, error: 'Value cannot be empty.' };
       return { ok: true, value: null };
@@ -277,8 +270,8 @@ export function makeParamEditorMachine() {
       min: input.min,
       max: input.max,
       currentValue: input.currentValue,
-      // `draftValue` mirrors the legacy `localValue[row.id]` — initialized
-      // from currentValue when the row first enters `editing` (see
+      // `draftValue` is initialized from currentValue when the row
+      // enters `editing` (see
       // `EDIT` action below) so the user's first keystroke replaces the
       // committed value rather than appending to an empty string.
       draftValue: '',
@@ -358,7 +351,7 @@ export function makeParamEditorMachine() {
             }),
           },
           EDIT: {
-            // Edge case 12: editing a bound row breaks the binding in one
+            // Editing a bound row breaks the binding in one
             // gesture. Atomic UNBIND_VARIABLE + EDIT.
             target: 'editing',
             actions: assign({
@@ -464,7 +457,7 @@ export function makeParamEditorMachine() {
       },
       committed: {
         // Non-terminal: re-editing a committed value is a normal user
-        // flow (the locked-row icon → unlock click in the legacy UI).
+        // flow (the unlock-to-edit click on a locked row).
         // Tests assert this state is reached after a successful commit;
         // they do NOT assert the actor stops here.
         on: {
@@ -502,7 +495,7 @@ export function makeParamEditorMachine() {
         },
       },
       invalid: {
-        // Edge Case #4: do NOT lock the user out. CHANGE_VALUE re-enters
+        // Do NOT lock the user out. CHANGE_VALUE re-enters
         // `editing` with the validation error cleared so the next
         // keystroke offers a fresh attempt; CANCEL discards.
         on: {

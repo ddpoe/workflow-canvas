@@ -10,14 +10,16 @@ unknown/uninstalled remote schemes are refused at init time; and doctor's
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
 
 from axiom_annotations import workflow
 
-from wfc.init import _normalize_archive, init_project
-from wfc.preflight import check_dvc
+from tests.fixtures.fakes import redirect_home
+from wfc.init import _REMOTE_SCHEME_PLUGINS, _normalize_archive, init_project
+from wfc.execution import check_dvc
 
 
 @workflow(
@@ -30,9 +32,7 @@ from wfc.preflight import check_dvc
     ["relative", "home", "absolute", "https", "file_url", "unknown", "missing_plugin"],
 )
 def test_normalize_archive_user_inputs(case, tmp_path, monkeypatch):
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    home = redirect_home(monkeypatch, tmp_path / "home")
     project = tmp_path / "proj"
     project.mkdir()
 
@@ -62,22 +62,30 @@ def test_normalize_archive_user_inputs(case, tmp_path, monkeypatch):
         with pytest.raises(ValueError, match="unsupported scheme ftp://"):
             _normalize_archive("ftp://host/archive", project)
     elif case == "missing_plugin":
-        # s3 is a recognized DVC scheme but dvc[s3] is not in the
-        # dependency set — refuse with the install hint.
-        with pytest.raises(ValueError, match=r"pip install 'dvc\[s3\]'"):
-            _normalize_archive("s3://bucket/prefix", project)
+        # Each remote scheme's DVC plugin is an optional extra; a scheme
+        # whose plugin this environment lacks is refused with the install
+        # hint. A dev environment installs the s3 extra for the S3
+        # reachability witness, so the scheme is chosen from what is absent.
+        import importlib.util
+        absent = [(s, p) for s, p in sorted(_REMOTE_SCHEME_PLUGINS.items())
+                  if importlib.util.find_spec(p) is None]
+        if not absent:
+            pytest.skip("every remote plugin is installed in this environment")
+        scheme, plugin = absent[0]
+        extra = plugin.removeprefix("dvc_")
+        with pytest.raises(ValueError,
+                           match=re.escape(f"pip install 'dvc[{extra}]'")):
+            _normalize_archive(f"{scheme}://bucket/prefix", project)
 
 
 @workflow(
     purpose="a fresh `wfc init --yes` project passes doctor's DVC "
             "deep-validation — DVC itself parses the config and resolves "
-            "the default remote (the check that would have caught the "
-            "file://C:/ regression)"
+            "the default remote (the check that catches a file://C:/ "
+            "remote URL that DVC rejects)"
 )
 def test_init_default_archive_accepted_by_dvc(tmp_path, monkeypatch):
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    redirect_home(monkeypatch, tmp_path / "home")
     project = tmp_path / "proj"
 
     init_project(project, assume_yes=True)
@@ -91,9 +99,7 @@ def test_init_default_archive_accepted_by_dvc(tmp_path, monkeypatch):
             "a remote URL DVC's schema rejects"
 )
 def test_doctor_catches_dvc_rejected_config(tmp_path, monkeypatch):
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    redirect_home(monkeypatch, tmp_path / "home")
     project = tmp_path / "proj"
 
     init_project(project, assume_yes=True)

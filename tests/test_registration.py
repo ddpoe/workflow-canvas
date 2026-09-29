@@ -1,26 +1,24 @@
 """
 Subsystem Test: Method Registration
 
-Validates that pm_mvp can register method scripts via the production
+Validates that wfc registers method scripts via the production
 register_module() + register_method() code path.  Covers:
 
-  - Flat method dirs (methods/emit/, methods/transform/, etc.)
+  - Flat method dirs (methods/transform/, methods/merge/)
   - AST scanner extraction of @wfc_method-decorated functions
   - Module → method linkage in the database
   - TrackedFunction + ParamDef rows populated from AST scan
   - Re-registration (idempotent upsert) without duplicating rows
 
 Uses lightweight fixture methods from tests/fixtures/methods/ (transform,
-merge, faulty).
+merge).
 
-These are Tier 2 tests: @workflow(purpose=...), no Step markers.
-They test a meaningful subsystem (registration) but aren't product stories.
+Tier 2 tests (@workflow(purpose=...)); the multi-phase flows are Tier 3 and
+add Step markers.
 """
 
 import shutil
 import sys
-# unittest.mock no longer needed — shared env system uses config validation
-# instead of subprocess mocking
 
 import pytest
 from pathlib import Path
@@ -30,9 +28,10 @@ from sqlmodel import select
 from axiom_annotations import workflow, Step
 
 from wfc.init import init_project
-from wfc.register import register_module, register_method
-from wfc.database import get_session
-from wfc.models import Module, Method, TrackedFunction, ParamDef, ModuleContract
+from wfc.registration import register_module, register_method
+from wfc.persistence import get_session, Module, Method, TrackedFunction, ParamDef, ModuleContract
+
+from tests.fixtures.conftest import write_env_record
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -73,7 +72,7 @@ L2_METHODS = [
 # ============================================================================
 
 @workflow(
-    purpose="Register all five L2 modules with contracts and verify DB state")
+    purpose="Register the L2 modules with contracts and verify DB state")
 def test_register_l2_modules(tmp_project):
     """Register each L2 module with its output and metric contracts,
     then verify Module and ModuleContract rows exist in the DB."""
@@ -119,6 +118,60 @@ def test_register_l2_modules(tmp_project):
 
 
 # ============================================================================
+# Test: the contract map
+# ============================================================================
+
+@workflow(
+    purpose="The contract map carries one entry per registered method, keyed "
+            "<module>.<method>, with its input and output slots, script path "
+            "and env; a method with no contract row maps to empty slot tables")
+def test_load_contract_map_covers_every_registered_method(tmp_project):
+    """The one read Contracts' enrichment and Graph's load take as a value."""
+    from wfc.registration import load_contract_map
+
+    init_project(tmp_project)
+    src_dir = tmp_project / "workspace" / "cm_method"
+    src_dir.mkdir(parents=True)
+    (src_dir / "cm_method.py").write_text("def main():\n    return 1\n")
+    (src_dir / "method.yaml").write_text(
+        "inputs:\n  table:\n    type: .csv\n"
+        "outputs:\n  summary:\n    type: .csv\n"
+        "params: {}\nexecutor: python\n"
+        "env: fixture-env\n"
+    )
+    register_module(name="cm_contracted", contracts=[], description="contracted")
+    register_method(method_dir=src_dir, module_name="cm_contracted")
+
+    # A second module whose method has no contract row.
+    with get_session() as session:
+        bare_module = Module(name="cm_bare")
+        session.add(bare_module)
+        session.commit()
+        session.refresh(bare_module)
+        session.add(Method(module_id=bare_module.id, name="bare_method",
+                           env="container:demo"))
+        session.commit()
+
+    with get_session() as session:
+        contract_map = load_contract_map(session)
+        registered = session.exec(
+            select(Method).where(Method.name == "cm_method")
+        ).one()
+        script_path, env = registered.script_path, registered.env
+
+    assert set(contract_map) == {"cm_contracted.cm_method", "cm_bare.bare_method"}
+    entry = contract_map["cm_contracted.cm_method"]
+    assert set(entry["input_slots"]) == {"table"}
+    assert set(entry["output_slots"]) == {"summary"}
+    assert entry["script_path"] == script_path
+    assert Path(script_path).name == "cm_method.py"
+    assert entry["env"] == env
+    bare = contract_map["cm_bare.bare_method"]
+    assert bare["input_slots"] == {} and bare["output_slots"] == {}
+    assert bare["env"] == "container:demo"
+
+
+# ============================================================================
 # Test: Register all L2 method scripts (flat + nested)
 # ============================================================================
 
@@ -137,8 +190,6 @@ def test_register_l2_methods(tmp_project):
             description=mod_def["description"])
 
     # Register all method scripts
-    # With the shared env system, methods default to 'inherit' unless
-    # method.yaml declares an env key -- no _install_env needed.
     registered = {}
     for module_name, method_dir_rel, expected_func in L2_METHODS:
         method_dir = tmp_project / method_dir_rel
@@ -194,7 +245,7 @@ def test_ast_scanner_extracts_params(tmp_project):
     filter_dir = tmp_project / "methods" / "filter_data"
     filter_dir.mkdir(parents=True, exist_ok=True)
     (filter_dir / "method.yaml").write_text(
-        "env: container:docker://local/x@sha256:" + "a" * 64 + "\n"
+        "env: fixture-env\n"
         "inputs:\n  data:\n    type: .csv\n"
         "outputs:\n  result:\n    type: .csv\n"
     )
@@ -213,7 +264,7 @@ def test_ast_scanner_extracts_params(tmp_project):
     merge_dir = tmp_project / "methods" / "merge_data"
     merge_dir.mkdir(parents=True, exist_ok=True)
     (merge_dir / "method.yaml").write_text(
-        "env: container:docker://local/x@sha256:" + "a" * 64 + "\n"
+        "env: fixture-env\n"
         "inputs:\n  data:\n    type: .csv\n"
         "outputs:\n  result:\n    type: .csv\n"
     )
@@ -319,6 +370,77 @@ def test_reregistration_idempotent(tmp_project):
 
 
 # ============================================================================
+# Test: A method name another module holds is refused
+# ============================================================================
+
+@workflow(
+    purpose="Registering a method name a different module already holds is "
+            "refused, because both would share the one methods/<name>/ "
+            "snapshot cache keys are computed from")
+def test_method_name_held_by_another_module_is_refused(tmp_project):
+    """The second module's registration is refused, naming both modules.
+
+    The registered snapshot lives at ``methods/<method_name>/`` with no
+    module segment, so a second module registering the same name would
+    overwrite the first's scripts and its ``method.yaml`` — both of which
+    the cache key is computed from.
+    """
+    init_project(tmp_project)
+
+    register_module(name="first_mod", contracts=[], description="Test")
+    register_module(name="second_mod", contracts=[], description="Test")
+    method_dir = tmp_project / "methods" / "transform"
+
+    first_id = register_method(method_dir=method_dir, module_name="first_mod")
+
+    # The refusal exists because methods/transform/ is SHARED: the second
+    # registration would overwrite the scripts and the method.yaml the first
+    # module's cache keys are computed from. So the bytes are the artifact —
+    # a refusal that had already written over them would be worse than none.
+    def _snapshot_bytes() -> dict[str, bytes]:
+        return {p.relative_to(method_dir).as_posix(): p.read_bytes()
+                for p in sorted(method_dir.rglob("*")) if p.is_file()}
+
+    before_snapshot = _snapshot_bytes()
+    assert before_snapshot, f"nothing under {method_dir} to protect"
+
+    with pytest.raises(ValueError) as exc:
+        register_method(method_dir=method_dir, module_name="second_mod")
+
+    message = str(exc.value)
+    assert "first_mod" in message and "second_mod" in message
+    assert "methods/transform" in message
+
+    assert _snapshot_bytes() == before_snapshot, (
+        "the refused registration changed the first module's snapshot under "
+        f"{method_dir}; the point of refusing is that those bytes — which "
+        "first_mod's cache keys are computed from — stay exactly as they were"
+    )
+
+    # The refusal lands before any row is written: one method row, still
+    # the first module's.
+    with get_session() as session:
+        rows = session.exec(
+            select(Method).where(Method.name == "transform")
+        ).all()
+        assert [r.id for r in rows] == [first_id]
+        second = session.exec(
+            select(Module).where(Module.name == "second_mod")
+        ).one()
+        assert rows[0].module_id != second.id
+
+    # The refusal is about the OTHER module, not about the name: the owning
+    # module re-registering its own method still passes. Without this the
+    # gate could be a blanket "methods/transform/ is taken" and read the same.
+    again_id = register_method(method_dir=method_dir, module_name="first_mod")
+    with get_session() as session:
+        rows = session.exec(
+            select(Method).where(Method.name == "transform")
+        ).all()
+        assert [r.id for r in rows] == [again_id]
+
+
+# ============================================================================
 # Test: Nested method dir registration resolves correct script_path
 # ============================================================================
 
@@ -338,7 +460,7 @@ def test_nested_method_script_path(tmp_project):
     nested_dir = tmp_project / "modules" / "nested_module" / "nested_method"
     nested_dir.mkdir(parents=True, exist_ok=True)
     (nested_dir / "method.yaml").write_text(
-        "env: container:docker://local/x@sha256:" + "a" * 64 + "\n"
+        "env: fixture-env\n"
         "inputs:\n  data:\n    type: .csv\n"
         "outputs:\n  result:\n    type: .csv\n"
     )
@@ -486,15 +608,15 @@ def test_individual_method_registration(
 # ============================================================================
 
 @workflow(
-    purpose="ADR-019 Cycle H: registering a method stores its declared built "
+    purpose="registering a method stores its declared built "
             "container env in the database")
 def test_register_method_stores_inherit_for_plain_dir(tmp_project):
-    """The fixture transform method declares env: container:fixture-env ->
-    method.env stores that container env in the DB (no 'inherit' default)."""
+    """The fixture transform method declares env: fixture-env ->
+    method.env stores that container env in the DB."""
     init_project(tmp_project)
 
     _ = Step(step_num=1, name="Register module and method",
-             purpose="Register the fixture transform method (env: container:fixture-env)")
+             purpose="Register the fixture transform method (env: fixture-env)")
     register_module(name="data_transform", contracts=[], description="Test")
     register_method(
         method_dir=tmp_project / "methods" / "transform",
@@ -508,8 +630,8 @@ def test_register_method_stores_inherit_for_plain_dir(tmp_project):
         ).first()
         assert method is not None
         # tmp_project's conftest writes a fixture-env record; the fixture
-        # method.yaml declares env: container:fixture-env.
-        assert method.env == "container:fixture-env"
+        # method.yaml declares env: fixture-env.
+        assert method.env == "fixture-env"
 
 
 @workflow(
@@ -537,12 +659,14 @@ def test_register_method_stores_named_env(tmp_project):
         '[pixi]\nroot = ".pixi"\n'
     )
 
+    write_env_record(tmp_project, "image-io")
+
     _ = Step(step_num=2, name="Create method with named env",
-             purpose="Write a method.yaml that declares env: pixi:image-io")
+             purpose="Write a method.yaml that declares env: image-io")
     method_dir = tmp_project / "methods" / "env_method"
     method_dir.mkdir(parents=True)
     (method_dir / "method.yaml").write_text(
-        "env: container:docker://local/image-io@sha256:" + "a" * 64 + "\n"
+        "env: image-io\n"
         "inputs:\n  data:\n    type: .csv\n"
         "outputs:\n  result:\n    type: .csv\n"
     )
@@ -572,39 +696,15 @@ def test_register_method_stores_named_env(tmp_project):
             select(Method).where(Method.name == "env_method")
         ).first()
         assert method is not None
-        assert method.env == "container:docker://local/image-io@sha256:" + "a" * 64
+        assert method.env == "image-io"
 
 
 # =============================================================================
-# Container env (ADR-019): register_method end-to-end (US-4)
+# Container env: register_method end-to-end
 # =============================================================================
 
 # A valid 64-hex sha256 digest used to compose well-formed container refs.
 _CONTAINER_VALID_DIGEST = "a" * 64
-_CONTAINER_VALID_REF = (
-    f"docker://ghcr.io/dante/image-io@sha256:{_CONTAINER_VALID_DIGEST}"
-)
-
-
-def _write_envs_manifest(project_dir: Path, envs: dict) -> None:
-    """Write a minimal .wfc/envs.json manifest under *project_dir*."""
-    import json
-    (project_dir / ".wfc").mkdir(parents=True, exist_ok=True)
-    (project_dir / ".wfc" / "envs.json").write_text(
-        json.dumps({"schema_version": 1, "envs": envs}, indent=2)
-    )
-
-
-def _container_env_record_dict(container: str = _CONTAINER_VALID_REF) -> dict:
-    """Return a record dict shaped like a valid .wfc/envs.json envs[name] VALUE."""
-    return {
-        "backend": "pixi",
-        "source": "pixi.toml",
-        "container": container,
-        "env_fingerprint": "deadbeef" * 8,
-        "built_from_lock": "pixi.lock",
-        "built_at": "2026-05-16T00:00:00Z",
-    }
 
 
 def _make_container_method_dir(tmp_project: Path, env_value: str) -> Path:
@@ -635,26 +735,27 @@ def _make_container_method_dir(tmp_project: Path, env_value: str) -> Path:
 
 
 @workflow(
-    purpose="register_method accepts env: container:<envname> when the env "
+    purpose="register_method accepts env: <envname> when the env "
             "is present in .wfc/envs.json with a digest-pinned container ref, "
-            "and persists 'container:<envname>' as Method.env (US-4 happy path "
+            "and persists '<envname>' as Method.env (happy path "
             "through the full register_method integration path)"
 )
 def test_register_method_resolves_container_env(tmp_project):
-    """End-to-end: register_method must resolve env: container:image-io
+    """End-to-end: register_method must resolve env: image-io
     via the .wfc/envs.json manifest. The image is NOT pulled at registration
-    time (ADR-019 #8) — only the manifest record's shape is validated."""
+    time — only the manifest record's shape is validated."""
     _ = Step(step_num=1, name="Init project and write envs manifest",
              purpose="Create .wfc/envs.json with one digest-pinned 'image-io' record")
     init_project(tmp_project)
-    _write_envs_manifest(tmp_project, envs={"image-io": _container_env_record_dict()})
+    write_env_record(tmp_project, "image-io", backend="pixi",
+                     digest=_CONTAINER_VALID_DIGEST)
 
     _ = Step(step_num=2, name="Create method that declares container env",
-             purpose="method.yaml has env: container:image-io")
-    method_dir = _make_container_method_dir(tmp_project, "container:image-io")
+             purpose="method.yaml has env: image-io")
+    method_dir = _make_container_method_dir(tmp_project, "image-io")
 
     _ = Step(step_num=3, name="Register module and method",
-             purpose="register_method must succeed; Method.env == 'container:image-io'")
+             purpose="register_method must succeed; Method.env == 'image-io'")
     register_module(name="container_module", contracts=[], description="Test")
     method_id = register_method(
         method_dir=method_dir,
@@ -667,21 +768,21 @@ def test_register_method_resolves_container_env(tmp_project):
             select(Method).where(Method.name == "container_method")
         ).first()
         assert method is not None
-        assert method.env == "container:image-io"
+        assert method.env == "image-io"
 
 
 @workflow(
-    purpose="register_method FAILS with a clear error when env: container:<name> "
-            "references an env that is absent from .wfc/envs.json (US-4 absent-env)"
+    purpose="register_method FAILS with a clear error when env: <name> "
+            "references an env that is absent from .wfc/envs.json (absent-env)"
 )
 def test_register_method_container_env_missing_from_manifest(tmp_project):
     _ = Step(step_num=1, name="Init project WITHOUT envs manifest",
-             purpose="No .wfc/envs.json on disk — every container:<name> lookup misses")
+             purpose="No .wfc/envs.json on disk — every env-name lookup misses")
     init_project(tmp_project)
 
     _ = Step(step_num=2, name="Create method referencing absent container env",
-             purpose="method.yaml declares env: container:image-io but manifest is empty")
-    method_dir = _make_container_method_dir(tmp_project, "container:image-io")
+             purpose="method.yaml declares env: image-io but manifest is empty")
+    method_dir = _make_container_method_dir(tmp_project, "image-io")
 
     _ = Step(step_num=3, name="Attempt registration",
              purpose="Must raise ValueError pointing at .wfc/envs.json")
@@ -694,24 +795,37 @@ def test_register_method_container_env_missing_from_manifest(tmp_project):
 
 
 @workflow(
-    purpose="register_method FAILS when env: container:<name> references an "
+    purpose="register_method FAILS when env: <name> references an "
             "env whose 'container' field is a floating tag — the digest-pin "
-            "rule must be enforced through the register_method path, not "
-            "just on direct refs (US-4 floating-tag rejection)"
+            "rule must be enforced through the register_method path "
+            "(floating-tag rejection)"
 )
 def test_register_method_container_env_floating_tag_rejected(tmp_project):
     _ = Step(step_num=1, name="Init project and write envs manifest with floating tag",
              purpose="image-io.container ends in :latest, NOT @sha256:...")
     init_project(tmp_project)
-    _write_envs_manifest(tmp_project, envs={
-        "image-io": _container_env_record_dict(
-            container="docker://ghcr.io/dante/image-io:latest",
-        ),
-    })
+    # Deliberately-INVALID record, hand-written on purpose: the container ref
+    # carries a floating tag, a shape production register() can never write
+    # (validate_container_ref rejects it before the manifest write). The raw
+    # dict stages the corrupt state this test exists to reject downstream.
+    import json
+    (tmp_project / ".wfc" / "envs.json").write_text(json.dumps({
+        "schema_version": 1,
+        "envs": {
+            "image-io": {
+                "backend": "pixi",
+                "source": "pixi.toml",
+                "container": "docker://ghcr.io/dante/image-io:latest",
+                "env_fingerprint": "deadbeef" * 4,
+                "built_from_lock": "pixi.lock",
+                "built_at": "2026-05-16T00:00:00Z",
+            }
+        },
+    }, indent=2))
 
     _ = Step(step_num=2, name="Create method referencing the floating-tag env",
-             purpose="method.yaml declares env: container:image-io")
-    method_dir = _make_container_method_dir(tmp_project, "container:image-io")
+             purpose="method.yaml declares env: image-io")
+    method_dir = _make_container_method_dir(tmp_project, "image-io")
 
     _ = Step(step_num=3, name="Attempt registration",
              purpose="Must raise ValueError mentioning digest-pinned")
@@ -721,38 +835,6 @@ def test_register_method_container_env_floating_tag_rejected(tmp_project):
             method_dir=method_dir,
             module_name="container_module",
         )
-
-
-@workflow(
-    purpose="register_method accepts env: container:docker://...@sha256:... "
-            "as a direct ref WITHOUT requiring an entry in .wfc/envs.json "
-            "(US-4 direct-ref escape hatch, ADR-019 decision #12)"
-)
-def test_register_method_container_direct_ref_bypasses_manifest(tmp_project):
-    _ = Step(step_num=1, name="Init project, no envs manifest written",
-             purpose="The direct-ref path must work even when .wfc/envs.json is absent")
-    init_project(tmp_project)
-
-    _ = Step(step_num=2, name="Create method with direct digest-pinned ref",
-             purpose="method.yaml declares env: container:docker://...@sha256:...")
-    env_value = f"container:{_CONTAINER_VALID_REF}"
-    method_dir = _make_container_method_dir(tmp_project, env_value)
-
-    _ = Step(step_num=3, name="Register module and method",
-             purpose="register_method must succeed; Method.env equals the full direct ref")
-    register_module(name="container_module", contracts=[], description="Test")
-    method_id = register_method(
-        method_dir=method_dir,
-        module_name="container_module",
-    )
-    assert method_id is not None
-
-    with get_session() as session:
-        method = session.exec(
-            select(Method).where(Method.name == "container_method")
-        ).first()
-        assert method is not None
-        assert method.env == env_value
 
 
 @workflow(
@@ -777,7 +859,7 @@ def test_register_method_missing_env_raises(tmp_project):
     method_dir = tmp_project / "methods" / "missing_env_method"
     method_dir.mkdir(parents=True)
     (method_dir / "method.yaml").write_text(
-        "env: container:nonexistent\n"
+        "env: nonexistent\n"
         "inputs:\n  data:\n    type: .csv\n"
     )
     (method_dir / "missing_env_method.py").write_text(
@@ -807,7 +889,7 @@ def test_register_method_no_inputs_raises(tmp_project):
     method_dir = tmp_project / "methods" / "no_inputs"
     method_dir.mkdir(parents=True)
     (method_dir / "method.yaml").write_text(
-        "env: container:docker://local/x@sha256:" + "a" * 64 + "\n"
+        "env: fixture-env\n"
         "inputs: {}\n"
         "outputs:\n  result:\n    type: .csv\n"
     )
@@ -1028,7 +1110,7 @@ def test_register_method_validates_module_contract(tmp_project):
     method_dir = tmp_project / "methods" / "bad_method"
     method_dir.mkdir(parents=True)
     (method_dir / "method.yaml").write_text(
-        "env: container:docker://local/x@sha256:" + "a" * 64 + "\n"
+        "env: fixture-env\n"
         "inputs:\n  data:\n    type: .csv\n"
         "outputs:\n  wrong_output:\n    type: .csv\n"
     )

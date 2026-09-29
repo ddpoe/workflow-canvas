@@ -1,65 +1,76 @@
-<!-- generated from pm_mvp::docs.consumer.reference.cli-reference @ c0b53da93453; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.reference.cli-reference @ eb11c8db6ae2; do not edit -->
 
 # CLI Reference
 
 ## Overview
 
-All commands are invoked via `wfc <command>` (or `python -m wfc <command>`). The CLI is the primary developer interface to the core pipeline, covering project setup, registration, execution, and caching. (Lineage is queried separately via `python -m wfc.lineage --run-id <id>`, not a `wfc` subcommand.)
+Every command is run as `wfc <command>` (or `python -m wfc <command>`). `wfc <command> --help` prints the same flags listed here.
+
+Commands find the project by walking up from the current directory to the nearest folder that contains `.wfc/wf-canvas.toml`, so you can run them from any subdirectory of a project. Set `WFC_PROJECT_ROOT` to name the project explicitly (see [Environment Variables](#environment-variables)).
+
+`wfc --help` also lists a few commands this page does not cover, such as `run-step` and `pipeline-summary`. Generated pipelines call those; you do not run them by hand.
+
+Exit codes: `0` means success, `1` means the command refused or failed and printed why, and `2` means the arguments were invalid.
 
 ## Project Commands
 
 ### wfc init
 
-Set up a new project so it is ready to run. `wfc init` is a guided wizard: it scaffolds the directory structure (`.wfc/`, `modules/`, `methods/`, `.runs/`, `data/samples/`), configures an output archive, initializes a local git repository with a clean first commit, and checks that Docker is available. It is **idempotent** — safe to re-run at any time. Each step is guarded by a "does this already exist?" check, so re-running only completes what is missing and never re-asks for or overwrites configuration you already have.
+Make a directory into a wfc project, then run the other commands from inside it:
 
-When it finishes, it prints a short health summary (the same checks as `wfc doctor`) so you can see at a glance whether the project is ready to run.
+```bash
+wfc init --dir wfc_project_root
+cd wfc_project_root
+```
 
-By default the wizard is interactive and prompts you (with sensible defaults you can accept by pressing Enter). Pass `--yes` to run it non-interactively for scripts and CI — every prompt takes its default.
+`wfc init`:
 
-What it sets up:
+1. Creates `.wfc/`, `modules/`, `methods/`, `data/samples/` and `.runs/`. It does not create a place for your own code; the suggested place is `src/<module>/<method>/` (see [Project Anatomy](../explanation/project-anatomy.md)).
+2. Writes `.wfc/wf-canvas.toml` with a `[dvc]` section naming the output archive (see [wf-canvas.toml](wf-canvas-toml.md)), and creates the project database `.wfc/wfc.db`.
+3. Adds wfc's entries to `.gitignore` and sets up DVC for the archive.
+4. Runs `git init` if the directory is not a repository yet, and commits the files it wrote. If git has no global identity, the commit uses `wfc <wfc@wfc>`; change it with `git config user.name` / `user.email`. The repository is local only; wfc never pushes.
+5. Prints a health table (the same checks as `wfc doctor`).
 
-- **Output archive (always on).** Your run outputs are copied to a backup folder so results stay safe and reusable (this is the project's DVC archive). Only the *location* is prompted; the default is a durable folder outside the repo (`~/.wfc/archives/<project>`). Pass `--archive PATH` to set the location non-interactively.
-- **Local git repository.** If the directory is not already a repo, `wfc init` runs `git init` **and makes an initial commit** of the scaffold. A real commit is required because pipeline runs need a clean commit to compute cache keys; starting from a committed, clean tree means your first run is not blocked. If git has no global identity, a repo-local identity is set automatically so the commit always lands (you can change it later with `git config`). This is a *local* repo only — no GitHub account, no network, and no login are needed; wfc never pushes.
-- **Docker check.** Container execution is required to run anything, so the wizard checks that Docker is installed and its daemon is running, and reports the result. It cannot install Docker for you, but scaffolding still completes so no work is lost; the summary makes clear that runs are blocked until Docker is present.
+The archive location is where copies of your run outputs are kept. `wfc init` asks for it, with `~/.wfc/archives/<project>` as the default. Give a directory path, or a DVC remote URL such as `s3://bucket/path` (the matching DVC plugin must be installed, for example `pip install 'dvc[s3]'`).
 
-The summary also prints one honest note about recoverability: the archive stores content-addressed blobs indexed by `.wfc/wfc.db`, and that database is **not** tracked in git — so to keep archived outputs recoverable you must back up the `.wfc/` directory.
+In an existing project, `wfc init` lists what it would add and asks once before changing anything (in a script, pass `--yes`). When nothing is missing it says the project is already current and changes nothing. It never overwrites a config key you already set.
+
+A missing git or Docker does not stop `wfc init`: the files are still written, and the health table shows what to install. Install it, re-run `wfc init` to fill in what is missing, then run `wfc doctor`.
 
 | Arg | Description |
 |---|---|
 | `--dir` | Target directory (default: current directory) |
-| `--archive PATH` | Output archive location (default: `~/.wfc/archives/<project>`) |
-| `--git` | Accepted no-op alias for scripts and docs that pass it explicitly; git init is on by default |
-| `--yes` | Run non-interactively, accepting every default (for scripts and CI) |
+| `--archive PATH` | Archive location, without prompting (default: `~/.wfc/archives/<project>`) |
+| `--yes` | Accept every default and apply the listed changes without asking (for scripts and CI) |
 
-Recovery for any missing tool is uniform: install the tool, re-run `wfc init` (it completes only what is missing), then `wfc doctor` to confirm.
+The `.wfc/wfc.db` database indexes everything in the archive and is not tracked in git. Back up the `.wfc/` directory to keep archived outputs recoverable.
 
 ### wfc doctor
 
-Check whether the project is ready to run, anytime. `wfc doctor` runs the same health checks the wizard runs at the end of `wfc init` and prints a health table:
+Check whether the project is ready to run. `wfc doctor` prints a health table with one row per check:
 
-- **git** — is git installed, is this a repo, does it have a commit, and is the working tree clean?
-- **archive (DVC)** — is an archive location configured, and is it reachable?
-- **Docker** — is `docker` on your PATH and is the daemon running?
+- **git**: git is installed, the project is a repository with a commit, and the working tree is clean.
+- **dvc**: an archive is configured, set up in DVC, and reachable.
+- **docker**: `docker` is installed and the daemon is running.
+- **samples**: every registered sample's content is still in the local cache or the archive.
 
-Each check reports `ok`, `warn`, or `fail` with a short fix hint. `wfc doctor` **exits non-zero if any check fails**, so you can use it as a pre-run gate or a CI check ("is this project runnable?") before launching a pipeline.
-
-| Arg | Description |
-|---|---|
-| *(none)* | Runs all checks against the current project |
+Each check reports `ok`, `warn` or `fail`, with a fix hint under any row that is not `ok`. `wfc doctor` exits 1 if any check fails (a `warn` does not), so it works as a pre-run check in scripts and CI. It takes no arguments.
 
 ### wfc demo
 
-Populate an already-initialised project with a complete, runnable pipeline in one command. `wfc demo` builds a small container environment, registers five methods and three samples through the normal registration path, writes a pipeline file, and opens the Canvas with that pipeline pre-wired — press Run to execute it. It requires `wfc init` first and exits non-zero having changed nothing if the directory is not an initialised project or Docker is unavailable. If a demo is already present it exits non-zero and points you at `--force` (replace) or `--remove` (tear down).
+Add a complete, runnable demo pipeline to an initialised project and open it in the Canvas. `wfc demo` builds a small container environment, registers a module with five methods and three samples, writes `demo-pipeline.json`, and opens the Canvas with that pipeline loaded. Press Run to execute it.
 
-`wfc demo --remove` deletes exactly what the demo added — its module, methods, samples, environment, runs, files, and pipeline — and nothing you registered yourself. It prints what it will remove and asks for confirmation unless you pass `--yes`. Demo entries all use the reserved `__demo__` name prefix, which the registration commands refuse for your own names.
+Run `wfc init` first; `wfc demo` also needs Docker running. If a check fails, it exits 1 and changes nothing. If a demo is already present, pass `--force` to replace it.
+
+`wfc demo --remove` deletes exactly what the demo added (its module, methods, samples, environment, runs, files and pipeline) and leaves everything you registered yourself. It lists what it will remove and asks first unless you pass `--yes`. Demo entries use the `__demo__` name prefix, which you cannot use for your own names.
 
 | Arg | Description |
 |---|---|
-| `--dir` | Existing initialised project directory (default: current directory) |
+| `--dir` | Initialised project directory (default: current directory) |
 | `--port` | Canvas port (default: `8500`) |
-| `--no-open` | Scaffold and serve without opening a browser |
-| `--force` | Re-register over an existing demo |
-| `--remove` | Remove every demo-owned entity, run, and file |
+| `--no-open` | Serve the Canvas without opening a browser |
+| `--force` | Replace an existing demo |
+| `--remove` | Remove every demo entity, run and file |
 | `--purge-image` | With `--remove`: also delete the `local/wfc-demo-env` Docker image |
 | `--yes` | With `--remove`: skip the confirmation prompt |
 
@@ -67,214 +78,242 @@ For a walkthrough see [Exploring the Demo](../tutorials/wfc-demo.md).
 
 ### wfc canvas
 
-Launch the Canvas web UI -- a browser-based visual pipeline builder and run history viewer.
+Start the Canvas web UI for the current project and print its address.
 
 | Arg | Description |
 |---|---|
 | `--host` | Bind address (default: `127.0.0.1`) |
-| `--port` | Port number (default: `8500`) |
-| `--reload` | Enable auto-reload for development |
-| `--project-root` | Override the project root for auto-load |
+| `--port` | Port (default: `8500`) |
+| `--reload` | Restart the server when wfc's source changes (for wfc development) |
+| `--project-root` | Project directory to serve (default: the project containing the current directory) |
 
-For a walkthrough of setting up and running your first project, see [Getting Started](../tutorials/getting-started.md).
+For a first-project walkthrough, see [Getting Started](../tutorials/getting-started.md).
 
 ## Registration Commands
 
+The examples use the suggested layout: your code under `src/<module>/<method>/`, with each module's `module.yaml` in `src/<module>/`, and commands run from the project root.
+
 ### wfc register-module
 
-Create a module with input/output contracts. Contracts can be provided via `module.yaml` in the module directory or directly via CLI.
+Create a module, or update an existing one, with its output contracts. Contracts come from `--contracts` when given; otherwise from `module.yaml` in `--module-dir`. Without `--module-dir`, wfc looks only in `modules/<name>/`, so pass `--module-dir` for a module under `src/`. A `module.yaml` inside the repository is committed to git.
+
+```bash
+wfc register-module --name my_analysis --module-dir src/my_analysis
+```
 
 | Arg | Description |
 |---|---|
-| `--name` | Module name |
-| `--module-dir` | Path to the module directory |
-| `--contracts` | JSON contracts (optional if `module.yaml` exists) |
+| `--name` | Module name (required) |
+| `--module-dir` | Directory holding the module's `module.yaml`, e.g. `src/my_analysis` |
+| `--contracts` | Contracts as a JSON file path or an inline JSON string, e.g. `[{"type":"output","name":"x","value_type":".parquet"}]`. Optional when a `module.yaml` is found |
 | `--description` | Module description |
 
 ### wfc register-method
 
-Register a method: performs AST scan of the method script, reads `method.yaml`, validates against module contracts, and creates a git commit.
+`wfc register-method <method-dir> --module <module>`, where `<method-dir>` is the method's directory and `<module>` is the registered module it joins.
+
+```bash
+wfc register-method src/my_analysis/filter_data --module my_analysis
+```
+
+Register a method from its directory: find the script, scan a Python script for its parameters, read `method.yaml`, check it against the module's contracts, copy the method into `methods/<name>/` (wfc's registered copy), and commit it to git. Registering the same name again updates the method: after you edit a method's script or `method.yaml`, run `wfc register-method` again.
+
+The script is the one named by `--script`, else by the `script:` key in `method.yaml`, else the single `<name>.py`, `.R`, `.r` or `.sh` file in the directory. If the script cannot be found or the check fails, it prints an `ERROR:` line and registers nothing.
 
 | Arg | Description |
 |---|---|
-| `method_dir` | Path to the method directory (positional) |
-| `--module` | Parent module name |
-| `--name` | Method name |
-| `--script` | Script filename to scan |
+| `method_dir` | Method directory (positional), e.g. `src/my_analysis/filter_data` |
+| `--module` | Module the method belongs to (required) |
+| `--name` | Method name (default: the directory name) |
+| `--script` | Script file name in the directory |
 
 ### wfc register-sample
 
-Import a data file into the project. Content-hashes the file via DVC and records the hash in the database. Requires a `[dvc]` section in `wf-canvas.toml`.
+Register a data file or directory as a sample. wfc hashes the content, copies it into the project's DVC cache (the source stays where it is) and records it; the sample is pushed to the archive when one is reachable. Pipelines restore it into `data/samples/<name>/` when a run needs it. A sample name can be registered once.
 
 | Arg | Description |
 |---|---|
-| `--name` | Sample name |
-| `--source` | Path to the source data file |
+| `--name` | Sample name (required) |
+| `--source` | Source file or directory (required) |
+| `--manifest` | Optional YAML file with a `description:` key, stored with the sample |
 
 ### wfc restore-sample
 
-Restore a registered sample from the DVC cache to `data/samples/{name}/`. Verifies integrity automatically (skips if hash matches, replaces if mismatched).
+Copy a registered sample from the cache into `data/samples/<name>/`, pulling it from the archive if it is not in the local cache. A file that is already present with the right content is left alone; a changed one is replaced. Pipelines run this for you before a step reads a sample.
 
 | Arg | Description |
 |---|---|
-| `--name` | Sample name |
-| `--hash` | Content hash to restore |
+| `--name` | Sample name (required) |
+| `--hash` | Expected content hash (default: the registered hash) |
+
+See [Registration](../how-to/registration.md) for walkthroughs of all four.
+
 
 ## Container Env Commands
 
-Manage container environments used by methods and dev-loop commands. Container envs are registered in `.wfc/envs.json` and referenced by method `env:` fields.
+Container environments are Docker images that methods run in. They are recorded in `.wfc/envs.json`, and a method names one with the `env:` key in its `method.yaml`.
 
 ### wfc register-env
 
-Build and register a container env. Generates a Dockerfile for the chosen backend, runs `docker build` with BuildKit, resolves the image digest, and writes a manifest entry to `.wfc/envs.json`. Three input modes select where the build sources its package list from:
+`wfc register-env <name> [<spec>] [flags]`, where `<name>` is the name methods use for the env and `<spec>` (optional) is a local env to capture.
 
-- **Positional typed-spec** — capture from a live local env. The CLI resolves the env, shells out for the package list (conda explicit list or pixi.lock + pixi.toml) plus a pip freeze, and stages the captured contents into the build context. Backend is inferred from the spec prefix; the captured package-list md5 is stored as `source_fingerprint` on the manifest record so the canvas can show what packages went into the image.
-- **File-mode (`--from <path>`)** — copy a user-supplied source file into the build context under the generator's expected filename (`pixi.lock` for pixi, `explicit-list.txt` for conda). For pixi, an adjacent `pixi.toml` next to the lock is also staged when present. Requires `--backend pixi` or `--backend conda`.
-- **Legacy (`--backend` alone)** — expects source files at the project root.
+Build a Docker image for an environment, pin it by digest, and record it in `.wfc/envs.json`. Docker must be running (except with `--dry-run`). Choose one of three sources:
 
-Modes are mutually exclusive; combining a positional typed-spec with `--backend` or `--from` errors before any docker subprocess fires. With `--dry-run`, writes the Dockerfile to `.wfc/build/<name>/Dockerfile` and exits (legacy mode only).
+- **Capture a local env** (positional `spec`): wfc reads the package list of an env on your machine (a conda env's explicit list, or a pixi env's `pixi.lock` and `pixi.toml`, plus a `pip freeze`) and builds an image with the same packages, including anything you added with `pip install`. `conda:<env>` looks under `[conda] root`, or the conda base found by `conda info --base`. `pixi:<name>` and `pixi:<proj>:<env>` look under `[pixi] root`, then in the project's own `.pixi/envs/`. See [wf-canvas.toml](wf-canvas-toml.md).
+- **Build from a file** (`--backend pixi|conda --from PATH`): build from a checked-in `pixi.lock` (with the `pixi.toml` next to it, if there is one) or a conda explicit list.
+- **Use an existing image** (`--backend byo --image docker://...`): wfc pulls the image and records its digest without building anything.
 
-The image itself never needs `wfc` installed — at dispatch, `wfc run-step` runs the method script directly under the env's recorded interpreter (see `--python` below and the execution model in the env-isolation design doc).
+The image does not need wfc installed. wfc runs the method script directly with the env's interpreter (see `--interpreter`).
 
 | Arg | Description |
 |---|---|
-| `name` | Env name (key in `.wfc/envs.json`) |
-| `spec` | Optional typed env spec to capture from a live env: `conda:<env>`, `pixi:<name>`, or `pixi:<proj>:<env>`. Mutually exclusive with `--backend` and `--from`. |
-| `--backend` | Build backend: `pixi`, `conda`, or `byo`. Inferred from positional spec when present; required for `--from` and legacy modes. |
-| `--from PATH` | File-mode: copy this file into the build context under the generator's expected filename. Requires explicit `--backend pixi` or `--backend conda`. |
-| `--image` | `docker://` image reference for `byo` backend |
-| `--base-image` | Override the default base image for this env |
-| `--python PATH` | Container-side path of the env's Python interpreter, recorded in `.wfc/envs.json` and used by `wfc run-step` to launch the method script directly (no `wfc` involvement inside the container). Accepted for any backend; when omitted, a per-backend default is recorded (the pixi/conda env's own interpreter, or bare `python` for `byo`). Useful for `byo` images whose Python is not on `PATH`. |
-| `--dry-run` | Write Dockerfile only; do not invoke docker (legacy mode only) |
-| `--force` | Overwrite an existing manifest entry for `name` |
+| `name` | Env name, the key in `.wfc/envs.json` (positional) |
+| `spec` | Local env to capture: `conda:<env>`, `pixi:<name>`, or `pixi:<proj>:<env>` (positional, optional). Cannot be combined with `--backend` or `--from` |
+| `--backend` | `pixi`, `conda` or `byo`. Required with `--from` and for `byo` |
+| `--from PATH` | Lock file or explicit list to build from |
+| `--image` | `docker://` image reference, for `byo` |
+| `--base-image` | Base image to build on instead of the default |
+| `--interpreter PATH` | Path of the interpreter inside the container that runs method scripts. Default: the env's Python for pixi and conda, `python` for `byo`. Set it for an R or bash env (for example `/opt/conda/bin/Rscript` or `/bin/bash`) or for a `byo` image whose Python is not on `PATH`. `--python PATH` is an alias |
+| `--dry-run` | Write the Dockerfile to `.wfc/build/<name>/Dockerfile` and stop without running Docker. Use it with `--from` |
+| `--force` | Replace an existing env of the same name |
 
 **Examples:**
 
 ```bash
-# Capture from a live conda env named cell_pose
+# Capture a local conda env named cell_pose
 wfc register-env cell_pose conda:cell_pose
 
-# Capture from a pixi project's env
+# Capture env "hello" of the pixi project "wcia"
 wfc register-env analysis pixi:wcia:hello
 
-# File-mode: build from a checked-in lock file
+# Build from a checked-in lock file
 wfc register-env analysis --backend pixi --from envs/analysis/pixi.lock
 
-# BYO image — pull a pre-built image by digest, with an explicit interpreter
-wfc register-env vendor --backend byo --image docker://ghcr.io/org/img@sha256:... --python /usr/bin/python3
+# Use a pre-built image, with an explicit interpreter
+wfc register-env vendor --backend byo --image docker://ghcr.io/org/img@sha256:... --interpreter /usr/bin/python3
 ```
 
-Live-env capture records the env's current state, including any ad-hoc `pip install` mutations on top of the conda/pixi env. To inspect what went into an image, open the canvas **Registry → Envs** tab and expand the env: its **Packages** panel lists the installed `name==version` packages, tagged by source (conda/pixi/pip). A `byo` image has no manifest to show, and an env registered before its packages were captured (or never rebuilt since) shows as not captured until you re-register it.
+To see what went into an image, open the Canvas **Registry → Envs** tab and expand the env: its **Packages** panel lists each `name==version` with its source (conda, pixi or pip). A `byo` image has no package list.
 
 ### wfc list-envs
 
-Print a fixed-width table of all registered envs from `.wfc/envs.json`. Columns: NAME, BACKEND, CONTAINER (digest-pinned ref), BUILT AT.
-
-No arguments.
+Print a table of the registered envs with columns NAME, BACKEND, CONTAINER (the digest-pinned image) and BUILT AT. Takes no arguments.
 
 ### wfc show-env
 
-Print the full record for a single registered env as key/value lines. Fields: name, backend, source, container, python (the recorded container-side interpreter path used by `wfc run-step`; blank for envs registered before interpreter recording), env_fingerprint, source_fingerprint, built_from_lock, built_at.
+`wfc show-env <name>`, where `<name>` is the env's name. Print one env's record: `name`, `backend`, `source`, `container`, `python` (the interpreter path), `env_fingerprint`, `source_fingerprint`, `built_from_lock` and `built_at`.
 
 | Arg | Description |
 |---|---|
-| `name` | Env name (key in `.wfc/envs.json`) |
+| `name` | Env name (positional) |
 
 ### wfc delete-env
 
-Remove a container env from `.wfc/envs.json`. Warns and lists any methods that reference the env before prompting for confirmation. Methods are NOT auto-deleted; you must retarget them manually. The registry tag (if any) is not removed.
+`wfc delete-env <name> [--force]`, where `<name>` is the env's name. Remove an env from `.wfc/envs.json`. If methods use the env, wfc lists them first; they stay registered, so re-register them against another env. It asks for confirmation unless you pass `--force`. The Docker image itself is not deleted.
 
 | Arg | Description |
 |---|---|
-| `name` | Env name to delete |
-| `--force` | Skip the confirmation prompt (warn-on-reference listing still prints) |
+| `name` | Env name (positional) |
+| `--force` | Skip the confirmation prompt |
 
+See [Registering an Environment](../tutorials/registering-an-environment.md) for a walkthrough.
 
 ## Dev-Loop Commands
 
-Interactive development commands that launch an ephemeral container of the env's digest-pinned image. The project directory is bind-mounted at `/work` inside the container, matching the exact layout `wfc run-step` uses, so methods run in production-parity conditions at dev time.
+These commands start a fresh container from a registered env's image, with the project mounted at `/work` as the working directory, the same layout a pipeline step runs in. Use them to try a method interactively in its real environment.
 
-**Important:** Each container is spawned fresh per invocation. Changes made inside the container — including packages installed via `pip install` — do not persist into pipeline runs. The container exits when the command or session ends; nothing is committed back to the image.
-
-**Cluster executor note:** `executor=slurm` is not supported for dev-loop commands in v1. Running any of these commands under a project with `[executor] type = "slurm"` in `wf-canvas.toml` will error clearly with an "out of scope for v1" message.
+Each container is removed when the command ends. Anything you change inside it, including packages you `pip install`, does not carry into pipeline runs. To change an env's packages, update the env and run `wfc register-env` again with `--force`. To change a method, edit its script in your project, then run `wfc register-method` again.
 
 ### wfc jupyter
 
-Launch Jupyter Lab inside an ephemeral container of the env's image. The Jupyter server inside the container always binds port 8888; the host port is either the explicit `--port` value or autopicked from the range 8888–8999 (port 8000 is always skipped). The token-bearing URL (`http://127.0.0.1:<port>/?token=...`) is printed by Jupyter on startup.
+`wfc jupyter <env> [--port PORT]`, where `<env>` is the env's name. Start Jupyter Lab in the env's container. Open the `http://127.0.0.1:<port>/?token=...` URL that Jupyter prints.
 
 | Arg | Description |
 |---|---|
-| `env` | Env name (key in `.wfc/envs.json`) |
-| `--port` | Host port to forward to the container's 8888. Default: autopick the first free port in 8888–8999 (port 8000 always skipped) |
+| `env` | Env name (positional) |
+| `--port` | Host port for Jupyter (default: the first free port from 8888 to 8999) |
 
 ### wfc shell
 
-Drop into an interactive shell inside an ephemeral container of the env's image. Tries `bash` first; falls back to `sh` on slim images that do not include bash. The project is bind-mounted at `/work`.
+`wfc shell <env>`, where `<env>` is the env's name. Open an interactive shell (`bash`, or `sh` if the image has no bash) in the env's container.
 
 | Arg | Description |
 |---|---|
-| `env` | Env name (key in `.wfc/envs.json`) |
+| `env` | Env name (positional) |
 
 ### wfc exec
 
-Run an arbitrary command inside an ephemeral container of the env's image. The command is passed verbatim as the container argv. Uses `-i` (no TTY), so the command works correctly when its output is piped or redirected (e.g., `wfc exec myenv cat file.txt > out.txt`).
+`wfc exec <env> <cmd...>`, where `<env>` is the env's name and `<cmd...>` is the command to run and its arguments. Everything after the env name is passed through as the command. Output can be piped or redirected, for example `wfc exec myenv cat file.txt > out.txt`.
 
 | Arg | Description |
 |---|---|
-| `env` | Env name (key in `.wfc/envs.json`) |
-| `cmd...` | Command and arguments to run inside the container |
+| `env` | Env name (positional) |
+| `cmd...` | Command and its arguments (positional) |
+
 
 ## Pipeline Commands
 
 ### wfc run-pipeline
 
-Generate a Snakefile from a pipeline JSON and execute it via Snakemake. After the pipeline completes, outputs are auto-archived unless `--no-archive` is passed.
+Run a pipeline file from the command line. This is the same run the Canvas Run button starts. wfc generates a Snakefile from the pipeline, runs it with Snakemake, and then archives the outputs unless you pass `--no-archive`.
 
 | Arg | Description |
 |---|---|
-| `--pipeline` | Path to the pipeline JSON file |
-| `--cores` | Number of Snakemake cores (default: 4) |
-| `--project-root` | Project root directory |
-| `--wfc-root` | Directory added to PYTHONPATH for workers so they can `import wfc`. Defaults to wfc's installed location. |
-| `--snakefile` | Where to write the generated Snakefile (default: `<project-root>/Snakefile`) |
-| `--archive` / `--no-archive` | Enable or disable auto-archiving of outputs after completion |
-| `--keep-going` | Pass `--keep-going` to Snakemake — keep running independent branches after a step fails, instead of stopping at the first failure |
+| `--pipeline` | Pipeline JSON file (required) |
+| `--cores` | Number of jobs Snakemake runs at once (default: `4`) |
+| `--project-root` | Project directory (default: current directory) |
+| `--snakefile` | Where to write the generated Snakefile (default: `.runs/pipelines/<pipeline-id>/Snakefile`) |
+| `--archive` / `--no-archive` | Archive outputs after the run (default: on). Archive later with `wfc cache archive` |
+| `--keep-going` | Keep running independent branches after a step fails, instead of stopping at the first failure |
 
-**Running from CLI vs Canvas:** From the command line, use `wfc run-pipeline --pipeline path/to/pipeline.json`. From Canvas, click the Run button in the Builder toolbar -- this calls the same underlying pipeline execution through the web API (`POST /api/workflow/run`).
+When every step succeeds, the command exits 0. When a step fails, it prints the pipeline summary and then one `ERROR: <message>` line naming the failure, and exits 1. If the pipeline cannot start (for example, a sample it reads cannot be found), it prints the `ERROR:` line with the fix and exits 1 without running anything.
 
-## Cache Commands
+## Cache and Export Commands
 
 ### wfc cache archive
 
-Hash and cache all un-archived run outputs (those with `content_hash = NULL`) into the DVC cache. Shows per-file progress. Use this after running a pipeline with `--no-archive`, or to archive a specific run. Each file is committed to the archive as it completes, so an interrupted archive loses nothing — re-running `wfc cache archive` picks up only the outputs that are still un-archived.
+Archive run outputs that are not archived yet: hash each file, copy it into the DVC cache, and record it. Use it after `wfc run-pipeline --no-archive`. It prints progress per file and saves each one as it finishes, so after an interruption, running it again archives only what is left.
 
 | Arg | Description |
 |---|---|
-| `--run-id` | Optional: limit archiving to a specific run |
+| `--run-id` | Archive only this run's outputs |
 
 ### wfc cache prune
 
-Remove old run archives and optionally DVC local cache entries to reclaim disk space. Before pruning, verifies the DVC remote is reachable (skipped with `--force`). Runs with un-archived outputs are skipped with a warning.
+Free disk space. By default, `wfc cache prune` removes run directories under `.runs/` that no recorded output needs. It lists what it will delete and asks before deleting.
+
+Before deleting anything it checks that the archive is reachable, and stops if it is not. Runs with outputs that are not archived yet are skipped with a warning; run `wfc cache archive` first. With `--include-local`, entries whose content has not been pushed to the archive are kept.
 
 | Arg | Description |
 |---|---|
-| `--all` | Remove all archives regardless of reference status |
-| `--include-local` | Also prune `.dvc/cache/` unreferenced hashes |
-| `--dry-run` | Print what would be deleted without deleting |
-| `--force` | Skip the confirmation prompt and remote reachability check |
-
+| `--all` | Remove every run directory and, with `--include-local`, every local cache entry, not only unreferenced ones |
+| `--include-local` | Also remove entries from the local DVC cache (`.dvc/cache/`) |
+| `--dry-run` | Print what would be deleted and delete nothing |
+| `--force` | Skip the confirmation prompt and the archive check, and also delete local cache entries that were never pushed to the archive. Those files cannot be recovered |
 
 ### wfc export
 
-Copy a run's output out of the cache into a file you own, or print the resolved cache path in place. Cache entries are read-only (see [Storage & Provenance](../explanation/storage-and-provenance.md)), so this is the supported way to get a mutable copy. Cache-hit runs resolve to the original run's outputs automatically.
+`wfc export <run-id> <slot> <dest>`, where `<run-id>` is the run to export from, `<slot>` is the output slot, and `<dest>` is where to write the copy. For example, `wfc export 412 masks results/masks.png`.
+
+Copy a run's output out of the cache into a file you own, or print where it is. Cache files are read-only (see [Storage & Provenance](../explanation/storage-and-provenance.md)); the exported copy is writable. For a run that reused a cached result, the original run's output is exported.
 
 | Arg | Description |
 |---|---|
 | `run_id` | Run to export from (positional) |
-| `output_name` | Output name (positional, optional with `--all`) |
-| `dest` | Destination file or directory (positional, optional with `--path`) |
-| `--all` | Export every output of the run into `dest` (a directory) under predictable per-output names |
-| `--path` | Print the resolved cache path instead of copying (script-friendly: `p=$(wfc export 412 masks --path)`) |
+| `slot` | Output slot to export (positional). Omit it to list the run's output slots and file names |
+| `dest` | Destination file or directory (positional). An existing directory receives the file under its own name |
+| `--all` | Export every output of the run into `dest`, which must be a directory |
+| `--path` | Print the read-only local path instead of copying, e.g. `p=$(wfc export 412 masks --path)`. With `--all`, prints one `name<TAB>path` line per output |
 | `--force` | Overwrite an existing destination file |
 
-A bare `wfc export <run-id>` or a mistyped output name exits nonzero and lists the run's actual output names instead of guessing.
+If any requested output cannot be exported, nothing is written and the command exits 1 with the reason.
+
+## Environment Variables
+
+None of these is required; each overrides a default.
+
+| Variable | Effect |
+|---|---|
+| `WFC_PROJECT_ROOT` | The project directory to use instead of walking up from the current directory. It must contain `.wfc/wf-canvas.toml`. |
+| `DATABASE_URL` | The database to read and write instead of the project's `.wfc/wfc.db`. `wfc demo` refuses to run when it names another project's database. |
+| `WFC_GIT_COMMIT_TIMEOUT` | Seconds a `git commit` made by wfc may take before it is stopped (default `300`). Raise it if your git hooks are slow. Must be a positive number. |

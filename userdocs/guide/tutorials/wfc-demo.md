@@ -1,67 +1,85 @@
-<!-- generated from pm_mvp::docs.consumer.tutorials.wfc-demo @ f794f4f52a38; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.tutorials.wfc-demo @ e14d95af87ba; do not edit -->
 
 # Tutorial: Exploring the Demo
 
 ## What `wfc demo` does
 
-`wfc demo` populates an already-initialised project with a complete, runnable pipeline in one command — no methods, environments, or sample data to author yourself. It's the fastest way to see a real Workflow Canvas run end to end.
+`wfc demo` adds a complete, runnable pipeline to a project and opens it in the Canvas, so you can watch a run end to end before writing any methods of your own. It needs the same prerequisites as [Getting Started](getting-started.md#prerequisites): Python, Docker running, and git.
 
 ```bash
 pip install workflow-canvas
-wfc init
+wfc init --dir demo_project --yes
+cd demo_project
 wfc demo
 ```
 
-`wfc demo` requires `wfc init` first (see [Installation](getting-started.md#installation) for prerequisites — Python 3.11+, Docker, and git). It builds a small container environment, registers five methods and three samples through the genuine registration path (the same code path your own methods go through — no shortcuts), writes a pipeline file, and opens the Canvas with that pipeline already wired. Pressing **Run** executes all five steps for all three samples.
+`wfc demo` works in an existing project, so run `wfc init` first. It then:
+
+- builds a small container image for the demo, a packaged copy of the software and dependencies its methods need ([The Tools Behind Workflow Canvas](../explanation/how-the-pieces-fit-together.md)) (the first build takes a few minutes) and registers it as the environment `__demo__env`;
+- registers the module `__demo__` with five methods, and three samples;
+- writes the pipeline to `demo-pipeline.json`;
+- starts the Canvas at `http://127.0.0.1:8500/?pipeline=demo` and opens it in your browser with the pipeline loaded.
+
+Press **Run** to run all five steps for all three samples.
 
 ![The Canvas Builder with the demo pipeline pre-wired: five method nodes fed by an Input Selector with the three demo samples](../_images/builder-demo-pipeline.png)
 
-If the directory isn't an initialised project, `wfc demo` exits non-zero and creates nothing. If Docker is unavailable, it exits non-zero having changed nothing. If a demo is already present, it exits non-zero and points you at `--force` (replace it) or `--remove` (tear it down).
+The Canvas keeps running until you press Ctrl+C in the terminal. To come back to it later, run `wfc canvas` and open `http://127.0.0.1:8500/?pipeline=demo`. Use `--port` to serve on another port and `--no-open` to skip opening the browser.
+
+If the demo is already in the project, `wfc demo` stops and tells you to pass `--force` (set it up again from scratch) or to remove it with `wfc demo --remove`.
+
 
 ## The Pipeline
 
-The demo pipeline has five methods over three samples (`ctrl_01`, `treat_01`, `treat_02` — 50 rows each, one row per cell):
+Every name the demo registers starts with `__demo__`: the methods are `__demo__preprocess`, `__demo__filter_cells` and so on, and the samples are `__demo__ctrl_01`, `__demo__treat_01` and `__demo__treat_02`. This page uses the short names.
+
+The pipeline runs five methods on each sample:
 
 ```
 preprocess -> filter_cells -> label -> summarize
                                     -> plot
 ```
 
-- **preprocess** drops rows with a missing `intensity` measurement (`drop_na=true`).
-- **filter_cells** keeps rows with `quality >= min_quality` (default `0.5`).
-- **label** writes `"above"` or `"below"` depending on whether `intensity >= threshold` (default `150`).
-- **summarize** groups the labeled rows and reports per-group counts and mean intensity.
-- **plot** renders a per-sample intensity histogram, colored by the label column — this is the run's visible payoff.
+- **preprocess** drops rows with no `intensity` value.
+- **filter_cells** keeps rows with `quality` at or above `min_quality` (0.5).
+- **label** adds a `label` column: `above` or `below`, depending on whether `intensity` reaches `threshold` (150).
+- **summarize** reports the row count and mean intensity for each label.
+- **plot** draws an intensity histogram for the sample, coloured by label.
 
-Each demo method script carries comments mapping its code to its `method.yaml` contract (each `ctx.save_artifact` to its declared output slot, each `ctx.params` read to its declared param, each input to its `ctx.input()` slot) — they're written to be copied as a starting point for your own methods. See [Authoring a Method Script](authoring-a-method-script.md) for the general pattern.
+The method scripts are copied into your project under `methods/__demo__<name>/`. Each one has comments that match its code to its `method.yaml` (each input, parameter and output), so you can use them as a starting point for your own methods. See [Authoring a Method Script](authoring-a-method-script.md).
+
 
 ## Inspecting a Run
 
-Open a completed `plot` run in the History tab's detail panel. Its PNG figure renders as an inline thumbnail on a light card — click it for a full-size lightbox (Escape or click-outside closes it). See [Run & Inspect Results](../how-to/run-and-inspect-results.md) for the rest of the Artifacts tab.
+When the run finishes, open the **History** tab and select a `plot` run. Its **Artifacts** tab shows the histogram as a thumbnail; click it to see it full size. See [Build, Run and Inspect in the Canvas](../how-to/canvas.md) for everything the run detail panel shows.
 
 ![A completed plot run's detail panel on the Artifacts tab, with the histogram PNG as an inline thumbnail](../_images/run-detail-panel.png)
 
-To pull any intermediate CSV out of the cache for your own inspection:
+To copy any step's output out of wfc, use the run ID shown in the detail panel:
 
 ```bash
-wfc export <run-id> <output-name> <dest>
+wfc export <run-id>                          # list the run's outputs
+wfc export <run-id> <output-name> <dest>     # copy one output to <dest>
 ```
 
-See [Exporting a run's outputs](../how-to/run-and-inspect-results.md#exporting-a-runs-outputs) for the full command.
 
 ## The Sample Data
 
-All three CSVs share the same schema: `id` (`cell_001` … `cell_050`), `intensity` (float; 1-2 cells per file are blank — this is what `preprocess`'s `drop_na` exercises), `area` (float, always present, unused by the shipped params), and `quality` (float 0-1, always present — the `filter_cells` gate).
+Each sample is a CSV of 50 cells with the columns `id`, `intensity`, `area` and `quality`. One or two cells per file have no `intensity`, which is what `preprocess` removes.
 
-| Sample | intensity range | empty `intensity` cells | quality range |
-|---|---|---|---|
-| `ctrl_01` | 49.2 – 193.5 | 2 | 0.51 – 0.98 |
-| `treat_01` | 70.3 – 272.2 | 1 | 0.31 – 0.95 |
-| `treat_02` | 80.0 – 320.7 | 2 | 0.21 – 0.80 |
+| Sample | intensity range | quality range |
+|---|---|---|
+| `ctrl_01` | 49.2 – 193.5 | 0.51 – 0.98 |
+| `treat_01` | 70.3 – 272.2 | 0.31 – 0.95 |
+| `treat_02` | 80.0 – 320.7 | 0.21 – 0.80 |
 
-The default `min_quality=0.5` sits inside every sample's quality range but bites differently — `ctrl_01` loses nothing (its minimum is 0.51), `treat_01` keeps 41 of 49 rows, `treat_02` keeps 28 of 48 (its low-quality tail is deliberately heavy). The default `threshold=150` also sits inside all three intensity ranges and separates the two conditions: after filtering, `ctrl_01` is 7 above / 41 below, `treat_01` is 29 above / 12 below, `treat_02` is 23 above / 5 below — control mostly below, treated mostly above.
+With the default parameters, most control cells are labelled `below` and most treated cells `above`. Try changing the parameters on the Canvas and running again:
 
-Retuning `threshold` in the Canvas visibly moves the above/below split (e.g. `200` puts almost all of `ctrl_01` below); retuning `min_quality` mainly changes `treat_02`'s row count.
+- Raise `threshold` to 200 and every `ctrl_01` cell falls `below`.
+- Change `min_quality` and the row count of `treat_02`, which has the most low-quality cells, changes the most.
+
+Steps whose inputs and parameters did not change are reused from the earlier run instead of running again.
+
 
 ## Removing the Demo
 
@@ -69,10 +87,12 @@ Retuning `threshold` in the Canvas visibly moves the above/below split (e.g. `20
 wfc demo --remove
 ```
 
-This removes exactly what `wfc demo` added — the demo's module, methods, samples, environment, runs (with their input/output/annotation rows), copied method directories, restored sample files, the pipeline file, and the built image's Dockerfile — and nothing you registered yourself, even a method of yours that happens to share a demo method's name (e.g. `preprocess`). It prints what it's about to remove (including the run count) and asks for confirmation unless you pass `--yes`. Removal is idempotent and tolerates a partially-scaffolded demo. Cached output bytes are untouched — `wfc cache prune` reclaims those separately.
+This lists what it will delete and asks you to confirm; pass `--yes` to skip the question. It removes the demo's module, methods, samples, environment and runs, the method directories under `methods/`, and `demo-pipeline.json`. Add `--purge-image` to also delete the demo's Docker image. Cached output files stay in the cache until you run `wfc cache prune`.
 
-The `__demo__` name prefix is reserved: `wfc register-module`, `register-method`, `register-sample`, and `register-env` (and the Canvas Registry tab) all refuse a name starting with `__demo__`, so nothing you register can collide with or be swept up by `wfc demo --remove`.
+Nothing you register yourself is removed: wfc refuses any module, method, sample or environment name that starts with `__demo__`, so only the demo carries that prefix.
+
 
 ## Next Steps
 
-Ready to build your own pipeline? Start with [Getting Started](getting-started.md) or go straight to [Authoring a Method Script](authoring-a-method-script.md) — the demo's own method scripts (`wfc/demo/assets/methods/` in the installed package) are a second worked example alongside that tutorial.
+To build a pipeline of your own, follow [Getting Started](getting-started.md), then [Authoring a Method Script](authoring-a-method-script.md). The demo's scripts under `methods/__demo__<name>/` are a second set of worked examples; copy them before you remove the demo.
+

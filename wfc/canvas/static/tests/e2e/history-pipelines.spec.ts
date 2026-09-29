@@ -1,6 +1,5 @@
 /**
- * Browser smoke tests for the History view's Pipelines tab (Task 10 of
- * the load-in-canvas cycle, incarnation 3).
+ * Browser smoke tests for the History view's Pipelines tab.
  *
  * Route-replay strategy: this spec mocks the /api/wfc/* endpoints directly
  * via `page.route()` rather than reusing `setupRouteReplay` (which targets
@@ -38,6 +37,12 @@ interface MockWfcRun {
   user: string;
   favorite: boolean;
   pipelineId: string | null;
+  // The Pipelines view titles a row from the first non-empty pipelineName
+  // in the group, falling back to `pipelineId.slice(0, 8)`
+  // (historyStore.ts::pipelineRuns). A payload without it renders
+  // "pipe_don" for pipe_done, which no hasText filter on the full id can
+  // match.
+  pipelineName: string | null;
   scriptPath: string | null;
 }
 
@@ -62,6 +67,7 @@ function mkRun(p: Partial<MockWfcRun>): MockWfcRun {
     user: 'tester',
     favorite: false,
     pipelineId: p.pipelineId ?? 'pipe_a',
+    pipelineName: p.pipelineName ?? p.pipelineId ?? 'pipe_a',
     scriptPath: null,
     ...p,
   };

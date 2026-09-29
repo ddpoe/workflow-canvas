@@ -1,12 +1,12 @@
-"""Tier 3 E2E tests for the enhanced `wfc init` setup wizard.
+"""Tier 3 E2E tests for the `wfc init` setup wizard.
 
-Covers the cycle's user stories:
-  US-1/US-2  `init --yes <clean dir>` lands a live [dvc] at the default
-             archive, a DVC cache, the DB, and a clean HEAD from the
-             fallback-identity commit (no global git identity required).
-  US-5       Re-running `init --yes` clobbers / re-asks nothing.
-  US-3/US-5  git absent → scaffold still completes, exit 0, git surfaced in
-             the summary, no repo; re-running with git present fills the gap.
+Covers the setup scenarios:
+  - `init --yes <clean dir>` lands a live [dvc] at the default
+    archive, a DVC cache, the DB, and a clean HEAD from the
+    fallback-identity commit (no global git identity required).
+  - Re-running `init --yes` clobbers / re-asks nothing.
+  - git absent → scaffold still completes, exit 0, git surfaced in
+    the summary, no repo; re-running with git present fills the gap.
 """
 
 from __future__ import annotations
@@ -17,6 +17,12 @@ from pathlib import Path
 
 from axiom_annotations import workflow, Step, AutoStep
 
+from tests.fixtures.fakes import (
+    fake_subprocess_run,
+    redirect_home,
+    stub_binary_lookup,
+    stub_interactive_prompt,
+)
 from wfc.init import init_project
 
 
@@ -35,7 +41,7 @@ def test_init_yes_lands_runnable_project(tmp_path, monkeypatch):
     # not touch the developer's real ~/.wfc/archives.
     home = tmp_path / "home"
     home.mkdir()
-    monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    redirect_home(monkeypatch, home)
     project = tmp_path / "proj"
 
     口 = AutoStep(step_num=1)
@@ -93,7 +99,7 @@ def test_init_yes_lands_runnable_project(tmp_path, monkeypatch):
 def test_init_yes_is_idempotent(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
-    monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    redirect_home(monkeypatch, home)
     project = tmp_path / "proj"
 
     口 = AutoStep(step_num=1)
@@ -138,20 +144,11 @@ def test_init_yes_is_idempotent(tmp_path, monkeypatch):
 def test_init_completes_when_git_absent(tmp_path, monkeypatch, capsys):
     home = tmp_path / "home"
     home.mkdir()
-    monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    redirect_home(monkeypatch, home)
     project = tmp_path / "proj"
 
     口 = Step(step_num=1, name="git binary missing",
              purpose="Simulate git not on PATH for both init and the preflight summary")
-    import shutil as _shutil
-    import wfc.preflight as preflight_mod
-    real_which = _shutil.which
-
-    def _no_git(name, *a, **k):
-        if name == "git":
-            return None
-        return real_which(name, *a, **k)
-
     # _is_git_repo / git init use subprocess directly; make `git` raise
     # FileNotFoundError like a truly-missing binary.
     real_run = subprocess.run
@@ -161,8 +158,8 @@ def test_init_completes_when_git_absent(tmp_path, monkeypatch, capsys):
             raise FileNotFoundError("git")
         return real_run(cmd, *a, **k)
 
-    monkeypatch.setattr(preflight_mod.shutil, "which", _no_git)
-    monkeypatch.setattr(subprocess, "run", _run_no_git)
+    stub_binary_lookup(monkeypatch, git=None)
+    fake_subprocess_run(monkeypatch, _run_no_git)
 
     口 = Step(step_num=2, name="init still completes",
              purpose="Scaffold succeeds and returns without raising")
@@ -181,7 +178,7 @@ def test_init_completes_when_git_absent(tmp_path, monkeypatch, capsys):
     口 = Step(step_num=4, name="Re-run with git present fills only the gap",
              purpose="With git restored, the repo is created; config/DVC untouched")
     monkeypatch.undo()
-    monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    redirect_home(monkeypatch, home)
     config_before = (project / ".wfc" / "wf-canvas.toml").read_bytes()
     dvc_before = (project / ".dvc" / "config").read_bytes()
 
@@ -190,3 +187,34 @@ def test_init_completes_when_git_absent(tmp_path, monkeypatch, capsys):
     assert created2[".git/"] is True
     assert (project / ".wfc" / "wf-canvas.toml").read_bytes() == config_before
     assert (project / ".dvc" / "config").read_bytes() == dvc_before
+
+
+@workflow(
+    purpose="init --yes is fully non-interactive — no input() prompt even "
+            "when a git repo with a remote is present"
+)
+def test_init_yes_never_prompts(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    redirect_home(monkeypatch, home)
+    project = tmp_path / "proj"
+    project.mkdir()
+
+    # A git repo with a remote present must still not prompt (this is the case
+    # where a prompt could plausibly sneak in from a remote-derived default).
+    subprocess.run(["git", "init", str(project)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(project), "remote", "add", "origin",
+         "git@github.com:dante/myproject.git"],
+        check=True, capture_output=True,
+    )
+
+    input_calls: list[str] = []
+    stub_interactive_prompt(monkeypatch, "", prompts=input_calls)
+
+    init_project(project, assume_yes=True)
+
+    assert input_calls == [], (
+        f"`wfc init --yes` must be fully non-interactive — got "
+        f"{len(input_calls)} prompt(s): {input_calls!r}"
+    )

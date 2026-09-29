@@ -6,8 +6,8 @@ env ``__demo__env``). ``wfc demo --remove`` later deletes by that tag, so
 the tag must be PROOF of demo ownership: no user-driven registration path
 may ever create a ``__demo__``-prefixed name. This module is the single
 guard seam — the library-level registration functions
-(:func:`wfc.register.register_module`, :func:`wfc.register.register_method`,
-:func:`wfc.cli.register_sample`, :func:`wfc.envs.register`) all call
+(:func:`wfc.registration.register_module`, :func:`wfc.registration.register_method`,
+:func:`wfc.registration.register_sample`, :func:`wfc.environments.register`) all call
 :func:`check_reserved_name` by default, which covers both the CLI commands
 and the Canvas Registry endpoints that wrap them. The demo itself passes
 ``allow_reserved=True``.

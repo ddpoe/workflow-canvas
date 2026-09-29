@@ -1,0 +1,87 @@
+{
+  "id": "fan-in-two-selectors",
+  "case": "legality-fan-in-two-selectors",
+  "note": "Two fan-in selectors with different sample lists into one consumer are refused naming both, rather than the second replacing the first.",
+  "document": {
+    "name": "fan-in-two-selectors",
+    "nodes": [
+      {
+        "id": "a",
+        "type": "input_selector",
+        "method": "",
+        "module": "",
+        "params": {},
+        "samples": [
+          "s1",
+          "s2"
+        ],
+        "source": "registered",
+        "fan_mode": "in"
+      },
+      {
+        "id": "b",
+        "type": "input_selector",
+        "method": "",
+        "module": "",
+        "params": {},
+        "samples": [
+          "s3"
+        ],
+        "source": "registered",
+        "fan_mode": "in"
+      },
+      {
+        "id": "m1",
+        "type": "method",
+        "method": "join",
+        "module": "mod",
+        "params": {}
+      }
+    ],
+    "links": [
+      {
+        "source": "a",
+        "target": "m1",
+        "targetHandle": "data"
+      },
+      {
+        "source": "b",
+        "target": "m1",
+        "targetHandle": "other"
+      }
+    ],
+    "samples": [
+      "s1",
+      "s2",
+      "s3"
+    ]
+  },
+  "contract_map": {
+    "mod.join": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        },
+        "other": {
+          "required": true
+        }
+      },
+      "script_path": "methods/join/join.py",
+      "env": "container:base"
+    }
+  },
+  "reference_outputs": {},
+  "package": {
+    "validation": "refuse",
+    "load": "refuse"
+  },
+  "client": {
+    "answers": false,
+    "reason": "the client previews only the duplicate-slot rule"
+  }
+}

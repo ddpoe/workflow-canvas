@@ -1,21 +1,21 @@
 /**
- * Vitest suite for the paramEditorAggregator (ADR-016 Phase 2 expand).
+ * Vitest suite for the paramEditorAggregator.
  *
- * Tests the US-2 commit-before-run scenario end-to-end with real
- * paramEditorActor children — replacing the 0.2.8 microtask race
- * (`requestCommitAll(); await new Promise(r => setTimeout(r, 0))`)
- * with an explicit `idle → committingAll → allCommitted` traversal.
+ * Tests the commit-before-run scenario end-to-end with real
+ * paramEditorActor children through an explicit
+ * `idle → committingAll → allCommitted` traversal.
  *
- * Two tests, both load-bearing:
+ *   Two editing children: send COMMIT_ALL. Wire CHILD_SETTLED bridges
+ *     from each child's subscription. Assert aggregator reaches
+ *     `allCommitted` ONLY after both children's currentValue carries
+ *     the typed draft. The bridge mirrors what root.ts does at runtime;
+ *     without it the aggregator would hang (proving the bridge is
+ *     load-bearing).
  *
- *   T1 (US-2 root cause): aggregator with two editing children.
- *     Send COMMIT_ALL. Wire CHILD_SETTLED bridges from each child's
- *     subscription. Assert aggregator reaches `allCommitted` ONLY
- *     after both children's currentValue carries the typed draft.
- *     The bridge mirrors what root.ts does at runtime; without it
- *     the aggregator would hang (proving the bridge is load-bearing).
+ *   Forward before allCommitted: an aggregator-driven commit reaches
+ *     the parent callback before the aggregator reports `allCommitted`.
  *
- *   T2 (no editing children): COMMIT_ALL when every child is in
+ *   No editing children: COMMIT_ALL when every child is in
  *     viewing/committed transitions straight to allCommitted with
  *     no pending — protects callers from hanging when nothing is
  *     dirty (the natural Run-button case post-commit).
@@ -41,7 +41,7 @@ function spawnEditor(input: ParamEditorInput): ParamEditorActor {
 }
 
 /**
- * Wire the bridge that root.ts will install at runtime: every time a
+ * Wire the bridge that root.ts installs at runtime: every time a
  * registered child's snapshot changes, if it's now settled, send
  * CHILD_SETTLED to the aggregator. Returns the unsubscribe.
  */
@@ -62,13 +62,13 @@ function bridgeChildToAggregator(
 }
 
 describe('paramEditorAggregator', () => {
-  it('COMMIT_ALL propagates to editing children and reaches allCommitted only after every child settles (US-2 race fix)', async () => {
+  it('COMMIT_ALL propagates to editing children and reaches allCommitted only after every child settles', async () => {
     const aggregator = createActor(makeParamEditorAggregatorMachine());
     aggregator.start();
 
     // Spawn two children, drive both into `editing` with distinct
-    // drafts. This reproduces the 0.2.8 scenario: user types in two
-    // rows, never blurs/Enters, clicks Run.
+    // drafts. This reproduces the commit-before-run scenario: user
+    // types in two rows, never blurs/Enters, clicks Run.
     const a = spawnEditor({
       nodeId: 'node_1',
       paramName: 'sample_name',
@@ -120,8 +120,7 @@ describe('paramEditorAggregator', () => {
     expect(aggregator.getSnapshot().context.pending.size).toBe(0);
 
     // Final values carry the typed drafts — this is the assertion
-    // that fails under the 0.2.8 race (Run submitted before the
-    // microtask flushed).
+    // that fails if Run submits before the children commit.
     expect(a.getSnapshot().context.currentValue).toBe('new-a');
     expect(b.getSnapshot().context.currentValue).toBe('new-b');
     expect(a.getSnapshot().value).toBe('committed');
@@ -134,27 +133,23 @@ describe('paramEditorAggregator', () => {
     aggregator.stop();
   });
 
-  it('aggregator-driven commit forwards committed value to parent BEFORE allCommitted (closes D-15 gap; would fail under legacy commitRow one-shot)', async () => {
-    // This is the test that would have caught D-15 before it landed.
-    //
+  it('aggregator-driven commit forwards committed value to parent BEFORE allCommitted, without passing through commitRow', async () => {
     // Scenario: user types into a base row, never blurs/Enters, clicks
     // Lock All / Run. The aggregator drives COMMIT via COMMIT_ALL —
-    // bypassing any UI-side commitRow handler. Pre-D-15 the parent
-    // callback (`onBaseChange`) was wired ONLY through commitRow's
-    // one-shot subscription — so an aggregator-driven commit updated
-    // the actor's context but never reached `data.paramValues`. The
-    // Run-button payload would carry stale values (the exact race
-    // US-2 was supposed to eliminate).
+    // bypassing any UI-side commitRow handler. A parent callback
+    // (`onBaseChange`) wired only through commitRow's one-shot
+    // subscription would see the actor's context update but never
+    // reach `data.paramValues`, and the Run-button payload would carry
+    // stale values.
     //
-    // The fix (D-15) is a permanent subscription installed at spawn
-    // time that forwards `currentValue` upstream whenever the actor
-    // enters `committed`. This test reproduces the spawn-time
-    // subscription pattern from ValueList.svelte#spawnBaseActor and
-    // asserts the parent callback fires with the typed value BEFORE
-    // the aggregator's `allCommitted` is observable. Removing the
-    // spawn-time subscription (reverting to a commitRow-only one-shot)
-    // would make this assertion fail because aggregator COMMIT_ALL
-    // never visits commitRow.
+    // The forward is a permanent subscription installed at spawn time
+    // that sends `currentValue` upstream whenever the actor enters
+    // `committed`. This test reproduces the spawn-time subscription
+    // pattern from rowActors.ts#spawnBaseActor and asserts the parent
+    // callback fires with the typed value BEFORE the aggregator's
+    // `allCommitted` is observable. Without the spawn-time subscription
+    // (a commitRow-only one-shot) this assertion fails because
+    // aggregator COMMIT_ALL never visits commitRow.
     const aggregator = createActor(makeParamEditorAggregatorMachine());
     aggregator.start();
 
@@ -167,7 +162,7 @@ describe('paramEditorAggregator', () => {
     });
 
     // Replicate the spawn-time forward subscription from
-    // ValueList.svelte#spawnBaseActor: on every transition into
+    // rowActors.ts#spawnBaseActor: on every transition into
     // `committed`, forward `currentValue` to the parent callback.
     // De-dup via lastForwarded so RESET_TO echoes don't loop.
     const baseChanges: unknown[] = [];
@@ -217,9 +212,9 @@ describe('paramEditorAggregator', () => {
     await new Promise(r => setTimeout(r, 0));
 
     // The parent callback fired with the typed value — this is the
-    // assertion that fails under a legacy commitRow-only one-shot.
-    // Under the legacy pattern, COMMIT_ALL bypasses commitRow, so
-    // baseChanges would still be empty after the aggregator settles.
+    // assertion that fails with a commitRow-only one-shot: COMMIT_ALL
+    // bypasses commitRow, so baseChanges would still be empty after
+    // the aggregator settles.
     expect(baseChanges).toEqual(['typed-but-not-blurred']);
     expect(baseChangesAtCommitMoment).toEqual(['typed-but-not-blurred']);
 

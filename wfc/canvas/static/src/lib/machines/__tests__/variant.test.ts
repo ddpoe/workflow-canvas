@@ -1,24 +1,24 @@
 /**
- * Vitest suite for the per-variant variantActor (ADR-016 Phase 2 expand).
+ * Vitest suite for the per-variant variantActor.
  *
- * Each test is one user story or load-bearing transition:
+ * Each test is one load-bearing transition:
  *
- *   - T1 (US-3 happy path): noVariants → addingVariant → editingValue
+ *   - happy path: noVariants → addingVariant → editingValue
  *     → committing → committed. Drives the full lifecycle for a fresh
  *     variant with no sibling collision.
- *   - T2 (US-3 dedup-merge): editingValue → committing → mergingDuplicate
- *     when the coerced draft equals an existing sibling. Replaces the
- *     "you can have two v's with the same value" pre-cycle behavior.
- *   - T3 (US-3 confirm-delete then cancel): committed → confirmingDelete
+ *   - dedup-merge: editingValue → committing → mergingDuplicate
+ *     when the coerced draft equals an existing sibling, so two
+ *     variants cannot hold the same value.
+ *   - confirm-delete then cancel: committed → confirmingDelete
  *     → committed (preserves currentValue + validationError on cancel).
- *     Asserts Edge Case #8 (modal-shaped, no parallel $state flag).
- *   - T4 (Edge Case #3 sibling broadcast): SIBLINGS_CHANGED updates the
- *     dedup target list. A draft committed BEFORE the broadcast is
- *     unique; the same draft committed AFTER broadcasting that it now
- *     matches a sibling lands in mergingDuplicate. This is the test the
- *     pitch flagged: snapshot-at-spawn would let two variants commit
- *     identical values when edited concurrently; broadcast keeps it
- *     consistent.
+ *     The delete confirmation is modal-shaped, with no parallel $state
+ *     flag.
+ *   - sibling broadcast: SIBLINGS_CHANGED updates the dedup target
+ *     list. A draft committed BEFORE the broadcast is unique; the same
+ *     draft committed AFTER broadcasting that it now matches a sibling
+ *     lands in mergingDuplicate. Snapshot-at-spawn would let two
+ *     variants commit identical values when edited concurrently;
+ *     broadcast keeps it consistent.
  */
 import { describe, expect, it } from 'vitest';
 import { createActor } from 'xstate';
@@ -40,7 +40,7 @@ function tick(): Promise<void> {
 }
 
 describe('variantActor', () => {
-  it('happy path: noVariants -> addingVariant -> editingValue -> committing -> committed (US-3)', async () => {
+  it('happy path: noVariants -> addingVariant -> editingValue -> committing -> committed', async () => {
     const actor = createActor(makeVariantMachine(), { input: { ...baseInput } });
     actor.start();
 
@@ -66,7 +66,7 @@ describe('variantActor', () => {
     actor.stop();
   });
 
-  it('committing into a duplicate sibling lands in mergingDuplicate (US-3 dedup)', async () => {
+  it('committing into a duplicate sibling lands in mergingDuplicate', async () => {
     const actor = createActor(makeVariantMachine(), {
       input: {
         ...baseInput,
@@ -90,7 +90,7 @@ describe('variantActor', () => {
     actor.stop();
   });
 
-  it('confirmingDelete -> CANCEL_DELETE returns to committed with context intact (Edge Case #8)', async () => {
+  it('confirmingDelete -> CANCEL_DELETE returns to committed with context intact', async () => {
     const actor = createActor(makeVariantMachine(), {
       input: {
         ...baseInput,
@@ -115,8 +115,8 @@ describe('variantActor', () => {
     actor.stop();
   });
 
-  it('SIBLINGS_CHANGED broadcast updates dedup target list mid-edit (Edge Case #3)', async () => {
-    // The bug snapshot-at-spawn would hide: two variantActors are
+  it('SIBLINGS_CHANGED broadcast updates dedup target list mid-edit', async () => {
+    // The case snapshot-at-spawn would miss: two variantActors are
     // editing simultaneously. The first commits 'foo'. The aggregator
     // broadcasts SIBLINGS_CHANGED: ['foo']. The second's pre-broadcast
     // siblingValues was [], so without the broadcast it would commit

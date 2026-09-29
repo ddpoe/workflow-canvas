@@ -1,7 +1,7 @@
-"""Scaffold logic for ``wfc demo`` (US-1).
+"""Scaffold logic for ``wfc demo``.
 
-Drives the 9-step sequence from the request design: every fallible check
-runs BEFORE the first state change, so a failed ``wfc demo`` leaves the
+Runs a 9-step sequence in which every fallible check runs BEFORE the
+first state change, so a failed ``wfc demo`` leaves the
 project byte-for-byte unchanged. All registration goes through the genuine
 production paths (``envs.register``, ``register_module``,
 ``register_method``, ``register_sample``) with the explicit
@@ -15,18 +15,32 @@ import importlib.metadata
 import os
 import shutil
 import subprocess
-import sys
 import threading
 import webbrowser
 from pathlib import Path
+from .. import layout
 
-from ..preflight import check_docker
-from ..provenance import DvcNotConfiguredError, ensure_dvc_ready
+from ..execution.readiness import check_docker
+from ..storage import DvcNotConfiguredError, ensure_dvc_ready
 
 DEMO_MODULE = "__demo__"
 DEMO_ENV = "__demo__env"
 DEMO_IMAGE_TAG = "local/wfc-demo-env:latest"
-DEMO_METHODS = ("preprocess", "filter_cells", "label", "summarize", "plot")
+#: Asset directory names under ``assets/methods/`` — the names the demo's
+#: source is authored and shipped under. Each holds ``<name>.py``.
+DEMO_METHOD_SOURCES = ("preprocess", "filter_cells", "label", "summarize", "plot")
+#: The names the demo's methods are REGISTERED under, and the names of the
+#: directories it stages under the project's ``methods/``.
+#:
+#: They carry the reserved prefix because ``register_method`` snapshots every
+#: method into ``methods/<method_name>/``, a single flat namespace shared by
+#: every module, and refuses a name another module already holds. Unprefixed,
+#: the demo would consume ``preprocess`` — so the first thing a new user runs
+#: would stop them registering a method of their own by that name.
+#:
+#: This is a workaround for the flat snapshot namespace, not a design. Remove
+#: the prefix (and this indirection) when per-module snapshot directories land.
+DEMO_METHODS = tuple(f"{DEMO_MODULE}{n}" for n in DEMO_METHOD_SOURCES)
 DEMO_SAMPLES = ("ctrl_01", "treat_01", "treat_02")
 ASSETS_DIR = Path(__file__).parent / "assets"
 
@@ -39,33 +53,83 @@ class DemoError(Exception):
 def _project_env(target: Path):
     """Bind the process to *target* as the active wfc project.
 
-    ``register_module`` / ``register_method`` resolve the project root from
-    the current working directory, and the DB engine is cached per-process —
-    so ``--dir`` support needs chdir + env vars + an engine reset, restored
-    on exit.
+    The registration calls resolve the project root and open sessions through
+    Persistence, so ``--dir`` support binds both to *target* with
+    :func:`wfc.persistence.use_project`. The working directory and
+    ``WFC_PROJECT_ROOT`` are set as well, for the subprocesses the scaffold
+    starts. All three are restored on exit.
 
     Args:
         target: Resolved project root directory.
     """
-    from ..database import reset_engine
+    from ..persistence import use_project
 
     old_cwd = Path.cwd()
-    old_root = os.environ.get("WFC_PROJECT_ROOT")
-    old_db = os.environ.get("DATABASE_URL")
+    old_root = os.environ.get(layout.ROOT_ENV_VAR)
     os.chdir(target)
-    os.environ["WFC_PROJECT_ROOT"] = str(target)
-    os.environ["DATABASE_URL"] = f"sqlite:///{target / '.wfc' / 'wfc.db'}"
-    reset_engine()
+    os.environ[layout.ROOT_ENV_VAR] = str(target)
     try:
-        yield
+        with use_project(target):
+            yield
     finally:
         os.chdir(old_cwd)
-        for key, old in (("WFC_PROJECT_ROOT", old_root), ("DATABASE_URL", old_db)):
-            if old is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = old
-        reset_engine()
+        if old_root is None:
+            os.environ.pop(layout.ROOT_ENV_VAR, None)
+        else:
+            os.environ[layout.ROOT_ENV_VAR] = old_root
+
+
+def _same_file(a: str | Path, b: str | Path) -> bool:
+    """Return whether two paths name the same file.
+
+    Compared as real paths, case-folded where the platform folds case, the
+    way the canvas provider compares its bound database to its project's.
+    """
+    return os.path.normcase(os.path.realpath(str(a))) == os.path.normcase(
+        os.path.realpath(str(b))
+    )
+
+
+def _refuse_a_foreign_database(target: Path) -> None:
+    """Refuse when ``DATABASE_URL`` names a database other than *target*'s.
+
+    The demo canvas reads *target*'s database through
+    :func:`wfc.persistence.use_project`, which leaves the environment alone.
+    The runs the canvas starts inherit ``DATABASE_URL``, so an override that
+    names another database would send their rows there while the canvas reads
+    *target*'s: new runs would never appear, and nothing would error. An
+    override naming *target*'s own database, in any spelling, passes.
+
+    Args:
+        target: Resolved project root directory.
+
+    Raises:
+        DemoError: ``DATABASE_URL`` is set and names another database.
+    """
+    override = os.environ.get("DATABASE_URL")
+    if not override:
+        return
+    from sqlalchemy.engine import make_url
+    from sqlalchemy.exc import ArgumentError
+
+    try:
+        url = make_url(override)
+    except ArgumentError:
+        named, shown = None, "a value that is not a database URL"
+    else:
+        named = url.database if url.get_backend_name() == "sqlite" else None
+        shown = url.render_as_string(hide_password=True)
+    expected = layout.db_path(target)
+    if named and _same_file(named, expected):
+        return
+    raise DemoError(
+        f"DATABASE_URL is set to {shown}, which is not this project's "
+        f"database ({expected}). The demo canvas reads this project's "
+        f"database, but the runs it starts would inherit DATABASE_URL and "
+        f"record to the other one, so they would never appear. Unset "
+        f"DATABASE_URL, or set it to {layout.database_url(target)}, and "
+        f"re-run `wfc demo`."
+    )
 
 
 def _existing_demo_entities(target: Path) -> list[str]:
@@ -82,9 +146,9 @@ def _existing_demo_entities(target: Path) -> list[str]:
     """
     from sqlmodel import select
 
-    from ..database import get_session
-    from ..envs import load_manifest
-    from ..models import Module, Sample
+    from ..persistence import get_session
+    from ..environments import load_manifest
+    from ..persistence import Module, Sample
 
     found: list[str] = []
     with get_session() as session:
@@ -116,10 +180,18 @@ def _method_name_collisions(target: Path) -> list[str]:
     """Detect user-owned claims on the demo's method names.
 
     ``register_method`` snapshots every method's code into
-    ``methods/<method_name>/`` keyed by method name alone, so a user method
-    named e.g. ``preprocess`` shares that directory with the demo's. Copying
-    demo code there would silently clobber the user's registered snapshot —
-    refuse up front instead. Must be called inside :func:`_project_env`.
+    ``methods/<method_name>/`` keyed by method name alone, so two methods
+    sharing a name share that directory and copying demo code there would
+    silently clobber the other one's registered snapshot. Refuse up front
+    instead. Must be called inside :func:`_project_env`.
+
+    Since the demo's method names carry the reserved ``__demo__`` prefix, the
+    DB arm can no longer fire: ``check_reserved_name`` refuses a ``__demo__*``
+    method name to every caller but ``wfc demo`` itself. It is kept because it
+    is the arm that becomes live again the day the prefix is removed. The
+    on-disk arm below is still reachable today — an aborted scaffold or a
+    reset database can leave a ``methods/__demo__<name>/`` directory with no
+    demo module to own it.
 
     Args:
         target: Resolved project root directory.
@@ -129,8 +201,7 @@ def _method_name_collisions(target: Path) -> list[str]:
     """
     from sqlmodel import select
 
-    from ..database import get_session
-    from ..models import Method, Module
+    from ..persistence import get_session, Method, Module
 
     collisions: list[str] = []
     with get_session() as session:
@@ -150,10 +221,12 @@ def _method_name_collisions(target: Path) -> list[str]:
         ).first() is not None
     if not demo_registered:
         # A methods/<m>/ dir with no demo module in the DB (and no DB claim
-        # above) is a user's unregistered work-in-progress — never overwrite.
+        # above) is unattributable — residue from an aborted scaffold or a
+        # reset database, or hand-authored work. Refuse rather than guess;
+        # the scaffold's copy step deletes whatever it lands on.
         claimed = {c.split("methods/")[-1].rstrip("/") for c in collisions}
         for m in DEMO_METHODS:
-            if m not in claimed and (target / "methods" / m).exists():
+            if m not in claimed and layout.method_dir(target, m).exists():
                 collisions.append(
                     f"directory methods/{m}/ exists but is not demo-owned"
                 )
@@ -179,14 +252,14 @@ def _build_demo_image(target: Path) -> str:
         print(f"WFC_DEMO_IMAGE set — skipping image build, using {ref}")
         return ref
 
-    from .. import docker_runner
+    from ..environments import docker as docker_runner
 
     template = (ASSETS_DIR / "Dockerfile.template").read_text(encoding="utf-8")
     # Thin-container contract: the image needs only what the demo methods
-    # import — wfc-client (Tier-1 authoring sugar; ships independently on
-    # PyPI) and matplotlib. Pin wfc-client to the host-installed version.
+    # import — wfc-client (the authoring helper library; ships independently
+    # on PyPI) and matplotlib. Pin wfc-client to the host-installed version.
     wfc_client_version = importlib.metadata.version("wfc-client")
-    build_dir = target / ".wfc" / "build" / DEMO_ENV
+    build_dir = layout.env_build_dir(target, DEMO_ENV)
     build_dir.mkdir(parents=True, exist_ok=True)
     (build_dir / "Dockerfile").write_text(
         template.format(wfc_client_version=wfc_client_version), encoding="utf-8"
@@ -221,13 +294,16 @@ def run_demo(
     """
     target = Path(target_dir or Path.cwd()).resolve()
 
-    # ---- Preflight: initialised project (never init here — locked) ----
-    marker = target / ".wfc" / "wf-canvas.toml"
-    db_path = target / ".wfc" / "wfc.db"
+    # ---- Preflight: initialised project (never init here) ----
+    marker = layout.marker_path(target)
+    db_path = layout.db_path(target)
     if not marker.exists() or not db_path.exists():
         raise DemoError(
             f"{target} is not a Workflow Canvas project — run: wfc init"
         )
+
+    # ---- Preflight: no DATABASE_URL naming another database ----
+    _refuse_a_foreign_database(target)
 
     # git repo required: registration commits method code for cache keys.
     try:
@@ -247,7 +323,7 @@ def run_demo(
             f"`wfc init` does this for you)."
         )
 
-    # DVC configured (register_sample hard-requires it, ADR-009/018).
+    # DVC configured (register_sample hard-requires it).
     try:
         ensure_dvc_ready(target)
     except DvcNotConfiguredError as exc:
@@ -288,8 +364,8 @@ def run_demo(
         image_ref = _build_demo_image(target)
 
         # ---- Step 5: register the env (before methods — method.yaml
-        # `env: container:__demo__env` is validated at register_method) ----
-        from ..envs import register as register_env
+        # `env: __demo__env` is validated at register_method) ----
+        from ..environments import register as register_env
 
         register_env(
             name=DEMO_ENV,
@@ -302,7 +378,7 @@ def run_demo(
         print(f"Registered env {DEMO_ENV}")
 
         # ---- Step 6: module + methods ----
-        from ..register import register_method, register_module
+        from ..registration import register_method, register_module
 
         register_module(
             name=DEMO_MODULE,
@@ -313,25 +389,32 @@ def run_demo(
             ),
             allow_reserved=True,
         )
-        for m in DEMO_METHODS:
-            dest = target / "methods" / m
+        # The assets keep their bare names; the prefix is applied on the way
+        # in, so the staged directory — which IS the snapshot directory, since
+        # the demo registers in place — is methods/__demo__<name>/ and no demo
+        # method ever claims a bare name a user might want.
+        for src_name, m in zip(DEMO_METHOD_SOURCES, DEMO_METHODS):
+            dest = layout.method_dir(target, m)
             if dest.exists():
                 shutil.rmtree(dest)
-            shutil.copytree(ASSETS_DIR / "methods" / m, dest)
+            shutil.copytree(ASSETS_DIR / layout.METHODS_DIR_NAME / src_name, dest)
             register_method(
                 method_dir=dest,
                 module_name=DEMO_MODULE,
                 method_name=m,
+                # The script keeps its authored name, so the
+                # `{method_name}.py` probe would miss it — name it outright.
+                script_name=f"{src_name}.py",
                 allow_reserved=True,
             )
 
         # ---- Step 7: samples (tagged directory names, clean filenames) ----
-        from ..cli import register_sample
+        from ..registration import register_sample
 
         for s in DEMO_SAMPLES:
-            src = ASSETS_DIR / "samples" / f"{s}.csv"
+            src = ASSETS_DIR / layout.SAMPLES_DIR_NAME / f"{s}.csv"
             tagged = f"{DEMO_MODULE}{s}"
-            sample_dir = target / "data" / "samples" / tagged
+            sample_dir = layout.sample_dir(target, tagged)
             sample_dir.mkdir(parents=True, exist_ok=True)
             copied = sample_dir / src.name
             shutil.copy2(src, copied)
@@ -349,7 +432,10 @@ def run_demo(
 
     print(
         "\nDemo scaffolded: module __demo__ (5 methods), 3 samples, env "
-        "__demo__env. Remove everything later with `wfc demo --remove`."
+        "__demo__env. Every demo entity carries the __demo__ prefix — "
+        "including the method names — so the demo never takes a name you "
+        "want for your own work. Remove everything later with "
+        "`wfc demo --remove`."
     )
 
     # ---- Step 9: serve the Canvas ----
@@ -362,7 +448,11 @@ def _serve(target: Path, port: int, no_open: bool) -> int:
     """Serve the Canvas for *target* on 127.0.0.1:*port* (blocking).
 
     Reuses the ``wfc canvas`` mechanism: project-root env binding plus an
-    in-process uvicorn of ``wfc.canvas.server:app``.
+    in-process uvicorn of ``wfc.canvas.server:app``. The server runs
+    inside :func:`wfc.persistence.use_project`, so it reads *target*'s
+    database whatever this process had bound before. The runs it starts
+    inherit ``DATABASE_URL``; :func:`run_demo` has already refused one that
+    names another database.
 
     Args:
         target: Resolved project root directory.
@@ -380,10 +470,13 @@ def _serve(target: Path, port: int, no_open: bool) -> int:
             "pip install 'uvicorn[standard]'"
         )
 
-    os.environ["WFC_CANVAS_PROJECT_ROOT"] = str(target)
+    os.environ[layout.ROOT_ENV_VAR] = str(target)
     url = f"http://127.0.0.1:{port}/?pipeline=demo"
     print(f"Starting Workflow Canvas at {url}")
     if not no_open:
         threading.Timer(1.5, webbrowser.open, args=(url,)).start()
-    uvicorn.run("wfc.canvas.server:app", host="127.0.0.1", port=port)
+    from ..persistence import use_project
+
+    with use_project(target):
+        uvicorn.run("wfc.canvas.server:app", host="127.0.0.1", port=port)
     return 0

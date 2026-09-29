@@ -45,7 +45,7 @@ def qc(ctx):
             row["__drop_reason"] = "non_numeric_value"
             dropped.append(row)
 
-    # Canonical ADR-020 pattern: write outputs to the ctx.workdir scratch dir
+    # Canonical pattern: write outputs to the ctx.workdir scratch dir
     # (WFC_RUN_DIR/_workdir/) and declare each via save_artifact. The manifest
     # records the _workdir-relative path; the host resolves it to archive the
     # nested file.

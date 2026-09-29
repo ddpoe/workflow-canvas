@@ -1,5 +1,5 @@
 """
-Workflow Test: Node-ID-Based Pipeline Identity (Gap 1)
+Workflow Test: Node-ID-Based Pipeline Identity
 
 Validates that pipelines with duplicate method names (same method used
 by multiple nodes) correctly produce distinct node_ids, topo-sort
@@ -10,8 +10,8 @@ but the four nodes have unique string IDs: ``filter_rep2``, ``filter_rep3``,
 ``qc_rep2``, ``qc_rep3``.
 
 This exercises the ``has_duplicate_methods=True`` code path in
-``load_pipeline()``, which was not tested by the existing suite (all
-legacy pipeline JSONs have unique method names per node).
+``load_pipeline()``; the other fixture pipeline JSONs have unique method
+names per node.
 """
 
 import json
@@ -20,8 +20,9 @@ from pathlib import Path
 import pytest
 from axiom_annotations import workflow
 
-from wfc.snakemake_gen import load_pipeline, topo_sort_steps, expand_variant_combos
-from wfc.snakemake_gen import generate_snakefile
+from wfc.graph import topo_sort_steps, expand_step_combos
+from wfc.execution import load_pipeline_from_path
+from wfc.orchestration import generate_snakefile
 
 
 # =============================================================================
@@ -45,14 +46,15 @@ def dup_pipeline_path(tmp_path):
 # =============================================================================
 
 @workflow(
-    purpose="Verify load_pipeline, topo_sort, and expand_variant_combos all use "
+    purpose="Verify load_pipeline, topo_sort, and expand_step_combos all use "
             "node_id (not method_name) when methods repeat across nodes")
-def test_engine_duplicate_methods(dup_pipeline_path):
+def test_engine_duplicate_methods(dup_pipeline_path, wfc_root):
     """Load → sort → expand a pipeline where csv_filter and feature_qc each
     appear twice.  Every stage should key on node_id, not method_name."""
 
-    # -- Load --
-    pipeline = load_pipeline(dup_pipeline_path)
+    # -- Load (through the composer, so it needs a reachable database;
+    # wfc_root's is empty, which is not a failure) --
+    pipeline = load_pipeline_from_path(dup_pipeline_path)
     assert len(pipeline.steps) == 4
 
     node_ids = [s.node_id for s in pipeline.steps]
@@ -76,16 +78,17 @@ def test_engine_duplicate_methods(dup_pipeline_path):
     assert ordered_ids.index("filter_rep2") < ordered_ids.index("qc_rep2")
     assert ordered_ids.index("filter_rep3") < ordered_ids.index("qc_rep3")
 
-    # -- Expand variant combos --
+    # -- Expand per-step rows --
     resolved_params: dict[str, dict[str, dict]] = {}
     for step in ordered:
         resolved_params[step.node_id] = pipeline.param_sets.get(
             step.node_id,
             pipeline.param_sets.get(step.method_name, {"default": step.params}))
 
-    combos = expand_variant_combos(ordered, pipeline.samples, resolved_params, None)
-    assert len(combos) >= 1
-    combo = combos[0]
+    rows = expand_step_combos(ordered, pipeline.samples, resolved_params, None)
+    assert len(rows) >= 1
+    step, combo = rows[0]
+    assert step is ordered[0]
     # Unified scheme: keys are "sample" and "variant", not per-node keys
     assert "sample" in combo and "variant" in combo
     assert "csv_filter" not in combo and "feature_qc" not in combo
@@ -97,17 +100,17 @@ def test_engine_duplicate_methods(dup_pipeline_path):
 
 @workflow(
     purpose="Verify generate_snakefile emits one rule per node_id with correct "
-            "workspace paths and input→output wiring between branches")
+            "sentinel paths and input→output wiring between branches")
 def test_snakefile_duplicate_methods(dup_pipeline_path, wfc_root):
     """Snakefile should have four distinct rules — not two collapsed by method name."""
 
-    pipeline = load_pipeline(dup_pipeline_path)
+    pipeline = load_pipeline_from_path(dup_pipeline_path)
     snakefile = generate_snakefile(pipeline, wfc_root, pipeline_id="test-pid")
 
     # Four rules by node_id, zero by method name
     for nid in ("filter_rep2", "filter_rep3", "qc_rep2", "qc_rep3"):
         assert f"rule {nid}:" in snakefile
-        # ADR-018: Snakemake-visible outputs are sentinels, not workspace files.
+        # Snakemake-visible outputs are sentinels.
         assert f".runs/sentinels/test-pid/{nid}/" in snakefile
     assert "rule csv_filter:" not in snakefile
     assert "rule feature_qc:" not in snakefile
@@ -122,3 +125,26 @@ def test_snakefile_duplicate_methods(dup_pipeline_path, wfc_root):
     # Python preamble is syntactically valid
     python_section = snakefile.split("rule all:")[0]
     compile(python_section, "<snakefile>", "exec")
+
+
+def test_legacy_integer_ids_with_unique_methods_key_steps_on_the_method_name():
+    """Integer-string ids and unique methods: each node id is its method name."""
+    from wfc.graph import load_pipeline
+
+    document = {
+        "nodes": [
+            {"id": "1", "type": "method", "env": "demo", "method": "load",
+             "module": "m", "params": {}},
+            {"id": "2", "type": "method", "env": "demo", "method": "filter",
+             "module": "m", "params": {}},
+        ],
+        "links": [{"source": "1", "target": "2"}],
+        "samples": ["s1"],
+    }
+
+    pipeline = load_pipeline(document, contract_map={}, reference_outputs={})
+
+    steps = {s.method_name: s for s in pipeline.steps}
+    assert {m: s.node_id for m, s in steps.items()} == {"load": "load",
+                                                         "filter": "filter"}
+    assert steps["filter"].depends_on == ["load"]

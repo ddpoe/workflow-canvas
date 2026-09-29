@@ -1,4 +1,4 @@
-"""ADR-018 Task 6: wfc.remote adapter + ensure_dvc_ready rewrite.
+"""The DVC transport (wfc.storage.transport) + ensure_dvc_ready.
 
 Tier 2: pure-logic tests over has_remote_configured + ensure_dvc_ready.
 Tier 3 (CI-load-bearing): real DVC DataCloud round-trip via a local-FS
@@ -7,6 +7,7 @@ import surface so we catch upstream API drift early.
 """
 
 import configparser
+import subprocess
 import textwrap
 import time
 from pathlib import Path
@@ -17,6 +18,7 @@ from sqlmodel import select
 from axiom_annotations import workflow, Step
 
 from tests.conftest import requires_docker
+from tests.fixtures.fakes import stub_transport
 
 
 # =============================================================================
@@ -25,7 +27,7 @@ from tests.conftest import requires_docker
 
 def test_has_remote_configured_no_config_returns_false(tmp_path):
     """No .dvc/config -> False."""
-    from wfc.remote import has_remote_configured
+    from wfc.storage import has_remote_configured
     assert has_remote_configured(tmp_path) is False
 
 
@@ -36,7 +38,7 @@ def test_has_remote_configured_with_remote_returns_true(tmp_path):
         "[core]\nremote = default\n"
         '[remote "default"]\nurl = /tmp/foo\n'
     )
-    from wfc.remote import has_remote_configured
+    from wfc.storage import has_remote_configured
     assert has_remote_configured(tmp_path) is True
 
 
@@ -44,7 +46,7 @@ def test_has_remote_configured_empty_config_returns_false(tmp_path):
     """A .dvc/config without any remote section -> False."""
     (tmp_path / ".dvc").mkdir()
     (tmp_path / ".dvc" / "config").write_text("[core]\nautostage = true\n")
-    from wfc.remote import has_remote_configured
+    from wfc.storage import has_remote_configured
     assert has_remote_configured(tmp_path) is False
 
 
@@ -80,10 +82,10 @@ def _write_dvc_cfg(project_dir: Path, url: str) -> None:
 
 @pytest.mark.parametrize("url", ["s3://bucket/x", "ssh://user@host/path", "gs://b/p"])
 def test_ensure_dvc_ready_accepts_non_local_urls(tmp_path, url):
-    """ADR-018: remote_type='local' gate is gone; any URL scheme is accepted."""
+    """Any remote URL scheme is accepted, not only local paths."""
     _write_wf(tmp_path, url)
     _write_dvc_cfg(tmp_path, url)
-    from wfc.provenance import ensure_dvc_ready
+    from wfc.storage import ensure_dvc_ready
     result = ensure_dvc_ready(tmp_path)
     assert result["url"] == url
 
@@ -94,13 +96,13 @@ def test_ensure_dvc_ready_accepts_non_local_urls(tmp_path, url):
 
 @workflow(
     purpose=(
-        "ADR-018 US-3: real DVC DataCloud push+pull round-trip via local-FS remote"
+        "real DVC DataCloud push+pull round-trip via local-FS remote"
     ),
     inputs="known bytes -> cache_file -> remote_push",
     outputs="pull retrieves byte-identical content from remote",
 )
 def test_remote_push_pull_round_trip(tmp_path):
-    """Pushes a known file through wfc.remote.push then pulls it back.
+    """Pushes a known file through wfc.storage.transport.push then pulls it back.
 
     Safety net for DVC Python API drift -- if HashInfo moves or
     DataCloud.push changes shape, this fails.
@@ -129,15 +131,16 @@ def test_remote_push_pull_round_trip(tmp_path):
 
     _ = Step(step_num=2, name="Cache a known file",
              purpose="cache_file moves bytes into .dvc/cache/files/md5/")
-    from wfc.provenance import cache_file, hash_path
+    from wfc.identity import hash_path
+    from wfc.storage import cache_file
     payload = project / "payload.txt"
-    payload.write_bytes(b"hello-adr018")
+    payload.write_bytes(b"hello-remote")
     h = hash_path(payload)
     cache_file(payload, h, project, move=False)
 
     _ = Step(step_num=3, name="Push to remote",
-             purpose="wfc.remote.push uploads via DataCloud.push")
-    from wfc.remote import push as remote_push, pull as remote_pull
+             purpose="wfc.storage.transport.push uploads via DataCloud.push")
+    from wfc.storage import push as remote_push, pull as remote_pull
     remote_push([h], project)
 
     # Verify remote has the file (any DVC remote layout is OK).
@@ -165,14 +168,90 @@ def test_remote_push_pull_round_trip(tmp_path):
     # Re-hash from the local cache and verify identity.
     restored = cache_root / h[:2] / h[2:]
     assert restored.exists(), f"pull should have restored {restored}"
-    assert restored.read_bytes() == b"hello-adr018"
+    assert restored.read_bytes() == b"hello-remote"
 
 
 # =============================================================================
-# Tier 3 (US-1 acceptance): DAG advance is genuinely async w.r.t. push
+# Tier 3: sample restore pulls a local miss from a real remote
 # =============================================================================
 
-# WFC_ROOT lets run_pipeline locate the wfc package for the Snakemake subprocess.
+@workflow(
+    purpose=(
+        "A registered sample whose cache entry is only on the remote is "
+        "pulled into the cache and restored byte-identical to its recorded "
+        "path; with the entry in neither place the restore exits 1"
+    ),
+    inputs="a sample registered and pushed to a real local-filesystem DVC remote",
+    outputs="the sample's bytes at its recorded path, then exit code 1",
+)
+def test_restore_sample_pulls_a_local_miss(tmp_project, monkeypatch):
+    """``storage:sample-restore-pull`` against a real DVC remote, no stubs."""
+    import os
+    import stat
+    from wfc.registration import register_sample
+    from wfc.storage import restore_sample
+    from wfc.persistence import PushStatus, Sample, get_session
+    from wfc.storage import init_dvc
+    from wfc.storage.cache import _cache_path
+
+    def _force_unlink(p: Path) -> None:
+        os.chmod(p, stat.S_IREAD | stat.S_IWRITE)
+        p.unlink()
+
+    口 = Step(step_num=1, name="Configure a local-filesystem remote",
+             purpose="Declare [dvc] url outside the project and mirror it "
+                     "into .dvc/config, as wfc init does")
+    monkeypatch.delenv("WFC_PIPELINE_ID", raising=False)
+    remote = tmp_project.parent / f"{tmp_project.name}-remote"
+    remote.mkdir()
+    _write_wf(tmp_project, remote.as_posix())
+    init_dvc(tmp_project, {"url": str(remote)})
+
+    口 = Step(step_num=2, name="Register and push a sample",
+             purpose="A standalone registration caches the bytes and pushes "
+                     "them synchronously")
+    payload = b"id,value\n1,42\n"
+    src = tmp_project / "restore_me.csv"
+    src.write_bytes(payload)
+    register_sample(name="pull_sample", source_path=src, project_root=tmp_project)
+    with get_session() as session:
+        row = session.exec(select(Sample).where(Sample.name == "pull_sample")).one()
+        content_hash = row.content_hash
+        registered_path = Path(row.registered_path)
+        push_status = row.push_status
+    assert push_status == PushStatus.pushed.value
+    entry = _cache_path(tmp_project, content_hash)
+    remote_object = remote / "files" / "md5" / content_hash[:2] / content_hash[2:]
+    assert remote_object.exists()
+
+    口 = Step(step_num=3, name="Remove the local cache entry",
+             purpose="The entry is now only on the remote")
+    _force_unlink(entry)
+
+    口 = Step(step_num=4, name="Restore the sample",
+             purpose="The restore pulls the entry into the cache, then copies "
+                     "it to the recorded path")
+    restore_sample("pull_sample", project_root=tmp_project)
+    assert entry.exists()
+    assert registered_path.read_bytes() == payload
+
+    口 = Step(step_num=5, name="Restore with the entry in neither place",
+             purpose="With the local entry, the remote object and the restored "
+                     "copy gone, the restore exits 1")
+    _force_unlink(entry)
+    _force_unlink(remote_object)
+    _force_unlink(registered_path)
+    with pytest.raises(SystemExit) as excinfo:
+        restore_sample("pull_sample", project_root=tmp_project)
+    assert excinfo.value.code == 1
+
+
+# =============================================================================
+# Tier 3: DAG advance is genuinely async w.r.t. push
+# =============================================================================
+
+# run_pipeline's wfc_root is unused (kept for its frozen signature); the
+# framework root is passed so the call matches the CLI's shape.
 _WFC_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -180,15 +259,15 @@ _WFC_ROOT = Path(__file__).resolve().parent.parent
 @requires_docker
 @workflow(
     purpose=(
-        "ADR-018 US-1: async push lets DAG advance before step 1's push completes"
+        "async push lets DAG advance before step 1's push completes"
     ),
-    inputs="2-step linear pipeline + slow-stub wfc.remote.push (~2s sleep)",
+    inputs="2-step linear pipeline + slow-stub wfc.storage.transport.push (~2s sleep)",
     outputs="step 2 started before step 1's RunOutput.pushed_at; all rows reach 'pushed' after drain",
 )
 def test_async_push_does_not_block_dag_advance(
     pipeline_factory, register_fixture_methods, monkeypatch
 ):
-    """Verifies the US-1 timing claim: DAG advances as soon as bytes are in
+    """Verifies the timing claim: DAG advances as soon as bytes are in
     the local cache, not after the remote push completes.
 
     Shape: build a 2-step linear pipeline whose remote-push is slowed by a
@@ -201,10 +280,10 @@ def test_async_push_does_not_block_dag_advance(
 
     _ = Step(step_num=1, name="Configure a local-FS DVC remote",
              purpose="Initialize .dvc/ + wire a remote pointing at a tmp dir")
-    remote_dir = project_dir / "remote_storage"
+    remote_dir = project_dir.parent / f"{project_dir.name}-remote-storage"
     remote_dir.mkdir()
     from dvc.repo import Repo
-    # register_fixture_methods runs init_project(), which now auto-initializes
+    # register_fixture_methods runs init_project(), which auto-initializes
     # .dvc/. Re-running Repo.init would raise InitError ('.dvc' exists), so only
     # init when the fixture hasn't already done so.
     if not (project_dir / ".dvc").exists():
@@ -220,6 +299,12 @@ def test_async_push_does_not_block_dag_advance(
     parser.set('remote "default"', "url", str(remote_dir))
     with open(cfg, "w") as f:
         parser.write(f)
+    # .dvc/config is tracked, and a run refuses a dirty tree; commit the
+    # remote the way wfc init leaves the project clean.
+    subprocess.run(["git", "add", ".dvc/config"], cwd=project_dir,
+                   check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "configure DVC remote"],
+                   cwd=project_dir, check=True, capture_output=True)
 
     _ = Step(step_num=2, name="Build 2-step linear pipeline",
              purpose="input_selector -> transform_1 -> transform_2 over sample_a")
@@ -242,9 +327,9 @@ def test_async_push_does_not_block_dag_advance(
         samples=[],
     )
 
-    _ = Step(step_num=3, name="Slow-stub wfc.remote.push (~2s sleep)",
+    _ = Step(step_num=3, name="Slow-stub wfc.storage.transport.push (~2s sleep)",
              purpose="Force the worker tick to spend real wall-clock time per push batch")
-    import wfc.remote as _wfc_remote
+    import wfc.storage.transport as _wfc_transport
 
     class _FakeResult:
         succeeded: list = []
@@ -254,11 +339,11 @@ def test_async_push_does_not_block_dag_advance(
         time.sleep(2.0)
         return _FakeResult()
 
-    monkeypatch.setattr(_wfc_remote, "push", _slow_push)
+    stub_transport(monkeypatch, push=_slow_push)
 
     _ = Step(step_num=4, name="Run pipeline (timing-capture wrapper)",
              purpose="Run two transforms and let the worker drain before run_pipeline returns")
-    from wfc.cli import run_pipeline
+    from wfc.execution import run_pipeline
     # archive=True so the deferred archive pass populates content_hash on each
     # RunOutput; without it the push worker filters every row out (content_hash
     # IS NOT NULL guard).
@@ -271,9 +356,8 @@ def test_async_push_does_not_block_dag_advance(
     )
 
     _ = Step(step_num=5, name="Assert step 2 started before step 1's push completed",
-             purpose="DAG advance must not wait for remote.push -- the core US-1 claim")
-    from wfc.database import get_session
-    from wfc.models import Run, RunOutput
+             purpose="DAG advance must not wait for remote.push -- the core claim")
+    from wfc.persistence import get_session, Run, RunOutput
     with get_session() as session:
         runs = session.exec(
             select(Run).order_by(Run.started_at)  # type: ignore[arg-type]
@@ -301,7 +385,7 @@ def test_async_push_does_not_block_dag_advance(
     )
     assert s2.started_at < s1_pushed_at, (
         f"step 2 started at {s2.started_at} but step 1's push finished at "
-        f"{s1_pushed_at} -- DAG advance waited on push (US-1 regression)"
+        f"{s1_pushed_at} -- DAG advance must not block on the push draining"
     )
 
     _ = Step(step_num=6, name="Assert finalize-drain pushed every RunOutput",

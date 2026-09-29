@@ -18,92 +18,62 @@ Covers the end-to-end contract:
      with `cancelledDueToRunId` set; legacy DB without the column still
      loads.
 
-All tests use the `tmp_project` fixture from tests/conftest.py and insert
-rows directly via `get_session` -- no Snakemake subprocess needed to
-exercise the walk.
+All tests use the `tmp_project` fixture from tests/conftest.py. The runs the
+walk reconciles are produced by the scenario harness's stub rung -- every
+row, and the frozen document the walk reads, is production's own -- with no
+Snakemake subprocess.
 """
 
 from __future__ import annotations
 
-import json
 import sqlite3
-from pathlib import Path
-from typing import Any
 
 import pytest
 from sqlmodel import select
 
 from axiom_annotations import workflow, Step
 
-from wfc.database import get_engine, get_session, reset_engine
-from wfc.models import Method, Module, Run
+from tests.fixtures.routes import completed_run
+from tests.harness import Scenario, exits, node, run_scenario, selector, wire
+from tests.harness.scenario import DEFAULT_VARIANT, SELECTOR_ID
+from wfc.persistence import get_engine, get_session, reset_engine, Run
 
 
 # =============================================================================
-# Helpers (mirror tests/test_lineage.py's direct-insert style)
+# Helpers
 # =============================================================================
 
 
-def _make_module(session, name: str) -> int:
-    mod = Module(name=name, description=f"{name} test module")
-    session.add(mod)
-    session.commit()
-    session.refresh(mod)
-    return mod.id  # type: ignore[return-value]
+def _walk_scenario(pid: str, nodes, samples=("S1",), root=None, **kwargs) -> Scenario:
+    """Declare a pipeline for the walk: a selector root plus ``nodes``.
+
+    Args:
+        pid: Pipeline execution id, also the document name.
+        nodes: The method nodes, wired among themselves and to the selector.
+        samples: The samples the project registers.
+        root: The selector node; the plain one when ``None``.
+        **kwargs: Any other :class:`Scenario` field.
+
+    Returns:
+        The scenario declaration.
+    """
+    return Scenario(nodes=[root or selector(), *nodes], samples=list(samples),
+                    pipeline_id=pid, name=pid, **kwargs)
 
 
-def _make_method(session, module_id: int, name: str) -> int:
-    m = Method(name=name, module_id=module_id, script_path=f"methods/{name}/{name}.py", env="container:demo")
-    session.add(m)
-    session.commit()
-    session.refresh(m)
-    return m.id  # type: ignore[return-value]
-
-
-def _make_run(
-    session,
-    method_id: int,
-    sample: str,
-    pipeline_id: str,
-    status: str = "completed",
-    params: dict | None = None,
-) -> int:
-    run = Run(
-        method_id=method_id,
-        sample=sample,
-        pipeline_id=pipeline_id,
-        status=status,
-        params=params,
-    )
-    session.add(run)
-    session.commit()
-    session.refresh(run)
-    return run.id  # type: ignore[return-value]
-
-
-def _write_pipeline_json(project_root: Path, pipeline_id: str, nodes, links, samples, param_sets=None) -> Path:
-    """Drop a frozen pipeline.json into .runs/pipelines/<pid>/ for the walk."""
-    pipeline_dir = project_root / ".runs" / "pipelines" / pipeline_id
-    pipeline_dir.mkdir(parents=True, exist_ok=True)
-    doc: dict[str, Any] = {
-        "nodes": nodes,
-        "links": links,
-        "samples": samples,
-    }
-    if param_sets:
-        doc["param_sets"] = param_sets
-    path = pipeline_dir / "pipeline.json"
-    path.write_text(json.dumps(doc, indent=2))
-    return path
+def _run_id_of(obs, node_id: str, sample: str = "S1",
+               variant: str = DEFAULT_VARIANT) -> int:
+    """The run id the claim phase registered for one driven target."""
+    return int(obs.runs[(node_id, sample, variant)].run_id)
 
 
 # =============================================================================
-# Task 1: schema migration
+# schema migration
 # =============================================================================
 
 
 def test_run_has_cancelled_due_to_run_id_column(tmp_project):
-    """On fresh DB, `runs` table has the new nullable self-FK column."""
+    """On fresh DB, `runs` table has the nullable self-FK column."""
     engine = get_engine()
     with engine.connect() as conn:
         from sqlalchemy import text
@@ -114,13 +84,17 @@ def test_run_has_cancelled_due_to_run_id_column(tmp_project):
     assert "cancelled_due_to_run_id" in cols
 
 
-def test_run_started_at_is_nullable(tmp_project):
+def test_run_started_at_is_nullable(tmp_project, monkeypatch):
     """A cancelled row can be inserted with started_at=None."""
+    # The row stays typed: the claim is that the column accepts NULL, so the
+    # NULL is the shape under test rather than a state a writer is asked to
+    # produce here. The method it hangs off is one production registered.
+    method_id = completed_run(tmp_project, monkeypatch=monkeypatch,
+                              method="method_a", module="m",
+                              sample="S1").run_row["method_id"]
     with get_session() as s:
-        mod_id = _make_module(s, "m")
-        mid = _make_method(s, mod_id, "method_a")
         run = Run(
-            method_id=mid,
+            method_id=method_id,
             sample="S1",
             pipeline_id="pid",
             status="cancelled",
@@ -136,7 +110,10 @@ def test_legacy_db_migration_adds_column(tmp_path, monkeypatch):
     """A pre-migration DB (missing cancelled_due_to_run_id) gains the column
     on first engine init."""
     db_path = tmp_path / "legacy.db"
-    # Create a `runs` table that matches the old schema (no cancelled column).
+    # LEGACY-SHAPE FIXTURE (frozen on purpose): hand-rolled DDL recreates an
+    # *old* `runs` schema (missing cancelled_due_to_run_id) to exercise the
+    # back-compat migration on engine init. This is the one case the
+    # test-policy permits raw CREATE TABLE; do not switch it to create_all.
     conn = sqlite3.connect(str(db_path))
     conn.execute(
         """
@@ -155,7 +132,7 @@ def test_legacy_db_migration_adds_column(tmp_path, monkeypatch):
     conn.close()
 
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
-    # Also set a PM project marker so project_root resolution works
+    # Also set a project marker so project_root resolution works
     wfc_dir = tmp_path / ".wfc"
     wfc_dir.mkdir(exist_ok=True)
     (wfc_dir / "wf-canvas.toml").write_text('[project]\nname="legacy"\n')
@@ -172,44 +149,40 @@ def test_legacy_db_migration_adds_column(tmp_path, monkeypatch):
 
 
 # =============================================================================
-# Task 2: _write_cancelled_rows walk
+# _write_cancelled_rows walk
 # =============================================================================
 
 
-@workflow(
-    purpose="Linear chain A->B->C where B failed: one cancelled row for C linked to B",
+@pytest.mark.parametrize(
+    ("ids", "c_node_id"),
+    [
+        pytest.param(("method_a", "method_b", "method_c"), "method_c",
+                     id="string-id-document"),
+        # A legacy document numbers its nodes; its steps are scheduled under
+        # their method names, yet the walk's row carries the raw document id.
+        pytest.param(("1", "2", "3"), "3", id="legacy-numeric-id-document"),
+    ],
 )
-def test_walk_linear_chain_one_failure(tmp_project):
-    from wfc.cli import _write_cancelled_rows
+@workflow(
+    purpose="Linear chain A->B->C where B failed: one cancelled row for C linked "
+            "to B, carrying C's own document id",
+)
+def test_walk_linear_chain_one_failure(tmp_project, monkeypatch, ids, c_node_id):
+    from wfc.execution.lifecycle import _write_cancelled_rows
 
     pid = "pipe-lin-1"
+    a_id, b_id, c_id = ids
 
-    # Seed modules + methods for 3 linear steps
-    with get_session() as s:
-        mod_id = _make_module(s, "mod")
-        a_id = _make_method(s, mod_id, "method_a")
-        b_id = _make_method(s, mod_id, "method_b")
-        _ = _make_method(s, mod_id, "method_c")
-
-        # A completed, B failed, C missing entirely
-        _make_run(s, a_id, "S1", pid, status="completed")
-        b_run_id = _make_run(s, b_id, "S1", pid, status="failed")
-
-    # Frozen pipeline.json with A -> B -> C
-    _write_pipeline_json(
-        tmp_project,
-        pid,
-        nodes=[
-            {"id": "a", "method": "method_a", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-            {"id": "b", "method": "method_b", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-            {"id": "c", "method": "method_c", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-        ],
-        links=[
-            {"source": "a", "target": "b"},
-            {"source": "b", "target": "c"},
-        ],
-        samples=["S1"],
-    )
+    # A completes, B fails, C is never scheduled: the harness runs the
+    # targets and freezes the document, and leaves the walk to the test.
+    obs = run_scenario(
+        _walk_scenario(pid, [
+            node(a_id, method="method_a", inputs=[wire(SELECTOR_ID)]),
+            node(b_id, method="method_b", inputs=[wire(a_id)], behavior=exits(1)),
+            node(c_id, method="method_c", inputs=[wire(b_id)]),
+        ]),
+        root=tmp_project, monkeypatch=monkeypatch, pipeline_end=False)
+    b_run_id = _run_id_of(obs, "method_b")
 
     口 = Step(step_num=1, name="Invoke walk", purpose="Fill in missing cancelled row for C")
     _write_cancelled_rows(pid, str(tmp_project))
@@ -224,40 +197,25 @@ def test_walk_linear_chain_one_failure(tmp_project):
     assert c_row.sample == "S1"
     assert c_row.cancelled_due_to_run_id == b_run_id
     assert c_row.started_at is None
+    assert c_row.node_id == c_node_id
 
 
 @workflow(
     purpose="Branching A->{B,C,D} where A failed: three cancelled rows pointing to A",
 )
-def test_walk_branching_root_failure(tmp_project):
-    from wfc.cli import _write_cancelled_rows
+def test_walk_branching_root_failure(tmp_project, monkeypatch):
+    from wfc.execution.lifecycle import _write_cancelled_rows
 
     pid = "pipe-branch-1"
-    with get_session() as s:
-        mod_id = _make_module(s, "mod")
-        a_id = _make_method(s, mod_id, "method_a")
-        _ = _make_method(s, mod_id, "method_b")
-        _ = _make_method(s, mod_id, "method_c")
-        _ = _make_method(s, mod_id, "method_d")
-
-        a_run_id = _make_run(s, a_id, "S1", pid, status="failed")
-
-    _write_pipeline_json(
-        tmp_project,
-        pid,
-        nodes=[
-            {"id": "a", "method": "method_a", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-            {"id": "b", "method": "method_b", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-            {"id": "c", "method": "method_c", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-            {"id": "d", "method": "method_d", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-        ],
-        links=[
-            {"source": "a", "target": "b"},
-            {"source": "a", "target": "c"},
-            {"source": "a", "target": "d"},
-        ],
-        samples=["S1"],
-    )
+    obs = run_scenario(
+        _walk_scenario(pid, [
+            node("method_a", inputs=[wire(SELECTOR_ID)], behavior=exits(1)),
+            node("method_b", inputs=[wire("method_a")]),
+            node("method_c", inputs=[wire("method_a")]),
+            node("method_d", inputs=[wire("method_a")]),
+        ]),
+        root=tmp_project, monkeypatch=monkeypatch, pipeline_end=False)
+    a_run_id = _run_id_of(obs, "method_a")
 
     _write_cancelled_rows(pid, str(tmp_project))
 
@@ -269,34 +227,25 @@ def test_walk_branching_root_failure(tmp_project):
     for c in cancelled:
         assert c.cancelled_due_to_run_id == a_run_id
         assert c.sample == "S1"
+    assert sorted(c.node_id for c in cancelled) == ["method_b", "method_c", "method_d"]
 
 
 @workflow(
     purpose="Cartesian samples × descendants after upstream failure: cancelled per (sample, descendant)",
 )
-def test_walk_cartesian_two_samples_one_failure(tmp_project):
-    from wfc.cli import _write_cancelled_rows
+def test_walk_cartesian_two_samples_one_failure(tmp_project, monkeypatch):
+    from wfc.execution.lifecycle import _write_cancelled_rows
 
     pid = "pipe-cart-1"
-    with get_session() as s:
-        mod_id = _make_module(s, "mod")
-        a_id = _make_method(s, mod_id, "method_a")
-        _ = _make_method(s, mod_id, "method_b")
-
-        # Both samples' method_a failed; method_b never ran
-        a_s1 = _make_run(s, a_id, "S1", pid, status="failed")
-        a_s2 = _make_run(s, a_id, "S2", pid, status="failed")
-
-    _write_pipeline_json(
-        tmp_project,
-        pid,
-        nodes=[
-            {"id": "a", "method": "method_a", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-            {"id": "b", "method": "method_b", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-        ],
-        links=[{"source": "a", "target": "b"}],
-        samples=["S1", "S2"],
-    )
+    # Both samples' method_a fail; method_b never runs for either
+    obs = run_scenario(
+        _walk_scenario(pid, [
+            node("method_a", inputs=[wire(SELECTOR_ID)], behavior=exits(1)),
+            node("method_b", inputs=[wire("method_a")]),
+        ], samples=("S1", "S2")),
+        root=tmp_project, monkeypatch=monkeypatch, pipeline_end=False)
+    a_s1 = _run_id_of(obs, "method_a", "S1")
+    a_s2 = _run_id_of(obs, "method_a", "S2")
 
     _write_cancelled_rows(pid, str(tmp_project))
 
@@ -316,36 +265,22 @@ def test_walk_cartesian_two_samples_one_failure(tmp_project):
 @workflow(
     purpose="Variant sweep: one variant's upstream fails -- only that variant's descendants cancel",
 )
-def test_walk_variant_sweep_isolated_failure(tmp_project):
-    from wfc.cli import _write_cancelled_rows
+def test_walk_variant_sweep_isolated_failure(tmp_project, monkeypatch):
+    from wfc.execution.lifecycle import _write_cancelled_rows
 
     pid = "pipe-var-1"
-    with get_session() as s:
-        mod_id = _make_module(s, "mod")
-        a_id = _make_method(s, mod_id, "method_a")
-        _ = _make_method(s, mod_id, "method_b")
+    variants = {"strict": {"t": 0.1}, "loose": {"t": 0.9}}
 
-        # strict variant completed; loose variant failed for S1
-        _make_run(s, a_id, "S1", pid, status="completed", params={"t": 0.1})  # strict
-        a_loose = _make_run(s, a_id, "S1", pid, status="failed", params={"t": 0.9})  # loose
-        # method_b completed for strict, missing for loose
-        b_id = s.exec(select(Method).where(Method.name == "method_b")).first().id
-        _make_run(s, b_id, "S1", pid, status="completed", params={"t": 0.1})
-
-    _write_pipeline_json(
-        tmp_project,
-        pid,
-        nodes=[
-            {"id": "a", "method": "method_a", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-            {"id": "b", "method": "method_b", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-        ],
-        links=[{"source": "a", "target": "b"}],
-        samples=["S1"],
-        param_sets={
-            "a": {"strict": {"t": 0.1}, "loose": {"t": 0.9}},
-            "b": {"strict": {"t": 0.1}, "loose": {"t": 0.9}},
-        },
-    )
+    # method_a fails under loose only: strict completes, method_b completes
+    # for strict and is never scheduled for loose. The harness freezes the
+    # document as launch freezes it; the walk under test is this call's.
+    obs = run_scenario(_walk_scenario(pid, [
+        node("method_a", inputs=[wire(SELECTOR_ID)],
+             behavior_by_variant={"loose": exits(1)}),
+        node("method_b", inputs=[wire("method_a")]),
+    ], variants=variants), root=tmp_project, monkeypatch=monkeypatch,
+        pipeline_end=False)
+    a_loose = _run_id_of(obs, "method_a", variant="loose")
 
     _write_cancelled_rows(pid, str(tmp_project))
 
@@ -363,32 +298,20 @@ def test_walk_variant_sweep_isolated_failure(tmp_project):
 @workflow(
     purpose="Fan-in collapsed chain: cancelled row carries sample='__all__'",
 )
-def test_walk_fan_in_collapsed_failure(tmp_project):
-    from wfc.cli import _write_cancelled_rows
+def test_walk_fan_in_collapsed_failure(tmp_project, monkeypatch):
+    from wfc.execution.lifecycle import _write_cancelled_rows
 
     pid = "pipe-fanin-1"
-    with get_session() as s:
-        mod_id = _make_module(s, "mod")
-        m_id = _make_method(s, mod_id, "csv_merge")
-        _ = _make_method(s, mod_id, "downstream")
-
-        # Collapsed step failed; downstream missing
-        merge_run = _make_run(s, m_id, "__all__", pid, status="failed")
-
-    _write_pipeline_json(
-        tmp_project,
-        pid,
-        nodes=[
-            {"id": "sel", "type": "input_selector", "fan_mode": "in", "samples": ["S1", "S2"]},
-            {"id": "merge", "method": "csv_merge", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-            {"id": "down", "method": "downstream", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-        ],
-        links=[
-            {"source": "sel", "target": "merge"},
-            {"source": "merge", "target": "down"},
-        ],
-        samples=[],
-    )
+    # The collapsed step fails; downstream is never scheduled
+    obs = run_scenario(
+        _walk_scenario(pid, [
+            node("csv_merge", inputs=[wire(SELECTOR_ID, bundle=True)],
+                 behavior=exits(1)),
+            node("downstream", inputs=[wire("csv_merge")]),
+        ], samples=("S1", "S2"),
+           root=selector(fan_mode="in", samples=["S1", "S2"])),
+        root=tmp_project, monkeypatch=monkeypatch, pipeline_end=False)
+    merge_run = _run_id_of(obs, "csv_merge", "__all__")
 
     _write_cancelled_rows(pid, str(tmp_project))
 
@@ -401,27 +324,17 @@ def test_walk_fan_in_collapsed_failure(tmp_project):
     assert cancelled[0].cancelled_due_to_run_id == merge_run
 
 
-def test_walk_is_idempotent(tmp_project):
+def test_walk_is_idempotent(tmp_project, monkeypatch):
     """Calling the walk twice does not duplicate cancelled rows."""
-    from wfc.cli import _write_cancelled_rows
+    from wfc.execution.lifecycle import _write_cancelled_rows
 
     pid = "pipe-idem-1"
-    with get_session() as s:
-        mod_id = _make_module(s, "mod")
-        a_id = _make_method(s, mod_id, "method_a")
-        _ = _make_method(s, mod_id, "method_b")
-        _make_run(s, a_id, "S1", pid, status="failed")
-
-    _write_pipeline_json(
-        tmp_project,
-        pid,
-        nodes=[
-            {"id": "a", "method": "method_a", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-            {"id": "b", "method": "method_b", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-        ],
-        links=[{"source": "a", "target": "b"}],
-        samples=["S1"],
-    )
+    run_scenario(
+        _walk_scenario(pid, [
+            node("method_a", inputs=[wire(SELECTOR_ID)], behavior=exits(1)),
+            node("method_b", inputs=[wire("method_a")]),
+        ]),
+        root=tmp_project, monkeypatch=monkeypatch, pipeline_end=False)
 
     _write_cancelled_rows(pid, str(tmp_project))
     _write_cancelled_rows(pid, str(tmp_project))
@@ -433,64 +346,31 @@ def test_walk_is_idempotent(tmp_project):
     assert len(cancelled) == 1
 
 
-def test_walk_prefers_nid_keying_when_labels_distinguish_branches(tmp_project):
-    """Two canvas nodes share method+sample+params but have distinct labels
-    (``nid``). Only the labelled branch whose upstream failed should receive
-    cancelled rows -- the other labelled branch (successful) must be left
-    alone.
-    """
-    from wfc.cli import _write_cancelled_rows
+@workflow(
+    purpose="Two unlabelled nodes of one method under identical params, one "
+            "failed: the walk matches presence and the failed ancestor by "
+            "node id, so only the failed branch's child is cancelled, against "
+            "that branch's run",
+)
+def test_walk_keys_on_node_id_when_two_branches_share_a_method(tmp_project, monkeypatch):
+    from wfc.execution.lifecycle import _write_cancelled_rows
 
-    pid = "pipe-nid-1"
-    # Pipeline layout:
-    #   a_left  (label=branchL) -> downstream  (label=downstreamL)
-    #   a_right (label=branchR) -> downstream  (label=downstreamR)
-    # Both "a" instances invoke method_a with identical params; both
-    # downstream instances invoke method_b with identical params.
-    # a_left FAILS; a_right SUCCEEDS.  The method-only triple-key is
-    # ambiguous here: ("method_a", "S1", _fp({})) would map to BOTH
-    # a_left and a_right.  Nid-keying breaks the ambiguity so only
-    # downstreamL gets a cancelled row, not downstreamR.
-    with get_session() as s:
-        mod_id = _make_module(s, "mod")
-        a_id = _make_method(s, mod_id, "method_a")
-        b_id = _make_method(s, mod_id, "method_b")
-
-        a_left = Run(
-            method_id=a_id, sample="S1", pipeline_id=pid,
-            status="failed", params={}, nid="branchL",
-        )
-        s.add(a_left); s.commit(); s.refresh(a_left)
-        a_left_id = a_left.id
-
-        a_right = Run(
-            method_id=a_id, sample="S1", pipeline_id=pid,
-            status="completed", params={}, nid="branchR",
-        )
-        s.add(a_right); s.commit(); s.refresh(a_right)
-
-        # downstreamR ran successfully; downstreamL is missing.
-        down_r = Run(
-            method_id=b_id, sample="S1", pipeline_id=pid,
-            status="completed", params={}, nid="downstreamR",
-        )
-        s.add(down_r); s.commit()
-
-    _write_pipeline_json(
-        tmp_project,
-        pid,
-        nodes=[
-            {"id": "al", "method": "method_a", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "label": "branchL"},
-            {"id": "ar", "method": "method_a", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "label": "branchR"},
-            {"id": "dl", "method": "method_b", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "label": "downstreamL"},
-            {"id": "dr", "method": "method_b", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "label": "downstreamR"},
-        ],
-        links=[
-            {"source": "al", "target": "dl"},
-            {"source": "ar", "target": "dr"},
-        ],
-        samples=["S1"],
-    )
+    pid = "pipe-nodeid-1"
+    # Pipeline layout, no labels anywhere:
+    #   al -> dl
+    #   ar -> dr
+    # al and ar run method_a with identical params; dl and dr run method_b.
+    # al fails, ar completes, dr completes on ar, and dl is never
+    # scheduled. Method, sample and params are the same across the two
+    # branches, so only the node id tells them apart.
+    obs = run_scenario(_walk_scenario(pid, [
+        node("al", method="method_a", inputs=[wire(SELECTOR_ID)],
+             behavior=exits(1)),
+        node("ar", method="method_a", inputs=[wire(SELECTOR_ID)]),
+        node("dl", method="method_b", inputs=[wire("al")]),
+        node("dr", method="method_b", inputs=[wire("ar")]),
+    ]), root=tmp_project, monkeypatch=monkeypatch, pipeline_end=False)
+    a_left_id = _run_id_of(obs, "al")
 
     _write_cancelled_rows(pid, str(tmp_project))
 
@@ -498,40 +378,22 @@ def test_walk_prefers_nid_keying_when_labels_distinguish_branches(tmp_project):
         cancelled = s.exec(
             select(Run).where(Run.pipeline_id == pid, Run.status == "cancelled")
         ).all()
-    # Expect exactly one cancelled row, for the left branch.
-    assert len(cancelled) == 1, (
-        f"nid-keying collision: {[(c.nid, c.sample) for c in cancelled]}"
-    )
-    c = cancelled[0]
-    assert c.nid == "downstreamL"
-    assert c.cancelled_due_to_run_id == a_left_id
-    # Confirm the right branch was NOT cancelled (its downstream already exists)
-    all_right_runs = [c for c in cancelled if c.nid == "downstreamR"]
-    assert all_right_runs == []
+    assert [(c.node_id, c.cancelled_due_to_run_id) for c in cancelled] == [
+        ("dl", a_left_id)
+    ]
 
 
-def test_walk_success_path_writes_nothing(tmp_project):
+def test_walk_success_path_writes_nothing(tmp_project, monkeypatch):
     """On a fully-successful pipeline the walk finds zero missing triples."""
-    from wfc.cli import _write_cancelled_rows
+    from wfc.execution.lifecycle import _write_cancelled_rows
 
     pid = "pipe-success-1"
-    with get_session() as s:
-        mod_id = _make_module(s, "mod")
-        a_id = _make_method(s, mod_id, "method_a")
-        b_id = _make_method(s, mod_id, "method_b")
-        _make_run(s, a_id, "S1", pid, status="completed")
-        _make_run(s, b_id, "S1", pid, status="completed")
-
-    _write_pipeline_json(
-        tmp_project,
-        pid,
-        nodes=[
-            {"id": "a", "method": "method_a", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-            {"id": "b", "method": "method_b", "module": "mod", "env": "container:demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-        ],
-        links=[{"source": "a", "target": "b"}],
-        samples=["S1"],
-    )
+    run_scenario(
+        _walk_scenario(pid, [
+            node("method_a", inputs=[wire(SELECTOR_ID)]),
+            node("method_b", inputs=[wire("method_a")]),
+        ]),
+        root=tmp_project, monkeypatch=monkeypatch, pipeline_end=False)
 
     _write_cancelled_rows(pid, str(tmp_project))
 
@@ -543,33 +405,26 @@ def test_walk_success_path_writes_nothing(tmp_project):
 
 
 # =============================================================================
-# Task 4: WfcProvider passthrough
+# WfcProvider passthrough
 # =============================================================================
 
 
-def test_wfc_provider_surfaces_cancelled_due_to_run_id(tmp_project):
+def test_wfc_provider_surfaces_cancelled_due_to_run_id(tmp_project, monkeypatch):
     """Cancelled Run rows appear via WfcProvider with cancelledDueToRunId populated."""
     from wfc.canvas.wfc_provider import WfcProvider
 
     pid = "pipe-prov-1"
-    with get_session() as s:
-        mod_id = _make_module(s, "mod")
-        a_id = _make_method(s, mod_id, "method_a")
-        b_id = _make_method(s, mod_id, "method_b")
-        a_failed = _make_run(s, a_id, "S1", pid, status="failed")
-        # Manually insert a cancelled row linked to a_failed
-        cancelled = Run(
-            method_id=b_id,
-            sample="S1",
-            pipeline_id=pid,
-            status="cancelled",
-            started_at=None,
-            cancelled_due_to_run_id=a_failed,
-        )
-        s.add(cancelled)
-        s.commit()
-        s.refresh(cancelled)
-        cancelled_id = str(cancelled.id)
+    # method_a fails, so the pipeline-end walk writes method_b's row
+    # cancelled under it -- the row the provider surfaces, as the walk wrote it
+    obs = run_scenario(
+        _walk_scenario(pid, [
+            node("method_a", inputs=[wire(SELECTOR_ID)], behavior=exits(1)),
+            node("method_b", inputs=[wire("method_a")]),
+        ]),
+        root=tmp_project, monkeypatch=monkeypatch)
+    a_failed = _run_id_of(obs, "method_a")
+    (cancelled_row,) = obs.rows_for_node("method_b", status="cancelled")
+    cancelled_id = str(cancelled_row["id"])
 
     prov = WfcProvider(str(tmp_project))
     prov.load()
@@ -583,12 +438,13 @@ def test_wfc_provider_surfaces_cancelled_due_to_run_id(tmp_project):
 
 
 def test_wfc_provider_legacy_db_without_column_still_loads(tmp_path, monkeypatch):
-    """A DB written before recent migrations (runs missing cancelled_due_to_run_id
-    and other newer columns; no run_annotations table) loads via WfcProvider
+    """A DB with an older schema (runs missing cancelled_due_to_run_id and
+    other nullable columns; no run_annotations table) loads via WfcProvider
     without exception.
 
-    Under the ORM read path the provider opens its own db_path-bound engine and
-    runs ``ensure_schema`` + ``create_all`` on load, so the old on-disk schema is
+    The provider reads through the process engine, bound
+    to this project's database, and building that engine runs ``ensure_schema``
+    + ``create_all``, so the old on-disk schema is
     upgraded (missing nullable columns added, missing tables built) BEFORE any
     ORM ``select`` runs. The load then reads the upgraded schema normally.
     """
@@ -639,6 +495,12 @@ def test_wfc_provider_legacy_db_without_column_still_loads(tmp_path, monkeypatch
     )
     conn.commit()
     conn.close()
+
+    # The provider reads through the process engine: bind this project's
+    # database with the override and a reset, as the harness does.
+    from wfc import layout
+    monkeypatch.setenv("DATABASE_URL", layout.database_url(tmp_path))
+    reset_engine()
 
     prov = WfcProvider(str(tmp_path))
     prov.load()  # must not raise

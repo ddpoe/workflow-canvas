@@ -15,4 +15,4 @@ outputs:
     required: true
 
 executor: python
-env: container:fixture-env
+env: fixture-env

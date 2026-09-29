@@ -1,10 +1,10 @@
 /**
  * Vitest unit tests for the explicit Run.status → nodeRunActor state
  * mapping (`runStatusToNodeState`) and its reverse, the
- * actor → legacy RunStatus collapse (`stateValueToRunStatus`).
+ * actor → coarse RunStatus collapse (`stateValueToRunStatus`).
  *
- * These two helpers enforce the richer-chart-than-backend invariant
- * called out in ADR-016 §"single source of truth": the actor knows
+ * These two helpers enforce the richer-chart-than-backend invariant:
+ * the actor knows
  * `cancelled.becauseUpstream` vs `cancelled.becauseUser`; the backend
  * only stores `cancelled`. Tests pin the mapping explicitly.
  */
@@ -103,7 +103,7 @@ describe('runStatusToNodeState', () => {
     });
   });
 
-  // ADR-015 Phase D Bug 4 Path A + Bug 5: cache-hit wins over status.
+  // Cache-hit wins over status.
   it('cache_hit=true → CACHE_HIT regardless of status (completed)', () => {
     const evt = runStatusToNodeState({
       status: 'completed',
@@ -121,7 +121,7 @@ describe('runStatusToNodeState', () => {
   });
 
   it('cache_hit=true with status=running still emits CACHE_HIT (invariant)', () => {
-    // Defends against a future polling-service tick where the cache
+    // Defends against a polling tick where the cache
     // signal arrives before the audit row's terminal status.  The
     // bridge MUST short-circuit so the streaming actor never spawns.
     const evt = runStatusToNodeState({
@@ -167,8 +167,8 @@ describe('stateValueToRunStatus', () => {
     expect(stateValueToRunStatus('orphaned')).toBe('failed');
   });
 
-  it('cached → completed (cached counts as a successful outcome)', () => {
-    expect(stateValueToRunStatus('cached')).toBe('completed');
+  it('cached → cached (a reused run is drawn apart from one that ran)', () => {
+    expect(stateValueToRunStatus('cached')).toBe('cached');
   });
 
   it('cancelled.becauseUser → cancelled (collapses subroots)', () => {
@@ -182,11 +182,10 @@ describe('stateValueToRunStatus', () => {
 
 describe('isTerminalOverallStatus', () => {
   // The polling actor stops the loop and emits PIPELINE_DONE iff the
-  // backend's overall_status is terminal. `cancelled` was missing from
-  // the original equality chain — without it, a fully-cancelled
-  // pipeline polled forever and the canvas Run/Stop button never
-  // recovered without a refresh.
-  it('cancelled is terminal — fixes the never-recovers wedge', () => {
+  // backend's overall_status is terminal. `cancelled` must count as
+  // terminal — without it, a fully-cancelled pipeline polls forever and
+  // the canvas Run/Stop button never recovers without a refresh.
+  it('cancelled is terminal, so polling stops and the Run/Stop button recovers', () => {
     expect(isTerminalOverallStatus('cancelled')).toBe(true);
   });
 
@@ -326,15 +325,14 @@ describe('subscribeSSE — transient-error grace window', () => {
 // A failure/partial run is only "done" once the backend run thread has
 // exited (`thread_alive === false`) — that is when the pipeline-end
 // cancelled-row walk has committed. Stopping the moment `overall_status`
-// first reads `failed` froze downstream nodes in `queued` → `pending`,
-// because their `cancelled` rows weren't written yet. These tests drive
+// first reads `failed` would freeze downstream nodes in `queued` →
+// `pending`, because their `cancelled` rows aren't written yet. These tests drive
 // the real `pollNodeStatus` callback through a mocked `fetch` + fake
 // timers and assert the loop keeps polling until the thread is dead.
 
 interface StatusFrame {
   job_id: string;
   overall_status: string;
-  steps: Record<string, unknown>;
   node_states: Record<string, unknown>;
   thread_alive: boolean;
   log: string;
@@ -349,7 +347,6 @@ function statusFrame(
   return {
     job_id: 'poll-job',
     overall_status: overall,
-    steps: {},
     node_states: nodeStates,
     thread_alive: threadAlive,
     log: '',

@@ -1,15 +1,13 @@
 /**
- * Per-variant lifecycle machine (ADR-016 Phase 2 expand).
+ * Per-variant lifecycle machine.
  *
  * Sister machine to `paramEditorActor`. Each variant row in
- * `ValueList.svelte` spawns one `variantActor` instead of carrying its
- * own `editing[row.id]` / `localValue[row.id]` / `errorMsg[row.id]`
- * trio. Adding the dedicated machine (rather than reusing
- * `paramEditorActor`) buys two user-visible affordances the architect
- * pitch lists as load-bearing: dedup-merge against sibling values
- * (US-3) and modal-shaped delete confirmation (Edge Case #8).
+ * `ValueList.svelte` spawns one `variantActor`. The dedicated machine
+ * (rather than reusing `paramEditorActor`) carries two user-visible
+ * affordances: dedup-merge against sibling values and modal-shaped
+ * delete confirmation.
  *
- * State map (matches ADR §future-phase-2 sketch):
+ * State map:
  *
  *   noVariants    -- ADD_VARIANT --> addingVariant
  *   addingVariant -- CHANGE_VALUE --> editingValue
@@ -29,7 +27,7 @@
  *   *             -- SIBLINGS_CHANGED --> (assigns siblingValues; no transition)
  *
  * The dedup check uses the parent's broadcast `SIBLINGS_CHANGED` event
- * to keep `siblingValues` fresh — per Edge Case #3, snapshotting at
+ * to keep `siblingValues` fresh — snapshotting at
  * spawn time would let two variants commit the same value if the user
  * edits both quickly in succession.
  */
@@ -340,7 +338,7 @@ export function makeVariantMachine() {
         },
       },
       confirmingDelete: {
-        // Edge Case #8: modal-shaped state. Holds until the user
+        // Modal-shaped state. Holds until the user
         // confirms or cancels. No parallel `$state` boolean — the UI
         // reads `state.matches('confirmingDelete')`.
         on: {

@@ -1,8 +1,7 @@
 /**
  * Per-node lifecycle machine.
  *
- * Implements the richer-than-backend chart documented in ADR-016 §
- * "nodeRunActor state map". The chart distinguishes user-meaningful
+ * Implements a richer-than-backend chart. The chart distinguishes user-meaningful
  * outcomes that the backend `Run.status` enum collapses (`cancelled`
  * is one column in the DB but two states here: `cancelled.becauseUpstream`
  * and `cancelled.becauseUser`).
@@ -14,7 +13,7 @@
  * Tests in `__tests__/nodeRun.test.ts` cover every transition.
  */
 import { setup, assign, fromCallback, type ActorRefFrom } from 'xstate';
-import type { RunTally } from '../types';
+import type { RunTally } from '../shared/types';
 
 // ── Context ────────────────────────────────────────────────────────────
 //
@@ -30,13 +29,13 @@ export interface NodeRunContext {
   jobId?: string;
   // Populated on first heartbeat from the polling service.
   runId?: string;
-  // Failure payload — ADR-015 Phase A.1 surfaces both fields.
+  // Failure payload — the error message and its traceback.
   error_message?: string;
   error_traceback?: string;
   // Cancellation cause payload (becauseUpstream branch only).
   upstreamNodeId?: string;
   upstreamRunId?: string;
-  // Orphaned payload — pipeline-level stderr tail (ADR-015 Phase A.3).
+  // Orphaned payload — pipeline-level stderr tail.
   pipelineStderrTail?: string;
   // Mid-run tally (running). The latest tally received from polling.
   tally?: RunTally;
@@ -117,8 +116,8 @@ export function makeNodeRunMachine(defaultNodeId: string = 'unknown') {
     // Read nodeId from spawn input. The factory arg is the fallback only
     // for tests that instantiate the machine directly. Reading from the
     // factory arg here would freeze nodeId at machine-creation time
-    // (one shared value across every spawned child) — the bug visible in
-    // the Stately Inspector as `Context: {nodeId: "unknown"}`.
+    // (one shared value across every spawned child), which shows in the
+    // Stately Inspector as `Context: {nodeId: "unknown"}`.
     context: ({ input }) => ({ nodeId: input?.nodeId ?? defaultNodeId }),
     states: {
       idle: {
@@ -240,9 +239,8 @@ export function makeNodeRunMachine(defaultNodeId: string = 'unknown') {
               pipelineStderrTail: ({ event }) => event.pipelineStderrTail,
             }),
           },
-          // ADR-015 Phase D Bug 4 Path B: defense-in-depth.  If a
-          // future polling-service refactor lets a HEARTBEAT slip
-          // through before the cache-hit signal arrives, this still
+          // Defense-in-depth: if a HEARTBEAT slips through before the
+          // cache-hit signal arrives, this still
           // routes the node to `cached` and tears down the spawned
           // streaming child via xstate v5 invoke exit semantics.
           CACHE_HIT: {

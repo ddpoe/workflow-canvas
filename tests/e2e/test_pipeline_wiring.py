@@ -17,16 +17,15 @@ from sqlmodel import select
 
 from axiom_annotations import workflow, Step
 
-from wfc.cli import run_pipeline
-from wfc.database import get_session
-from wfc.models import Run, RunOutput
+from wfc.execution import run_pipeline
+from wfc.persistence import get_session, Run, RunOutput
 from tests.fixtures.conftest import create_sample_csv as _create_sample_csv
 from tests.conftest import requires_docker
 
 # wfc package root -- needed so Snakemake subprocesses can find `python -m wfc`
 WFC_ROOT = Path(__file__).resolve().parent.parent.parent
 
-# ADR-019 Cycle H: these tests execute pipelines end-to-end through the
+# these tests execute pipelines end-to-end through the
 # container dispatch path (register_fixture_methods builds a real image).
 # Deselected from the default suite (integration) and skipped without Docker.
 pytestmark = [pytest.mark.integration, requires_docker]
@@ -41,14 +40,14 @@ def _find_run_output_path(
 ) -> Path:
     """Locate a RunOutput.artifact_path for a given (node, sample) pair.
 
-    ADR-018 deleted ``.runs/workspace/`` — content now lives in the
-    run-archive directory tracked by ``RunOutput.artifact_path``.  The
+    Content lives in the run-archive directory tracked by
+    ``RunOutput.artifact_path``.  The
     pipeline_id substring is optional; node/sample/output_name uniquely
     identify the row within a single-pipeline test.
     """
     # Join on Method.name so we can target a specific step regardless of
     # whether the runtime tagged Run.nf_process_name with the node_id.
-    from wfc.models import Method
+    from wfc.persistence import Method
     with get_session() as session:
         stmt = (
             select(RunOutput, Run, Method)
@@ -115,7 +114,8 @@ def test_linear_pipeline(pipeline_factory, register_fixture_methods):
     s = Step(
         step_num=4,
         name="Verify transform output exists",
-        purpose="ADR-018: workspace is gone; assert sentinel + RunOutput row exists",
+        purpose="Outputs live at RunOutput.artifact_path, not in a workspace "
+                "directory; assert the sentinel and the RunOutput row exist",
     )
     sentinel = project_dir.rglob(".runs/sentinels/*/transform_1/sample_a/default/.complete")
     sentinels = list(sentinel)
@@ -192,7 +192,7 @@ def test_fan_out_pipeline(pipeline_factory, register_fixture_methods):
     s = Step(
         step_num=4,
         name="Verify both transform outputs exist",
-        purpose="ADR-018: assert sentinels + RunOutput rows for both fan-out branches",
+        purpose="assert sentinels + RunOutput rows for both fan-out branches",
     )
     sentinels_a = list(project_dir.rglob(".runs/sentinels/*/transform_a/sample_a/default/.complete"))
     sentinels_b = list(project_dir.rglob(".runs/sentinels/*/transform_b/sample_a/default/.complete"))
@@ -201,7 +201,7 @@ def test_fan_out_pipeline(pipeline_factory, register_fixture_methods):
     # Both fan-out branches share method='transform' / sample='sample_a';
     # collect both RunOutput artifact paths and verify the two suffixes
     # appear across them.
-    from wfc.models import Method
+    from wfc.persistence import Method
     with get_session() as session:
         stmt = (
             select(RunOutput, Run, Method)
@@ -284,7 +284,7 @@ def test_fan_in_pipeline(pipeline_factory, register_fixture_methods):
     s = Step(
         step_num=4,
         name="Verify merged output exists",
-        purpose="ADR-018: sentinel + RunOutput row for the fan-in merge",
+        purpose="sentinel + RunOutput row for the fan-in merge",
     )
     sentinels = list(project_dir.rglob(".runs/sentinels/*/merge_1/sample_a/default/.complete"))
     assert len(sentinels) == 1, f"Expected 1 merge sentinel, found {len(sentinels)}"
@@ -320,15 +320,15 @@ def test_fan_in_selector_pipeline(pipeline_factory, register_fixture_methods):
 
     s = Step(
         step_num=1,
-        name="Create three sample CSVs and their restore sentinels",
-        purpose="Each sample contributes 3 rows; merge should produce 9. The "
-                ".sample_ready sentinel files satisfy the dependency ordering "
-                "that collapsed root steps declare in their input: block (the "
-                "test bypasses DVC-backed sample registration).",
+        name="Register three samples from sources outside the project",
+        purpose="Each sample contributes 3 rows; merge should produce 9. "
+                "Nothing is staged under data/samples/ and no .sample_ready "
+                "sentinel is written by hand — the restore_sample rules the "
+                "collapsed root steps depend on are what materialize both, "
+                "which is the only way a user's project gets them.",
     )
     for sample in ("s1", "s2", "s3"):
         _create_sample_csv(project_dir, sample, num_rows=3)
-        (project_dir / "data" / "samples" / sample / ".sample_ready").write_text("")
 
     s = Step(
         step_num=2,
@@ -365,7 +365,7 @@ def test_fan_in_selector_pipeline(pipeline_factory, register_fixture_methods):
     s = Step(
         step_num=4,
         name="Verify collapsed merged output exists under __all__ sample segment",
-        purpose="ADR-018: sentinel + RunOutput for the collapsed fan-in run",
+        purpose="sentinel + RunOutput for the collapsed fan-in run",
     )
     sentinels = list(project_dir.rglob(".runs/sentinels/*/merge_1/__all__/default/.complete"))
     assert len(sentinels) == 1, f"Expected 1 collapsed merge sentinel, found {len(sentinels)}"

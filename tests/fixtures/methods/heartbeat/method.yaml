@@ -31,4 +31,4 @@ params:
     description: "Emit a matching [heartbeat warn] stderr line every Nth tick (0 = none)"
 
 executor: python
-env: container:fixture-env
+env: fixture-env

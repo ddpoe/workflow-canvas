@@ -1,10 +1,7 @@
 """
-Tests for env_fingerprint provenance (pev-2026-04-18).
+Tests for env_fingerprint provenance.
 
 Covers:
-  - pixi_lock_section is deterministic under cosmetic lock churn
-    (semantic fields only, sorted JSON — not YAML round-trip)
-  - pip_freeze raises cleanly on subprocess failure / missing binary
   - store_env_content cleans up its temp file on ALL paths,
     including when cache_file raises
   - build_cache_key is sensitive to env_fingerprint changes
@@ -21,336 +18,26 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
-import yaml
 from sqlmodel import select
 
 from axiom_annotations import workflow, Step
 
-from wfc.database import get_session
-from wfc.env_introspect import (
+from wfc.persistence import get_session
+from wfc.environments.introspect import (
     conda_list_explicit,
-    pip_freeze,
-    pixi_lock_section,
 )
-from wfc.models import Method, MethodVersion, Module, Run, Sample
-from wfc.version import (
-    build_cache_key,
-    capture_env_content,
-    store_env_content,
-)
-
-
-# =============================================================================
-# Fixtures
-# =============================================================================
-
-def _write_lock(path: Path, data: dict) -> None:
-    """Write a pixi.lock-shaped dict as YAML to ``path``."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(data, f, sort_keys=False)
-
-
-def _make_lock_dict(
-    *,
-    env_name: str = "default",
-    platform: str = "linux-64",
-    pkgs: list[dict] | None = None,
-    extra_env_keys: dict | None = None,
-) -> dict:
-    """Build a minimal pixi.lock-shaped dict for fixture use."""
-    pkgs = pkgs or [
-        {
-            "name": "numpy",
-            "version": "1.26.0",
-            "build": "py312h0",
-            "hash": {"md5": "abc123"},
-            "platform": platform,
-            "url": "https://conda.example/numpy-1.26.0-py312h0.conda",
-        },
-        {
-            "name": "pandas",
-            "version": "2.1.0",
-            "build": "py312h1",
-            "hash": {"md5": "def456"},
-            "platform": platform,
-            "url": "https://conda.example/pandas-2.1.0-py312h1.conda",
-        },
-    ]
-    env_block = {"packages": {platform: [{"conda": pkg["url"]} for pkg in pkgs]}}
-    if extra_env_keys:
-        env_block.update(extra_env_keys)
-    return {
-        "version": 6,
-        "environments": {env_name: env_block},
-        "packages": pkgs,
-    }
-
-
-# =============================================================================
-# pixi_lock_section: cosmetic-churn determinism (load-bearing)
-# =============================================================================
-
-@workflow(
-    purpose="pixi_lock_section returns identical output for two lock files "
-            "that differ only in cosmetic form (field order, extra url/source "
-            "noise) but match semantically"
-)
-def test_pixi_lock_section_cosmetic_churn_stable(tmp_path):
-    """Lock-churn robustness is the headline property of env_fingerprint.
-
-    A pyyaml bump that reorders fields, or a pixi bump that adds a new
-    cosmetic field, must NOT invalidate every cache entry.  Only semantic
-    field changes (name/version/build/hash/platform) should count.
-    """
-    口 = Step(step_num=1, name="Write baseline lock",
-             purpose="Minimal two-package lock with semantic fields")
-    pixi_root_a = tmp_path / "A"
-    (pixi_root_a / "myenv-abc").mkdir(parents=True)
-    lock_a = _make_lock_dict(platform="linux-64")
-    _write_lock(pixi_root_a / "myenv-abc" / "pixi.lock", lock_a)
-
-    口 = Step(step_num=2, name="Write cosmetically-churned lock",
-             purpose="Same semantic content but extra url/source fields and "
-                     "packages listed in reverse order")
-    pixi_root_b = tmp_path / "B"
-    (pixi_root_b / "myenv-xyz").mkdir(parents=True)
-    # Same semantic content: pkgs reversed; add cosmetic 'size' and 'timestamp'.
-    reversed_pkgs = list(reversed([
-        {
-            "size": 12345,  # cosmetic noise
-            "timestamp": 1700000000,  # cosmetic noise
-            "name": "numpy",
-            "version": "1.26.0",
-            "build": "py312h0",
-            "hash": {"md5": "abc123"},
-            "platform": "linux-64",
-            "url": "https://conda.example/numpy-1.26.0-py312h0.conda",
-        },
-        {
-            "size": 67890,
-            "timestamp": 1700000001,
-            "name": "pandas",
-            "version": "2.1.0",
-            "build": "py312h1",
-            "hash": {"md5": "def456"},
-            "platform": "linux-64",
-            "url": "https://conda.example/pandas-2.1.0-py312h1.conda",
-        },
-    ]))
-    lock_b = {
-        "version": 6,
-        "packages": reversed_pkgs,
-        "environments": {
-            "default": {
-                "channels": ["conda-forge"],  # cosmetic: not in A
-                "packages": {
-                    "linux-64": [
-                        {"conda": "https://conda.example/pandas-2.1.0-py312h1.conda"},
-                        {"conda": "https://conda.example/numpy-1.26.0-py312h0.conda"},
-                    ],
-                },
-            },
-        },
-    }
-    _write_lock(pixi_root_b / "myenv-xyz" / "pixi.lock", lock_b)
-
-    口 = Step(step_num=3, name="Compare outputs",
-             purpose="Both locks must produce byte-identical pixi_lock_section output")
-    sec_a = pixi_lock_section(pixi_root_a, "myenv", "linux-64")
-    sec_b = pixi_lock_section(pixi_root_b, "myenv", "linux-64")
-    assert sec_a == sec_b, f"Cosmetic churn changed output:\n  A: {sec_a}\n  B: {sec_b}"
-
-
-@workflow(
-    purpose="pixi_lock_section raises KeyError when the current platform is "
-            "not present in the lock — no silent fallback to 'all platforms'"
-)
-def test_pixi_lock_section_missing_platform_raises(tmp_path):
-    """A lock that does not list the current platform cannot honestly
-    fingerprint what will be installed — must fail loud."""
-    pixi_root = tmp_path / "proj"
-    (pixi_root / "myenv-abc").mkdir(parents=True)
-    lock = _make_lock_dict(platform="linux-64")
-    _write_lock(pixi_root / "myenv-abc" / "pixi.lock", lock)
-
-    with pytest.raises(KeyError, match="win-64"):
-        pixi_lock_section(pixi_root, "myenv", "win-64")
-
-
-@workflow(
-    purpose="pixi_lock_section auto-detects the platform from a single-platform "
-            "pixi.lock when no platform override is passed — avoids any "
-            "homegrown sys.platform -> conda-platform-tag mapping"
-)
-def test_pixi_lock_section_auto_detects_single_platform(tmp_path):
-    """Single-platform lock: platform=None -> use the one listed platform."""
-    pixi_root = tmp_path / "proj"
-    (pixi_root / "myenv-abc").mkdir(parents=True)
-    # Use an unusual platform string to prove the function reads it from the
-    # lock itself rather than mapping from sys.platform.
-    lock = _make_lock_dict(platform="linux-aarch64")
-    _write_lock(pixi_root / "myenv-abc" / "pixi.lock", lock)
-
-    # Without an explicit platform, the function must pull "linux-aarch64"
-    # from the lock's environments block and produce a non-empty section.
-    sec_auto = pixi_lock_section(pixi_root, "myenv")
-    sec_explicit = pixi_lock_section(pixi_root, "myenv", "linux-aarch64")
-    assert sec_auto == sec_explicit
-    assert "numpy" in sec_auto
-
-
-@workflow(
-    purpose="pixi_lock_section raises an actionable error when the lock lists "
-            "multiple platforms and no override is passed — points the caller "
-            "at pixi install / explicit platform= argument"
-)
-def test_pixi_lock_section_multi_platform_ambiguous_raises(tmp_path):
-    """Multi-platform lock with no override: must fail loud with an actionable
-    message.  We do NOT guess via sys.platform."""
-    pixi_root = tmp_path / "proj"
-    (pixi_root / "myenv-abc").mkdir(parents=True)
-    # Hand-build a multi-platform lock so both linux-64 and win-64 are present.
-    pkgs_linux = [{
-        "name": "numpy", "version": "1.26.0", "build": "py312h0",
-        "hash": {"md5": "abc123"}, "platform": "linux-64",
-        "url": "https://conda.example/numpy-1.26.0-py312h0.conda",
-    }]
-    pkgs_win = [{
-        "name": "numpy", "version": "1.26.0", "build": "py312h0_win",
-        "hash": {"md5": "winwin"}, "platform": "win-64",
-        "url": "https://conda.example/numpy-1.26.0-py312h0_win.conda",
-    }]
-    lock = {
-        "version": 6,
-        "environments": {
-            "default": {
-                "packages": {
-                    "linux-64": [{"conda": pkgs_linux[0]["url"]}],
-                    "win-64": [{"conda": pkgs_win[0]["url"]}],
-                },
-            },
-        },
-        "packages": pkgs_linux + pkgs_win,
-    }
-    _write_lock(pixi_root / "myenv-abc" / "pixi.lock", lock)
-
-    # Ambiguous: no platform override, multiple platforms in the lock.
-    with pytest.raises(ValueError, match="ambiguous|multiple platforms|platform="):
-        pixi_lock_section(pixi_root, "myenv")
-
-    # But an explicit platform argument still works.
-    sec_linux = pixi_lock_section(pixi_root, "myenv", "linux-64")
-    sec_win = pixi_lock_section(pixi_root, "myenv", "win-64")
-    assert sec_linux != sec_win
-    assert "py312h0" in sec_linux
-    assert "py312h0_win" in sec_win
-
-
-@workflow(
-    purpose="capture_env_content('pixi:<project>:<env>', ...) fingerprints the "
-            "named env, not whatever env happens to share the project's name — "
-            "regression for the bug where parts[1] was used as env_name"
-)
-def test_capture_env_content_pixi_three_segment_picks_named_env(tmp_path, monkeypatch):
-    """3-segment pixi specs must fingerprint parts[2] (env), not parts[1] (project).
-
-    Repro for the reported bug: a pixi project ``wcia`` with a declared env
-    ``cc-mapping`` — ``env: pixi:wcia:cc-mapping`` — must fingerprint the
-    cc-mapping lock section.  The buggy code used ``parts[1]`` as env_name,
-    which either fingerprinted the wrong env (silently wrong) or raised
-    because the lock has no env matching the project name.
-    """
-    # Multi-env lock: envA has numpy, envB has pandas. No "default".
-    # Bug behavior: env_name=parts[1]="myproject" is not in environments,
-    #   no "default", len != 1 -> raises KeyError.
-    # Correct behavior: env_name=parts[2]="envB" -> pandas fingerprinted.
-    pixi_root = tmp_path / "pixi_cache"
-    (pixi_root / "myproject-abc").mkdir(parents=True)
-    pkgs = [
-        {"name": "numpy", "version": "1.0", "build": "a",
-         "hash": {"md5": "n1"}, "platform": "linux-64",
-         "url": "https://ex.co/numpy-1.0-a.conda"},
-        {"name": "pandas", "version": "2.0", "build": "b",
-         "hash": {"md5": "p1"}, "platform": "linux-64",
-         "url": "https://ex.co/pandas-2.0-b.conda"},
-    ]
-    lock = {
-        "version": 6,
-        "environments": {
-            "envA": {"packages": {"linux-64": [{"conda": pkgs[0]["url"]}]}},
-            "envB": {"packages": {"linux-64": [{"conda": pkgs[1]["url"]}]}},
-        },
-        "packages": pkgs,
-    }
-    _write_lock(pixi_root / "myproject-abc" / "pixi.lock", lock)
-
-    # Point the project's wf-canvas.toml at our fake pixi_root
-    (tmp_path / ".wfc").mkdir()
-    (tmp_path / ".wfc" / "wf-canvas.toml").write_text(
-        f'[pixi]\nroot = "{pixi_root.as_posix()}"\n'
-    )
-
-    # Avoid real interpreter / pip freeze
-    monkeypatch.setattr(
-        "wfc.register.resolve_python_for_env",
-        lambda *a, **k: Path("/fake/python"),
-    )
-    monkeypatch.setattr("wfc.env_introspect.pip_freeze", lambda _py: "")
-    # capture_env_content also calls pip_freeze_best_effort, which deliberately
-    # raises on a missing interpreter (a real env problem, per its docstring).
-    # The fake /fake/python path is just a test shortcut, so mock it too — this
-    # test exercises env *selection*, not pip-freeze behavior.
-    monkeypatch.setattr(
-        "wfc.env_introspect.pip_freeze_best_effort", lambda _py: ""
-    )
-
-    blob = capture_env_content("pixi:myproject:envB", tmp_path)
-
-    assert "pandas" in blob, (
-        f"envB's packages missing — 3-segment spec fingerprinted wrong env:\n{blob}"
-    )
-    assert "numpy" not in blob, (
-        f"envA's packages present — 3-segment spec picked project name "
-        f"instead of env name:\n{blob}"
-    )
-
-
-# =============================================================================
-# pip_freeze: subprocess failure surfaces clearly
-# =============================================================================
-
-@workflow(
-    purpose="pip_freeze raises RuntimeError with the stderr message on "
-            "nonzero exit — silent failure would produce an empty freeze "
-            "that looks identical for two different envs"
-)
-def test_pip_freeze_nonzero_exit_raises():
-    """Mock subprocess.run to simulate pip exiting nonzero; confirm raise."""
-    口 = Step(step_num=1, name="Patch subprocess.run",
-             purpose="Simulate pip exiting nonzero with a useful stderr")
-    failed = MagicMock(returncode=2, stdout="", stderr="ERROR: broken env\n")
-    with patch("wfc.env_introspect.subprocess.run", return_value=failed):
-        口 = Step(step_num=2, name="Call pip_freeze",
-                 purpose="Verify RuntimeError is raised with stderr included")
-        with pytest.raises(RuntimeError, match="broken env"):
-            pip_freeze("/nonexistent/python")
-
-
-@workflow(
-    purpose="pip_freeze raises FileNotFoundError when the python interpreter "
-            "binary is missing — clear error, not a cryptic subprocess trace"
-)
-def test_pip_freeze_missing_binary_raises():
-    """Mock subprocess.run to raise FileNotFoundError; confirm it propagates."""
-    with patch("wfc.env_introspect.subprocess.run", side_effect=FileNotFoundError()):
-        with pytest.raises(FileNotFoundError, match="Python interpreter not found"):
-            pip_freeze("/no/such/python")
-
-
+from wfc.environments import get as _envs_get
+from wfc.persistence import Method, MethodVersion, Module, Run, Sample
+# seed_sample_row, not create_sample_csv, deliberately: these tests compose
+# cache keys, where the row's content_hash IS the input under test.
+from tests.conftest import seed_sample_row
+from tests.fixtures.conftest import write_env_record
+from tests.fixtures.fakes import stub_cache_writers
+from wfc.identity import build_cache_key
+from wfc.storage import store_env_content
+from wfc.environments.fingerprint import capture_env_content
 # =============================================================================
 # store_env_content: temp-file cleanup on exception
 # =============================================================================
@@ -373,10 +60,8 @@ def test_store_env_content_temp_cleanup_on_exception(tmp_path, monkeypatch):
     def boom(*a, **kw):
         raise RuntimeError("cache write failed")
 
-    monkeypatch.setattr("wfc.version.cache_file", boom, raising=False)
-    # Also patch the symbol inside store_env_content's local import
-    import wfc.provenance
-    monkeypatch.setattr(wfc.provenance, "cache_file", boom)
+    # store_env_content imports cache_file at call time; patch its home.
+    stub_cache_writers(monkeypatch, cache_file=boom)
 
     口 = Step(step_num=3, name="Call store_env_content and verify cleanup",
              purpose="RuntimeError must propagate, but no temp file may leak")
@@ -395,8 +80,7 @@ def test_store_env_content_temp_cleanup_on_exception(tmp_path, monkeypatch):
 @workflow(
     purpose="After store_env_content, the content blob is retrievable from "
             ".dvc/cache/files/md5/{first2}/{rest} under the returned md5 — "
-            "satisfies the 'historical runs can be fully reconstructed' "
-            "requirement from the request"
+            "so a historical run's env can be fully reconstructed"
 )
 def test_store_env_content_blob_retrievable(tmp_path):
     """The md5 returned must point at a file whose content is the blob."""
@@ -414,11 +98,11 @@ def test_store_env_content_blob_retrievable(tmp_path):
 
 
 # =============================================================================
-# build_cache_key 4-arg: env_fingerprint sensitivity
+# build_cache_key: env_fingerprint sensitivity
 # =============================================================================
 
 @workflow(
-    purpose="build_cache_key with the 4-arg signature produces distinct keys "
+    purpose="build_cache_key produces distinct keys "
             "when env_fingerprint changes and identical keys when it does not"
 )
 def test_build_cache_key_env_fingerprint_sensitivity():
@@ -428,9 +112,9 @@ def test_build_cache_key_env_fingerprint_sensitivity():
     input_fp = "b" * 64
     env_fp_1 = "1" * 32
     env_fp_2 = "2" * 32
-    k1 = build_cache_key(code_fp, params, input_fp, env_fp_1)
-    k2 = build_cache_key(code_fp, params, input_fp, env_fp_1)
-    k3 = build_cache_key(code_fp, params, input_fp, env_fp_2)
+    k1 = build_cache_key(code_fp, params, input_fp, env_fp_1, "envfp_mod.envfp_method")
+    k2 = build_cache_key(code_fp, params, input_fp, env_fp_1, "envfp_mod.envfp_method")
+    k3 = build_cache_key(code_fp, params, input_fp, env_fp_2, "envfp_mod.envfp_method")
     assert k1 == k2
     assert k1 != k3
     assert len(k1) == 64
@@ -442,8 +126,8 @@ def test_build_cache_key_env_fingerprint_sensitivity():
 
 @workflow(
     purpose="A Run row inserted without env_fingerprint loads cleanly from "
-            "the DB — legacy rows predating this cycle keep NULL and stay "
-            "readable (no migration script required)"
+            "the DB — a row with a NULL env_fingerprint stays readable "
+            "(no migration script required)"
 )
 def test_legacy_null_env_fingerprint_run_loads(tmp_project):
     """Insert a Run with env_fingerprint unset; read it back and verify NULL."""
@@ -480,7 +164,7 @@ def test_legacy_null_env_fingerprint_run_loads(tmp_project):
 
 
 # =============================================================================
-# Integration: env change invalidates cache (US-1)
+# Integration: env change invalidates cache
 # =============================================================================
 
 def _seed_env_method(module_name="envfp_mod", method_name="envfp_method"):
@@ -506,30 +190,42 @@ def _ensure_method_source(project_dir, method_name="envfp_method"):
     script = method_dir / f"{method_name}.py"
     if not script.exists():
         script.write_text("def main():\n    pass\n")
+    # The registered copy's contract is the other half of the method's code
+    # identity, so a registered copy without one is refused at fingerprint
+    # time. It is held fixed here: this module drives the ENV axis.
+    contract = method_dir / "method.yaml"
+    if not contract.exists():
+        contract.write_text(
+            "env: demo\n"
+            "inputs:\n  data:\n    required: false\n"
+            "outputs:\n  result:\n    type: .csv\n"
+        )
 
 
 @workflow(
     purpose="Two otherwise-identical pre_run calls with different env content "
             "yield different env_fingerprint and different cache_key; the "
-            "second call is a MISS, not a CACHED hit — US-1"
+            "second call is a MISS, not a CACHED hit"
 )
 def test_env_change_invalidates_cache(tmp_project, monkeypatch):
     """Integration: pre_run under two 'envs' -> distinct cache_keys and MISS."""
-    from wfc.cli import pre_run
+    from wfc.execution.claim import pre_run
 
-    口 = Step(step_num=1, name="Seed method and source",
-             purpose="Minimal method with env='container:demo'; capture_env_content is stubbed below")
+    口 = Step(step_num=1, name="Seed method, source, and a real 'demo' env",
+             purpose="Method env='container:demo' resolves through the real manifest "
+                     "branch — env_fingerprint comes from the registered record verbatim")
     _seed_env_method()
     _ensure_method_source(tmp_project)
+    seed_sample_row("s_env")
+    # Register a real container env 'demo' so resolve_env_fingerprint reads its
+    # precomputed env_fingerprint verbatim (the manifest short-circuit).
+    # Digest 'a' == env state A;
+    # a different digest below == env state B and yields a different fingerprint.
+    write_env_record(tmp_project, "demo", digest="a" * 64)
+    demo_fp_a = _envs_get("demo", tmp_project).env_fingerprint
 
-    口 = Step(step_num=2, name="First pre_run with stubbed env 'A'",
+    口 = Step(step_num=2, name="First pre_run under real env 'A'",
              purpose="Produces a NEW run; record its env_fingerprint and cache_key")
-    # Stub capture_env_content so we fully control the env payload without
-    # shelling out to pip.  Different return value = different env_fingerprint.
-    monkeypatch.setattr(
-        "wfc.version.capture_env_content",
-        lambda env_spec, pd: "ENV_STATE_A\nnumpy==1.1\n",
-    )
     commit = "e" * 40
     flag_1, run_id_1 = pre_run(
         method_name="envfp_method",
@@ -544,6 +240,8 @@ def test_env_change_invalidates_cache(tmp_project, monkeypatch):
     env_fp_a = run_a.env_fingerprint
     cache_key_a = run_a.cache_key
     assert env_fp_a is not None and len(env_fp_a) == 32
+    # The persisted fingerprint is the manifest's value, byte-for-byte.
+    assert env_fp_a == demo_fp_a
 
     # Mark completed so it's cache-eligible for the next call
     with get_session() as session:
@@ -554,15 +252,17 @@ def test_env_change_invalidates_cache(tmp_project, monkeypatch):
 
     # Create a matching archive directory so the cache-hit check passes if
     # the keys happen to collide (they must NOT, but be defensive).
-    from wfc.cli import _run_archive_dir
-    _run_archive_dir(run_id_1).mkdir(parents=True, exist_ok=True)
+    from wfc.persistence import project_root as get_project_root
+    from wfc.layout import run_archive_dir
+    run_archive_dir(get_project_root(), run_id_1).mkdir(parents=True, exist_ok=True)
 
-    口 = Step(step_num=3, name="Second pre_run with stubbed env 'B'",
-             purpose="Different env content -> different env_fingerprint -> MISS")
-    monkeypatch.setattr(
-        "wfc.version.capture_env_content",
-        lambda env_spec, pd: "ENV_STATE_B\nnumpy==2.2\n",
-    )
+    口 = Step(step_num=3, name="Re-register env 'B' and second pre_run",
+             purpose="A different env digest -> different env_fingerprint -> MISS")
+    # Overwrite 'demo' with a new digest == env state B. The manifest branch now
+    # resolves a different env_fingerprint, so the second run must MISS.
+    write_env_record(tmp_project, "demo", digest="b" * 64)
+    demo_fp_b = _envs_get("demo", tmp_project).env_fingerprint
+    assert demo_fp_b != demo_fp_a
     flag_2, run_id_2 = pre_run(
         method_name="envfp_method",
         module_name="envfp_mod",
@@ -581,25 +281,30 @@ def test_env_change_invalidates_cache(tmp_project, monkeypatch):
     assert run_b.env_fingerprint is not None
     assert run_b.env_fingerprint != env_fp_a
     assert run_b.cache_key != cache_key_a
+    # The second run's fingerprint is env B's manifest value, verbatim.
+    assert run_b.env_fingerprint == demo_fp_b
 
 
 @workflow(
     purpose="pre_run persists env_fingerprint on the cache-HIT audit Run row "
             "as well as on the MISS row — CACHED audit rows are equal "
-            "provenance citizens (US-2 + US-5)"
+            "provenance citizens"
 )
 def test_env_fingerprint_persisted_on_cached_audit_row(tmp_project, monkeypatch):
     """Same env on both calls -> second is CACHED; audit row has env_fingerprint set."""
-    from wfc.cli import pre_run, _run_archive_dir
+    from wfc.execution.claim import pre_run
+    from wfc.persistence import project_root as get_project_root
+    from wfc.layout import run_archive_dir
 
     _seed_env_method()
     _ensure_method_source(tmp_project)
+    seed_sample_row("s_stable")
 
-    # Stable env content across both calls
-    monkeypatch.setattr(
-        "wfc.version.capture_env_content",
-        lambda env_spec, pd: "STABLE_ENV\nnumpy==1.26\n",
-    )
+    # Register a real 'demo' env; both calls resolve the same manifest
+    # env_fingerprint verbatim, so the second is a CACHED hit and the audit
+    # row carries that same fingerprint.
+    write_env_record(tmp_project, "demo", digest="a" * 64)
+    demo_fp = _envs_get("demo", tmp_project).env_fingerprint
 
     commit = "7" * 40
     flag_1, run_id_1 = pre_run(
@@ -616,7 +321,7 @@ def test_env_fingerprint_persisted_on_cached_audit_row(tmp_project, monkeypatch)
         r.status = "completed"
         session.add(r)
         session.commit()
-    _run_archive_dir(run_id_1).mkdir(parents=True, exist_ok=True)
+    run_archive_dir(get_project_root(), run_id_1).mkdir(parents=True, exist_ok=True)
 
     flag_2, audit_id = pre_run(
         method_name="envfp_method",
@@ -626,7 +331,7 @@ def test_env_fingerprint_persisted_on_cached_audit_row(tmp_project, monkeypatch)
         git_commit=commit,
     )
     assert flag_2 == "CACHED"
-    # pre_run's CACHED contract now returns the audit row, not the source.
+    # pre_run's CACHED contract returns the audit row, not the source.
     assert audit_id != run_id_1
 
     with get_session() as session:
@@ -634,6 +339,8 @@ def test_env_fingerprint_persisted_on_cached_audit_row(tmp_project, monkeypatch)
     assert audit is not None
     assert audit.cache_source_run_id == run_id_1
     assert audit.env_fingerprint is not None
+    # The audit row carries the manifest's env_fingerprint verbatim.
+    assert audit.env_fingerprint == demo_fp
     # Same env content -> same md5
     with get_session() as session:
         origin = session.get(Run, run_id_1)

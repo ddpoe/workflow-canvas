@@ -1,44 +1,72 @@
 """
-wfc/version.py — Content-addressed versioning and input fingerprinting.
+wfc/version.py — Git-commit discipline.
 
-Five public functions:
+Public functions:
   get_git_commit(repo_path)             Fail-fast on dirty working tree.
-  build_code_fingerprint(method_source_dir)  SHA256 of method source files.
-  get_or_create_version(method_id, code_fingerprint, git_commit)
-  build_input_fingerprint(upstream_run_ids, sample_ids)
-  build_cache_key(code_fingerprint, params, input_fingerprint, env_fingerprint)
-  capture_env_content(env_spec, project_dir)
-  store_env_content(content, project_dir) -> md5 (env_fingerprint)
-  resolve_env_fingerprint(env_spec, project_dir) -> md5 (env_fingerprint)
+  commit_paths(repo_root, paths, msg)   Commit exactly the named paths.
 
-Design notes (aligned with design/l2/gaps.md § Gap 15):
+The identities themselves — the content hash, the code fingerprint, the
+input fingerprint and the cache key — live in ``wfc.identity``; this module
+composes none of them. The env fingerprint is ``wfc.environments``'
+(``capture_env_content``, ``resolve_env_fingerprint``), and the MethodVersion
+lookup is ``wfc.registration.get_or_create_version``.
+
+Design notes:
+  - Every git call is bounded (``GIT_TIMEOUT``; the commit, which runs the
+    user's hooks, ``GIT_COMMIT_TIMEOUT``, or ``WFC_GIT_COMMIT_TIMEOUT`` when
+    set for hooks that need longer). A git that does not finish is
+    stopped with its children and reported loudly (:class:`GitTimeoutError`);
+    a commit stopped this way leaves nothing staged behind it.
   - get_git_commit raises DirtyRepositoryError if there are uncommitted changes.
     Commit-then-run is the intended discipline; there is no --allow-dirty escape hatch.
-  - build_code_fingerprint hashes .py files from the registered method copy,
-    sorted by relative path.  This makes cache keys stable across non-code commits.
-  - build_input_fingerprint uses upstream Run.cache_key (deterministic chain),
-    NOT RunOutput.content_hash.  content_hash is archival-only.
-    sorted() on the parts list is load-bearing, not an optimisation —
-    DB row order is not guaranteed. Changing it silently breaks cache keys.
-  - cache_key = SHA256(code_fingerprint + json.dumps(params, sort_keys=True) + fingerprint)
-  - git_commit is retained as optional audit metadata on MethodVersion, not part of cache key.
+  - git_commit is retained as optional audit metadata on MethodVersion, not part of
+    the cache key.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
+import os
+import signal
 import subprocess
-from datetime import datetime, timezone
+import time
 from pathlib import Path
-from typing import Sequence
 
-from sqlalchemy.exc import IntegrityError
-from sqlmodel import select
-from axiom_annotations import task
+from .persistence import project_root
 
-from .database import get_session, project_root
-from .models import MethodVersion, Run, RunOutput, Sample
+#: Seconds a git query or staging call may take before it is stopped.
+GIT_TIMEOUT = 60
+
+#: Seconds ``git commit`` may take; it runs the user's hooks, so it gets more.
+GIT_COMMIT_TIMEOUT = 300
+
+#: Environment variable that overrides :data:`GIT_COMMIT_TIMEOUT` (seconds).
+GIT_COMMIT_TIMEOUT_ENV = "WFC_GIT_COMMIT_TIMEOUT"
+
+
+def commit_timeout() -> float:
+    """The seconds ``git commit`` may take before it is stopped.
+
+    ``WFC_GIT_COMMIT_TIMEOUT`` overrides the default for a project whose
+    hooks need more (or less) time.
+
+    Returns:
+        The override when set, else :data:`GIT_COMMIT_TIMEOUT`.
+
+    Raises:
+        ValueError: The override is not a positive number.
+    """
+    raw = os.environ.get(GIT_COMMIT_TIMEOUT_ENV, "").strip()
+    if not raw:
+        return GIT_COMMIT_TIMEOUT
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 0.0
+    if value <= 0:
+        raise ValueError(
+            f"{GIT_COMMIT_TIMEOUT_ENV}={raw!r} is not a positive number of seconds"
+        )
+    return value
 
 
 # =============================================================================
@@ -50,6 +78,92 @@ class DirtyRepositoryError(RuntimeError):
 
     The fix is always ``git commit`` (or ``git stash``), never a bypass flag.
     """
+
+
+class GitTimeoutError(RuntimeError):
+    """A git command did not finish within its timeout and was stopped.
+
+    Attributes:
+        started: ``time.time()`` when the command was launched.
+    """
+
+    def __init__(self, message: str, started: float):
+        super().__init__(message)
+        self.started = started
+
+
+# =============================================================================
+# Running git
+# =============================================================================
+
+def _stop_tree(proc: subprocess.Popen) -> None:
+    """Kill *proc* and every process it started (a hook and its children).
+
+    Killing only git would leave a hook holding the output pipes open, and
+    reading them would wait for the hook.
+
+    Args:
+        proc: The git process that ran out of time.
+    """
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                stdin=subprocess.DEVNULL, capture_output=True, timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
+def _git(args: list[str], cwd: Path | str,
+         timeout: float | None = None) -> subprocess.CompletedProcess:
+    """Run one git command, bounded by a timeout, never reading a terminal.
+
+    Args:
+        args: The command line, starting with ``git``.
+        cwd: Directory to run it in.
+        timeout: Seconds allowed; ``None`` means :data:`GIT_TIMEOUT`.
+
+    Returns:
+        The finished process, with text stdout and stderr.
+
+    Raises:
+        GitTimeoutError: The command did not finish in time; it was stopped
+            together with every process it started.
+        FileNotFoundError: git is not installed (or *cwd* does not exist).
+    """
+    limit = GIT_TIMEOUT if timeout is None else timeout
+    started = time.time()
+    proc = subprocess.Popen(
+        args, cwd=str(cwd), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True,
+        start_new_session=(os.name != "nt"),
+    )
+    try:
+        out, err = proc.communicate(timeout=limit)
+    except subprocess.TimeoutExpired:
+        _stop_tree(proc)
+        try:
+            proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+        verb = next((a for a in args[1:]
+                     if not a.startswith("-") and "=" not in a), "")
+        raise GitTimeoutError(
+            f"`git {verb}` in {str(cwd)!r} did not finish within {limit:g} s "
+            f"(a hook, a filter or a prompt waiting for input?); it was stopped",
+            started,
+        ) from None
+    return subprocess.CompletedProcess(args, proc.returncode, out, err)
 
 
 # =============================================================================
@@ -71,18 +185,14 @@ def get_git_commit(repo_path: Path | str | None = None) -> str:
     Raises:
         DirtyRepositoryError: If the working tree has uncommitted changes.
         RuntimeError: If git is not available or the path is not a git repo.
+        GitTimeoutError: If git did not answer in time.
     """
     if repo_path is None:
         repo_path = project_root()
     cwd = str(repo_path)
 
     # Fail-fast: check working tree first
-    status = subprocess.run(
-        ["git", "status", "--porcelain"],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-    )
+    status = _git(["git", "status", "--porcelain"], cwd)
     if status.returncode != 0:
         raise RuntimeError(
             f"git status failed in {cwd!r}: {status.stderr.strip()}"
@@ -101,12 +211,7 @@ def get_git_commit(repo_path: Path | str | None = None) -> str:
             f"  Dirty files:\n{dirty_lines}"
         )
 
-    result = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-    )
+    result = _git(["git", "rev-parse", "HEAD"], cwd)
     if result.returncode != 0:
         raise RuntimeError(
             f"git rev-parse HEAD failed in {cwd!r}: {result.stderr.strip()}"
@@ -114,455 +219,198 @@ def get_git_commit(repo_path: Path | str | None = None) -> str:
     return result.stdout.strip()
 
 
-def build_code_fingerprint(method_source_dir: Path | str) -> str:
-    """Build a SHA256 fingerprint of a method's source files.
+class NotAGitRepositoryError(RuntimeError):
+    """Raised by :func:`commit_paths` when a commit is required outside git."""
 
-    Walks the method source directory, reads all ``.py`` files, sorts them
-    by relative path (load-bearing for determinism), concatenates their
-    contents, and returns a SHA256 hex digest.
 
-    This function is the content-addressed replacement for using git_commit
-    as the code identity component in cache keys.  The directory should be
-    the registered copy under ``methods/{method_name}/``.
+def git_toplevel(directory: Path | str) -> Path | None:
+    """Return the root of the git working tree holding *directory*.
 
     Args:
-        method_source_dir: Path to the directory containing the method's
-            registered source files.
+        directory: Any directory.
 
     Returns:
-        64-char hex SHA256 string.
+        The working tree's top level, resolved, or ``None`` when *directory*
+        is not inside a git working tree (or git is not installed).
 
     Raises:
-        ValueError: If the directory does not exist or contains no ``.py`` files.
+        GitTimeoutError: If git did not answer in time.
     """
-    source_dir = Path(method_source_dir)
-    if not source_dir.is_dir():
-        raise ValueError(
-            f"Method source directory does not exist: {source_dir}"
-        )
-
-    # Collect all .py files, sorted by relative path for determinism
-    py_files = sorted(
-        source_dir.rglob("*.py"),
-        key=lambda p: p.relative_to(source_dir).as_posix(),
-    )
-    if not py_files:
-        raise ValueError(
-            f"Method source directory contains no .py files: {source_dir}"
-        )
-
-    hasher = hashlib.sha256()
-    for py_file in py_files:
-        rel_path = py_file.relative_to(source_dir).as_posix()
-        content = py_file.read_text(encoding="utf-8")
-        hasher.update(f"{rel_path}:{content}".encode("utf-8"))
-
-    return hasher.hexdigest()
-
-
-def get_or_create_version(method_id: int, code_fingerprint: str, git_commit: str | None = None) -> int:
-    """Return MethodVersion.id for (method_id, code_fingerprint), creating if needed.
-
-    The DB UniqueConstraint on (method_id, code_fingerprint) is the safety net;
-    this function provides the upsert logic on top.  Concurrent callers (e.g. 4+
-    parallel Snakemake workers sharing the same method/fingerprint) will race on
-    the INSERT -- the loser catches IntegrityError and re-SELECTs the winning row.
-
-    Args:
-        method_id: Database ID of the Method row.
-        code_fingerprint: 64-char SHA256 hex digest from build_code_fingerprint().
-        git_commit: Optional 40-char git commit SHA for audit metadata.  Stored
-            on the MethodVersion row but not used for identity or cache keys.
-
-    Returns:
-        MethodVersion.id (integer).
-    """
-    # Fast path: row already exists (common case after first worker wins).
-    with get_session() as session:
-        existing = session.exec(
-            select(MethodVersion).where(
-                MethodVersion.method_id == method_id,
-                MethodVersion.code_fingerprint == code_fingerprint,
-            )
-        ).first()
-        if existing is not None:
-            return existing.id  # type: ignore[return-value]
-
-    # Slow path: try to INSERT, fall back to SELECT if another worker beat us.
     try:
-        with get_session() as session:
-            version = MethodVersion(
-                method_id=method_id,
-                code_fingerprint=code_fingerprint,
-                git_commit=git_commit,
-                recorded_at=datetime.now(timezone.utc),
-            )
-            session.add(version)
-            session.commit()
-            session.refresh(version)
-            return version.id  # type: ignore[return-value]
-    except IntegrityError:
-        # Another concurrent worker inserted the same (method_id, code_fingerprint)
-        # first — retrieve their row.
-        with get_session() as session:
-            existing = session.exec(
-                select(MethodVersion).where(
-                    MethodVersion.method_id == method_id,
-                    MethodVersion.code_fingerprint == code_fingerprint,
-                )
-            ).first()
-            if existing is None:  # pragma: no cover — should be impossible
-                raise RuntimeError(
-                    f"get_or_create_version: INSERT failed with IntegrityError "
-                    f"but follow-up SELECT found nothing for "
-                    f"method_id={method_id}, code_fingerprint={code_fingerprint!r}"
-                )
-            return existing.id  # type: ignore[return-value]
+        result = _git(["git", "rev-parse", "--show-toplevel"], directory)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return Path(result.stdout.strip()).resolve()
 
 
-@task(purpose="Build a SHA256 input fingerprint from upstream run cache keys and root sample hashes")
-def build_input_fingerprint(
-    upstream_run_ids: Sequence[int],
-    sample_ids: Sequence[int] | None = None,
-    label: str | None = None,
-    strict: bool = False,
-) -> str:
-    """Build a SHA256 fingerprint of all inputs to a run.
+def commit_paths(
+    repo_root: Path | str,
+    paths: list[Path | str],
+    message: str,
+    *,
+    require_repo: bool = True,
+) -> str | None:
+    """Stage and commit exactly *paths*, and nothing else.
 
-    Uses upstream Run.cache_key (deterministic cache key chain) instead of
-    RunOutput.content_hash.  This decouples cache validity from archival
-    state -- NULL content_hash (deferred archiving) has no effect on
-    fingerprint computation.
+    Every commit wfc makes (init, method, module and env registration) goes
+    through here, so every one names its paths. A path outside the working
+    tree, or one git ignores, is skipped rather than force-added. Entries
+    the user staged for other paths are neither committed nor unstaged: the
+    commit is a pathspec commit, which takes only the named paths.
 
-    The cache key chain is deterministic: each node's cache_key is
-    SHA256(code_fingerprint + params + upstream_cache_keys).  Using
-    upstream cache_key here closes the chain.
+    Deletions inside a named directory are staged too (``git add -A``), so a
+    snapshot that dropped a stale script commits the removal.
 
-    Handles both upstream Run rows (downstream nodes) and Sample rows
-    (root nodes) in one call -- caller never branches. For Sample rows,
-    the DVC content hash is preferred (content-addressed); samples predating
-    ADR-009 with content_hash=NULL fall back to path:size:mtime.
-
-    ``sorted()`` on the parts list is **load-bearing**, not an optimisation --
-    DB row order is not guaranteed and will silently break cache key stability.
+    The commit uses a fixed ``wfc`` identity, so the repository needs no git
+    identity configured.
 
     Args:
-        upstream_run_ids: IDs of upstream Run rows. Empty list for root nodes.
-        sample_ids: IDs of Sample rows. Provided for root nodes only.
-        label: Optional label for fingerprint context (unused, reserved).
-        strict: If True, raise on missing data (unused, reserved).
+        repo_root: A directory inside the repository (the project root).
+        paths: Files or directories to commit, absolute or relative to
+            *repo_root*.
+        message: The commit message.
+        require_repo: When ``True``, raise if *repo_root* is not inside a git
+            working tree; when ``False``, return ``None`` without committing.
 
     Returns:
-        64-char hex SHA256 string.
-    """
-    parts: list[str] = []
-
-    with get_session() as session:
-        for run_id in upstream_run_ids:
-            run = session.get(Run, run_id)
-            if run is None:
-                continue
-            if run.cache_key:
-                parts.append(f"key:{run.cache_key}")
-            else:
-                # Upstream run predates cache key integration -- use a
-                # sentinel so the fingerprint is still deterministic
-                # (always produces the same value for this run).
-                parts.append(f"key:legacy-run-{run_id}")
-
-        for sid in (sample_ids or []):
-            sample = session.get(Sample, sid)
-            if sample is None:
-                continue
-            # Prefer DVC content hash (MD5) when available — it is content-
-            # addressed, so identical content produces an identical key even
-            # if path, size, or mtime differ (re-registration, relocation).
-            # Legacy rows registered before ADR-009 have content_hash=NULL
-            # and fall back to the path:size:mtime sentinel.
-            if sample.content_hash:
-                parts.append(f"hash:{sample.content_hash}")
-            else:
-                path = sample.registered_path or ""
-                size = sample.file_size or 0
-                mtime = sample.file_mtime or 0.0
-                parts.append(f"{path}:{size}:{mtime}")
-
-    return hashlib.sha256(",".join(sorted(parts)).encode()).hexdigest()
-
-
-def build_cache_key(
-    code_fingerprint: str,
-    params: dict,
-    input_fingerprint: str,
-    env_fingerprint: str,
-) -> str:
-    """Build a SHA256 cache key for a run.
-
-    Pure function -- no DB access.  Uses the content-addressed code fingerprint
-    (not git commit) so that unrelated commits do not invalidate cache keys.
-
-    Args:
-        code_fingerprint: 64-char SHA256 hex digest from build_code_fingerprint().
-        params: Parameter dict for this run (serialised deterministically).
-        input_fingerprint: Output of build_input_fingerprint().
-        env_fingerprint: 32-char MD5 hex digest from ``store_env_content()``,
-            identifying the resolved environment content (lock + pip freeze,
-            or a container env's image fingerprint).  Folding
-            env into the cache key means that installing a different numpy
-            version between runs invalidates the cache — no more silent
-            stale-env hits.
-
-    Returns:
-        64-char hex SHA256 string.
-    """
-    raw = (
-        code_fingerprint
-        + json.dumps(params, sort_keys=True)
-        + input_fingerprint
-        + env_fingerprint
-    )
-    return hashlib.sha256(raw.encode()).hexdigest()
-
-
-# =============================================================================
-# Environment content capture (Gap: env_fingerprint provenance)
-# =============================================================================
-
-def capture_env_content(env_spec: str, project_dir: Path | str) -> str:
-    """Capture a deterministic content blob describing a method's env.
-
-    Backend dispatch:
-
-      - ``pixi:<name>`` or ``pixi:<project>:<env>`` — lock-based intent from
-        ``pixi.lock`` (semantic fields, sorted JSON) plus ``pip freeze`` of
-        the resolved interpreter.  Uses :func:`resolve_python_for_env` to
-        find the interpreter.
-
-      - ``conda:<name>`` — install-based actuality from
-        ``conda list --explicit --md5`` plus ``pip freeze``.
-
-      - ``container:<image>@sha256:<hex>`` — canonical JSON blob naming
-        the container image and its digest. This is the **precompute
-        write path** used by :func:`wfc.envs.register` to populate
-        ``env_fingerprint`` at registration time. The runtime *read*
-        path (a method's registered env at run-step time) is
-        :func:`resolve_env_fingerprint`, which never calls this function
-        for registered container envs.
-
-    The returned string is always real env content — never a precomputed
-    fingerprint — deterministic for a given env state, and is the input to
-    :func:`store_env_content`, which hashes it and stores the blob in the
-    DVC content-addressed cache.
-
-    Args:
-        env_spec: Typed env string from ``Method.env`` (e.g.
-            ``"pixi:image-io"``, ``"conda:analysis"``,
-            ``"container:<image>@sha256:<hex>"``).
-        project_dir: Root directory of the wfc project (used to resolve
-            ``[pixi]`` / ``[conda]`` roots from ``wf-canvas.toml`` for the
-            typed backends).
-
-    Returns:
-        A newline-delimited blob whose content varies by backend but is
-        deterministic for a given env state.
-    """
-    from .env_introspect import (
-        conda_list_explicit,
-        pip_freeze_best_effort,
-        pixi_lock_section,
-    )
-    from .register import resolve_python_for_env
-
-    project_dir = Path(project_dir)
-
-    if env_spec.startswith("container:"):
-        # Container-backend precompute path (ADR-019 Cycle C). The spec is
-        # ``container:<image>@sha256:<hex>``. We split on the last
-        # ``@sha256:`` so an image ref like ``docker://reg/img@sha256:...``
-        # is correctly partitioned even though the image part contains
-        # extra punctuation. The output is canonical JSON (sorted keys,
-        # no spaces) so two calls with the same (image, digest) hash to
-        # the same env_fingerprint regardless of input formatting.
-        import json as _json
-        payload = env_spec[len("container:"):]
-        marker = "@sha256:"
-        idx = payload.rfind(marker)
-        if idx < 0:
-            raise ValueError(
-                f"Malformed container env spec {env_spec!r}: expected "
-                f"'container:<image>@sha256:<hex>'."
-            )
-        image = payload[:idx]
-        digest_hex = payload[idx + len(marker):]
-        if not image or not digest_hex:
-            raise ValueError(
-                f"Malformed container env spec {env_spec!r}: image and "
-                f"digest must both be non-empty."
-            )
-        blob = _json.dumps(
-            {"type": "container", "image": image, "digest": f"sha256:{digest_hex}"},
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        return blob
-
-    parts = env_spec.split(":")
-    backend = parts[0]
-
-    if backend == "pixi":
-        from .init import read_config
-        config = read_config(project_dir)
-        pixi_root = config.get("pixi_root")
-        if not pixi_root:
-            raise ValueError(
-                f"No [pixi] root configured in {project_dir}/.wfc/wf-canvas.toml; "
-                f"cannot capture env for '{env_spec}'."
-            )
-        # "pixi:<name>"           -> <name> is the project dir name; env
-        #                            is resolved by pixi_lock_section's
-        #                            "default" / single-env fallback.
-        # "pixi:<project>:<env>"  -> project is the dir name, env is the
-        #                            exact key into the lock's environments
-        #                            block.  Project and env may differ.
-        if len(parts) == 2:
-            project_name = parts[1]
-            env_name = None
-        elif len(parts) == 3:
-            project_name = parts[1]
-            env_name = parts[2]
-        else:
-            raise ValueError(
-                f"Malformed pixi env spec {env_spec!r}: expected "
-                f"'pixi:<name>' or 'pixi:<project>:<env>'."
-            )
-        # Platform selection is lock-driven: pixi_lock_section reads the
-        # platform list directly from the lock's ``environments`` block.
-        # For standalone pixi envs (the wfc convention) the lock lists a
-        # single platform, which is unambiguously the right answer.  Multi-
-        # platform locks surface an actionable error pointing at an explicit
-        # platform argument — we never guess via sys.platform.
-        lock_section = pixi_lock_section(
-            pixi_root, project_name, env_name=env_name
-        )
-
-        env_python = resolve_python_for_env(
-            env_spec,
-            pixi_root=pixi_root,
-            conda_root=config.get("conda_root") or None,
-            project_dir=project_dir,
-        )
-        # pixi.lock is the authoritative intent; pip freeze is a drift
-        # check for anything `pip install`ed on top. If the env has no
-        # pip at all (pure conda-forge), tolerate that by recording a
-        # sentinel so the fingerprint still reflects "pip absent" vs
-        # "pip present with no extras".
-        return f"{lock_section}\n{pip_freeze_best_effort(env_python)}"
-
-    if backend == "conda":
-        from .init import read_config
-        config = read_config(project_dir)
-        env_python = resolve_python_for_env(
-            env_spec,
-            pixi_root=config.get("pixi_root") or None,
-            conda_root=config.get("conda_root") or None,
-            project_dir=project_dir,
-        )
-        # conda prefix = parent of bin/python (posix) or parent of python.exe
-        env_prefix = env_python.parent.parent if env_python.name == "python" else env_python.parent
-        explicit = conda_list_explicit(env_prefix)
-        # `conda list --explicit --md5` is already the authoritative
-        # actuality blob; pip freeze is the drift check. Tolerate a
-        # missing pip the same way pixi does.
-        return f"{explicit}\n{pip_freeze_best_effort(env_python)}"
-
-    raise ValueError(
-        f"Unknown env backend in spec '{env_spec}'. "
-        f"Expected 'pixi:...' or 'conda:...'."
-    )
-
-
-def store_env_content(content: str, project_dir: Path | str) -> str:
-    """Write ``content`` to a temp file, hash it, cache it in DVC, return md5.
-
-    The md5 returned is the environment fingerprint used as the 4th arg to
-    :func:`build_cache_key` and persisted as ``Run.env_fingerprint``.
-
-    The blob is stored under ``.dvc/cache/files/md5/{first2}/{rest}`` so it
-    can be retrieved later by the returned md5.
-
-    Args:
-        content: Deterministic env content blob (from
-            :func:`capture_env_content`).
-        project_dir: Root directory of the wfc project.
-
-    Returns:
-        32-character hex MD5 digest of ``content``.
+        The new commit's SHA, or ``None`` when nothing was committed (no
+        repository and ``require_repo`` is ``False``, no path inside the
+        tree, or every named path already committed as it stands).
 
     Raises:
-        Whatever :func:`wfc.provenance.cache_file` raises — the temp file is
-        always cleaned up, success OR failure.
+        NotAGitRepositoryError: If *repo_root* is not in a git working tree
+            and ``require_repo`` is ``True``.
+        RuntimeError: If ``git add`` or ``git commit`` fails or does not
+            finish within its timeout (its paths are unstaged either way).
+        GitTimeoutError: If a git query before staging does not finish.
     """
-    import os
-    import tempfile
+    root = Path(repo_root).resolve()
+    top = git_toplevel(root)
+    if top is None:
+        if require_repo:
+            raise NotAGitRepositoryError(
+                f"{str(root)!r} is not a git repository.\n"
+                "Run `wfc init` before registering methods.\n"
+                "wfc requires git to track method versions for cache-key "
+                "computation."
+            )
+        return None
 
-    from .provenance import cache_file, hash_file
-
-    # Write to a NamedTemporaryFile with delete=False so we control cleanup.
-    # encoding=utf-8 and newline="" keep the bytes deterministic across
-    # platforms; the caller is expected to provide canonical content.
-    fd, tmp_path = tempfile.mkstemp(prefix="wfc-env-", suffix=".blob")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
-            f.write(content)
-        md5 = hash_file(tmp_path)
-        cache_file(tmp_path, md5, project_dir)
-        return md5
-    finally:
-        # Clean up the temp file on ALL paths — success, hash_file failure,
-        # cache_file failure.  Use try/except to stay defensive on Windows
-        # where the file could be held open briefly.
+    # Resolve every path against the project root and keep those inside the
+    # working tree, spelled relative to its top level with forward slashes.
+    rels: list[str] = []
+    for p in paths:
+        full = Path(p)
+        if not full.is_absolute():
+            full = root / full
+        full = full.resolve()
         try:
-            os.unlink(tmp_path)
-        except FileNotFoundError:
+            rel = full.relative_to(top).as_posix()
+        except ValueError:
+            continue
+        if rel in ("", "."):
+            continue
+        if rel not in rels:
+            rels.append(rel)
+
+    # A git-ignored path is skipped, never force-added. check-ignore exits 0
+    # for an ignored path and 1 for one that is not. A tracked path is never
+    # reported as ignored (check-ignore consults the index first).
+    kept = []
+    for rel in rels:
+        ignored = _git(["git", "check-ignore", "-q", "--", rel], top)
+        if ignored.returncode != 0:
+            kept.append(rel)
+    # A path that neither exists nor is tracked cannot be staged; skip it.
+    staged_ok = []
+    for rel in kept:
+        if (top / rel).exists():
+            staged_ok.append(rel)
+            continue
+        tracked = _git(["git", "ls-files", "--error-unmatch", "--", rel], top)
+        if tracked.returncode == 0:
+            staged_ok.append(rel)
+    if not staged_ok:
+        return None
+
+    try:
+        stage = _git(["git", "add", "-A", "--", *staged_ok], top)
+        if stage.returncode != 0:
+            raise RuntimeError(f"git add failed: {stage.stderr.strip()}")
+
+        # Nothing new under the named paths: already committed as it stands.
+        diff = _git(["git", "diff", "--cached", "--quiet", "--", *staged_ok],
+                    top)
+        if diff.returncode == 0:
+            return None
+
+        commit = _git(
+            [
+                "git",
+                "-c", "user.email=wfc@wfc",
+                "-c", "user.name=wfc",
+                "commit", "-q", "-m", message,
+                "--", *staged_ok,
+            ],
+            top, timeout=commit_timeout(),
+        )
+    except GitTimeoutError as exc:
+        # A stopped add or commit is a refused commit: nothing half-done.
+        _release_index_locks(top, exc.started)
+        _unstage(top, staged_ok)
+        raise RuntimeError(
+            f"git commit failed: {exc}. Its paths were unstaged: "
+            f"{', '.join(staged_ok)}"
+        ) from exc
+    if commit.returncode != 0:
+        # Put the index back for the named paths, so a refused commit (a
+        # hook, say) leaves nothing staged behind it.
+        _unstage(top, staged_ok)
+        raise RuntimeError(
+            f"git commit failed: {(commit.stderr or commit.stdout).strip()}"
+        )
+
+    return _git(["git", "rev-parse", "HEAD"], top).stdout.strip()
+
+
+def _unstage(top: Path, rels: list[str]) -> None:
+    """Put the index back to ``HEAD`` for *rels* (drop them in a repo with none).
+
+    Args:
+        top: The working tree's top level.
+        rels: Paths relative to *top*, as :func:`commit_paths` staged them.
+    """
+    has_head = _git(["git", "rev-parse", "--verify", "-q", "HEAD"],
+                    top).returncode == 0
+    unstage = (["git", "reset", "-q", "--", *rels] if has_head
+               else ["git", "rm", "-r", "-q", "--cached",
+                     "--ignore-unmatch", "--", *rels])
+    _git(unstage, top)
+
+
+def _release_index_locks(top: Path, since: float) -> None:
+    """Remove the index locks a stopped git left behind.
+
+    A git killed mid-commit cannot remove its ``index.lock`` (nor a pathspec
+    commit's temporary ``next-index-*.lock``), and every later git command
+    that writes the index would refuse to run. Only locks written since the
+    stopped command started are removed: while it held them, nothing else
+    could have taken them.
+
+    Args:
+        top: The working tree's top level.
+        since: ``time.time()`` when the stopped command was launched.
+    """
+    git_dir = _git(["git", "rev-parse", "--absolute-git-dir"],
+                   top).stdout.strip()
+    if not git_dir:
+        return
+    for lock in [Path(git_dir) / "index.lock",
+                 *Path(git_dir).glob("next-index-*.lock")]:
+        try:
+            if lock.stat().st_mtime >= since - 2:
+                lock.unlink()
+        except OSError:
             pass
-
-
-def resolve_env_fingerprint(env_spec: str, project_dir: Path | str) -> str:
-    """Resolve a method's env spec to its ``env_fingerprint`` (md5).
-
-    The single runtime entry point for turning ``Method.env`` into the
-    fingerprint persisted on the Run row and folded into the cache key.
-
-    Bare env names registered in ``.wfc/envs.json`` with a non-empty
-    ``container`` field short-circuit to the manifest's precomputed
-    ``env_fingerprint`` — no subprocess, no lock parse, and **no cache
-    write** (the blob was stored at registration time; re-storing the
-    fingerprint string here would hash the hash). This is the primary
-    runtime perf benefit of the container backend.
-
-    Every other spec (``pixi:``, ``conda:``,
-    ``container:<image>@sha256:<hex>``, and bare names without a
-    registered container env) captures the deterministic env-content blob
-    and stores it in the DVC cache:
-    ``store_env_content(capture_env_content(...))``.
-
-    Args:
-        env_spec: Env string from ``Method.env``, with any ``container:``
-            prefix already stripped from bare manifest names by the caller.
-        project_dir: Root directory of the wfc project.
-
-    Returns:
-        32-character hex MD5 env fingerprint.
-    """
-    project_dir = Path(project_dir)
-
-    if ":" not in env_spec:
-        try:
-            from .envs import get as _envs_get
-            record = _envs_get(env_spec, project_dir)
-        except Exception:
-            record = None
-        if record is not None and getattr(record, "container", "") and record.env_fingerprint:
-            return record.env_fingerprint
-
-    return store_env_content(capture_env_content(env_spec, project_dir), project_dir)

@@ -5,12 +5,9 @@
  * Such a run completes before the live streaming actor connects, so the
  * Inspector falls through to its historical-fetch fallback (its own
  * EventSource against `…/stream-logs?full=1`). An output-less run replays a
- * single `terminal` frame and nothing else. A regressed fallback rescheduled
- * its own effect — tearing down the EventSource before that lone frame
- * arrived — and left the badge frozen on "Connecting…".
- *
- * Expected to FAIL on the unfixed fallback (stuck "Connecting…") and PASS
- * once the effect no longer self-reschedules.
+ * single `terminal` frame and nothing else. A fallback that reschedules its
+ * own effect tears down the EventSource before that lone frame arrives and
+ * leaves the badge frozen on "Connecting…", which this spec catches.
  */
 import { expect, test } from '@playwright/test';
 import { setupRouteReplay } from '../../src/lib/__fixtures__/route-replay';

@@ -1,5 +1,5 @@
 /**
- * ADR-015 Phase D Layer 2: shared timeline fixtures.
+ * Shared timeline fixtures.
  *
  * Each timeline is an ordered sequence of `{ delayMs, payload }`
  * entries. The Playwright route-replay helper (`route-replay.ts`)
@@ -8,14 +8,13 @@
  *
  * The payload type is the **generated** `WorkflowStatusResponse` from
  * `src/lib/types/api.ts`, so any backend rename/removal of a field
- * makes these fixtures fail tsc — the contract guarantee called out in
- * US-1 of the cycle pitch.
+ * makes these fixtures fail tsc.
  */
 import type { components } from '../types/api';
 import type { RouteReplayOptions, SSEStreamFixture } from './route-replay';
 import type { RunStatusEvent } from '../machines/services';
 
-// ADR-015 Phase D Pass 2: recorded SSE stream fixtures.  Each JSON file
+// Recorded SSE stream fixtures.  Each JSON file
 // is produced by `wfc/canvas/static/scripts/record-sse.ts` against the
 // dev server.  Imported here as JSON so vitest + Playwright can both
 // consume them via the shared catalog.
@@ -36,9 +35,9 @@ export interface TimelineFrame {
 export type Timeline = TimelineFrame[];
 
 /**
- * ADR-015 Phase D Pass 1: behavior catalog row.
+ * Behavior catalog row.
  *
- * One entry per polling-driven row of the bug-class table.  Both
+ * One entry per polling-driven behavior.  Both
  * test layers iterate the same catalog object — Vitest feeds the
  * timeline frames through `runStatusToNodeState` and asserts the
  * emitted event sequence matches `expectedEvents`; Playwright sets
@@ -51,7 +50,7 @@ export interface BehaviorRow {
   /** Stable name; matches the catalog key.  Used as PNG filename and test id. */
   name: string;
   /**
-   * Canvas seed key consumed by `App.svelte::seedFixture`.  Determines
+   * Canvas seed key consumed by `seed.ts::seedFixture`.  Determines
    * how many nodes (and what kind) the canvas mounts before run.
    */
   fixtureKey: string;
@@ -78,10 +77,10 @@ export interface BehaviorRow {
    */
   skipVitest?: boolean;
   /**
-   * ADR-015 Phase D Pass 2: optional recorded SSE stream replayed by
+   * Optional recorded SSE stream replayed by
    * the e2e test against `/api/wfc/run/<runId>/stream-logs`.  When set,
-   * `route-replay.ts` swaps the default Pass 1 single-frame stub for a
-   * delayMs-paced replay.  Pass 1 polling-only rows omit this.
+   * `route-replay.ts` swaps the default single-frame stub for a
+   * delayMs-paced replay.  Polling-only rows omit this.
    */
   sseStream?: SSEStreamFixture;
 }
@@ -95,7 +94,6 @@ function frame(
   return {
     job_id: 'job-fixture',
     overall_status: overall,
-    steps: {},
     node_states,
     thread_alive: overall === 'running' || overall === 'pending',
     log: '',
@@ -103,10 +101,10 @@ function frame(
   };
 }
 
-// US-5 (Bug 3): a single method node walks the happy path
+// A single method node walks the happy path
 // pending -> running -> completed.  The `running` frame must be
-// observable in the UI; the existing 150ms setTimeout defer in
-// `services.ts` covers that today.
+// observable in the UI; the 150ms setTimeout defer in
+// `services.ts` covers that.
 export const normalSucceededTimeline: Timeline = [
   {
     delayMs: 0,
@@ -136,10 +134,10 @@ export const normalSucceededTimeline: Timeline = [
   },
 ];
 
-// US-6 + US-7 (Bug 4 + Bug 5): cache-hit run.  The backend reports
+// Cache-hit run.  The backend reports
 // `status: 'completed'` plus the cache-hit fields on the very first
 // tick; the bridge must short-circuit to CACHE_HIT and the
-// InspectorPanel must render the cache-hit banner with `originalRunId`
+// MethodPanel must render the cache-hit banner with `originalRunId`
 // instead of stranding on "Connecting…".
 export const cacheHitTimeline: Timeline = [
   {
@@ -162,7 +160,7 @@ export const cacheHitTimeline: Timeline = [
 // connects. The Inspector therefore takes the historical-fetch fallback
 // (no live streaming actor). Paired with `silentTerminalSSE` below — a
 // stream that carries a single `terminal` frame and no stdout/stderr —
-// this is the exact "silent + fast" combination that stranded the
+// this is the "silent + fast" combination that must not strand the
 // Output tab on "Connecting…".
 export const silentFastCompletedTimeline: Timeline = [
   {
@@ -180,8 +178,8 @@ export const silentFastCompletedTimeline: Timeline = [
 // Output-less historical stream: one `terminal` frame, no stdout/stderr.
 // The `delayMs` is load-bearing — the frame must arrive on a macrotask
 // *after* the fallback effect's microtask self-reschedule would fire
-// `es.close()`, so a regressed build drops it and strands on
-// "Connecting…". `status: 'success'` matches the backend's
+// `es.close()`, so a fallback that closes on that microtask drops it
+// and strands on "Connecting…". `status: 'success'` matches the backend's
 // `_log_map_terminal_status` (it emits `success`, not `completed`).
 export const silentTerminalSSE: SSEStreamFixture = {
   events: [
@@ -193,7 +191,7 @@ export const silentTerminalSSE: SSEStreamFixture = {
   ],
 };
 
-// US-3 (Bug 1): two method nodes with different cadence so a single
+// Two method nodes with different cadence so a single
 // observable tick shows them in distinct statuses (one running, one
 // still pending), then both reach distinct terminal states.
 export const multiNodeTimeline: Timeline = [
@@ -248,7 +246,7 @@ export const multiNodeTimeline: Timeline = [
   },
 ];
 
-// US-4 (Bug 2): one method node + one system (input_selector) node.
+// One method node + one system (input_selector) node.
 // The status endpoint only includes method nodes in `node_states`, so
 // the system node's silence is the absence of any status entry — the
 // canvas must NOT decorate it.
@@ -281,11 +279,11 @@ export const systemNodeTimeline: Timeline = [
   },
 ];
 
-// ── ADR-015 Phase D Pass 1: behavior catalog timelines ─────────────────
+// ── Behavior catalog timelines ─────────────────────────────────────────
 //
-// Eight new named behaviors covering the polling-driven rows of the
-// bug-class table.  Each fixture is pinned to the actual backend shape
-// (verified against `wfc/canvas/server.py::get_workflow_status`):
+// Eight named behaviors covering the polling-driven rows of the
+// catalog.  Each fixture is pinned to the actual backend shape
+// (verified against `wfc/canvas/run_state.py::aggregate_pipeline_status`):
 // per-node `error` is a single STRING, cancelled rows carry
 // `upstream_node_id`/`upstream_run_id`/`cancelled_due_to_run_id`,
 // `mixed` aggregate keeps the error from the failed sample.
@@ -293,7 +291,7 @@ export const systemNodeTimeline: Timeline = [
 // Row 1: cancelledByUpstreamFailure — A fails, B cancelled because of A.
 // Bridge maps cancelled+upstream_node_id to UPSTREAM_FAILED;
 // nodeRun.machine routes that to `cancelled.becauseUpstream`;
-// InspectorPanel renders `causality-banner[data-banner-kind="upstream"]`.
+// MethodPanel renders `causality-banner[data-banner-kind="upstream"]`.
 export const cancelledByUpstreamFailureTimeline: Timeline = [
   {
     delayMs: 0,
@@ -332,9 +330,45 @@ export const cancelledByUpstreamFailureTimeline: Timeline = [
   },
 ];
 
+// Row 1b: refusedAtClaim -- A was refused at the claim, so it never ran:
+// the status carries the failed row the pipeline-end walk wrote for it,
+// with the refusal as its error, and B's cancelled row names A's node
+// and run. The bridge maps B to UPSTREAM_FAILED against A, not
+// USER_STOP, and the terminal frame ends polling.
+const REFUSAL_TEXT =
+  "Input slot 'data' of node 'method_a' is wired from 'sel', but the " +
+  'claim was not handed it';
+
+export const refusedAtClaimTimeline: Timeline = [
+  {
+    delayMs: 0,
+    payload: frame('running', {
+      method_a: { status: 'pending' },
+      method_b: { status: 'pending' },
+    }),
+  },
+  {
+    delayMs: 120,
+    payload: frame('failed', {
+      method_a: {
+        status: 'failed',
+        run_ids: ['7'],
+        tally: { running: 0, completed: 0, failed: 1 },
+        error: REFUSAL_TEXT,
+      },
+      method_b: {
+        status: 'cancelled',
+        upstream_node_id: 'method_a',
+        upstream_run_id: '7',
+        cancelled_due_to_run_id: '7',
+      },
+    }),
+  },
+];
+
 // Row 2: failedWithTraceback — single per-node `error` STRING containing
-// a traceback-shaped multi-line message (the actual shipped backend
-// shape; see D-2 in the cycle decisions log).  NOT `error_message` +
+// a traceback-shaped multi-line message (the backend's per-node
+// shape).  NOT `error_message` +
 // `error_traceback` per-node — those flow only via SSE.
 const TRACEBACK_TEXT =
   'Traceback (most recent call last):\n' +
@@ -422,7 +456,7 @@ export const tallyProgressionTimeline: Timeline = [
 ];
 
 // Row 4: queuedBehindRunning — a single observable tick where A is
-// running and B is still pending.  Distinct from the existing
+// running and B is still pending.  Distinct from
 // `multiNodeTimeline` in that the trajectory test asserts on the
 // pending/running co-occurrence rather than terminal divergence.
 export const queuedBehindRunningTimeline: Timeline = [
@@ -528,11 +562,11 @@ export const errorMidGraphTimeline: Timeline = [
 // (some completed, some failed).  Backend bridges `mixed` -> RUN_OK
 // with a tally whose `failed > 0`; nodeRun.machine routes that
 // through the guarded `RUN_OK` -> `completed_with_failures` branch
-// (nodeRun.machine.ts#L203-208).  InspectorPanel reads
-// `error_message` from context for both `failed` and
-// `completed_with_failures` (InspectorPanel.svelte#L202).  Pin the
+// (the `running` state's `RUN_OK` transitions in nodeRun.machine.ts).
+// MethodPanel reads `error_message` from context for both `failed` and
+// `completed_with_failures` (MethodPanel's `nodeError`).  Pin the
 // fixture to carry the per-node `error` from the failed sample, as
-// `wfc/canvas/server.py::get_workflow_status` does (L1607-1611).
+// `wfc/canvas/run_state.py::aggregate_pipeline_status` does.
 export const mixedStatusTimeline: Timeline = [
   {
     delayMs: 0,
@@ -630,7 +664,7 @@ export const zeroJobDAGTimeline: Timeline = [];
 
 // ── Catalog map ────────────────────────────────────────────────────────
 //
-// Single source of truth iterated by both new test files.  Per-row
+// Single source of truth iterated by both test files.  Per-row
 // `expectedEvents` shape: outer array is one entry per timeline frame;
 // inner array is one entry per `Object.keys(node_states)` entry in that
 // frame, in iteration order — matching how `services.behaviors.test.ts`
@@ -657,6 +691,20 @@ export const behaviorCatalog: Record<string, BehaviorRow> = {
           upstreamNodeId: 'method_a',
           upstreamRunId: 'run-a-1',
         },
+      ],
+    ],
+  },
+  refusedAtClaim: {
+    name: 'refusedAtClaim',
+    fixtureKey: 'two-methods-cancel',
+    timeline: refusedAtClaimTimeline,
+    expectedEvents: [
+      // Frame 0: both pending -- no events.
+      [null, null],
+      // Frame 1: A failed with the refusal; B cancelled against A's run.
+      [
+        { type: 'RUN_FAILED', error_message: REFUSAL_TEXT },
+        { type: 'UPSTREAM_FAILED', upstreamNodeId: 'method_a', upstreamRunId: '7' },
       ],
     ],
   },
@@ -751,7 +799,7 @@ export const behaviorCatalog: Record<string, BehaviorRow> = {
       // failed sample.  nodeRun guard routes to completed_with_failures
       // and assigns error_message into context, which the Inspector's
       // node-error-box reads via the same derivation as `failed`
-      // (InspectorPanel.svelte L196-204).
+      // (MethodPanel's `nodeError`).
       [
         {
           type: 'RUN_OK',
@@ -811,7 +859,7 @@ export const behaviorCatalog: Record<string, BehaviorRow> = {
     skipVitest: true,
   },
 
-  // ── ADR-015 Phase D Pass 2: SSE rows ───────────────────────────────────
+  // ── SSE rows ───────────────────────────────────────────────────────────
   //
   // These rows reuse the polling timeline from the streaming/fault demos
   // but layer a recorded SSE stream on top.  The Vitest counterpart
@@ -858,13 +906,13 @@ export const behaviorCatalog: Record<string, BehaviorRow> = {
   },
 
   liveLogLineAppend: (() => {
-    // Pass 3: timeline lengthened so the polling node-pill stays in
-    // `running` for ~11s while the paced SSE stream emits 5 stdout ticks
-    // ~2s apart.  Without this, the node flipped to `completed` ~250ms
-    // after Run was clicked and the gallery video had no progressive
-    // log-append motion to capture.  The polling cadence in
-    // `services.ts::pollWorkflowStatus` is 1Hz, so 11 running frames
-    // covers the ~11s SSE replay window.
+    // A long run of `running` frames keeps the polling node-pill in
+    // `running` while the paced SSE stream emits 5 stdout ticks ~2s
+    // apart.  A short timeline would flip the node to `completed` ~250ms
+    // after Run is clicked, and the gallery video would have no
+    // progressive log-append motion to capture.  The polling cadence in
+    // `services.ts::pollNodeStatus` is 1Hz, so each running frame covers
+    // ~1s of the ~11s SSE replay window.
     const runningFrame: TimelineFrame = {
       delayMs: 0,
       payload: frame('running', {
@@ -890,7 +938,7 @@ export const behaviorCatalog: Record<string, BehaviorRow> = {
     // polling flips the parent off `running` and tears down the
     // streaming child.  Without the margin, the race occasionally
     // completes polling first, the streaming machine never sees its
-    // terminal frame, the InspectorPanel falls through to the
+    // terminal frame, the MethodPanel falls through to the
     // historical-fetch fallback, and the badge briefly flashes back
     // to "Connecting…" instead of staying on "Terminal · success".
     const N_RUNNING = 14;
@@ -956,7 +1004,7 @@ export const behaviorCatalog: Record<string, BehaviorRow> = {
     ],
   },
 
-  // Pass 3: streaming-then-crash gallery video.  Distinct from
+  // Streaming-then-crash gallery video.  Distinct from
   // `faultOnStream` (which crashes ~250ms after Run, no visible
   // progress).  This row keeps the run "running" for ~6s while the
   // SSE fixture emits 3 progressive stdout ticks before flipping to a

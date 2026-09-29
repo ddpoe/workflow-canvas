@@ -1,7 +1,7 @@
 """
 Tests for the SSE log-stream endpoint — GET /api/wfc/run/{run_id}/stream-logs.
 
-Covers step 4 of the pipeline-output-visibility plan:
+Covers:
 - Terminal runs return captured stdout/stderr as SSE events then close.
 - ?full=1 returns the entire log; default tails the last N lines.
 - Missing log files don't 500 — endpoint still emits the terminal event.
@@ -15,50 +15,59 @@ import json
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
-from sqlmodel import SQLModel, Session, create_engine, select
+from sqlmodel import Session, create_engine, select
 
-from wfc.canvas.server import app, _active_jobs
-from wfc.models import Method, Module, Run
+from wfc.persistence import Method, Run
+from tests.fixtures.routes import (
+    build_project_snapshot,
+    canvas_client,
+    restore_project_snapshot,
+)
+from tests.harness import Scenario, node
 
 
 # ---------------------------------------------------------------------------
-# Fixtures (mirrors tests/test_canvas_run.py)
+# Fixtures (the build-once, restore-per-test shape of tests/test_canvas_run.py)
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def db_engine(tmp_path, monkeypatch):
-    db_path = tmp_path / ".wfc" / "wfc.db"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    url = f"sqlite:///{db_path}"
-    monkeypatch.setenv("DATABASE_URL", url)
+@pytest.fixture(scope="module")
+def logs_project(tmp_path_factory):
+    """The one-method project the log-stream tests serve, built once by registration.
 
-    from wfc.database import reset_engine
+    Yields:
+        The ``ProjectSnapshot``: the built project, its ``DATABASE_URL``,
+        the live database file and the pristine copy.
+    """
+    from wfc.persistence import reset_engine
+
+    root = tmp_path_factory.mktemp("canvas_logs_project")
+    snapshot = build_project_snapshot(
+        Scenario(nodes=[node("preprocess", module="data_preprocessing")],
+                 samples=["sampleA"]),
+        root,
+    )
+    yield snapshot
     reset_engine()
 
-    engine = create_engine(url)
-    SQLModel.metadata.create_all(engine)
 
-    with Session(engine) as session:
-        mod = Module(name="data_preprocessing", description="Preprocessing")
-        session.add(mod)
-        session.flush()
-        session.add(Method(
-            name="preprocess", module_id=mod.id,
-            script_path="methods/preprocess/preprocess.py",
-            env="container:demo",
-        ))
-        session.commit()
+@pytest.fixture
+def db_engine(logs_project, monkeypatch):
+    """A pristine copy of the harness-built database, pinned for one test."""
+    from wfc.persistence import reset_engine
 
+    restore_project_snapshot(logs_project, monkeypatch)
+
+    engine = create_engine(logs_project.database_url)
     yield engine
+    engine.dispose()
+    reset_engine()
 
 
 @pytest.fixture
-def client(db_engine, tmp_path, monkeypatch):
-    monkeypatch.setenv("WFC_CANVAS_PROJECT_ROOT", str(tmp_path))
-    _active_jobs.clear()
-    return TestClient(app, raise_server_exceptions=False)
+def client(db_engine, logs_project, monkeypatch):
+    """FastAPI test client over the harness-built project ``db_engine`` pinned."""
+    return canvas_client(logs_project.project.root, monkeypatch)
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +100,14 @@ def _insert_run(
 
 
 def _run_dir(project_root: Path, run_id: int) -> Path:
-    d = project_root / ".runs" / f"{run_id:08d}"
+    # Resolve through the production run-dir helper so the test can't hand-form
+    # a path that drifts from where run-step actually writes per-run logs. The
+    # helper keys off database.project_root() (pinned to the built project by
+    # the db_engine fixture's snapshot restore).
+    from wfc.persistence import project_root as get_project_root
+    from wfc.layout import run_archive_dir
+
+    d = run_archive_dir(get_project_root(), run_id)
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -181,7 +197,14 @@ def test_stream_logs_default_tail_caps_lines(client, db_engine, tmp_path):
 def test_stream_logs_missing_files_returns_terminal_only(client, db_engine, tmp_path):
     """Completed run with no on-disk logs → still returns 200 + terminal event."""
     run_id = _insert_run(db_engine, status="completed")
-    # Note: no _run_dir(), no log files written.
+    # No _run_dir(), no log files written. The database is restored per
+    # test but the run tree is not, so an earlier test's logs under the
+    # same run id (ids restart with the restored database) are cleared
+    # here: the state under test is a completed run with nothing on disk.
+    import shutil
+    from wfc.layout import run_archive_dir
+    from wfc.persistence import project_root as get_project_root
+    shutil.rmtree(run_archive_dir(get_project_root(), run_id), ignore_errors=True)
 
     resp = client.get(f"/api/wfc/run/{run_id}/stream-logs")
     assert resp.status_code == 200

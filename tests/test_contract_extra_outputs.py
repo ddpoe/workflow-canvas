@@ -1,14 +1,12 @@
 """
-ContractViolation message shape + save_artifact boundary (ADR-020).
+ContractViolation message shape + save_artifact boundary.
 
-``ContractViolation`` is the host-side error type for ADR-005 column/contract
-validation. It now lives in the pure-stdlib ``wfc_client`` package (lifted
-from the deleted in-tree ``wfc.method``); its message shape is unchanged so
-existing error-message assertions stay stable.
+``ContractViolation`` is the host-side error type for column/contract
+validation. It lives in the pure-stdlib ``wfc_client`` package.
 
-Under the single-results-channel model there is no return-value parsing and
-no silent free-form ``ctx.save()`` fallback. A method declares each output by
-writing a file and calling ``ctx.save_artifact(name, path)``. The client's
+Under the single-results-channel model a method declares each output by
+writing a file and calling ``ctx.save_artifact(name, path)``; return values
+are not parsed. The client's
 only guard is that the path resolves inside ``WFC_RUN_DIR`` — extension/type
 correctness is validated host-side after the run.
 """
@@ -64,7 +62,7 @@ class TestContractViolationAndBoundary:
         assert "Undeclared outputs returned" not in str(exc)
 
     # ------------------------------------------------------------------
-    # save_artifact path boundary (US-2): path-inside-WFC_RUN_DIR only
+    # save_artifact path boundary: path-inside-WFC_RUN_DIR only
     # ------------------------------------------------------------------
 
     def test_save_artifact_rejects_path_outside_run_dir(self, tmp_path, monkeypatch):

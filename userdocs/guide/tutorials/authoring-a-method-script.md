@@ -1,99 +1,112 @@
-<!-- generated from pm_mvp::docs.consumer.tutorials.authoring-a-method-script @ d4eb17df9a65; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.tutorials.authoring-a-method-script @ 16391e807643; do not edit -->
 
 # Tutorial: Authoring a Method Script
 
 ## Authoring a Method Script
 
-A *method* is the smallest unit of work in a pipeline: one step that takes some inputs and parameters, does something, and writes output files. This tutorial walks you through writing one from scratch.
+A *method* is one step of a pipeline: it takes input files and parameters, does its work, and writes output files. In this tutorial you write a small method that keeps the rows of a CSV whose `score` is above a threshold, then register it.
 
-There are two layers you can write against, and you'll meet both here:
+You can write a method two ways:
 
-1. **The `wfc-client` decorator** — the recommended path for Python authors. You decorate one function, read inputs off a context object, and declare your outputs. It's a tiny, pure-standard-library helper that does the bookkeeping for you.
-2. **The canonical env-var + file contract** — the floor underneath the decorator. A method is really just a process that reads a handful of environment variables and writes some files. You can write a method this way in *any* language with *zero* dependencies, and that's what makes a recorded run reproducible forever.
+1. **With the `wfc-client` decorator** (Python). You decorate one function, read inputs from a context object, and declare each output you write.
+2. **Directly against environment variables and files**, in any language. wfc tells the method where its inputs and parameters are through a few environment variables, and the method writes its outputs into a run directory. The decorator is a thin layer over this.
 
-We'll build the directory, write the script the recommended way, then show the exact contract it sits on. You only need a Python script and a small `method.yaml` to get started.
+You need a project first; [Getting Started](getting-started.md) sets one up. The commands on this page run from the project root, called `wfc_project_root` here (`wfc init --dir wfc_project_root`, then `cd wfc_project_root`).
 
-If you haven't set up a project yet, start with [Getting Started](../tutorials/getting-started.md) first — it scaffolds the project this method will live in.
+Each step runs in a container: a packaged copy of the software and dependencies your method needs (see [How the Pieces Fit Together](../explanation/how-the-pieces-fit-together.md)). wfc calls this an environment, and you need one registered for the method to run in; [Registering an Environment](registering-an-environment.md) covers it.
 
-## Step 1 — Lay out the method directory
 
-A method is a self-contained directory built from two required files (plus any number of optional helper Python modules):
+## Step 1 — Create the method directory
+
+A method is a directory holding two files:
 
 | File | Purpose |
 |---|---|
-| `{method_name}.py` | Python script containing the implementation (required) |
-| `method.yaml` | Contract file declaring inputs, outputs, params, and env (**required** — registration fails without it, since every method must name a built container env via `env:`) |
+| `{method_name}.py` (or `.R`, `.r`, `.sh`) | The method's script, in Python, R or bash. |
+| `method.yaml` | Declares the method's inputs, outputs, parameters and environment. |
 
-The script filename must match the directory name. A method called `filter_data` lives in a directory named `filter_data/` and its script is `filter_data.py`.
+The script is named after the directory. Methods belong to a module, and the suggested place for your own code is `src/<module>/<method>/`, with the module's `module.yaml` in `src/<module>/`:
 
-### Where methods live
-
-**Nested under a module (typical):**
 ```
-modules/{module_name}/{method_name}/
-  {method_name}.py
-  method.yaml
-```
-Example: `modules/binary_label_classification/train_classifier/train_classifier.py`
-
-**Flat standalone:**
-```
-methods/{method_name}/
-  {method_name}.py
-  method.yaml
-```
-Example: `methods/feature_qc/feature_qc.py`
-
-Both layouts register the same way:
-```bash
-wfc register-method modules/my_analysis/preprocess --module my_analysis
-wfc register-method methods/feature_qc --module data_tools
+wfc_project_root/
+  src/
+    my_analysis/
+      module.yaml
+      filter_data/
+        filter_data.py
+        method.yaml
 ```
 
-At registration, `wfc` scans the script, reads `method.yaml`, and snapshots the method's Python files and `method.yaml` into `methods/{method_name}/` for code fingerprinting — regardless of where the source lives. That snapshot is what the cache keys against, so the same code always resolves to the same cached results.
+Create those directories now, and write a one-line `src/my_analysis/module.yaml`:
 
-### Helper modules
-
-A method directory may hold extra `.py` files beside the main script — split shared utilities into their own modules and `import` them as usual. Helper modules travel with the method: they are snapshotted alongside `{method_name}.py` and folded into the code fingerprint, so editing one invalidates the cache exactly like editing the main script. Only the main script is scanned for tracked functions and parameters, though — functions defined in helper modules do **not** appear as method functions in the database or canvas. Non-Python sibling files (data files, shell scripts) are committed to git but are *not* part of the snapshot or fingerprint, so a method should not depend on them at run time.
-
-## Step 2 — Write the script with the wfc-client decorator
-
-The recommended way to write a method is the **`wfc-client`** decorator. It's a tiny, pure-standard-library package you add to your method's environment — no pandas, no database, no dependency on the `wfc` engine itself. You decorate one function with `@wfc.method`, write your output files, and declare each one with `ctx.save_artifact(name, path)`.
-
-### Install
-
-```bash
-pip install wfc-client
+```yaml
+description: Filtering steps for scored data
 ```
 
-Add `wfc-client` to your method's environment like any other dependency. It pulls in nothing else.
+A `module.yaml` can also list outputs every method in the module must provide; [Writing Contracts](writing-contracts.md) covers that. wfc keeps its own registered copy of each method under `methods/<name>/`; write your code under `src/`, not there.
 
-### The decorator surface
+To use a different script name, set `script:` in `method.yaml` (see the [method.yaml Schema](../reference/method-yaml-schema.md)).
+
+You can put helper scripts beside the main script and import or source them as usual. Every `.py`, `.R`, `.r` and `.sh` file in the method directory counts as part of the method: when you edit any of them and run `wfc register-method` again, the next run recomputes. Keep scratch scripts somewhere else. To list the helper files explicitly, use `helpers:` in `method.yaml`.
+
+
+## Step 2 — Declare the slots in method.yaml
+
+`method.yaml` names the method's input and output *slots*, its parameters, and its environment. The canvas uses it to draw the node, and the script uses the same names to find its files.
+
+Write `src/my_analysis/filter_data/method.yaml`:
+
+```yaml
+inputs:
+  data:
+    type: csv
+    description: Scored rows to filter.
+
+outputs:
+  filtered:
+    type: csv
+    description: Rows whose score exceeds the threshold.
+
+params:
+  threshold:
+    type: float
+    default: 0.5
+
+env: my-analysis
+```
+
+- **`inputs`**: each name is an input slot. A method needs at least one.
+- **`outputs`**: each name is an output slot. The `type` is the file extension, so the `filtered` output is `filtered.csv`.
+- **`params`**: each parameter gets an editor in the canvas inspector.
+- **`env`**: the name of a registered environment. Replace `my-analysis` with yours.
+
+Every key and field is listed in the [method.yaml Schema](../reference/method-yaml-schema.md). Column declarations are covered in [Writing Contracts](writing-contracts.md).
+
+## Step 3 — Write the script with the wfc-client decorator
+
+`wfc-client` is a small Python package that handles the bookkeeping between your method and wfc. This example also reads and writes the CSV with pandas. Add both `wfc-client` and `pandas` to your environment's dependencies before you build the environment with `wfc register-env`.
+
+Write `src/my_analysis/filter_data/filter_data.py`:
 
 ```python
+import pandas as pd
+
 import wfc_client as wfc
 
 
 @wfc.method
 def filter_data(ctx):
-    # Resolve the "data" input slot declared in method.yaml.
-    data_path = ctx.input("data")[0]          # list[Path] from the resolved inputs
-    threshold = ctx.params.get("threshold", 0.5)
+    data_path = ctx.input("data")[0]              # the file wired into the "data" slot
+    threshold = float(ctx.params.get("threshold", 0.5))
 
-    import csv
-    with open(data_path, newline="") as f:
-        rows = [r for r in csv.DictReader(f) if float(r["score"]) > threshold]
+    df = pd.read_csv(data_path)
+    kept = df[df["score"] > threshold]
 
-    # Write the file yourself, anywhere inside the run dir (ctx.workdir is a
-    # scratch dir at run_dir/_workdir/), then declare it.
     out_path = ctx.workdir / "filtered.csv"
-    with open(out_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=rows[0].keys() if rows else [])
-        writer.writeheader()
-        writer.writerows(rows)
+    kept.to_csv(out_path, index=False)
 
-    ctx.save_artifact("filtered", out_path)    # name must match method.yaml outputs
-    ctx.log_metric("kept_rows", len(rows))
+    ctx.save_artifact("filtered", out_path)       # "filtered" is the output slot
+    ctx.log_metric("kept_rows", len(kept))
 
 
 if __name__ == "__main__":
@@ -102,48 +115,48 @@ if __name__ == "__main__":
 
 | Member | Purpose |
 |---|---|
-| `@wfc.method` | Marks the single entry-point function. Exactly one per method module. |
-| `ctx.input(slot)` | Returns `list[Path]` of resolved input files for an input slot. |
-| `ctx.params` | Dict of params (`method.yaml` defaults merged with pipeline overrides). |
-| `ctx.run_dir` | The directory `wfc` reads after your method exits. |
-| `ctx.workdir` | Scratch dir at `run_dir/_workdir/`, created on first access. |
-| `ctx.save_artifact(name, path)` | Declares that the file at `path` is the output `name`. `path` must resolve **inside** the run dir or you get an immediate error. |
-| `ctx.log_metric(name, value)` | Records a scalar metric. |
-| `wfc.run()` | The entry point — resolves your one decorated function, builds `ctx`, runs it. |
+| `@wfc.method` | Marks the method's function. A script has exactly one. |
+| `ctx.input(slot)` | The input files for a slot, as a list of paths. |
+| `ctx.params` | The parameter values set on the node, as a dict. |
+| `ctx.run_dir` | The run directory. Everything you save must be inside it. |
+| `ctx.workdir` | A scratch directory inside the run directory. |
+| `ctx.save_artifact(slot, path)` | Declares that the file (or directory) at `path` is the output for `slot`. |
+| `ctx.log_metric(name, value)` | Records a number or short string for this run. |
+| `wfc.run()` | Runs the decorated function. |
 
-The decorator **never touches your data bytes**. `save_artifact(name, path)` records *which* file is the declared output; `wfc` does the hashing and archiving on the host afterwards. There is **no return value** — outputs flow only through `ctx.save_artifact`, metrics only through `ctx.log_metric`. Trying to save a file written outside the run dir raises an immediate, clear error.
+A parameter you leave unset in the canvas is not in `ctx.params`, so read it with `.get()` and the same default you wrote in `method.yaml`.
 
-When your method exits, the client writes a single `_wfc_results.json` manifest recording your declared outputs (as paths relative to the run dir) and metrics. `wfc` reads that one file, resolves each output, hashes it into the content cache, and records the run. A missing required output, or a non-zero exit, fails the step.
+When you register the method, wfc checks each `ctx.save_artifact` call in the decorated function against `method.yaml`: an output name that isn't declared, or a declared output that is never saved, stops the registration. Write the output name as a string literal in the decorated function so the check can see it.
 
-## Step 3 — Understand the contract underneath
+When the function returns, `wfc.run()` writes a small `_wfc_results.json` file listing your saved outputs and metrics. wfc reads it after the method exits.
 
-The decorator is sugar over a contract `wfc` guarantees: **a method is just a process that reads a few environment variables and writes its declared output files.** You can write a method against this contract directly with *zero* dependencies — not even `wfc-client` — in any language. That's also what makes a method rerunnable forever: the contract is plain env vars and files, so a recorded run can be reproduced without any specific client version.
 
-### The contract
+## Step 4 — Or write against the environment variables directly
 
-Before launching your script, `wfc` sets these environment variables:
+Underneath the decorator, a method is a process that reads a few environment variables and writes files. You can write a method this way in any language with no wfc package installed. This is how R and bash methods work.
 
-| Variable | Type | Meaning |
-|---|---|---|
-| `WFC_RUN_DIR` | path | Directory to write your declared outputs into. Everything you produce goes here. |
-| `WFC_INPUT_PATHS` | JSON | `{slot_name: [absolute paths]}` — resolved input files for each input slot in `method.yaml`. |
-| `WFC_PARAMS` | JSON | `{param_name: value}` — params from `method.yaml` defaults merged with pipeline overrides. |
-| `WFC_RUN_ID` | int | Unique run identifier. |
-| `WFC_SAMPLE` | str | Current sample name. |
-| `WFC_NODE_ID` | str | Node identifier within the pipeline. |
-| `WFC_PIPELINE_ID` | str | Pipeline identifier for this execution. |
-| `WFC_VARIANT` | str | Variant name for this run. |
+### What wfc gives the method
 
-Your contract back to `wfc`:
+| Variable | Contents |
+|---|---|
+| `WFC_RUN_DIR` | The run directory. Write your outputs here. |
+| `WFC_INPUT_PATHS` | JSON `{slot: [paths]}`: the files (or directories) wired into each input slot. |
+| `WFC_PARAMS` | JSON `{name: value}`: the parameter values set on the node. Unset parameters are absent. |
+| `WFC_RUN_ID` | The run's id. |
+| `WFC_SAMPLE` | The sample this run is for (`__all__` for a step that bundles several samples). |
+| `WFC_NODE_ID` | The node's id in the pipeline. |
+| `WFC_PIPELINE_ID` | The pipeline run's id. |
+| `WFC_VARIANT` | The parameter variant's name. |
 
-- Read inputs and params from those env vars.
-- Write each declared output to `${WFC_RUN_DIR}/<output_name>.<ext>` matching your `method.yaml` `outputs:` declarations.
-- Print whatever you like to stdout/stderr — `wfc` captures both into the run logs automatically.
-- **Exit 0 on success, non-zero on failure.** That is how `wfc` knows whether the step succeeded.
+### What the method gives back
 
-### The same method, stdlib only
+- Write each output into `WFC_RUN_DIR`, named after its slot plus the slot's `type`: the `filtered` output with `type: csv` is `filtered.csv`. A `dir` output is a directory named after the slot.
+- Exit 0 on success and non-zero on failure.
+- Anything printed to stdout or stderr is kept in the run's log.
 
-This is the Step 2 example rewritten with no imports from `wfc` or `wfc-client` — just the standard library reading the env vars directly. It mirrors the in-repo fixture methods (`tests/fixtures/methods/heartbeat/heartbeat.py`, `tests/fixtures/methods/qc/qc.py`):
+Every declared output must be there when the method exits, or the step fails. Other files in the run directory are ignored.
+
+### The same method with the standard library
 
 ```python
 import csv
@@ -151,86 +164,84 @@ import json
 import os
 from pathlib import Path
 
+run_dir = Path(os.environ["WFC_RUN_DIR"])
+inputs = json.loads(os.environ["WFC_INPUT_PATHS"])
+params = json.loads(os.environ.get("WFC_PARAMS", "{}"))
 
-def main():
-    run_dir = Path(os.environ["WFC_RUN_DIR"])
-    input_paths = json.loads(os.environ.get("WFC_INPUT_PATHS", "{}"))
-    params = json.loads(os.environ.get("WFC_PARAMS", "{}"))
+threshold = float(params.get("threshold", 0.5))
 
-    data_paths = input_paths.get("data", [])
-    if not data_paths or not Path(data_paths[0]).exists():
-        raise FileNotFoundError(f"Input file not found: {data_paths}")
+with open(inputs["data"][0], newline="") as f:
+    reader = csv.DictReader(f)
+    fieldnames = reader.fieldnames
+    rows = [r for r in reader if float(r["score"]) > threshold]
 
-    threshold = float(params.get("threshold", 0.5))
-
-    with open(data_paths[0], newline="") as f:
-        rows = [r for r in csv.DictReader(f) if float(r["score"]) > threshold]
-
-    # Write the declared output "filtered" into WFC_RUN_DIR.
-    out_path = run_dir / "filtered.csv"
-    with open(out_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=rows[0].keys() if rows else [])
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-if __name__ == "__main__":
-    main()
+with open(run_dir / "filtered.csv", "w", newline="") as f:
+    writer = csv.DictWriter(f, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(rows)
 ```
 
-The script reads `WFC_RUN_DIR` / `WFC_INPUT_PATHS` / `WFC_PARAMS`, writes its outputs into `WFC_RUN_DIR`, and exits 0. It imports nothing from `wfc` — pandas, R, bash, or any other language works the same way as long as the script honors the env-var + file contract.
+### R
 
-### Recording metrics without the client
+```r
+inputs <- jsonlite::fromJSON(Sys.getenv("WFC_INPUT_PATHS"))
+params <- jsonlite::fromJSON(Sys.getenv("WFC_PARAMS"))
+threshold <- if (is.null(params$threshold)) 0.5 else params$threshold
 
-The `wfc-client` decorator writes a single `_wfc_results.json` manifest at exit (declared outputs + metrics). A plain env-var + file method can do the same by hand if it wants to record metrics: write `${WFC_RUN_DIR}/_wfc_results.json` of shape `{"outputs": {name: run-dir-relative-path}, "metrics": {name: value}}`. If you only produce output files and no metrics, you can omit the manifest entirely — `wfc` scans `WFC_RUN_DIR` for the declared output filenames instead.
-
-### What wfc does after your script exits
-
-When your process exits 0, `wfc` reads `_wfc_results.json` if present (the single results channel for outputs and metrics); otherwise it scans `WFC_RUN_DIR` for the output filenames declared in `method.yaml`. Each declared output is hashed into the content cache and the run is recorded. Undeclared files in `WFC_RUN_DIR` are ignored. A missing required output, or a non-zero exit, fails the step.
-
-Note that the `wfc` engine itself runs on the *host* — the machine that launches your method — and reaches your method only through these env vars and files. Your method's environment contains only your declared dependencies plus Python, and, if you opted into the decorator, the pure-stdlib `wfc-client`. The full `wfc` package is never installed alongside your method.
-
-## Step 4 — Declare slots in method.yaml
-
-Both versions of the script above refer to an input slot named `data`, an output named `filtered`, and a `threshold` param. Those names come from `method.yaml`, the contract file that sits next to your script. At registration `wfc` parses it into the slot-level metadata the database and canvas use to wire pipelines together.
-
-A minimal `method.yaml` for our example:
-
-```yaml
-inputs:
-  data:
-    type: .csv
-    description: Scored rows to filter.
-
-outputs:
-  filtered:
-    type: .csv
-    description: Rows whose score exceeds the threshold.
-
-params:
-  threshold:
-    type: float
-    default: 0.5
-
-env: my-analysis-env
+rows <- read.csv(inputs$data[1])
+write.csv(rows[rows$score > threshold, ],
+          file.path(Sys.getenv("WFC_RUN_DIR"), "filtered.csv"), row.names = FALSE)
 ```
 
-The essentials:
+### bash
 
-- **`inputs:`** — named input slots. Each name is what you pass to `ctx.input("data")` (or look up under `WFC_INPUT_PATHS["data"]`).
-- **`outputs:`** — named output slots. Each name must match what you `ctx.save_artifact("filtered", ...)` (or the filename you write into `WFC_RUN_DIR`).
-- **`params:`** — typed params with defaults; pipeline overrides merge on top, and the merged dict arrives as `ctx.params` / `WFC_PARAMS`.
-- **`env:`** — the named container environment your method runs in. This must be a registered environment name (not a runtime package list).
+This example uses `jq`, so the environment needs it installed:
 
-This is the *basics* only. The full field reference — every input/output/param field, column validation, executor selection, and the complete `env:` vocabulary including pinned digests — lives in [method.yaml Schema](../reference/method-yaml-schema.md). For input/output *contracts* (column validation, `from_params`, module-level overrides) see [Writing Contracts](../tutorials/writing-contracts.md).
+```bash
+input=$(jq -r '.data[0]' <<< "$WFC_INPUT_PATHS")
+threshold=$(jq -r '.threshold // 0.5' <<< "$WFC_PARAMS")
+awk -F, -v t="$threshold" 'NR == 1 || $2 > t' "$input" > "$WFC_RUN_DIR/filtered.csv"
+```
+
+The bash example assumes `score` is the second column.
+
+On Windows, save `.sh` and `.R` scripts with LF line endings (for example with `git config core.autocrlf input`). A bash script with CRLF line endings fails in the container, and the step reports that it did not produce its declared slot.
+
+### Metrics without the decorator
+
+To record metrics, write `_wfc_results.json` into `WFC_RUN_DIR`:
+
+```json
+{"outputs": {"filtered": "filtered.csv"}, "metrics": {"kept_rows": 42}}
+```
+
+Output paths are relative to the run directory, so a file listed here can have any name. Without this file, wfc looks for each output under its slot name and extension.
+
+## Step 5 — Register the method
+
+Methods belong to a module. From the project root, register the module once, then the method:
+
+```bash
+wfc register-module --name my_analysis --module-dir src/my_analysis
+wfc register-method src/my_analysis/filter_data --module my_analysis
+```
+
+`--module-dir` points at the directory holding `module.yaml`. `wfc register-method <method-dir> --module <module>` takes the method's directory as its one positional argument, and `--module` names the module it joins. See the [CLI Reference](../reference/cli-reference.md) for every flag.
+
+Registration reads `method.yaml`, checks it, and checks that the environment named in `env:` is registered. It commits the method directory to the project's git repository and copies the method's script files and `method.yaml` into `methods/filter_data/`. wfc compares against that copy to decide whether a step must recompute.
+
+To change the method, edit the script (or `method.yaml`) in `src/my_analysis/filter_data/`, then run `wfc register-method` again.
+
+Method names are unique across the project: registration refuses a name that another module already uses.
+
+An R or bash method runs under the interpreter its environment was registered with. Register that environment with `--interpreter` pointing at `Rscript` or `bash` inside the image; [Registering an Environment](registering-an-environment.md) shows how.
+
+The method now appears in the canvas sidebar under its module, ready to drop into a pipeline.
+
 
 ## Next steps
 
-You now have a method directory, a script (either the `wfc-client` decorator or the bare env-var + file contract), and a `method.yaml` that declares its slots. From here:
-
-- **Register the environment your method runs in.** The `env:` you named must point at a container environment that has been built first. See [Registering an Environment](../tutorials/registering-an-environment.md) — it covers `wfc register-env`, what `wfc doctor` checks, and how `wfc init` sets the project up.
-- **Register the method itself** with `wfc register-method <path> --module <module>`, once its environment exists.
-- **Flesh out the contract** — column validation, typed params, and module-level overrides — in [Writing Contracts](../tutorials/writing-contracts.md).
-- **Look up any field** in the full [method.yaml Schema](../reference/method-yaml-schema.md) reference.
-
-With the method registered, you can drop it into a pipeline and run it. To wire and run pipelines, head to [Canvas Visual Builder](../how-to/canvas.md).
+- Wire the method into a pipeline and run it: [Build, Run and Inspect in the Canvas](../how-to/canvas.md).
+- Declare the columns your slots carry and add column pickers: [Writing Contracts](writing-contracts.md).
+- Look up any `method.yaml` key: [method.yaml Schema](../reference/method-yaml-schema.md).
+- See what happens when a step runs: [How a Run Executes](../explanation/how-a-run-executes.md).

@@ -1,20 +1,17 @@
 /**
- * Vitest suite for the per-row paramEditorActor (ADR-016 Phase 2).
+ * Vitest suite for the per-row paramEditorActor.
  *
- * Each test corresponds to a user story or canonical bug scenario:
+ * The first block covers the edit lifecycle:
  *
- *   - T1 (US-1) — cross-row isolation: two actors, drive one, second
- *     stays in `viewing` with original context. Replaces 0.2.7's
- *     `dirtyParams` Set bleed by construction.
- *   - T2 (US-2) — happy path: viewing → editing → committing →
- *     committed; final value carried in context.
- *   - T3 — invalid → re-edit: coerce fails, machine lands in `invalid`,
- *     `CHANGE_VALUE` re-enters `editing` with validationError cleared.
- *     Asserts Edge Case #4 (don't lock the user out).
- *   - T4 — blank optional numeric: int + required=false + draft=''
- *     commits to value=null (NOT invalid). Preserves the 0.2.13
- *     blank-commit precedent so the upcoming expand phase doesn't
- *     regress numeric rows.
+ *   - cross-row isolation: two actors, drive one, second stays in
+ *     `viewing` with original context.
+ *   - happy path: viewing → editing → committing → committed; final
+ *     value carried in context.
+ *   - invalid → re-edit: coerce fails, machine lands in `invalid`,
+ *     `CHANGE_VALUE` re-enters `editing` with validationError cleared
+ *     (don't lock the user out).
+ *   - blank optional numeric: int + required=false + draft=''
+ *     commits to value=null (NOT invalid).
  *
  * The `committing` state invokes a `fromPromise` coerce service; tests
  * await one microtask after `COMMIT` so the promise resolves and
@@ -34,14 +31,14 @@ function makeActor(input: ParamEditorInput) {
   return createActor(machine, { input });
 }
 
-// Track 2 (ADR-017) Pipeline Variables — per D-4, bind/unbind owned by
-// the actor. The five tests at the bottom of this file (US-2 BIND_VARIABLE,
-// EDIT-from-bound, picker open/close, spawn-input seed, etc.) prove the
-// machine is the single source of truth for row binding state. UI tests
-// in the Vitest UI suite cover the picker render path; these tests cover
-// the state-transition contract in isolation.
+// Pipeline Variables — bind/unbind is owned by the actor. The binding
+// tests at the bottom of this file (BIND_VARIABLE, EDIT-from-bound,
+// picker open/close, spawn-input seed, etc.) prove the machine is the
+// single source of truth for row binding state. UI tests in the Vitest
+// UI suite cover the picker render path; these tests cover the
+// state-transition contract in isolation.
 
-// Default input — type:str row matching the spike target (C-2).
+// Default input — a type:str row.
 const baseInput: ParamEditorInput = {
   nodeId: 'node_1',
   paramName: 'sample_name',
@@ -57,10 +54,8 @@ async function tick(): Promise<void> {
 }
 
 describe('paramEditorActor', () => {
-  it('cross-row isolation: editing one row does not affect another (US-1, replaces 0.2.7)', async () => {
-    // The 0.2.7 bug was a single `dirtyParams: Set<string>` that two
-    // rows mutated concurrently. With per-instance actors each row's
-    // state lives in its own context, so simultaneous editing of one
+  it('cross-row isolation: editing one row does not affect another', async () => {
+    // Each row's state lives in its own actor context, so editing one
     // row leaves any other row's state untouched.
     const rowA = makeActor({
       ...baseInput,
@@ -88,8 +83,7 @@ describe('paramEditorActor', () => {
     expect(rowA.getSnapshot().context.currentValue).toBe('a-edited');
 
     // rowB never received any event — its state and context must be
-    // untouched. This is the assertion that fails under the 0.2.7 bug
-    // model and passes by construction with per-instance actors.
+    // untouched.
     const bSnap = rowB.getSnapshot();
     expect(bSnap.value).toBe('viewing');
     expect(bSnap.context.currentValue).toBe('b-original');
@@ -100,7 +94,7 @@ describe('paramEditorActor', () => {
     rowB.stop();
   });
 
-  it('happy path: viewing -> editing -> committing -> committed carries typed value (US-2)', async () => {
+  it('happy path: viewing -> editing -> committing -> committed carries typed value', async () => {
     const actor = makeActor({ ...baseInput, currentValue: 'old' });
     actor.start();
     expect(actor.getSnapshot().value).toBe('viewing');
@@ -127,7 +121,7 @@ describe('paramEditorActor', () => {
     actor.stop();
   });
 
-  it('invalid -> re-edit clears validationError and accepts new draft (Edge Case #4)', async () => {
+  it('invalid -> re-edit clears validationError and accepts new draft', async () => {
     // Inject a coerce stub that rejects the first attempt. We don't use
     // the production coerce service here because we want to exercise
     // the invalid → editing transition directly.
@@ -149,7 +143,7 @@ describe('paramEditorActor', () => {
     expect(actor.getSnapshot().context.validationError).toBe('mock failure');
 
     // CHANGE_VALUE from invalid must re-enter editing AND clear the
-    // stale error so the user isn't locked out (Edge Case #4).
+    // stale error so the user isn't locked out.
     actor.send({ type: 'CHANGE_VALUE', value: 'better' });
     const snap = actor.getSnapshot();
     expect(snap.value).toBe('editing');
@@ -158,11 +152,10 @@ describe('paramEditorActor', () => {
     actor.stop();
   });
 
-  it('blank commit on optional numeric coerces to null, not invalid (preserves 0.2.13)', async () => {
-    // The 0.2.13 fix taught the param editor that an optional numeric
-    // param committed blank means "absent" (engine .get() returns None).
-    // The new machine must preserve this so when expand-phase migrates
-    // numeric rows to the actor they don't regress.
+  it('blank commit on optional numeric coerces to null, not invalid', async () => {
+    // An optional numeric param committed blank means "absent" (engine
+    // .get() returns None), so the commit lands in `committed` with a
+    // null value rather than in `invalid`.
     const actor = makeActor({
       nodeId: 'node_1',
       paramName: 'maybe_count',
@@ -185,10 +178,10 @@ describe('paramEditorActor', () => {
   });
 });
 
-// ── Track 2 (ADR-017) — Pipeline Variables binding ───────────────────────
+// ── Pipeline Variables binding ───────────────────────────────────────────
 
-describe('paramEditorActor — Pipeline Variables binding (ADR-017 / D-4)', () => {
-  it('US-2 BIND_VARIABLE: viewing → bound preserves currentValue', () => {
+describe('paramEditorActor — Pipeline Variables binding', () => {
+  it('BIND_VARIABLE: viewing → bound preserves currentValue', () => {
     const actor = makeActor({ ...baseInput, currentValue: 'label' });
     actor.start();
     actor.send({ type: 'BIND_VARIABLE', name: 'col' });
@@ -203,7 +196,7 @@ describe('paramEditorActor — Pipeline Variables binding (ADR-017 / D-4)', () =
     actor.stop();
   });
 
-  it('US-2 EDIT from bound breaks binding (edge case 12)', () => {
+  it('EDIT from bound breaks binding', () => {
     const actor = makeActor({ ...baseInput, currentValue: 'label', boundVariable: 'col' });
     actor.start();
     // Spawn-input seed should land directly in `bound` via the always-guard.
@@ -216,7 +209,7 @@ describe('paramEditorActor — Pipeline Variables binding (ADR-017 / D-4)', () =
     actor.stop();
   });
 
-  it('US-2 OPEN/CLOSE_BIND_PICKER toggles bindPickerOpen (no component-local flag)', () => {
+  it('OPEN/CLOSE_BIND_PICKER toggles bindPickerOpen (no component-local flag)', () => {
     const actor = makeActor(baseInput);
     actor.start();
     expect(actor.getSnapshot().context.bindPickerOpen).toBe(false);
@@ -227,7 +220,7 @@ describe('paramEditorActor — Pipeline Variables binding (ADR-017 / D-4)', () =
     actor.stop();
   });
 
-  it('US-2 spawn-input seeds bound state when boundVariable provided', () => {
+  it('spawn-input seeds bound state when boundVariable provided', () => {
     const actor = makeActor({ ...baseInput, currentValue: 'X', boundVariable: 'colmap' });
     actor.start();
     const snap = actor.getSnapshot();
@@ -236,7 +229,7 @@ describe('paramEditorActor — Pipeline Variables binding (ADR-017 / D-4)', () =
     actor.stop();
   });
 
-  it('US-2 BIND_VARIABLE from committed transitions to bound (Reviewer iter 1 fix)', async () => {
+  it('BIND_VARIABLE from committed transitions to bound', async () => {
     // Drive a successful commit to land in `committed`, then bind.
     const actor = makeActor(baseInput);
     actor.start();
@@ -255,7 +248,7 @@ describe('paramEditorActor — Pipeline Variables binding (ADR-017 / D-4)', () =
     actor.stop();
   });
 
-  it('US-2 BIND_VARIABLE from invalid transitions to bound and clears validationError (Reviewer iter 1 fix)', async () => {
+  it('BIND_VARIABLE from invalid transitions to bound and clears validationError', async () => {
     // Drive a failed commit (int param + non-numeric draft) to land in `invalid`.
     const actor = makeActor({ ...baseInput, paramType: 'int', required: true });
     actor.start();

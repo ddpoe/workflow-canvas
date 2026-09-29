@@ -2,7 +2,8 @@
 Shared fixture method infrastructure for pipeline tests.
 
 Provides reusable fixtures for registering lightweight test methods
-and building pipeline JSON files from topology descriptions.
+and building pipeline JSON files from topology descriptions, plus the
+consolidated fakes the fixtures install.
 
 Fixtures:
   - register_fixture_methods: Registers lightweight fixture methods
@@ -10,111 +11,44 @@ Fixtures:
   - pipeline_factory: Builds pipeline JSON files from topology descriptions.
                    Supports both method nodes and system nodes
                    (input_selector, run_reference).
+  - register_imaging_methods / imaging_pipeline_factory: the same pair for
+                   the imaging fixture methods.
 
-Helpers:
-  - register_test_method: Plain function (no pytest dependency) that exercises
-                   the production registration code path (init_project +
-                   reset_engine + register_module + register_method) for a
-                   single method directory. Reusable from both the fixture
-                   above and Tier 3 integration tests.
+Fakes:
+  - stub_readiness_probes: The one readiness-probe fake, taking a status
+                   per probe (``None`` leaves a probe real).
+  - mocked_snakemake: The one stand-in for a Snakemake invocation (the
+                   process spawn and the Snakefile emitter).
+
+The production-path builders (``init_test_project``, ``register_test_method``,
+``register_sample_row``, ``create_sample_csv``, ``write_env_record``,
+``run_cli`` and the two out-of-tree path helpers) live in
+the ``tests/fixtures/routes/`` package and are re-exported from here so every existing
+import path keeps working.
 """
 
-import csv
 import json
-import os
 import shutil
 from pathlib import Path
 
 import pytest
 
+# Re-export the routes so ``from tests.fixtures.conftest import ...`` keeps
+# working at every existing call site.
+from tests.fixtures.routes import (  # noqa: F401
+    create_sample_csv,
+    init_test_project,
+    project_archive_dir,
+    register_sample_row,
+    register_test_method,
+    run_cli,
+    sample_source_dir,
+    write_env_record,
+)
+# Two registry fakes, re-exported so ``from tests.fixtures.conftest import
+# stub_readiness_probes`` works.
+from tests.fixtures.fakes import mocked_snakemake, stub_readiness_probes  # noqa: F401
 
-def register_test_method(
-    project_dir: Path,
-    *,
-    module_name: str,
-    method_dir: Path,
-    method_name: str | None = None,
-    module_contracts: list[dict] | None = None,
-) -> None:
-    """Register a method into a tmp wfc project using production registration APIs.
-
-    Runs the same code path a real ``wfc register`` CLI invocation does:
-    ``wfc.init.init_project`` (idempotent), ``wfc.database.reset_engine``,
-    ``wfc.register.register_module``, ``wfc.register.register_method``. No DB
-    hand-crafting, no stub registration.
-
-    The helper temporarily ``chdir``\\ s into ``project_dir`` for the
-    registration call because ``register_method`` and ``_git_commit_registration``
-    use ``Path.cwd()`` to resolve relative script paths and the git repo root.
-    Original cwd is restored on return.
-
-    Caller responsibility: ``WFC_PROJECT_ROOT`` and ``DATABASE_URL`` must be set
-    in ``os.environ`` BEFORE invoking (typically via ``monkeypatch.setenv`` in
-    the calling test). The project directory must be a git repo (run ``git init``
-    plus user.email/user.name config before calling).
-
-    Args:
-        project_dir: Project root directory. Will be initialized (idempotent)
-            if not already.
-        module_name: Module name to register (or upsert) into the database.
-        method_dir: Directory containing the method's ``{method_name}.py`` and
-            ``method.yaml``. Must already exist with the method source files.
-        method_name: Method name (defaults to ``method_dir.name``).
-        module_contracts: Optional list of module contract dicts (passed to
-            :func:`wfc.register.register_module`). Defaults to empty list.
-    """
-    from wfc.init import init_project
-    from wfc.register import register_module, register_method
-    from wfc.database import reset_engine
-
-    project_dir = Path(project_dir).resolve()
-    method_dir = Path(method_dir).resolve()
-
-    # init_project is idempotent on a project_dir that already has .wfc/ —
-    # the existing scaffold is left in place; only missing pieces are filled.
-    init_project(project_dir)
-    reset_engine()
-
-    register_module(
-        name=module_name,
-        contracts=module_contracts if module_contracts is not None else [],
-    )
-
-    # register_method uses Path.cwd() to compute the relative script_path and
-    # to resolve the git repo root for the commit step. chdir for the duration
-    # of the call so the caller doesn't have to manage it.
-    prev_cwd = os.getcwd()
-    try:
-        os.chdir(project_dir)
-        register_method(
-            method_dir=method_dir,
-            module_name=module_name,
-            method_name=method_name,
-        )
-    finally:
-        os.chdir(prev_cwd)
-
-
-def create_sample_csv(project_dir: Path, sample_name: str, num_rows: int = 3) -> Path:
-    """Write a sample CSV to data/samples/{sample_name}/data.csv.
-
-    Args:
-        project_dir: Project root directory.
-        sample_name: Sample identifier.
-        num_rows: Number of data rows to generate.
-
-    Returns:
-        Path to the created CSV file.
-    """
-    sample_dir = project_dir / "data" / "samples" / sample_name
-    sample_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = sample_dir / "data.csv"
-    with open(csv_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["id", "value"])
-        for i in range(num_rows):
-            writer.writerow([i, i * 10])
-    return csv_path
 
 FIXTURE_METHODS_DIR = Path(__file__).resolve().parent / "methods"
 IMAGING_METHODS_DIR = Path(__file__).resolve().parent / "methods_imaging"
@@ -145,55 +79,18 @@ SYSTEM_NODE_TYPES = {"input_selector", "run_reference"}
 
 
 # Bare name of the container env the fixture methods bind to. The fixture
-# method.yaml files declare ``env: container:fixture-env``; the pipeline nodes
-# emitted by pipeline_factory declare ``env: fixture-env`` (bare). Both resolve
-# to the same .wfc/envs.json record written by register_fixture_methods.
+# method.yaml files and the pipeline nodes emitted by pipeline_factory both
+# declare ``env: fixture-env``, resolving to the one .wfc/envs.json record
+# written by register_fixture_methods.
 FIXTURE_ENV_NAME = "fixture-env"
-
-# Tag of the locally-built fixture image (matches tests/conftest.py).
-FIXTURE_IMAGE_REPO = "local/wfc-test-minimal"
-
-
-def _write_fixture_env_manifest(project_dir: Path, image_digest: str) -> None:
-    """Write the ``fixture-env`` container record into ``.wfc/envs.json``.
-
-    The record's digest-pinned ``container`` ref lets run-step dispatch each
-    fixture method into the session-scoped image, and lets register_method's
-    ``_resolve_env`` validation pass.
-
-    Args:
-        project_dir: Project root (already initialised, has ``.wfc/``).
-        image_digest: Bare sha256 hex of the locally-built fixture image.
-    """
-    wfc_dir = project_dir / ".wfc"
-    wfc_dir.mkdir(parents=True, exist_ok=True)
-    container_ref = f"docker://{FIXTURE_IMAGE_REPO}@sha256:{image_digest}"
-    (wfc_dir / "envs.json").write_text(json.dumps({
-        "schema_version": 1,
-        "envs": {
-            FIXTURE_ENV_NAME: {
-                "backend": "pixi",
-                "source": "pixi.toml",
-                "container": container_ref,
-                "env_fingerprint": image_digest,
-                "built_from_lock": "pixi.lock",
-                "built_at": "2026-06-23T00:00:00Z",
-                # The fixture image is plain python:3.11-slim (python on
-                # PATH); record the interpreter explicitly so dispatch does
-                # not fall back to the pixi-backend default path, which does
-                # not exist in that image.
-                "python": "python",
-            }
-        },
-    }))
 
 
 @pytest.fixture
 def register_fixture_methods(git_project, fixture_container_image, monkeypatch):
     """Register lightweight fixture methods bound to a built container env.
 
-    ADR-019 Cycle H: execution is container-only. The fixture methods
-    (transform, merge, faulty) declare ``env: container:fixture-env`` and run
+    execution is container-only. The fixture methods
+    (transform, merge, faulty) declare ``env: fixture-env`` and run
     inside a session-scoped image built from ``tests/fixtures/Dockerfile.minimal``
     (the ``fixture_container_image`` fixture). This fixture writes the
     ``fixture-env`` record into ``.wfc/envs.json``, then registers each method
@@ -214,14 +111,17 @@ def register_fixture_methods(git_project, fixture_container_image, monkeypatch):
     db_path = tmp_path / ".wfc" / "wfc.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
 
-    from wfc.database import reset_engine
-    from wfc.init import init_project
+    from wfc.persistence import reset_engine
 
     # Initialise the project and write the container-env manifest BEFORE the
-    # first register_test_method call: register_method -> _resolve_env reads
+    # first register_test_method call: register_method -> check_method_env reads
     # the manifest to validate the method's env.
-    init_project(tmp_path)
-    _write_fixture_env_manifest(tmp_path, fixture_container_image)
+    init_test_project(tmp_path)
+    # The fixture image is a locally built docker image attached by digest —
+    # a byo registration in production terms (raw docker build, no pixi/conda
+    # source). Its python:3.11-slim base has `python` on PATH, which is the
+    # byo interpreter default.
+    write_env_record(tmp_path, FIXTURE_ENV_NAME, digest=fixture_container_image)
     reset_engine()
 
     for method_name, module_name in FIXTURE_METHODS:
@@ -277,21 +177,26 @@ def build_pipeline_json(
         node_type = node.get("type", "method")
 
         if node_type in SYSTEM_NODE_TYPES:
+            # Real Canvas exports (compile.ts) omit method/module on system
+            # nodes entirely — JSON.stringify drops the undefined fields. The
+            # run-step crash shape is the key ABSENT, not an empty string, so
+            # the fixture must leave them out to match production output.
             enriched = {
                 "id": node["id"],
                 "type": node_type,
-                "method": "",
-                "module": "",
                 "params": node.get("params", {}),
             }
-            for key in ("samples", "run_id", "output_slot", "output_path", "fan_mode"):
+            for key in ("samples", "run_id", "fan_mode"):
                 if key in node:
                     enriched[key] = node[key]
             enriched_nodes.append(enriched)
             continue
 
         method_name = node["method"]
-        script_path = f"methods/{method_name}/{method_name}.py"
+        # A node may name its script explicitly; naming one that is not
+        # there is how the dispatch phase's host-side script pre-flight
+        # is reached with the method directory otherwise intact.
+        script_path = node.get("script") or f"methods/{method_name}/{method_name}.py"
 
         slot_outputs = {}
         slot_types = {}
@@ -305,7 +210,12 @@ def build_pipeline_json(
                         slot_spec.get("type", "csv")
                         if isinstance(slot_spec, dict) else "csv"
                     )
-                    slot_outputs[slot_name] = f"{slot_name}.csv"
+                    # A node may name the published filename explicitly;
+                    # the declared filename (not the slot name) is what
+                    # the collect phase scans for.
+                    slot_outputs[slot_name] = node.get("slot_outputs", {}).get(
+                        slot_name, f"{slot_name}.csv"
+                    )
                     slot_types[slot_name] = slot_type
 
         enriched = {
@@ -316,10 +226,14 @@ def build_pipeline_json(
             "params": node.get("params", {}),
             "slot_outputs": slot_outputs,
             "slot_types": slot_types,
-            # ADR-019 Cycle H: bind to the built container env so run-step's
+            # bind to the built container env so run-step's
             # _envs_get lookup finds the digest-pinned image record.
             "env": node.get("env", FIXTURE_ENV_NAME),
         }
+        # Canvas label passthrough — run-step stamps Run.nid from it and the
+        # cancelled-rows walk keys rows by it.
+        if "label" in node:
+            enriched["label"] = node["label"]
         enriched_nodes.append(enriched)
 
     pipeline = {
@@ -384,7 +298,7 @@ def register_imaging_methods(git_project, fixture_container_image, monkeypatch):
     Mirrors :func:`register_fixture_methods` but installs the imaging skip-link
     DAG (build_config -> tile_export -> illum_correct -> stitch -> segment ->
     quantify -> export_final) from ``tests/fixtures/methods_imaging/``. The
-    method.yaml files declare ``env: container:fixture-env`` so registration
+    method.yaml files declare ``env: fixture-env`` so registration
     validates against the manifest written here; pipeline nodes use the bare
     ``fixture-env`` name.
 
@@ -401,11 +315,14 @@ def register_imaging_methods(git_project, fixture_container_image, monkeypatch):
     db_path = tmp_path / ".wfc" / "wfc.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
 
-    from wfc.database import reset_engine
-    from wfc.init import init_project
+    from wfc.persistence import reset_engine
 
-    init_project(tmp_path)
-    _write_fixture_env_manifest(tmp_path, fixture_container_image)
+    init_test_project(tmp_path)
+    # The fixture image is a locally built docker image attached by digest —
+    # a byo registration in production terms (raw docker build, no pixi/conda
+    # source). Its python:3.11-slim base has `python` on PATH, which is the
+    # byo interpreter default.
+    write_env_record(tmp_path, FIXTURE_ENV_NAME, digest=fixture_container_image)
     reset_engine()
 
     for method_name, module_name in IMAGING_METHODS:

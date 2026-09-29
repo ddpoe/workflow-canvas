@@ -2,18 +2,19 @@
  * Module-level root actor for the canvas lifecycle.
  *
  * Exports a singleton `pipelineRunActor` started once at app mount.
- * Components import this directly (per ADR-016 Open Q #1 / D-2) rather
- * than going through Svelte context. In DEV the Stately Inspector is
+ * Components import this directly rather than going through Svelte
+ * context. In DEV the Stately Inspector is
  * wired so a maintainer can observe the actor tree live; the
  * `@statelyai/inspect` import is gated behind `import.meta.env.DEV`
  * so Vite tree-shakes it out of the production bundle.
  */
 import { createActor, fromPromise } from 'xstate';
+import { writable, get } from 'svelte/store';
 import {
   runState,
   setPipelineError,
   updateNodeData,
-} from '../stores';
+} from '../builder/stores';
 import {
   makePipelineRunMachine,
   type PipelinePayload,
@@ -24,11 +25,14 @@ import {
   submitPipeline,
   pollNodeStatus,
   subscribeSSE,
+  cancelJob,
   stateValueToRunStatus,
   type NodeRunValue,
 } from './services';
 import {
   makeParamEditorAggregatorMachine,
+  childSettledBetween,
+  isChildEditing,
   type ChildActor,
   type ParamEditorAggregatorActor,
 } from './paramEditorAggregator.machine';
@@ -38,8 +42,8 @@ import {
  *
  * Captured at module load (top-level await) and passed both to the
  * pipelineRunActor below AND exported for paramEditorActor instances
- * spawned by ValueList rows (ADR-016 Phase 2). Per cycle decision D-4
- * the param-editor actors are NOT nested under pipelineRunActor — they
+ * spawned by ValueList rows. The param-editor actors are NOT nested
+ * under pipelineRunActor — they
  * form their own inspector tree root, so each ValueList row attaches
  * the same callback to its own `createActor()` call to surface
  * transitions in the same DEV inspector tab.
@@ -64,8 +68,8 @@ if (import.meta.env.DEV) {
   // when `import.meta.env.DEV` is statically `false`, so the dynamic
   // import is excluded from the production bundle. The await ensures
   // `inspect` is assigned BEFORE `createActor()` runs below — without
-  // it, xstate captured `undefined` and the inspector tab never
-  // connected (the bug fixed in review iteration 1).
+  // it, xstate captures `undefined` and the inspector tab never
+  // connects.
   try {
     const mod = await import('@statelyai/inspect');
     _inspector = mod.createBrowserInspector({
@@ -103,9 +107,8 @@ export function startInspector(): boolean {
 // `streamingActor` slot on nodeRunActor. The streaming machine internally
 // invokes `subscribeSSE` to wrap the EventSource. Routing through the
 // machine gives the InspectorPanel a typed snapshot value
-// (connecting/streaming/terminal/reconnecting) to read via
-// `nodeRunActor.snapshot.children.streaming`, instead of the local
-// EventSource $effect that previously duplicated state.
+// (connecting/streaming/succeeded/failed/cancelled) to read via
+// `nodeRunActor.snapshot.children.streaming`.
 const wiredStreamingMachine = makeStreamingMachine().provide({
   actors: { subscribeSSE },
 });
@@ -114,17 +117,15 @@ const wiredNodeRunMachine = makeNodeRunMachine().provide({
   actors: { streamingActor: wiredStreamingMachine },
 });
 
-// ── Param-editor aggregator singleton (ADR-016 Phase 2 expand) ────────
+// ── Param-editor aggregator singleton ─────────────────────────────────
 //
-// Replaces the legacy `commitAllSignal` writable + `dirtyParams` Set.
 // Every ValueList row REGISTERs its paramEditorActor / variantActor on
 // mount and UNREGISTERs on destroy. The pipelineRunActor's `preflight`
 // invokes a tiny `awaitAllCommitted` actor that subscribes here and
-// resolves on `idle/allCommitted → committingAll → allCommitted` —
-// replacing the 0.2.8 microtask race with a typed transition.
+// resolves on `idle/allCommitted → committingAll → allCommitted`.
 //
-// Lives in its own inspector tree root per cycle decision D-4
-// (paramEditor children are not nested under pipelineRunActor).
+// Lives in its own inspector tree root (paramEditor children are not
+// nested under pipelineRunActor).
 export const paramEditorAggregator: ParamEditorAggregatorActor = createActor(
   makeParamEditorAggregatorMachine(),
   { inspect },
@@ -132,22 +133,37 @@ export const paramEditorAggregator: ParamEditorAggregatorActor = createActor(
 paramEditorAggregator.start();
 
 // Bridge: every registered child's snapshot transitions are forwarded
-// as CHILD_SETTLED events when the child leaves an editing-shaped
-// state. We track subscriptions per-child (by actor reference) so a
-// re-REGISTER (HMR / inspector tab swap) doesn't double-subscribe.
+// as CHILD_SETTLED events by the aggregator's one settle rule
+// (`childSettledBetween`: a commit attempt that ended, refused or not, or
+// an editing state left some other way). We track subscriptions per-child
+// (by actor reference) so a re-REGISTER (HMR / inspector tab swap)
+// doesn't double-subscribe.
 const childAggregatorSubs = new WeakMap<ChildActor, () => void>();
 const childAggregatorIds = new WeakMap<ChildActor, string>();
+
+/**
+ * True while any registered parameter editor is open or holds an
+ * uncommitted draft. Reactive: the Runs Preview shows run counts only
+ * while this is true, and a lock is cleared the moment it turns true.
+ */
+export const editorsDirty = writable(false);
+
+function refreshEditorsDirty(): void {
+  const dirty = hasDirtyEditors();
+  if (get(editorsDirty) !== dirty) editorsDirty.set(dirty);
+}
 
 function bridgeChildToAggregator(id: string, child: ChildActor): void {
   if (childAggregatorSubs.has(child)) return;
   childAggregatorIds.set(child, id);
-  let lastEditing = isEditingShaped(child);
-  const sub = child.subscribe(() => {
-    const editingNow = isEditingShaped(child);
-    if (lastEditing && !editingNow && isSettledShaped(child)) {
+  let last: unknown = child.getSnapshot().value;
+  const sub = child.subscribe(snap => {
+    const now: unknown = snap.value;
+    if (childSettledBetween(last, now)) {
       paramEditorAggregator.send({ type: 'CHILD_SETTLED', id });
     }
-    lastEditing = editingNow;
+    last = now;
+    refreshEditorsDirty();
   });
   childAggregatorSubs.set(child, () => sub.unsubscribe());
 }
@@ -161,28 +177,6 @@ function unbridgeChild(child: ChildActor): void {
   }
 }
 
-function isEditingShaped(child: ChildActor): boolean {
-  const v = child.getSnapshot().value;
-  if (typeof v !== 'string') return false;
-  return (
-    v === 'editing' ||
-    v === 'committing' ||
-    v === 'invalid' ||
-    v === 'addingVariant' ||
-    v === 'editingValue'
-  );
-}
-
-function isSettledShaped(child: ChildActor): boolean {
-  const v = child.getSnapshot().value;
-  if (typeof v !== 'string') return false;
-  if (v === 'committing') return false;
-  if (v === 'editing' || v === 'addingVariant' || v === 'editingValue') {
-    return false;
-  }
-  return true;
-}
-
 /**
  * Public hooks ValueList.svelte calls on mount/destroy. Wraps the
  * REGISTER/UNREGISTER events plus the snapshot bridge so the component
@@ -191,23 +185,25 @@ function isSettledShaped(child: ChildActor): boolean {
 export function registerEditorChild(id: string, child: ChildActor): void {
   paramEditorAggregator.send({ type: 'REGISTER', id, actor: child });
   bridgeChildToAggregator(id, child);
+  refreshEditorsDirty();
 }
 
 export function unregisterEditorChild(id: string, child: ChildActor): void {
   paramEditorAggregator.send({ type: 'UNREGISTER', id });
   unbridgeChild(child);
+  refreshEditorsDirty();
 }
 
 /**
  * Returns true iff the aggregator currently has any registered child
  * in an editing-shaped state. Used by Toolbar / InspectorPanel for
- * Lock All button visibility — replacing `dirtyParams.size > 0`.
+ * Lock All button visibility.
  */
 export function hasDirtyEditors(): boolean {
   for (const child of Object.values(
     paramEditorAggregator.getSnapshot().context.children,
   )) {
-    if (isEditingShaped(child)) return true;
+    if (isChildEditing(child)) return true;
   }
   return false;
 }
@@ -223,7 +219,7 @@ export function nodeHasDirtyEditors(nodeId: string): boolean {
     paramEditorAggregator.getSnapshot().context.children,
   )) {
     if (!id.startsWith(prefix)) continue;
-    if (isEditingShaped(child)) return true;
+    if (isChildEditing(child)) return true;
   }
   return false;
 }
@@ -239,7 +235,7 @@ export function dirtyEditorIds(): string[] {
   for (const [id, child] of Object.entries(
     paramEditorAggregator.getSnapshot().context.children,
   )) {
-    if (isEditingShaped(child)) out.push(id);
+    if (isChildEditing(child)) out.push(id);
   }
   return out;
 }
@@ -285,14 +281,12 @@ export const pipelineRunActor = createActor(machine, {
 });
 pipelineRunActor.start();
 
-// Bridge actor state into the legacy `runState` writable so the
-// existing toolbar status bar + banner code keeps working without
-// touching every consumer in this cycle. This bridge is removable
-// when those consumers subscribe to the actor directly.
+// Bridge actor state into the `runState` writable, which the toolbar
+// status bar and banner read.
 //
 // Also bridges `context.jobId` (= the pipeline_id returned by
-// /api/workflow/run, see server.py:1489) into the canvas-level
-// `canvasPipelineId` store so the D-10 running-block gate sees the
+// /api/workflow/run) into the canvas-level
+// `canvasPipelineId` store so the running-block gate sees the
 // new identity as soon as submit resolves. The store stays in sync:
 //   - submitting.onDone assigns context.jobId → bridge writes store
 //   - RESET clears context.jobId → bridge writes null
@@ -312,12 +306,12 @@ pipelineRunActor.subscribe(snap => {
   if (snap.context.pipelineError) {
     setPipelineError(snap.context.pipelineError);
   }
-  // Mirror jobId into canvasPipelineId. Lazy import keeps the legacy
-  // module import graph (root.ts ↔ stores.ts ↔ pipeline.ts) acyclic.
+  // Mirror jobId into canvasPipelineId. Lazy import keeps the module
+  // import graph (root.ts ↔ stores.ts ↔ pipeline.ts) acyclic.
   const newPid = snap.context.jobId;
   if (newPid !== _lastBridgedJobId) {
     _lastBridgedJobId = newPid;
-    import('../pipeline.js').then(m => {
+    import('../builder/pipeline.js').then(m => {
       m.canvasPipelineId.set(newPid);
     }).catch(() => {});
   }
@@ -325,8 +319,7 @@ pipelineRunActor.subscribe(snap => {
 
 // ── Per-node bridge: actor snapshot → data.runStatus / data.runTally ──
 //
-// Single-source invariant (ADR-016 §"single source of truth"): the
-// nodeRunActor is authoritative; CustomNode's CSS-class lookup of
+// Single-source invariant: the nodeRunActor is authoritative; CustomNode's CSS-class lookup of
 // `data.runStatus` is a denormalized view of that actor, written FROM
 // the actor — never bypassing it.
 //
@@ -364,8 +357,7 @@ pipelineRunActor.subscribe(snap => {
 
 /**
  * Send the RUN_CLICKED event to the singleton with a snapshot of the
- * current pipeline. The Toolbar calls this; replaces the legacy
- * `runPipeline()` body in `pipeline.ts`.
+ * current pipeline. The Toolbar calls this.
  */
 export function dispatchRun(pipeline: PipelinePayload): void {
   pipelineRunActor.send({ type: 'RUN_CLICKED', pipeline });
@@ -384,7 +376,7 @@ export function dispatchReset(): void {
  * Stop the in-flight run. Cascades USER_STOP to every still-running
  * child nodeRunActor and moves the pipeline actor to `done`.
  *
- * ADR-015 Phase D Pass 2: also fires a real backend cancel POST so the
+ * Also fires a backend cancel POST so the
  * Snakemake subprocess (and its descendants) is terminated and the
  * affected run rows flip to ``cancelled`` with
  * ``error_message="Cancelled by user"``.  Fire-and-forget — the local
@@ -393,9 +385,7 @@ export function dispatchReset(): void {
 export function dispatchUserStop(): void {
   const jobId = pipelineRunActor.getSnapshot().context.jobId;
   if (jobId) {
-    fetch(`/api/workflow/cancel/${encodeURIComponent(jobId)}`, {
-      method: 'POST',
-    }).catch(err => {
+    cancelJob(jobId).catch(err => {
       // eslint-disable-next-line no-console
       console.warn('[dispatchUserStop] cancel POST failed:', err);
     });

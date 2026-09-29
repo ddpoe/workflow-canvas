@@ -1,12 +1,12 @@
-"""Tier 2 + Tier 1 tests for dev-loop command construction (ADR-019 Cycle E).
+"""Tier 2 + Tier 1 tests for dev-loop command construction.
 
 Covers:
-- US-1 / US-4: ``wfc shell`` and ``wfc exec`` reuse
-  :func:`wfc.container_runner.build_docker_command` so the bind-mount,
+- ``wfc shell`` and ``wfc exec`` reuse
+  :func:`wfc.environments.argv.build_docker_command` so the bind-mount,
   ``--user``, and ``-w /work`` discipline matches ``wfc run-step`` exactly.
-- US-5: ``executor = "slurm"`` triggers a clean "out of scope for v1"
-  error and a non-zero exit code, with no docker invocation.
-- US-6: ``--help`` output for each of ``wfc jupyter``, ``wfc shell``, and
+- ``executor = "slurm"`` triggers a clean "cluster Apptainer dispatch is
+  not supported" error and a non-zero exit code, with no docker invocation.
+- ``--help`` output for each of ``wfc jupyter``, ``wfc shell``, and
   ``wfc exec`` includes the ephemeral-container reminder sentence.
 """
 from __future__ import annotations
@@ -14,11 +14,12 @@ from __future__ import annotations
 import json
 import shlex
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 from axiom_annotations import workflow
+
+from tests.fixtures.fakes import fake_subprocess_run, stub_docker_command_builder
 
 
 VALID_DIGEST = "a" * 64
@@ -30,36 +31,37 @@ CONTAINER_REF_BARE = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _fresh_resolver():
+    """Each test resolves its own tree: the canonical resolver caches per process."""
+    from wfc.persistence import reset_engine
+
+    reset_engine()
+    yield
+    reset_engine()
+
+
 def _setup_project(tmp_path: Path, *, executor: str | None = None) -> Path:
     (tmp_path / ".wfc").mkdir()
     toml = '[project]\nname="t"\n[database]\nurl="sqlite:///:memory:"\n'
     if executor is not None:
         toml += f'[executor]\ntype="{executor}"\n'
     (tmp_path / ".wfc" / "wf-canvas.toml").write_text(toml)
-    (tmp_path / ".wfc" / "envs.json").write_text(json.dumps({
-        "schema_version": 1,
-        "envs": {
-            "image-io": {
-                "backend": "pixi",
-                "source": "pixi.toml",
-                "container": CONTAINER_REF_DOCKER,
-                "env_fingerprint": "f" * 64,
-                "built_from_lock": "pixi.lock",
-                "built_at": "2026-05-17T00:00:00Z",
-            }
-        },
-    }))
+    # byo record: a registry image attached by digest is what production
+    # writes for a docker-registry ref like this one.
+    from tests.fixtures.conftest import write_env_record
+    write_env_record(tmp_path, "image-io", image="ghcr.io/dante/image-io",
+                     digest=VALID_DIGEST)
     return tmp_path
 
 
 # ---------------------------------------------------------------------------
-# US-1 / US-4: shell + exec reuse build_docker_command
+# shell + exec reuse build_docker_command
 # ---------------------------------------------------------------------------
 
 @workflow(purpose="wfc shell and wfc exec both delegate argv construction to "
-                  "wfc.container_runner.build_docker_command so bind-mount, "
-                  "--user, and -w /work discipline matches wfc run-step "
-                  "(US-1, US-4)")
+                  "wfc.environments.argv.build_docker_command so bind-mount, "
+                  "--user, and -w /work discipline matches wfc run-step")
 def test_dev_loop_reuses_container_runner_helper(tmp_path, monkeypatch):
     proj = _setup_project(tmp_path)
     monkeypatch.chdir(proj)
@@ -97,10 +99,9 @@ def test_dev_loop_reuses_container_runner_helper(tmp_path, monkeypatch):
         captured_subprocess.append(list(argv))
         return _FakeResult()
 
-    with patch("wfc.container_runner.build_docker_command",
-               side_effect=_fake_build), \
-         patch("wfc.dev_loop.subprocess.run", side_effect=_fake_run):
-        from wfc import dev_loop
+    fake_subprocess_run(monkeypatch, _fake_run)
+    with stub_docker_command_builder(_fake_build):
+        from wfc.environments import dev_loop
 
         rc_shell = dev_loop.shell("image-io")
         rc_exec = dev_loop.exec_("image-io", ["python", "-c", "print(1)"])
@@ -143,13 +144,14 @@ def test_dev_loop_reuses_container_runner_helper(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# US-5: slurm executor carve-out
+# slurm executor carve-out
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("verb", ["jupyter", "shell", "exec"])
 def test_slurm_executor_carve_out_errors(tmp_path, monkeypatch, capsys, verb):
     """Under executor=slurm, all three dev-loop verbs exit non-zero with a
-    clear 'out of scope for v1' message and never invoke docker."""
+    clear 'cluster Apptainer dispatch is not supported' message and never
+    invoke docker."""
     proj = _setup_project(tmp_path, executor="slurm")
     monkeypatch.chdir(proj)
 
@@ -161,25 +163,25 @@ def test_slurm_executor_carve_out_errors(tmp_path, monkeypatch, capsys, verb):
             returncode = 0
         return _R()
 
-    with patch("wfc.dev_loop.subprocess.run", side_effect=_fake_run):
-        from wfc import dev_loop
-        if verb == "jupyter":
-            rc = dev_loop.jupyter("image-io")
-        elif verb == "shell":
-            rc = dev_loop.shell("image-io")
-        else:
-            rc = dev_loop.exec_("image-io", ["echo", "x"])
+    fake_subprocess_run(monkeypatch, _fake_run)
+    from wfc.environments import dev_loop
+    if verb == "jupyter":
+        rc = dev_loop.jupyter("image-io")
+    elif verb == "shell":
+        rc = dev_loop.shell("image-io")
+    else:
+        rc = dev_loop.exec_("image-io", ["echo", "x"])
 
     assert rc == 1
     assert not called["docker"], (
         "dev-loop must not spawn docker under executor=slurm"
     )
     err = capsys.readouterr().err
-    assert "out of scope for v1" in err
+    assert "cluster Apptainer dispatch (executor=slurm) is not supported" in err
 
 
 # ---------------------------------------------------------------------------
-# US-6: --help text includes the ephemeral-container reminder
+# --help text includes the ephemeral-container reminder
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("verb", ["jupyter", "shell", "exec"])
@@ -218,7 +220,7 @@ def test_dev_loop_help_includes_ephemeral_reminder(verb, capsys):
 def test_dev_loop_errors_when_env_not_registered(tmp_path, monkeypatch, capsys):
     proj = _setup_project(tmp_path)
     monkeypatch.chdir(proj)
-    from wfc import dev_loop
+    from wfc.environments import dev_loop
     rc = dev_loop.shell("nonexistent")
     assert rc == 1
     err = capsys.readouterr().err
@@ -227,11 +229,14 @@ def test_dev_loop_errors_when_env_not_registered(tmp_path, monkeypatch, capsys):
 
 def test_dev_loop_errors_when_no_wfc_project(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)  # no .wfc/
-    from wfc import dev_loop
-    # _find_project_root walks up to the filesystem root, so a stray .wfc/
-    # above tmp_path (e.g. one in the user's home dir) would mask the
-    # no-project case. Force the no-project condition deterministically.
-    monkeypatch.setattr(dev_loop, "_find_project_root", lambda: None)
+    from wfc.environments import dev_loop
+    # The canonical resolver walks up to the filesystem root, so a marker
+    # above tmp_path would mask the no-project case. Pinning the override at
+    # the bare tmp_path makes the resolver validate it and refuse — the
+    # no-project condition, deterministically.
+    monkeypatch.setenv("WFC_PROJECT_ROOT", str(tmp_path))
+    from wfc.persistence import reset_engine
+    reset_engine()
     rc = dev_loop.shell("image-io")
     assert rc == 1
     err = capsys.readouterr().err

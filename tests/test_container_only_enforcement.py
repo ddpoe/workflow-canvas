@@ -1,13 +1,12 @@
-"""Tier 1 behaviour tests for ADR-019 Cycle H container-only enforcement.
+"""Tier 1 behaviour tests for container-only enforcement.
 
-Two new behaviours this cycle adds (D-5: enforcement over verification — these
-are the only two new tests):
+Two behaviours (enforcement over verification):
 
-- US-2: ``run_step`` with an env that has NO container record (unknown name /
-  removed ``inherit`` / a non-container record) exits non-zero with a message
+- ``run_step`` with an env that has NO container record (unknown name /
+  ``inherit`` / a non-container record) exits non-zero with a message
   naming the env and pointing at ``wfc register-env <name>``, AND writes the
   failure outcome sidecar. No silent host fallback.
-- US-3: a method contract with no ``env`` (or ``env: inherit``) is rejected at
+- a method contract with no ``env`` (or ``env: inherit``) is rejected at
   parse time with the "must name a built container env" error; it does not run.
 
 Both tests are unmarked (no Docker) and run under the default ``pytest`` suite.
@@ -19,9 +18,11 @@ from pathlib import Path
 
 import pytest
 
+from tests.fixtures.fakes import stub_runtime_phases
+
 
 # =============================================================================
-# US-2: non-resolving env errors loudly at runtime
+# Non-resolving env errors loudly at runtime
 # =============================================================================
 
 def _setup_no_container_project(tmp_path: Path) -> tuple[Path, Path]:
@@ -53,43 +54,14 @@ def _setup_no_container_project(tmp_path: Path) -> tuple[Path, Path]:
     return tmp_path, pj
 
 
-def _patch_runtime(monkeypatch, project_dir: Path) -> None:
-    """Stub pre_run / complete_run / get_project_root / get_session so run_step
-    reaches the container-resolution branch without a real DB."""
-    monkeypatch.setenv("WFC_PROJECT_ROOT", str(project_dir))
-    # wfc.database caches project_root() at module level; reset so this test's
-    # project_dir is honoured regardless of test ordering (other tests in the
-    # suite set WFC_PROJECT_ROOT to their own tmp dirs).
-    from wfc.database import reset_engine
-    reset_engine()
-    from wfc import cli as cli_mod
-
-    monkeypatch.setattr(cli_mod, "pre_run", lambda **kw: ("NEW", 42))
-    monkeypatch.setattr(cli_mod, "complete_run", lambda **kw: None)
-    monkeypatch.setattr(cli_mod, "get_project_root", lambda: project_dir)
-    monkeypatch.setattr(cli_mod, "runs_dir", lambda: project_dir / ".runs")
-    monkeypatch.setattr(cli_mod, "resolve_input", lambda **kw: None)
-
-    class _NullSession:
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
-        def exec(self, *a, **kw):
-            class _R:
-                def first(self): return None
-            return _R()
-        def add(self, *a, **kw): pass
-        def commit(self): pass
-    monkeypatch.setattr(cli_mod, "get_session", lambda: _NullSession())
-
-
 def test_run_step_no_container_env_errors_loudly(tmp_path, monkeypatch, capsys):
-    """US-2: run_step on an env with no container record exits non-zero,
+    """run_step on an env with no container record exits non-zero,
     names the env, points at ``wfc register-env``, and writes the failure
     outcome sidecar — no host fallback."""
     proj, pj = _setup_no_container_project(tmp_path)
-    _patch_runtime(monkeypatch, proj)
+    stub_runtime_phases(monkeypatch, proj)
 
-    from wfc.cli import run_step
+    from wfc.execution import run_step
     rc = run_step(
         node_id="n1",
         sample="s1",
@@ -107,8 +79,8 @@ def test_run_step_no_container_env_errors_loudly(tmp_path, monkeypatch, capsys):
     assert "image-io" in err
     assert "wfc register-env" in err
 
-    # Failure outcome sidecar was written so pipeline-summary aggregation
-    # and the run row stay consistent.
+    # A failure outcome sidecar was written, so the pipeline-end walk can
+    # record the refused target as a failed row.
     outcome_path = (
         proj / ".runs" / "pipelines" / "p1" / "outcomes"
         / "n1__s1__default.json"
@@ -119,11 +91,11 @@ def test_run_step_no_container_env_errors_loudly(tmp_path, monkeypatch, capsys):
 
 
 # =============================================================================
-# US-3: missing / inherit env rejected at parse-time validation
+# Missing / inherit env rejected at parse-time validation
 # =============================================================================
 
 def test_parse_method_yaml_rejects_missing_env(tmp_path):
-    """US-3: a method.yaml with no ``env`` is rejected with the
+    """A method.yaml with no ``env`` is rejected with the
     'must name a built container env' error; it does not run."""
     from wfc.contracts import parse_method_yaml
 
@@ -138,8 +110,8 @@ def test_parse_method_yaml_rejects_missing_env(tmp_path):
 
 
 def test_parse_method_yaml_rejects_inherit_env(tmp_path):
-    """US-3: the removed ``env: inherit`` keyword is rejected with the same
-    'must name a built container env' error (it now reads as a non-built env)."""
+    """``env: inherit`` is not a keyword: it is rejected with the same
+    'must name a built container env' error, as a non-built env."""
     from wfc.contracts import parse_method_yaml
 
     method_dir = tmp_path / "inherit_env"

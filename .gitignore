@@ -14,6 +14,7 @@ build/
 *.db-shm
 *.db-wal
 *.db-journal
+*.db.*.bak
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -52,8 +53,15 @@ test-results/
 # Windows stackdumps
 *.stackdump
 
+# Dev-server and tool logs
+*.log
+
+# Dev toolbar screenshot output (scripts/dev_routes.py)
+screenshots/
+
 # Local Claude settings
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 
 # Generated mkdocs site
 site/

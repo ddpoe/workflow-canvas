@@ -9,12 +9,11 @@
  * qualified with their parent (e.g. `cancelled.becauseUpstream`).
  *
  * Writes one `.mmd` file per machine into
- * `wfc/canvas/static/scripts/mermaid/`. The Auditor (not the Builder)
- * embeds the rendered output into `docs/features/canvas/lifecycle/`.
+ * `wfc/canvas/static/scripts/mermaid/`, which the documentation embeds.
  *
  * NOTE: only static structure is captured here. The runtime spawn tree
  * (pipelineRunActor → nodeRunActor → streamingActor) does NOT appear in
- * the diagrams; that's the auditor doc's job to clarify in prose.
+ * the diagrams; the documentation describes it in prose.
  *
  * Run with: `npm run gen-mermaid`
  */
@@ -164,8 +163,8 @@ function collectFinalStates(
   out: string[],
 ): void {
   // Mermaid stateDiagram-v2 marks terminal states with `state --> [*]`.
-  // The earlier generator used `<<choice>>` which is a *decision*
-  // pseudostate (diamond), semantically wrong for terminals.
+  // `<<choice>>` is a *decision* pseudostate (diamond), semantically
+  // wrong for terminals.
   if (state.type === 'final') {
     out.push(`  ${path} --> [*]`);
   }

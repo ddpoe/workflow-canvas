@@ -1,4 +1,4 @@
-"""Tier 3 integration test: a Tier-1 ``@wfc.method`` method end-to-end (ADR-020).
+"""Tier 3 integration test: a Tier-1 ``@wfc.method`` method end-to-end.
 
 Builds a user-env image WITH the ``wfc-client`` package installed
 (``tests/fixtures/Dockerfile.client``), registers the Tier-1 ``qc`` fixture
@@ -30,31 +30,16 @@ from pathlib import Path
 
 import pytest
 
-from tests.fixtures.conftest import register_test_method
+from tests.conftest import requires_docker
+from tests.fixtures.conftest import (
+    register_sample_row,
+    register_test_method,
+    sample_source_dir,
+)
+from wfc.storage import restore_sample
 
 
-def _docker_available() -> bool:
-    """True iff ``docker`` is on PATH and ``docker info`` succeeds."""
-    if shutil.which("docker") is None:
-        return False
-    try:
-        result = subprocess.run(
-            ["docker", "info"],
-            capture_output=True,
-            timeout=10,
-        )
-        return result.returncode == 0
-    except (subprocess.SubprocessError, OSError):
-        return False
-
-
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.skipif(
-        not _docker_available(),
-        reason="Docker not reachable on PATH",
-    ),
-]
+pytestmark = [pytest.mark.integration, requires_docker]
 
 
 def _init_git_project(proj: Path) -> None:
@@ -84,23 +69,11 @@ def _write_envs_json(proj: Path, image_digest: str, env_name: str) -> None:
     """Write ``.wfc/envs.json`` with a digest-pinned container ref for env_name."""
     wfc_dir = proj / ".wfc"
     wfc_dir.mkdir(exist_ok=True)
-    container_ref = f"docker://local/wfc-test-client@sha256:{image_digest}"
-    (wfc_dir / "envs.json").write_text(json.dumps({
-        "schema_version": 1,
-        "envs": {
-            env_name: {
-                "backend": "pixi",
-                "source": "pixi.toml",
-                "container": container_ref,
-                "env_fingerprint": image_digest,
-                "built_from_lock": "pixi.lock",
-                "built_at": "2026-06-24T00:00:00Z",
-                # Plain python:3.11-slim image — python is on PATH; record
-                # it so dispatch skips the pixi-backend default path.
-                "python": "python",
-            }
-        },
-    }))
+    from tests.fixtures.conftest import write_env_record
+    # byo attach of the locally built image (raw docker build, no pixi/conda
+    # source); the image has the interpreter on PATH.
+    write_env_record(proj, env_name, image="local/wfc-test-client",
+                     digest=image_digest)
 
 
 def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path:
@@ -121,7 +94,7 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
     _write_envs_json(proj, image_digest, "client-env")
 
     # Copy the Tier-1 qc fixture into the project's methods/ tree. method.yaml
-    # already names `env: container:client-env`.
+    # already names `env: client-env`.
     src_method = (
         Path(__file__).resolve().parent.parent
         / "fixtures" / "methods_client" / "qc"
@@ -140,19 +113,22 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
 
     # Sample data the input_selector feeds into the `data` slot. Two clean
     # rows + one non-numeric row so qc keeps 2 and drops 1.
-    sample_dir = proj / "data" / "samples" / "s1"
-    sample_dir.mkdir(parents=True, exist_ok=True)
-    (sample_dir / "data.csv").write_text(
+    source_dir = sample_source_dir(proj) / "s1"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    (source_dir / "data.csv").write_text(
         "id,value\n1,10\n2,20\n3,not_a_number\n"
     )
+    register_sample_row(proj, "s1", source_dir / "data.csv")
+    # run-step drives this directly, so no Snakemake restore_sample rule
+    # materializes the bytes: call the production restore, the only
+    # sanctioned writer under data/samples/.
+    restore_sample("s1", project_root=proj)
 
     pipeline = {
         "nodes": [
             {
                 "id": "sel",
                 "type": "input_selector",
-                "method": "",
-                "module": "",
                 "samples": ["s1"],
             },
             {
@@ -193,9 +169,8 @@ def test_tier1_method_writes_manifest_and_archives(
     ``RunOutput`` rows + metrics from it; ``archive_outputs`` then hashes and
     DVC-caches every declared output.
     """
-    from wfc.database import get_session, reset_engine
-    from wfc.models import Run, RunOutput
-    from wfc.provenance import archive_outputs
+    from wfc.persistence import get_session, reset_engine, Run, RunOutput
+    from wfc.storage import archive_outputs
     from sqlmodel import select
 
     proj = _materialize_project(tmp_path, client_image, monkeypatch)

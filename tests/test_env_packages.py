@@ -1,17 +1,17 @@
-"""Tier-1 tests for the env-contents seam (ADR-019 package-contents view).
+"""Tier-1 tests for the env-contents seam (package-contents view).
 
 Covers:
-  * wfc.env_packages.parse_packages — per-backend blob parsing, source
-    tagging, case-insensitive sort, and pip-wins dedup precedence (US-1).
+  * wfc.environments.packages.parse_packages — per-backend blob parsing, source
+    tagging, case-insensitive sort, and pip-wins dedup precedence.
   * Round-trip of the assembly/parse delimiter contract on a multi-line
     pixi.lock (edge case 1) and an empty pip-freeze section (edge case 2).
-  * Cache-key invariance pin — capture_env_content's container branch and
-    build_cache_key are byte-for-byte unchanged by this cycle (US-5).
+  * Determinism of capture_env_content's container blob and build_cache_key
+    (both feed cache keys, so their exact bytes are a stability contract).
 """
 
 from __future__ import annotations
 
-from wfc.env_packages import PIP_FREEZE_DELIMITER, parse_packages
+from wfc.environments.packages import PIP_FREEZE_DELIMITER, parse_packages
 
 
 # A realistic full pixi.lock (multi-line YAML, top-level packages list).
@@ -79,7 +79,7 @@ def test_parse_packages_empty_pip_freeze_no_spurious_entry():
 
 
 def test_parse_packages_pip_duplicate_wins_over_conda():
-    """Pip-wins dedup precedence (US-1): when the conda lock and the pip-freeze
+    """Pip-wins dedup precedence: when the conda lock and the pip-freeze
     tail carry the SAME name at DIFFERENT versions, the pip entry wins — it
     installs last (``--no-deps``) and reflects the actual on-disk version — and
     the merged list has exactly one row for that name.
@@ -104,24 +104,24 @@ def test_parse_packages_pip_duplicate_wins_over_conda():
 
 
 # =============================================================================
-# US-5: cache-key invariance pin
+# Determinism: container env blob + cache-key composition
 # =============================================================================
 
-def test_container_fingerprint_and_cache_key_are_pinned():
-    """The env_fingerprint source (capture_env_content's container branch)
-    and build_cache_key are byte-for-byte unchanged by this cycle.
+def test_container_env_blob_and_cache_key_are_deterministic():
+    """capture_env_content emits a canonical, key-sorted JSON blob for a
+    container spec, and build_cache_key composes its inputs deterministically.
 
-    Pins the exact container blob, its md5, and a representative cache key
-    so any accidental edit to capture_env_content / build_cache_key (the
-    load-bearing functions this cycle must NOT touch) fails loudly.
+    Both feed cache keys, so their exact bytes are a stability contract: this
+    pins the container blob, its md5, and a representative cache key so any
+    accidental change to the blob format or key composition fails loudly.
     """
     import hashlib
 
-    from wfc.version import build_cache_key, capture_env_content
-
+    from wfc.identity import build_cache_key
+    from wfc.environments.fingerprint import capture_env_content
     digest = "a" * 64
     spec = f"container:demo@sha256:{digest}"
-    blob = capture_env_content(spec, project_dir=".")
+    blob = capture_env_content(spec)
     assert blob == (
         '{"digest":"sha256:' + digest + '","image":"demo","type":"container"}'
     )
@@ -132,8 +132,10 @@ def test_container_fingerprint_and_cache_key_are_pinned():
         params={"threshold": 0.5},
         input_fingerprint="i" * 64,
         env_fingerprint=env_fp,
+        method_identity="demo_mod.demo_method",
     )
     expected = hashlib.sha256(
-        ("c" * 64 + '{"threshold": 0.5}' + "i" * 64 + env_fp).encode()
+        ("c" * 64 + '{"threshold": 0.5}' + "i" * 64 + env_fp
+         + "demo_mod.demo_method").encode()
     ).hexdigest()
     assert key == expected

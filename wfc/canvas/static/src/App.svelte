@@ -4,29 +4,39 @@
   import '@xyflow/svelte/dist/style.css';
   import './app.css';
 
-  import CustomNode from './lib/CustomNode.svelte';
-  import Sidebar from './lib/Sidebar.svelte';
-  import InspectorPanel from './lib/InspectorPanel.svelte';
-  import Toolbar from './lib/Toolbar.svelte';
-  import RunsPreview from './lib/RunsPreview.svelte';
-  import DevToolbar from './lib/DevToolbar.svelte';
-  import HistoryView from './lib/HistoryView.svelte';
-  import RegistryTab from './lib/RegistryTab.svelte';
-  import FlowHelper from './lib/FlowHelper.svelte';
-  import DeletableEdge from './lib/DeletableEdge.svelte';
-  import ConfirmDialog from './lib/ConfirmDialog.svelte';
-  import GraftToast from './lib/GraftToast.svelte';
-  import { confirmDialogState, graftToastState, centerOnNodeRequest } from './lib/uiState.js';
-  import { nodes, edges, selectedNodeId, nextNodeId, deleteNodes, loadSamples, runState, setPipelineError, flashToast, dismissFlash, modules as modulesStore } from './lib/stores.js';
+  import CustomNode from './lib/builder/CustomNode.svelte';
+  import Sidebar from './lib/builder/Sidebar.svelte';
+  import InspectorPanel from './lib/inspector/InspectorPanel.svelte';
+  import Toolbar from './lib/builder/Toolbar.svelte';
+  import { isDuplicateSlotEdge as isDuplicateSlotEdgeOn } from './lib/graph/legality.js';
+  import RunsPreview from './lib/builder/RunsPreview.svelte';
+  import DevToolbar from './lib/builder/DevToolbar.svelte';
+  import HistoryView from './lib/history/HistoryView.svelte';
+  import { selectRun } from './lib/history/historyStore.js';
+  import RegistryTab from './lib/registry/RegistryTab.svelte';
+  import FlowHelper from './lib/builder/FlowHelper.svelte';
+  import DeletableEdge from './lib/builder/DeletableEdge.svelte';
+  import ConfirmDialog from './lib/shared/ConfirmDialog.svelte';
+  import LockSummary from './lib/builder/LockSummary.svelte';
+  import GraftToast from './lib/shared/GraftToast.svelte';
+  import { confirmDialogState, graftToastState, centerOnNodeRequest } from './lib/shared/uiState.js';
+  import { nodes, edges, selectedNodeId, nextNodeId, deleteNodes, loadSamples, runState, setPipelineError, flashToast, dismissFlash, modules as modulesStore } from './lib/builder/stores.js';
   // Side-effect import — starts the singleton pipelineRunActor and (in
-  // DEV) wires the Stately Inspector. ADR-016 §root.ts.
+  // DEV) wires the Stately Inspector.
   import './lib/machines/root.js';
-  import { pushState, initKeyboardShortcuts } from './lib/history.js';
-  import type { CanvasNodeData, MethodDef } from './lib/types.js';
+  import { pushState, initKeyboardShortcuts } from './lib/builder/undo.js';
+  import { nodeFromDragPayload } from './lib/builder/nodeData.js';
+  import { fetchDemoPipelineDocument, fetchDevStatus } from './lib/builder/api.js';
+  // Playwright bootstrap. `?fixture=<key>` seeds the canvas
+  // synchronously before mount and may ask for a starting tab. The seeding
+  // itself lives in `lib/__fixtures__/seed.ts`, imported statically so it
+  // stays synchronous for every seeded spec.
+  import { seedFixtureFromQuery } from './lib/__fixtures__/seed.js';
   import type { XYPosition } from '@xyflow/system';
   import { get } from 'svelte/store';
 
-  let activeTab = $state<'builder' | 'registry' | 'history'>('builder');
+  const _fixtureTab = seedFixtureFromQuery();
+  let activeTab = $state<'builder' | 'registry' | 'history'>(_fixtureTab ?? 'builder');
   // Preview is on by default — it's the cheapest way for the user to see
   // what jobs the current canvas will compile to before committing a run.
   // A collapsed pull-tab on the right edge of the flow area reopens it
@@ -40,169 +50,6 @@
   let inspectorWidth = $state(240);
   let dragging = $state<'sidebar' | 'inspector' | null>(null);
   let devMode = $state(false);
-
-  // ADR-015 Phase D Playwright bootstrap. When ?fixture=<key> is present
-  // the canvas seeds nodes/edges synchronously before mount so flow
-  // tests can drive the actor tree without dragging from the sidebar or
-  // calling /api/modules.
-  function seedFixture(key: string) {
-    const methodBase: Omit<CanvasNodeData, 'label'> = {
-      method: 'fixture_method',
-      module: 'fixture_module',
-      color: '#2ecc71',
-      inputs: [],
-      outputs: [{ name: 'output', type: 'csv' }],
-      params: [],
-      paramValues: {},
-      runStatus: 'idle',
-      expanded: false,
-      // pipeline.ts:145 sets `nodeType: 'method' as const` for every method
-      // node loaded from a real pipeline; the fixture seed must match so
-      // InspectorPanel's streaming-child $effect (line 700) doesn't bail
-      // out on `data.nodeType !== 'method'` and leave the streaming badge
-      // stuck on Idle while the run animates the node pill.
-      nodeType: 'method',
-    };
-    const systemBase: Omit<CanvasNodeData, 'label'> = {
-      method: '',
-      module: '',
-      color: '#1ABC9C',
-      inputs: [],
-      outputs: [{ name: 'output', type: 'csv' }],
-      params: [],
-      paramValues: {},
-      runStatus: 'idle',
-      expanded: false,
-      nodeType: 'input_selector',
-      selectedSamples: [],
-      selectedRunId: undefined,
-      selectedOutputSlot: undefined,
-      fanMode: 'out',
-      inputCollapsed: false,
-    };
-    const mk = (id: string, label: string, x: number, base = methodBase): Node<CanvasNodeData> => ({
-      id, type: 'custom', position: { x, y: 100 }, origin: [0, 0],
-      data: { ...base, label },
-    });
-    let seeded: Node<CanvasNodeData>[] = [];
-    if (key === 'single-method' || key === 'cache-hit-method' || key === 'single-method-streaming') {
-      // ADR-015 Phase D Pass 2: `single-method-streaming` shares the
-      // single-method canvas seed.  Streaming-specific behaviour comes
-      // from the SSE fixture replayed by `route-replay.ts` and the
-      // `subscribeSSE` invocation triggered when the row enters
-      // `running` — no new node shape is needed here.
-      seeded = [mk('method_a', 'Method A', 100)];
-    } else if (key === 'two-methods' || key === 'two-methods-cancel') {
-      // ADR-015 Phase D Pass 1: `two-methods-cancel` reuses the
-      // `two-methods` seed shape (A + B side by side).  The cancel
-      // semantics live in the timeline payload (B's per-node row
-      // carries `upstream_node_id: 'method_a'`), not in the canvas.
-      seeded = [mk('method_a', 'Method A', 100), mk('method_b', 'Method B', 400)];
-    } else if (key === 'three-methods-chain') {
-      // ADR-015 Phase D Pass 1: errorMidGraph row.  Three method
-      // nodes A, B, C laid out left-to-right.  The polling bridge
-      // doesn't depend on graph edges — only on per-node status
-      // rows — so no edges are seeded.
-      seeded = [
-        mk('method_a', 'Method A', 100),
-        mk('method_b', 'Method B', 400),
-        mk('method_c', 'Method C', 700),
-      ];
-    } else if (key === 'method-and-system') {
-      seeded = [
-        mk('system_in', 'Input Selector', 100, systemBase),
-        mk('method_only', 'Method Only', 400),
-      ];
-    } else if (key === 'bound-variable') {
-      // ADR-017 Track 2 Phase D smoke: seed one method node with a
-      // dict-typed param `mapping` bound to pipeline variable
-      // `column_map`, prime the pipelineVariables store, and stash a
-      // `pendingBoundVariables` marker so the spawned paramEditorActor
-      // for `mapping` lands in the `bound` state on first mount. The
-      // fixture deliberately bypasses pipeline.ts::loadPipeline (which
-      // requires the full editable JSON contract); per the architect's
-      // escape clause, the smoke proves the rehydration-and-rendering
-      // layer (variables + binding marker → chip) without exercising
-      // the History UI or the JSON parser path.
-      const boundBase: Omit<CanvasNodeData, 'label'> = {
-        ...methodBase,
-        params: [
-          { name: 'mapping', type: 'dict', required: false },
-        ],
-        paramValues: { mapping: { p27: 'X' } },
-      };
-      seeded = [mk('method_a', 'Method A', 100, boundBase)];
-      // Prime the variables store + bound-variable marker. Lazy-import
-      // to avoid pulling pipeline.ts into the App module-init path.
-      Promise.all([
-        import('./lib/stores.js'),
-        import('./lib/pipeline.js'),
-      ]).then(([{ pipelineVariables }, { pendingBoundVariables }]) => {
-        pipelineVariables.set({ column_map: { type: 'dict', value: { p27: 'X' } } });
-        pendingBoundVariables.set({ 'method_a::mapping': 'column_map' });
-        selectedNodeId.set('method_a');
-      }).catch(() => {});
-    } else if (key === 'bound-variable-history') {
-      // ADR-017 Track 2 Phase D — full E2E roundtrip fixture (Reviewer
-      // iter 1 issue 3). Unlike `bound-variable` (which seeds canvas
-      // directly to prove the rehydration-and-rendering layer), this
-      // fixture leaves the canvas blank and only switches to the
-      // History tab. The Playwright test mocks /api/wfc/runs (so a
-      // PipelineRow renders), /api/workflow/{id}/editable (so
-      // fetchPipelineDocument returns variables + $var refs), and
-      // /api/modules (so InspectorPanel knows the bound param's type).
-      // Clicking "Open pipeline in Canvas" then exercises the full
-      // path: PipelineRow → fetchPipelineDocument → /editable →
-      // parsePipelineJSON → loadPipeline → spawn paramEditorActor.
-      // No canvas seed; activeTab is set to 'history' below.
-      seeded = [];
-    } else if (key === 'param-editor') {
-      // ADR-016 Phase 2 gallery: seed one method node carrying a single
-      // required `string` param `note` plus a pre-existing `v1` variant.
-      // Lets `param-editor-gallery.spec.ts` drive every paramEditor /
-      // variant / aggregator state through Playwright clicks (no SSE
-      // timeline) and capture a PNG per state. `string` keeps the
-      // input text-shaped (`type="text"`, ValueList.svelte:660) so
-      // Playwright `fill()` accepts arbitrary strings, and
-      // `required: true` lets a blanked-input commit reach the
-      // coerce required-check failure path. Only fires when
-      // `?fixture=param-editor` is present, so this branch has no
-      // production-runtime effect.
-      const paramEditorBase: Omit<CanvasNodeData, 'label'> = {
-        ...methodBase,
-        params: [
-          { name: 'note', type: 'string', required: true },
-        ],
-        paramValues: { note: 'hello' },
-        variants: { note: { v1: 'hello' } },
-      };
-      seeded = [mk('method_a', 'Method A', 100, paramEditorBase)];
-    }
-    if (seeded.length > 0) {
-      nodes.set(seeded);
-      edges.set([]);
-    }
-  }
-  const _fixtureKey = typeof window !== 'undefined'
-    ? new URLSearchParams(window.location.search).get('fixture')
-    : null;
-  if (_fixtureKey) seedFixture(_fixtureKey);
-
-  // History fixture: route-replay covers /api/wfc/runs etc., but the
-  // History tab needs to be the initial active tab so smoke tests can
-  // assert against PipelinesView without simulating the toolbar click.
-  // Plays nicely with the existing canvas fixtures — `?fixture=history-*`
-  // implies History tab; everything else falls through to Builder.
-  if (_fixtureKey && _fixtureKey.startsWith('history-')) {
-    activeTab = 'history';
-  }
-  // ADR-017 Track 2 Phase D — `bound-variable-history` fixture also
-  // boots into the History tab (Reviewer iter 1 issue 3). Doesn't use
-  // the `history-` prefix because the fixture name leads with the
-  // feature being tested (bound-variable round-trip), not the tab.
-  if (_fixtureKey === 'bound-variable-history') {
-    activeTab = 'history';
-  }
 
   // `?pipeline=demo` — demo pre-wiring (`wfc demo` opens the browser on
   // this URL). Fetches GET /api/pipelines/demo and hands the document to
@@ -232,10 +79,9 @@
   }
   async function loadDemoPipeline(): Promise<void> {
     try {
-      const resp = await fetch('/api/pipelines/demo');
-      if (!resp.ok) return; // no demo scaffolded — inert
-      const json = await resp.json();
-      const { loadPipeline } = await import('./lib/pipeline.js');
+      const json = await fetchDemoPipelineDocument();
+      if (json === null) return; // no demo scaffolded — inert
+      const { loadPipeline } = await import('./lib/builder/pipeline.js');
       await waitForModules(10_000);
       loadPipeline(json);
     } catch { /* inert on any failure — normal canvas boot continues */ }
@@ -243,8 +89,7 @@
   if (_pipelineKey === 'demo') loadDemoPipeline();
 
   $effect(() => {
-    fetch('/api/dev/status')
-      .then(r => r.ok ? r.json() : null)
+    fetchDevStatus()
       .then(data => { if (data?.dev) devMode = true; })
       .catch(() => {});
     loadSamples();
@@ -298,58 +143,9 @@
 
     pushState();
     const id = nextNodeId();
-
-    if (parsed._systemNode) {
-      // System node (Input Selector or Run Reference)
-      const newNode: Node<CanvasNodeData> = {
-        id,
-        type: 'custom',
-        position,
-        origin: [0, 0],
-        data: {
-          label: parsed.name,
-          method: '',
-          module: '',
-          color: '#1ABC9C',
-          inputs: [],
-          outputs: [{ name: 'output', type: 'csv' }],
-          params: [],
-          paramValues: {},
-          runStatus: 'idle',
-          expanded: false,
-          nodeType: parsed.nodeType,
-          selectedSamples: [],
-          selectedRunId: undefined,
-          selectedOutputSlot: undefined,
-          fanMode: 'out',
-          inputCollapsed: false,
-        },
-      };
-      nodes.update(n => [...n, newNode]);
-    } else {
-      // Method node (existing behavior)
-      const method: MethodDef = parsed;
-      const newNode: Node<CanvasNodeData> = {
-        id,
-        type: 'custom',
-        position,
-        origin: [0, 0],
-        data: {
-          label: method.name,
-          method: method.name,
-          module: method.module,
-          version: method.version,
-          color: method.color ?? '#2ecc71',
-          inputs: method.inputs,
-          outputs: method.outputs,
-          params: method.params,
-          paramValues: {},
-          runStatus: 'idle',
-          expanded: false,
-        },
-      };
-      nodes.update(n => [...n, newNode]);
-    }
+    // One writer per node type, in `nodeData.ts`: the payload decides which
+    // (a system node carries `_systemNode`; a method is its bare MethodDef).
+    nodes.update(n => [...n, nodeFromDragPayload(id, position, parsed)]);
   }
 
   function onDragOver(event: DragEvent) {
@@ -388,27 +184,31 @@
     rejectTimer = setTimeout(() => { rejectMessage = null; }, 2500);
   }
 
+  // Is this node id a run_reference system node?
+  function isReferenceSource(nodeId: string | null | undefined): boolean {
+    if (!nodeId) return false;
+    return get(nodes).some(n => n.id === nodeId && n.data?.nodeType === 'run_reference');
+  }
+
+  // A second edge into an occupied (target, targetHandle) slot is refused.
+  // The rule is the pure predicate in lib/graph/legality.ts — a preview of
+  // the server's structural validation, kept aligned by the shared shape
+  // corpus; this binds it to the canvas stores.
+  function isDuplicateSlotEdge(connection: Connection): boolean {
+    return isDuplicateSlotEdgeOn(connection, get(edges), isReferenceSource);
+  }
+
   // Svelte Flow hands this a connection candidate during drag. Return false
-  // to prevent the drop. We block any second edge into the same (target,
-  // targetHandle) slot — multi-edge-per-slot has never worked end-to-end
-  // (engine hard-wires the sample axis per upstream).
+  // to prevent the drop.
   function isValidConnection(conn: Connection): boolean {
-    const handle = conn.targetHandle ?? null;
-    const dup = get(edges).some(e =>
-      e.target === conn.target && (e.targetHandle ?? null) === handle
-    );
-    if (dup) return false;
-    return true;
+    return !isDuplicateSlotEdge(conn);
   }
 
   function handleConnect(connection: Connection) {
     // Defense-in-depth: isValidConnection should have already blocked dupes,
     // but re-check here in case a keyboard/API path bypasses it.
     const handle = connection.targetHandle ?? null;
-    const dup = get(edges).some(e =>
-      e.target === connection.target && (e.targetHandle ?? null) === handle
-    );
-    if (dup) {
+    if (isDuplicateSlotEdge(connection)) {
       showReject(`Input slot '${handle ?? "(default)"}' on '${connection.target}' already has an edge. Only one edge per slot is supported.`);
       return;
     }
@@ -425,27 +225,32 @@
   }
 
   function handleDelete({ nodes: deletedNodes, edges: deletedEdges }: { nodes: Node[]; edges: Edge[] }) {
-    pushState();
-    if (deletedNodes.length > 0) {
-      const ids = new Set(deletedNodes.map(n => n.id));
-      nodes.update(ns => ns.filter(n => !ids.has(n.id)));
-      edges.update(es => es.filter(e => !ids.has(e.source) && !ids.has(e.target)));
-    }
-    if (deletedEdges.length > 0) {
+    const hasNodes = deletedNodes.length > 0;
+    const hasEdges = deletedEdges.length > 0;
+    if (!hasNodes && !hasEdges) return;
+    // One snapshot for the whole event. Deleting nodes goes through the
+    // store, which records the snapshot and clears the selection, so only an
+    // edge-only delete records one here.
+    if (hasNodes) deleteNodes(deletedNodes.map(n => n.id));
+    else pushState();
+    if (hasEdges) {
       const ids = new Set(deletedEdges.map(e => e.id));
       edges.update(es => es.filter(e => !ids.has(e.id)));
     }
   }
 
   function handleKeydown(event: KeyboardEvent) {
-    // Backspace to delete selected node (Delete is handled by SvelteFlow)
+    // Backspace deletes the selected node. It is also Svelte Flow's own
+    // default delete key, so a press can reach the flow's `ondelete` as
+    // well; the Delete key is bound to nothing. Both paths hand their ids to
+    // the store, which records one snapshot and ignores a delete that
+    // removes nothing, so one press is one undo step either way.
     if (event.key === 'Backspace') {
       const target = event.target as HTMLElement;
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT') return;
       const id = get(selectedNodeId);
       if (id) {
         event.preventDefault();
-        pushState();
         deleteNodes([id]);
       }
     }
@@ -468,7 +273,6 @@
 
   function contextMenuDelete() {
     if (!contextMenu) return;
-    pushState();
     deleteNodes([contextMenu.nodeId]);
     contextMenu = null;
   }
@@ -479,7 +283,7 @@
 
   $effect(() => { initKeyboardShortcuts(); });
 
-  // D-13: centering bridge. RunDetailPanel's [Jump to node] action publishes
+  // Centering bridge. RunDetailPanel's [Jump to node] action publishes
   // a node id to `centerOnNodeRequest`; we subscribe here (where the
   // SvelteFlow `fitView` helper is bound) and animate the viewport to that
   // node, then reset the request so the same id can be requested again.
@@ -544,7 +348,8 @@
         {/if}
       </div>
       {#if previewOpen}
-        <RunsPreview onClose={() => { previewOpen = false; }} />
+        <RunsPreview onClose={() => { previewOpen = false; }}
+          onOpenRun={(runId) => { selectRun(runId); activeTab = 'history'; }} />
       {:else}
         <!-- Collapsed pull-tab: visible along the bottom edge of the
              canvas column so the user always knows the preview exists. -->
@@ -619,6 +424,7 @@
       onConfirm={() => $confirmDialogState!.resolve(true)}
     />
   {/if}
+  <LockSummary />
   {#if $graftToastState}
     <GraftToast
       message={$graftToastState.message}
@@ -667,7 +473,7 @@
     flex-shrink: 0;
     background: #252526;
     border: none;
-    border-top: 1px solid #3e3e42;
+    border-top: 1px solid var(--border);
     color: #888;
     font-size: 11px;
     letter-spacing: 0.5px;
@@ -797,7 +603,7 @@
   }
   .resize-handle:hover,
   .resizing .resize-handle {
-    background: #4A90D9;
+    background: var(--accent);
   }
   .history-tab-container {
     flex: 1;
@@ -811,7 +617,7 @@
   .context-menu {
     position: fixed;
     background: #2d2d30;
-    border: 1px solid #3e3e42;
+    border: 1px solid var(--border);
     border-radius: 4px;
     padding: 4px 0;
     min-width: 140px;

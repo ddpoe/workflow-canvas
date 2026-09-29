@@ -1,7 +1,7 @@
 /**
  * Named guards for the SSE log-streaming machine.
  *
- * Extracted out of `streaming.machine.ts` so the SSE_TERMINAL fan-out
+ * Defined apart from `streaming.machine.ts` so the SSE_TERMINAL fan-out
  * arms reference guards by string name — this is what lets
  * `gen-machine-mermaid.ts` annotate the diagram edges with the guard
  * that picks each final state. Inline lambda guards would be opaque

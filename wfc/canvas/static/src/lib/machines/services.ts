@@ -5,8 +5,8 @@
  *
  *   - `submitPipeline`  — `fromPromise`. Wraps `/api/workflow/validate`
  *                          + `/api/workflow/run`. Returns `{ jobId }`.
- *   - `pollNodeStatus`  — `fromCallback`. Replaces `pipeline.ts::startPolling`.
- *                          Polls `/api/workflow/status/:jobId` every 2.5s,
+ *   - `pollNodeStatus`  — `fromCallback`.
+ *                          Polls `/api/workflow/status/:jobId` once a second,
  *                          translates per-node `Run.status` into typed
  *                          NODE_* events fed into the parent
  *                          `pipelineRunActor`, and POSTs `/api/wfc/refresh`
@@ -16,15 +16,16 @@
  *                          typed SSE_LINE / SSE_TERMINAL / SSE_ERROR
  *                          events to its parent `streamingActor`.
  *
- * Also exports `runStatusToNodeState` — the explicit single-source
- * mapping from backend `Run.status` strings to the richer-than-backend
- * nodeRunActor state. ADR-016 §Decision: "the mapping `Run.status` →
- * machine state becomes one explicit function in the polling service."
+ * Beside them, the plain request wrappers this unit's components call
+ * directly — `validatePipeline` and `cancelJob`, with the `ValidateResult`
+ * the first answers with — and `runStatusToNodeState`, the explicit
+ * single-source mapping from backend `Run.status` strings to the
+ * richer-than-backend nodeRunActor state.
  */
 import { fromCallback, fromPromise } from 'xstate';
 import { get } from 'svelte/store';
-import { nodes } from '../stores';
-import type { PipelineJSON, RunTally, PipelineError, RunStatus } from '../types';
+import { nodes } from '../builder/stores';
+import type { PipelineJSON, RunTally, PipelineError, RunStatus } from '../shared/types';
 import type { components } from '../types/api';
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -39,16 +40,15 @@ export interface SubmitError {
   message: string;
   validationErrors?: string[];
   status?: number;
-  // Run-readiness rejections (D-6) carry a kind-tagged payload so the
+  // Run-readiness rejections carry a kind-tagged payload so the
   // pipeline-error card can render a Docker/git readiness affordance.
   kind?: string;
   hint?: string;
 }
 
-// Output state shape pulled from the JSON returned by `/api/workflow/status`.
-// ADR-015 Phase D Layer 1: this used to be a hand-rolled local
-// interface; it is now the generated `NodeRunState` component, so
-// renaming/removing a field in `wfc/canvas/server.py::NodeRunState`
+// Per-node state shape returned by `/api/workflow/status`. It is the
+// generated `NodeRunState` component, so
+// renaming/removing a field in `wfc/canvas/routes/runs.py::NodeRunState`
 // surfaces as a TS compile error here.  `tally` from openapi-typescript
 // is `{ [k: string]: number } | null`, but the rest of the codebase
 // uses the richer `RunTally` shape — we narrow at the boundary.
@@ -57,19 +57,63 @@ export type BackendNodeState = Omit<ApiNodeRunState, 'tally'> & {
   tally?: RunTally | null;
 };
 
+// ── validate / cancel ──────────────────────────────────────────────────
+
+/** The verdict `/api/workflow/validate` answers with. */
+export interface ValidateResult {
+  valid: boolean;
+  errors?: string[];
+}
+
+/**
+ * Validate a compiled pipeline document.
+ *
+ * The response is not status-checked — both callers read the body straight off
+ * a resolved response and each keeps its own handling of a failure: the submit
+ * pre-flight below swallows a dead endpoint and falls through to run, while the
+ * Toolbar's Validate button writes a `PipelineError`.
+ *
+ * Args:
+ *     pipeline: The compiled document to validate.
+ *
+ * Returns:
+ *     The verdict and its error list.
+ */
+export async function validatePipeline(pipeline: PipelineJSON): Promise<ValidateResult> {
+  const resp = await fetch('/api/workflow/validate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(pipeline),
+  });
+  return resp.json();
+}
+
+/**
+ * Ask the backend to cancel a running job.
+ *
+ * The rejection is the caller's: the warning logged when the POST fails names
+ * the caller, so the promise is returned rather than swallowed here.
+ *
+ * Args:
+ *     jobId: The job to cancel.
+ *
+ * Returns:
+ *     The in-flight POST.
+ */
+export function cancelJob(jobId: string): Promise<Response> {
+  return fetch(`/api/workflow/cancel/${encodeURIComponent(jobId)}`, {
+    method: 'POST',
+  });
+}
+
 // ── submitPipeline ─────────────────────────────────────────────────────
 
 export const submitPipeline = fromPromise<SubmitOutput, SubmitInput>(
   async ({ input }) => {
     const { pipeline } = input;
-    // Validation comes first — preserved from the legacy runPipeline().
+    // Validation comes first.
     try {
-      const vResp = await fetch('/api/workflow/validate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(pipeline),
-      });
-      const vResult = await vResp.json();
+      const vResult = await validatePipeline(pipeline);
       if (!vResult.valid) {
         const err: SubmitError = {
           message:
@@ -93,7 +137,8 @@ export const submitPipeline = fromPromise<SubmitOutput, SubmitInput>(
     // bridge then maps `queued → 'pending'` for the CustomNode CSS
     // class. No direct write here.
 
-    // keep_going — same logic as legacy runPipeline. Read once at submit.
+    // keep_going comes from the first fan-out input_selector node
+    // (default true). Read once at submit.
     let keepGoing = false;
     for (const n of get(nodes)) {
       if (n.data.nodeType !== 'input_selector') continue;
@@ -112,7 +157,7 @@ export const submitPipeline = fromPromise<SubmitOutput, SubmitInput>(
     });
     const result = await resp.json();
     if (!resp.ok) {
-      // Run-readiness rejections (D-6) send detail = {kind, message, hint};
+      // Run-readiness rejections send detail = {kind, message, hint};
       // other failures send a plain string detail. Preserve the kind/hint so
       // the pipeline-error card renders the Docker/git readiness affordance.
       const detail = result?.detail;
@@ -166,11 +211,10 @@ export type RunStatusEvent =
 export function runStatusToNodeState(
   state: BackendNodeState,
 ): RunStatusEvent {
-  // Cache-hit wins over `state.status` (ADR-015 Phase D Bug 4 Path A +
-  // Bug 5).  The backend reports a successful cache reuse with
-  // `status: 'completed'`, but we want the node state machine to land
+  // Cache-hit wins over `state.status`. The backend reports a successful
+  // cache reuse with `status: 'completed'`, but we want the node state machine to land
   // in `cached` rather than `succeeded` so the streaming actor never
-  // spawns (no logs to stream) and the InspectorPanel can render the
+  // spawns (no logs to stream) and the MethodPanel can render the
   // cache-hit banner.
   if (state.cache_hit) {
     return {
@@ -197,7 +241,7 @@ export function runStatusToNodeState(
     case 'mixed': {
       const t = tally ?? { running: 0, completed: 1, failed: 0 };
       // `mixed` aggregate carries the failed-sample `error` string
-      // (server.py:1607). Forward it so nodeRunActor.completed_with_failures
+      // (the status route's aggregation in run_state.py). Forward it so nodeRunActor.completed_with_failures
       // has something to render in the Inspector's node-error-box.
       // `completed` (no failures) never has `state.error`, so the field
       // stays undefined for the happy path.
@@ -212,8 +256,9 @@ export function runStatusToNodeState(
         error_message: state.error ?? 'failed',
       };
     case 'cancelled':
-      // Default to becauseUser — UPSTREAM_FAILED is sent separately by
-      // the polling service when it detects sibling failure.
+      // A cancelled row that names the node or run it was cancelled
+      // behind is an upstream failure; one that names neither was
+      // stopped by the user.
       if (state.upstream_node_id || state.cancelled_due_to_run_id) {
         return {
           type: 'UPSTREAM_FAILED',
@@ -228,7 +273,7 @@ export function runStatusToNodeState(
   }
 }
 
-// ── nodeRunActor state → legacy RunStatus mapping ─────────────────────
+// ── nodeRunActor state → coarse RunStatus mapping ─────────────────────
 //
 // The reverse direction of `runStatusToNodeState`. The actor knows the
 // rich state value (e.g. `cancelled.becauseUpstream`); SvelteFlow's
@@ -244,7 +289,7 @@ export function runStatusToNodeState(
 export type NodeRunValue = string | Record<string, string | object>;
 
 /**
- * Map a nodeRunActor snapshot value to the coarse legacy RunStatus
+ * Map a nodeRunActor snapshot value to the coarse RunStatus
  * string. Returns ``'idle'`` when the value is unrecognised (defensive
  * default; preserves the canvas's "blank slate" colour).
  */
@@ -259,15 +304,17 @@ export function stateValueToRunStatus(value: NodeRunValue): RunStatus {
       case 'running':
         return 'running';
       case 'succeeded':
-      case 'cached':
         return 'completed';
+      case 'cached':
+        // A reused run is drawn apart from one that ran.
+        return 'cached';
       case 'completed_with_failures':
         return 'mixed';
       case 'failed':
       case 'orphaned':
         return 'failed';
       case 'stale':
-        // No legacy equivalent — render as idle so it doesn't masquerade
+        // No coarse equivalent — render as idle so it doesn't masquerade
         // as a successful run.
         return 'idle';
       default:
@@ -285,11 +332,10 @@ export function stateValueToRunStatus(value: NodeRunValue): RunStatus {
 
 // ── pollNodeStatus ─────────────────────────────────────────────────────
 //
-// Replaces `pipeline.ts::startPolling`. The body is the same — fetch
-// every 2.5s, translate node_states into events, POST `/api/wfc/refresh`
-// on terminal, stop the timer on terminal or fetch failure. The only
-// structural change is that node-state writes become typed events sent
-// into the parent (`pipelineRunActor`) which fans out to children.
+// Fetches the job status every second and translates node_states into
+// typed events sent into the parent (`pipelineRunActor`), which fans
+// them out to children. POSTs `/api/wfc/refresh` on terminal status and
+// stops the timer on terminal status or fetch failure.
 
 // Terminal overall_status values that should fire PIPELINE_DONE and
 // stop the polling actor. `cancelled` belongs here: after the cancel
@@ -337,15 +383,14 @@ export const pollNodeStatus = fromCallback<{ type: string }, PollInput>(
             // parent actor — it never writes `data.runStatus` directly.
             // The bridge that mirrors the actor's snapshot back into
             // `data.runStatus` (for SvelteFlow's coarse CSS class
-            // selection) lives in `root.ts::bridgeChildSnapshots`. This
-            // is the single-source invariant called out in ADR-016 §
-            // "single source of truth": the actor is authoritative;
+            // selection) lives in `root.ts::bridgeChildSnapshots`.
+            // Single-source invariant: the actor is authoritative;
             // `data.runStatus` is a denormalized view of it, written
             // FROM the actor, never bypassing it.
             // First time we see a non-pending status, send HEARTBEAT
             // with the first run_id so the child flips from queued to
             // running. Subsequent ticks just update tally.
-            // Cache-hit short-circuit (ADR-015 Phase D Bug 4 Path A).
+            // Cache-hit short-circuit.
             // Skip HEARTBEAT entirely so the child never enters
             // `running` and the streaming actor is never spawned.
             // Treat the cache-hit row as already-handled for the
@@ -483,10 +528,10 @@ export const pollNodeStatus = fromCallback<{ type: string }, PollInput>(
     };
 
     // Drive the first tick immediately so the user sees movement; then
-    // every 1s. The legacy cadence was 2.5s, but Snakemake's startup
-    // latency already eats several ticks before any node has a runId —
-    // 1s gets the user out of the visual dead zone faster without
-    // meaningfully increasing backend load for a dev-grade tool.
+    // every 1s. Snakemake's startup latency already eats several ticks
+    // before any node has a runId; a 1s cadence gets the user out of
+    // that visual dead zone quickly without meaningfully increasing
+    // backend load for a dev-grade tool.
     void tick();
     const timer = setInterval(tick, 1000);
 
@@ -508,8 +553,8 @@ export interface SSEInput {
 // auto-reconnect (~3s default) handles momentary blips on its own; we
 // only escalate to the machine if the failure persists past this window
 // without a successful message. Keeps "user shouldn't see flicker on
-// transient wifi hiccup" honest without resurrecting the reconnecting
-// state in the machine.
+// transient wifi hiccup" honest without a reconnecting state in the
+// machine.
 const SSE_ERROR_GRACE_MS = 5000;
 
 export const subscribeSSE = fromCallback<{ type: string }, SSEInput>(

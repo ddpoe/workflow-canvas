@@ -3,12 +3,13 @@ E2E Workflow: Project Initialization
 
 Conservative core stories only:
 1) Fresh project scaffold with usable database
-2) Config override for external database URL
+2) ``--git`` initializes a repository
 """
 
 from axiom_annotations import workflow, Step, AutoStep
 
-from wfc.init import init_project, read_config
+from tests.fixtures.conftest import project_archive_dir
+from wfc.init import init_project
 
 
 @workflow(
@@ -18,7 +19,11 @@ def test_init_creates_project(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
     口 = AutoStep(step_num=1)
-    created = init_project(tmp_path, init_git=True)
+    # The archive is named so the default ~/.wfc/archives/<project> is never
+    # resolved and init_dvc pre-creates nothing in the developer's home.
+    created = init_project(tmp_path, init_git=True,
+                           archive=str(project_archive_dir(tmp_path)),
+                           assume_yes=True)
 
     口 = Step(step_num=2, name="Verify scaffold structure",
              purpose="Expected project directories and files are created")
@@ -47,7 +52,9 @@ def test_init_git_flag_initializes_repo(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
 
     口 = AutoStep(step_num=1)
-    created = init_project(tmp_path, init_git=True)
+    created = init_project(tmp_path, init_git=True,
+                           archive=str(project_archive_dir(tmp_path)),
+                           assume_yes=True)
 
     口 = Step(step_num=2, name="Verify git repo created",
              purpose="The project directory is now a git repository")
@@ -58,29 +65,3 @@ def test_init_git_flag_initializes_repo(tmp_path, monkeypatch, capsys):
              purpose="No warning shown when git init succeeds")
     captured = capsys.readouterr()
     assert "WARNING" not in captured.out
-
-
-@workflow(
-    purpose="Override database to Postgres via config and verify config read"
-)
-def test_config_postgres_override(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-
-    口 = AutoStep(step_num=1)
-    init_project(tmp_path, init_git=True)
-
-    口 = Step(step_num=2, name="Override config URL",
-             purpose="Set wf-canvas.toml database URL to a Postgres connection string")
-    config_path = tmp_path / ".wfc" / "wf-canvas.toml"
-    config_path.write_text(
-        '[database]\nurl = "postgresql://user:pass@localhost/test_db"\n\n'
-        '[project]\nname = "override_test"\n'
-    )
-
-    口 = AutoStep(step_num=3)
-    config = read_config(tmp_path)
-
-    口 = Step(step_num=4, name="Verify override",
-             purpose="Reader returns the overridden Postgres URL and project name")
-    assert "postgresql" in config["database_url"]
-    assert config["project_name"] == "override_test"

@@ -14,6 +14,7 @@
   --color-running: #E9A847;
   --color-completed: #50C878;
   --color-failed: #E74C3C;
+  --color-system: #1ABC9C;
   --node-bg: #353535;
 
   /* SvelteFlow dark mode overrides */
@@ -47,15 +48,15 @@ html, body, #app {
   box-shadow: none;
 }
 .svelte-flow__controls button {
-  background: #2d2d30 !important;
-  border: 1px solid #3e3e42 !important;
-  color: #ccc !important;
-  fill: #ccc !important;
+  background: var(--bg-header) !important;
+  border: 1px solid var(--border) !important;
+  color: var(--text-primary) !important;
+  fill: var(--text-primary) !important;
   width: 26px;
   height: 26px;
 }
 .svelte-flow__controls button:hover {
-  background: #3e3e42 !important;
+  background: var(--border) !important;
   color: #fff !important;
   fill: #fff !important;
 }

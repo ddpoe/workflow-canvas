@@ -37,7 +37,7 @@ export interface paths {
          *
          *     The canvas inspector calls this for params declared with
          *     ``column_of_input: <slot>`` to populate a dropdown of candidate column
-         *     names. Reuses ``wfc/contracts.py::resolve_columns`` against the upstream
+         *     names. Reuses ``wfc.contracts.resolve_columns`` against the upstream
          *     method's contract.
          *
          *     Args:
@@ -59,37 +59,6 @@ export interface paths {
         get: operations["get_output_columns_api_contracts__method_full__output_columns_get"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/envs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Post Envs
-         * @description Register a container env via :func:`wfc.envs.register`.
-         *
-         *     Body shape::
-         *
-         *         {"name": "image-io",
-         *          "backend": "pixi" | "conda" | "byo",
-         *          "source": {...},                  # per-backend payload
-         *          "base_image": "..." | null,       # optional, not valid for byo
-         *          "force": false}
-         *
-         *     Returns the persisted :class:`EnvRecord` as JSON (the manifest record
-         *     dict plus a ``name`` key so the caller doesn't have to track it).
-         */
-        post: operations["post_envs_api_envs_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -133,9 +102,34 @@ export interface paths {
          * @description Return modules as a nested dict keyed by module/method name for the builder UI.
          *
          *     Shape: {moduleName: {description, methods: {methodName: {inputs, outputs, ...}}}}
-         *     This matches what nodes.js / populateModulePalette() expect.
+         *     The builder's module palette reads this shape.
          */
         get: operations["get_modules_api_modules_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/pipelines/demo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Demo Pipeline
+         * @description Return ``<project_root>/demo-pipeline.json`` (written by ``wfc demo``).
+         *
+         *     Consumed by the ``?pipeline=demo`` URL param in the canvas, which hands
+         *     the document to ``loadPipeline()`` so each node's real slots resolve
+         *     against the registry. 404 when no demo is scaffolded — inert in a
+         *     normal project.
+         */
+        get: operations["get_demo_pipeline_api_pipelines_demo_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -153,40 +147,19 @@ export interface paths {
         };
         /**
          * Get Pipeline Document
-         * @description Return the literal ``pipeline.json`` written at submission time.
+         * @description Return the run's literal frozen ``pipeline.json``.
          *
          *     Reads ``<project_root>/.runs/pipelines/<pipeline_id>/pipeline.json`` —
-         *     the same file ``WfcProvider._load_bundled_samples`` consumes for fan-in
-         *     sample resolution. Returns the parsed JSON document as-is so the
-         *     canvas can hand it to ``loadPipeline()`` without transformation.
+         *     written at submission time for canvas runs, frozen at run start by
+         *     ``run_pipeline`` for CLI runs, and the same file
+         *     ``WfcProvider._load_bundled_samples`` consumes for fan-in sample
+         *     resolution. Returns the parsed JSON document as-is so the canvas can
+         *     hand it to ``loadPipeline()`` without transformation.
          *
          *     404 when the file does not exist (the pipeline was authored but
          *     never reached the snake-gen / run-generation stage).
          */
         get: operations["get_pipeline_document_api_pipelines__pipeline_id__document_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/project/status": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Project Status
-         * @description Onboarding-shaped project status.
-         *
-         *     Subset of ENDPOINTS.md §1.1 — reports whether a project is loaded,
-         *     its root, and quick counts. Always 200, never 404.
-         */
-        get: operations["get_project_status_api_project_status_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -237,7 +210,8 @@ export interface paths {
          *
          *     Returns the raw blob as ``text/plain`` so the frontend can render it
          *     directly in a code panel. Shares its read path (and path-traversal
-         *     guard) with ``GET .../packages`` via :func:`_read_env_blob_text`.
+         *     guard) with ``GET .../packages`` via :func:`_env_blob_text`, which maps
+         *     the errors of :func:`wfc.storage.read_env_content` to 400 and 404.
          */
         get: operations["get_registry_env_blob_api_registry_envs_blob__md5__get"];
         put?: never;
@@ -259,10 +233,10 @@ export interface paths {
          * Get Registry Env Packages
          * @description Installed-package list for a registered pixi/conda env.
          *
-         *     Resolves *spec* to its :class:`wfc.envs.EnvRecord`, reads the captured
+         *     Resolves *spec* to its :class:`wfc.environments.EnvRecord`, reads the captured
          *     ``source_fingerprint`` blob from the DVC cache, and parses it into a
          *     sorted, de-duplicated, source-tagged package list via
-         *     :func:`wfc.env_packages.parse_packages`.
+         *     :func:`wfc.environments.parse_packages`.
          *
          *     Honest empty state: a byo env, an env that never staged source content,
          *     or an unmatched spec returns ``captured: false`` with ``packages: []`` —
@@ -270,7 +244,7 @@ export interface paths {
          *
          *     Response::
          *
-         *         {"spec": "container:demo",
+         *         {"spec": "demo",
          *          "backend": "pixi" | "conda" | "byo" | null,
          *          "captured": true,
          *          "packages": [{"name": ..., "version": ..., "source": "pixi"}, ...]}
@@ -295,17 +269,16 @@ export interface paths {
          * Get Registry Methods
          * @description List registered methods for the Registry tab.
          *
-         *     Shape (subset of ENDPOINTS.md §2.2): `{methods: [{name, module, env,
-         *     validated, runCount, source}]}`.
+         *     Shape: `{methods: [{name, module, env, validated, runCount, source}]}`.
          *
-         *     `validated` replaces the handoff's `status: "ok"|"stale"|"broken"` with
-         *     a `bool | null` sourced from the dryRun cache (null = never checked).
+         *     `validated` is a `bool | null` (null = never checked); this list does not
+         *     read the validation cache, so it is always null.
          */
         get: operations["get_registry_methods_api_registry_methods_get"];
         put?: never;
         /**
          * Register Method Endpoint
-         * @description Wrap ``wfc.register.register_method`` with optional dry-run preflight.
+         * @description Wrap ``wfc.registration.register_method`` with optional dry-run preflight.
          */
         post: operations["register_method_endpoint_api_registry_methods_post"];
         delete?: never;
@@ -370,8 +343,7 @@ export interface paths {
          * Get Registry Modules
          * @description List registered modules for the Registry tab.
          *
-         *     Shape matches design_handoff_onboarding/ENDPOINTS.md §2.1 (subset):
-         *     `{modules: [{name, description, contracts[], methods, source}]}`.
+         *     Shape: `{modules: [{name, description, contracts[], methods, source}]}`.
          *     `color` is intentionally omitted -- the frontend assigns it from the
          *     `MOD_COLORS` cycle by registration order.
          */
@@ -379,7 +351,7 @@ export interface paths {
         put?: never;
         /**
          * Register Module Endpoint
-         * @description Wrap ``wfc.register.register_module`` with optional dry-run preflight.
+         * @description Wrap ``wfc.registration.register_module`` with optional dry-run preflight.
          */
         post: operations["register_module_endpoint_api_registry_modules_post"];
         delete?: never;
@@ -399,8 +371,8 @@ export interface paths {
          * Get Registry Samples
          * @description List registered samples for the Registry tab.
          *
-         *     Shape (subset of ENDPOINTS.md §2.4): `{samples: [{name, source, size,
-         *     hash, pushed, runCount, registered_at}]}`.
+         *     Shape: `{samples: [{name, source, size, hash, pushed, runCount,
+         *     registered_at}]}`.
          *
          *     `pushed` is `True` when a DVC content hash is present (indicates the sample
          *     is in the DVC cache and pushable to the remote); `False` otherwise.
@@ -409,7 +381,7 @@ export interface paths {
         put?: never;
         /**
          * Register Sample Endpoint
-         * @description Wrap ``wfc.cli.register_sample`` behind an HTTP endpoint.
+         * @description Wrap ``wfc.registration.register_sample`` behind an HTTP endpoint.
          */
         post: operations["register_sample_endpoint_api_registry_samples_post"];
         delete?: never;
@@ -432,7 +404,7 @@ export interface paths {
          *     Walks ``parentRunIds`` from the clicked run back to roots — through
          *     pipeline boundaries — and synthesizes a flat literal-only pipeline
          *     JSON suitable for the canvas's ``loadPipeline()``. See
-         *     ``wfc.canvas.lineage_synthesizer`` for the algorithm.
+         *     ``wfc.lineage.synthesis`` for the algorithm.
          *
          *     Status codes:
          *       - 200 with synthesized JSON on success
@@ -442,6 +414,76 @@ export interface paths {
         get: operations["get_run_lineage_pipeline_api_runs__run_id__lineage_pipeline_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/wfc/archive-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Archive Status
+         * @description Unarchived-output counts + live progress of any running archive pass.
+         *
+         *     Read-only.  Counts come straight from the DB (progress truth is the DB);
+         *     ``progress`` is non-null only while an archive pass runs in this server
+         *     process — a manual job or a pipeline's end-of-run auto-archive.
+         */
+        get: operations["get_archive_status_api_wfc_archive_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/wfc/cache-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Cache Status
+         * @description Predict each target's cache status for the posted pipeline document.
+         *
+         *     Read-only: nothing is written, no env is captured, nothing is restored
+         *     or pulled.
+         */
+        post: operations["post_cache_status_api_wfc_cache_status_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/wfc/cache/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start Cache Archive
+         * @description Start a background archive pass over all unarchived outputs.
+         *
+         *     409 when an archive job is already running or a pipeline is in flight
+         *     (the pipeline's end-of-run pass archives on its own).
+         */
+        post: operations["start_cache_archive_api_wfc_cache_archive_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -460,23 +502,6 @@ export interface paths {
          * @description Return completed runs with output slots for Run Reference nodes.
          */
         get: operations["get_wfc_completed_runs_api_wfc_completed_runs_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/wfc/experiments": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Wfc Experiments */
-        get: operations["get_wfc_experiments_api_wfc_experiments_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -505,43 +530,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/wfc/export-csvs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Export Wfc Csvs
-         * @description Zip download of CSV artifacts from wfc runs.
-         */
-        post: operations["export_wfc_csvs_api_wfc_export_csvs_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/wfc/lineage/{run_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Wfc Lineage */
-        get: operations["get_wfc_lineage_api_wfc_lineage__run_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/wfc/load": {
         parameters: {
             query?: never;
@@ -553,10 +541,12 @@ export interface paths {
         put?: never;
         /**
          * Load Wfc Data
-         * @description Load (or reload) the wfc provider from a project path.
+         * @description Reload the history provider for the project this canvas serves.
          *
-         *     Also updates DATABASE_URL and resets the SQLAlchemy engine so that
-         *     GET /api/modules queries this project's DB, not the server's launch-cwd DB.
+         *     A canvas serves the one project it was launched in. Naming that project,
+         *     in any spelling that resolves to it, reloads the provider. Naming any
+         *     other project is refused with 409 and changes nothing: the canvas keeps
+         *     serving its project, and the message says to start a canvas in the other.
          */
         post: operations["load_wfc_data_api_wfc_load_post"];
         delete?: never;
@@ -613,26 +603,6 @@ export interface paths {
          * @description Preview what would be exported (all file types) without downloading.
          */
         post: operations["preview_wfc_artifacts_api_wfc_preview_artifacts_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/wfc/preview-csvs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Preview Wfc Csvs
-         * @description Preview CSV export (counts + sizes) without downloading.
-         */
-        post: operations["preview_wfc_csvs_api_wfc_preview_csvs_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -816,23 +786,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/wfc/tree/{run_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Wfc Run Tree */
-        get: operations["get_wfc_run_tree_api_wfc_tree__run_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/workflow/cancel/{job_id}": {
         parameters: {
             query?: never;
@@ -844,7 +797,7 @@ export interface paths {
         put?: never;
         /**
          * Cancel Workflow
-         * @description Cancel an in-flight pipeline (ADR-015 Phase D Pass 2).
+         * @description Cancel an in-flight pipeline.
          *
          *     Terminates the live Snakemake subprocess (and its descendants) and
          *     flips any ``running`` rows for this pipeline to ``cancelled`` with
@@ -877,41 +830,13 @@ export interface paths {
          *     ``run_pipeline()``. Returns the pipeline_id as the job_id immediately.
          *
          *     Rejects empty pipelines with HTTP 400.  Before spawning the run thread it
-         *     pre-flights Docker and git (cycle decision D-6, 3-lite): a not-ready
+         *     pre-flights Docker and git: a not-ready
          *     environment is rejected with HTTP 409 carrying a kind-tagged
          *     ``{kind, message, hint}`` payload (the same shape the frontend renders for
          *     pre-run errors), so no orphan run is started.  Multiple pipelines may run
          *     concurrently — each gets its own pipeline_id-scoped workspace.
          */
         post: operations["run_workflow_api_workflow_run_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/workflow/save": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Save Workflow
-         * @description Save a workflow definition.
-         *
-         *     Note: ``Workflow`` was previously declared as the pydantic class for
-         *     this body, but the symbol was never defined in this module — this
-         *     endpoint has been a runtime no-op behind that broken reference.  The
-         *     untyped ``Dict[str, Any]`` keeps the endpoint reachable and lets
-         *     FastAPI's OpenAPI generation succeed, which in turn unblocks the
-         *     ADR-015 Phase D codegen pipeline.  Callers should treat the body as
-         *     free-form JSON until/unless this endpoint is properly typed.
-         */
-        post: operations["save_workflow_api_workflow_save_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -927,7 +852,7 @@ export interface paths {
         };
         /**
          * Get Workflow Status
-         * @description Return per-step and overall status for a running or completed pipeline.
+         * @description Return per-node and overall status for a running or completed pipeline.
          *
          *     Queries the ``runs`` table by ``pipeline_id`` and derives overall status.
          *     Also returns whether the background thread is still alive and any captured
@@ -937,7 +862,7 @@ export interface paths {
          *         job_id: The pipeline_id returned by the run endpoint.
          *
          *     Returns:
-         *         JSON with ``job_id``, ``overall_status``, ``steps``, ``thread_alive``,
+         *         JSON with ``job_id``, ``overall_status``, ``node_states``, ``thread_alive``,
          *         ``log``, and ``error`` fields.
          */
         get: operations["get_workflow_status_api_workflow_status__job_id__get"];
@@ -961,6 +886,11 @@ export interface paths {
         /**
          * Validate Workflow
          * @description Validate a pipeline graph against registered methods in the DB.
+         *
+         *     The thin wrapper over the Graph unit's structural core: fetch the
+         *     contract map through Registration and hand the request document to
+         *     ``wfc.graph.validate_structure``, which answers ``{valid, errors,
+         *     warnings}``.
          */
         post: operations["validate_workflow_api_workflow_validate_post"];
         delete?: never;
@@ -980,8 +910,8 @@ export interface paths {
          * Get Pipeline Editable
          * @description Return the pre-substitution pipeline JSON (with variables + {$var}).
          *
-         *     Falls back to ``pipeline.json`` (post-substitution) for legacy runs that
-         *     were submitted before the editable sidecar existed.
+         *     Falls back to ``pipeline.json`` (post-substitution) for a run that has
+         *     no editable sidecar.
          */
         get: operations["get_pipeline_editable_api_workflow__pipeline_id__editable_get"];
         put?: never;
@@ -996,6 +926,64 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * CacheStatusOutput
+         * @description Where one output of the source run can be read from.
+         */
+        CacheStatusOutput: {
+            /**
+             * Location
+             * @enum {string}
+             */
+            location: "local" | "remote" | "missing";
+            /** Slot */
+            slot: string;
+        };
+        /**
+         * CacheStatusResponse
+         * @description Every target's row, or the load's refusal that blocks them all.
+         */
+        CacheStatusResponse: {
+            /** Blocked Reason */
+            blocked_reason?: string | null;
+            /** Rows */
+            rows: components["schemas"]["CacheStatusRowModel"][];
+        };
+        /**
+         * CacheStatusRowModel
+         * @description One target's predicted status.
+         *
+         *     ``key`` is ``<node id>::<sample>::<variant>``, the key the canvas
+         *     projection gives the same row.
+         */
+        CacheStatusRowModel: {
+            /** Cache Key */
+            cache_key?: string | null;
+            /** Key */
+            key: string;
+            /** Node Id */
+            node_id: string;
+            /**
+             * Outputs
+             * @default []
+             */
+            outputs: components["schemas"]["CacheStatusOutput"][];
+            /** Reason */
+            reason?: string | null;
+            /** Sample */
+            sample: string;
+            /** Source Nid */
+            source_nid?: string | null;
+            /** Source Run Id */
+            source_run_id?: number | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "cached_local" | "cached_remote" | "outputs_missing" | "new_step_changed" | "new_upstream_reruns" | "blocked";
+            /** Variant */
+            variant: string;
+        };
         /** ContractSpec */
         ContractSpec: {
             /** Name */
@@ -1014,11 +1002,6 @@ export interface components {
         ExportArtifactsRequest: {
             /** File Types */
             file_types?: string[] | null;
-            /** Run Ids */
-            run_ids?: string[] | null;
-        };
-        /** ExportCSVsRequest */
-        ExportCSVsRequest: {
             /** Run Ids */
             run_ids?: string[] | null;
         };
@@ -1165,8 +1148,6 @@ export interface components {
             method: string;
             /** Module */
             module?: string | null;
-            /** Output Slot */
-            output_slot?: string | null;
             /**
              * Params
              * @default {}
@@ -1189,33 +1170,6 @@ export interface components {
              * @default method
              */
             type: string | null;
-        };
-        /**
-         * RegisterEnvRequest
-         * @description Body for ``POST /api/envs``. See :func:`wfc.envs.register`.
-         *
-         *     No ``push`` field — ADR-019's 2026-05-17 amendment defers
-         *     registry push to v1.x. The canvas surface mirrors the CLI flags.
-         */
-        RegisterEnvRequest: {
-            /** Backend */
-            backend: string;
-            /** Base Image */
-            base_image?: string | null;
-            /**
-             * Force
-             * @default false
-             */
-            force: boolean;
-            /** Name */
-            name: string;
-            /**
-             * Source
-             * @default {}
-             */
-            source: {
-                [key: string]: unknown;
-            };
         };
         /**
          * RunPatchRequest
@@ -1241,6 +1195,8 @@ export interface components {
         };
         /** SampleRegisterRequest */
         SampleRegisterRequest: {
+            /** Description */
+            description?: string | null;
             /** Name */
             name: string;
             /**
@@ -1283,10 +1239,6 @@ export interface components {
             };
             /** Overall Status */
             overall_status: string;
-            /** Steps */
-            steps: {
-                [key: string]: string;
-            };
             /** Thread Alive */
             thread_alive: boolean;
         };
@@ -1333,39 +1285,6 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    post_envs_api_envs_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RegisterEnvRequest"];
-            };
-        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -1438,6 +1357,26 @@ export interface operations {
             };
         };
     };
+    get_demo_pipeline_api_pipelines_demo_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
     get_pipeline_document_api_pipelines__pipeline_id__document_get: {
         parameters: {
             query?: never;
@@ -1465,26 +1404,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_project_status_api_project_status_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
                 };
             };
         };
@@ -1830,7 +1749,7 @@ export interface operations {
             };
         };
     };
-    get_wfc_completed_runs_api_wfc_completed_runs_get: {
+    get_archive_status_api_wfc_archive_status_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -1850,7 +1769,60 @@ export interface operations {
             };
         };
     };
-    get_wfc_experiments_api_wfc_experiments_get: {
+    post_cache_status_api_wfc_cache_status_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PipelineInput"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CacheStatusResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_cache_archive_api_wfc_cache_archive_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    get_wfc_completed_runs_api_wfc_completed_runs_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -1882,70 +1854,6 @@ export interface operations {
                 "application/json": components["schemas"]["ExportArtifactsRequest"];
             };
         };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    export_wfc_csvs_api_wfc_export_csvs_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ExportCSVsRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_wfc_lineage_api_wfc_lineage__run_id__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                run_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
@@ -2050,39 +1958,6 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["ExportArtifactsRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    preview_wfc_csvs_api_wfc_preview_csvs_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ExportCSVsRequest"];
             };
         };
         responses: {
@@ -2380,37 +2255,6 @@ export interface operations {
             };
         };
     };
-    get_wfc_run_tree_api_wfc_tree__run_id__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                run_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     cancel_workflow_api_workflow_cancel__job_id__post: {
         parameters: {
             query?: never;
@@ -2452,41 +2296,6 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["PipelineInput"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    save_workflow_api_workflow_save_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
             };
         };
         responses: {

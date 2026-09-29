@@ -1,6 +1,6 @@
 # Skip-level fan-in: config arrives 3 hops upstream from build_config;
-# corrected is immediate from illum_correct. The primary Phase 1
-# exercise — RunDetailPanel should show both parent chips.
+# corrected is immediate from illum_correct. RunDetailPanel should show
+# both parent chips.
 inputs:
   config:
     type: .csv
@@ -17,4 +17,4 @@ outputs:
     required: true
 
 executor: python
-env: container:fixture-env
+env: fixture-env

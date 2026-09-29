@@ -1,12 +1,13 @@
 # wfc-client
 
-Pure-stdlib Tier-1 sugar for writing [Workflow Canvas](https://github.com/ddpoe/workflow-canvas) (`wfc`) methods.
+Tier-1 sugar for writing [Workflow Canvas](https://github.com/ddpoe/workflow-canvas) (`wfc`) methods.
 
 `wfc-client` is the *opt-in ergonomic* way to write a wfc method. The
 canonical interface is the Tier-2 env-var + file contract — `wfc-client`
-is a thin, zero-dependency wrapper over it. It never installs `wfc`,
-pandas, or any third-party package into your environment, and it never
-copies, reads, or serializes your data bytes: it is a metadata recorder.
+is a thin wrapper over it with one small dependency, `axiom-annotations`,
+whose markers narrate `wfc.run()`. It never installs `wfc`, pandas, or a
+scientific stack into your environment, and it never copies, reads, or
+serializes your data bytes: it is a metadata recorder.
 
 ```python
 import wfc_client as wfc

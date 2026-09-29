@@ -1,0 +1,151 @@
+{
+  "id": "duplicate-slot-edge-two-references",
+  "case": "legality-one-edge-per-slot",
+  "note": "Every edge on m1.data is a reference: a reference fan-in, accepted at both moments.",
+  "document": {
+    "name": "duplicate-slot-edge-two-references",
+    "nodes": [
+      {
+        "id": "r1",
+        "type": "run_reference",
+        "method": "",
+        "module": "",
+        "params": {},
+        "run_id": "7"
+      },
+      {
+        "id": "r2",
+        "type": "run_reference",
+        "method": "",
+        "module": "",
+        "params": {},
+        "run_id": "8"
+      },
+      {
+        "id": "m1",
+        "type": "method",
+        "method": "filter",
+        "module": "mod",
+        "params": {}
+      }
+    ],
+    "links": [
+      {
+        "source": "r1",
+        "target": "m1",
+        "sourceHandle": "out",
+        "targetHandle": "data"
+      },
+      {
+        "source": "r2",
+        "target": "m1",
+        "sourceHandle": "out",
+        "targetHandle": "data"
+      }
+    ],
+    "samples": []
+  },
+  "contract_map": {
+    "mod.filter": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/filter/filter.py",
+      "env": "container:base"
+    },
+    "mod.plot": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/plot/plot.py",
+      "env": "container:base"
+    },
+    "mod.qc": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/qc/qc.py",
+      "env": "container:base"
+    },
+    "mod.merge": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "sources": {
+          "required": true
+        }
+      },
+      "script_path": "methods/merge/merge.py",
+      "env": "container:base"
+    },
+    "mod.join": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        },
+        "other": {
+          "required": true
+        }
+      },
+      "script_path": "methods/join/join.py",
+      "env": "container:base"
+    }
+  },
+  "reference_outputs": {
+    "r1": {
+      "output_paths": {
+        "out": "/runs/7/out.csv"
+      },
+      "sample": "s1"
+    },
+    "r2": {
+      "output_paths": {
+        "out": "/runs/8/out.csv"
+      },
+      "sample": "s2"
+    }
+  },
+  "package": {
+    "validation": "accept",
+    "load": "accept"
+  },
+  "client": {
+    "answers": true,
+    "candidate": {
+      "source": "r2",
+      "target": "m1",
+      "sourceHandle": "out",
+      "targetHandle": "data"
+    },
+    "verdict": "accept"
+  }
+}

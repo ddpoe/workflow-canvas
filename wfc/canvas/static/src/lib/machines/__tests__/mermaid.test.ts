@@ -4,9 +4,9 @@
  * Imports the generator's `buildMermaid` directly (no file I/O,
  * no subprocess). Asserts:
  *   - each diagram contains at least N transition lines
- *   - no `[object Object]` substring (the v3 toDirectedGraph bug
- *     fixed in review iteration 1 surfaced as that literal in
- *     pipelineRun.mmd)
+ *   - no `[object Object]` substring (what `@xstate/graph`'s v3
+ *     `toDirectedGraph` emits for parallel/branching edges, which the
+ *     generator walks the machine config to avoid)
  *   - the cancelled substates are qualified (e.g.
  *     `cancelled.becauseUpstream`)
  */

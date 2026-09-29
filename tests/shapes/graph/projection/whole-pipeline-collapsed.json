@@ -1,0 +1,155 @@
+{
+  "id": "whole-pipeline-collapsed",
+  "case": "expansion-whole-pipeline",
+  "note": "A single collapsed step over two variants: two rows at the sentinel.",
+  "document": {
+    "name": "whole-pipeline-collapsed",
+    "nodes": [
+      {
+        "id": "s",
+        "type": "input_selector",
+        "method": "",
+        "module": "",
+        "params": {},
+        "samples": [
+          "a",
+          "b"
+        ],
+        "source": "registered",
+        "fan_mode": "in"
+      },
+      {
+        "id": "m1",
+        "type": "method",
+        "method": "merge",
+        "module": "mod",
+        "params": {
+          "p": 0
+        }
+      }
+    ],
+    "links": [
+      {
+        "source": "s",
+        "target": "m1",
+        "targetHandle": "sources"
+      }
+    ],
+    "samples": [
+      "a",
+      "b"
+    ],
+    "param_sets": {
+      "m1": {
+        "v1": {
+          "p": 1
+        },
+        "v2": {
+          "p": 2
+        }
+      }
+    }
+  },
+  "contract_map": {
+    "mod.filter": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/filter/filter.py",
+      "env": "container:base"
+    },
+    "mod.plot": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/plot/plot.py",
+      "env": "container:base"
+    },
+    "mod.qc": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/qc/qc.py",
+      "env": "container:base"
+    },
+    "mod.merge": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "sources": {
+          "required": true
+        }
+      },
+      "script_path": "methods/merge/merge.py",
+      "env": "container:base"
+    },
+    "mod.join": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        },
+        "other": {
+          "required": true
+        }
+      },
+      "script_path": "methods/join/join.py",
+      "env": "container:base"
+    }
+  },
+  "reference_outputs": {},
+  "expect": {
+    "collapsed": [
+      "m1"
+    ],
+    "bundle": [
+      "a",
+      "b"
+    ],
+    "rows": [
+      {
+        "node": "m1",
+        "sample": "__all__",
+        "variant": "v1",
+        "reused": false
+      },
+      {
+        "node": "m1",
+        "sample": "__all__",
+        "variant": "v2",
+        "reused": false
+      }
+    ]
+  },
+  "client": {
+    "answers": true
+  }
+}

@@ -1,0 +1,214 @@
+{
+  "id": "mixed-axes",
+  "case": "expansion-per-step",
+  "note": "A per-sample branch beside a collapsed branch, two samples, two variants: rows in step order, samples outer for the per-sample step, the sentinel for the collapsed one. Every node is swept, so the axis has no default.",
+  "document": {
+    "name": "mixed-axes",
+    "nodes": [
+      {
+        "id": "a",
+        "type": "input_selector",
+        "method": "",
+        "module": "",
+        "params": {},
+        "samples": [
+          "s1",
+          "s2"
+        ],
+        "source": "registered",
+        "fan_mode": "out"
+      },
+      {
+        "id": "b",
+        "type": "input_selector",
+        "method": "",
+        "module": "",
+        "params": {},
+        "samples": [
+          "s1",
+          "s2"
+        ],
+        "source": "registered",
+        "fan_mode": "in"
+      },
+      {
+        "id": "m1",
+        "type": "method",
+        "method": "filter",
+        "module": "mod",
+        "params": {
+          "x": 0
+        }
+      },
+      {
+        "id": "m2",
+        "type": "method",
+        "method": "merge",
+        "module": "mod",
+        "params": {
+          "y": 0
+        }
+      }
+    ],
+    "links": [
+      {
+        "source": "a",
+        "target": "m1",
+        "targetHandle": "data"
+      },
+      {
+        "source": "b",
+        "target": "m2",
+        "targetHandle": "sources"
+      }
+    ],
+    "samples": [
+      "s1",
+      "s2"
+    ],
+    "param_sets": {
+      "m1": {
+        "a": {
+          "x": 1
+        },
+        "b": {
+          "x": 2
+        }
+      },
+      "m2": {
+        "a": {
+          "y": 1
+        },
+        "b": {
+          "y": 2
+        }
+      }
+    }
+  },
+  "contract_map": {
+    "mod.filter": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/filter/filter.py",
+      "env": "container:base"
+    },
+    "mod.plot": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/plot/plot.py",
+      "env": "container:base"
+    },
+    "mod.qc": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/qc/qc.py",
+      "env": "container:base"
+    },
+    "mod.merge": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "sources": {
+          "required": true
+        }
+      },
+      "script_path": "methods/merge/merge.py",
+      "env": "container:base"
+    },
+    "mod.join": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        },
+        "other": {
+          "required": true
+        }
+      },
+      "script_path": "methods/join/join.py",
+      "env": "container:base"
+    }
+  },
+  "reference_outputs": {},
+  "expect": {
+    "collapsed": [
+      "m2"
+    ],
+    "bundle": [
+      "s1",
+      "s2"
+    ],
+    "rows": [
+      {
+        "node": "m1",
+        "sample": "s1",
+        "variant": "a",
+        "reused": false
+      },
+      {
+        "node": "m1",
+        "sample": "s1",
+        "variant": "b",
+        "reused": false
+      },
+      {
+        "node": "m1",
+        "sample": "s2",
+        "variant": "a",
+        "reused": false
+      },
+      {
+        "node": "m1",
+        "sample": "s2",
+        "variant": "b",
+        "reused": false
+      },
+      {
+        "node": "m2",
+        "sample": "__all__",
+        "variant": "a",
+        "reused": false
+      },
+      {
+        "node": "m2",
+        "sample": "__all__",
+        "variant": "b",
+        "reused": false
+      }
+    ]
+  },
+  "client": {
+    "answers": true
+  }
+}

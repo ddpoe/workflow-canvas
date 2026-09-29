@@ -1,6 +1,6 @@
 """Tier 3 integration test: two-node container pipeline (WFC_INPUT_PATHS handoff).
 
-Builds on Task 7's single-node smoke test by exercising:
+Builds on the single-node smoke test by exercising:
   - cross-container artifact handoff via bind-mount round-trip
   - WFC_INPUT_PATHS host->/work path translation end-to-end
   - --user $UID:$GID propagation across multiple containerized invocations
@@ -15,13 +15,12 @@ Two methods registered via the production registration helper
 Driver: ONE ``python -m wfc run-pipeline`` subprocess invocation. Snakemake
 orchestrates the producer->consumer DAG end-to-end through production code
 (Snakefile generation, dependency resolution, and WFC_INPUT_PATHS materialization
-for the consumer step). This deliberately differs from Task 7's driver
-(``wfc run-step``): Task 7 isolates container-exec; Task 8 proves the
-Snakemake-on-top-of-containers path works.
+for the consumer step). This deliberately differs from the single-node
+smoke test's driver (``wfc run-step``): that test isolates container-exec;
+this test proves the Snakemake-on-top-of-containers path works.
 
-Satisfies: end-to-end coverage gap exposed by fix-pass 2 retry — Task 7 only
-exercises WFC_RUN_DIR translation (empty inputs); this test exercises the
-WFC_INPUT_PATHS host->/work translation.
+The single-node smoke test only exercises WFC_RUN_DIR translation (empty
+inputs); this test exercises the WFC_INPUT_PATHS host->/work translation.
 """
 from __future__ import annotations
 
@@ -34,37 +33,17 @@ from pathlib import Path
 
 import pytest
 
-from tests.fixtures.conftest import register_test_method
-from wfc.canvas.server import (
-    PipelineInput,
-    PipelineLink,
-    PipelineNode,
-    _enrich_pipeline,
+from tests.conftest import requires_docker
+from tests.fixtures.conftest import (
+    register_sample_row,
+    register_test_method,
+    sample_source_dir,
 )
+from wfc.canvas.models import PipelineInput, PipelineLink, PipelineNode
+from wfc.canvas.submission import _enrich_pipeline
 
 
-def _docker_available() -> bool:
-    """True iff ``docker`` is on PATH and ``docker info`` succeeds."""
-    if shutil.which("docker") is None:
-        return False
-    try:
-        result = subprocess.run(
-            ["docker", "info"],
-            capture_output=True,
-            timeout=10,
-        )
-        return result.returncode == 0
-    except (subprocess.SubprocessError, OSError):
-        return False
-
-
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.skipif(
-        not _docker_available(),
-        reason="Docker not reachable on PATH",
-    ),
-]
+pytestmark = [pytest.mark.integration, requires_docker]
 
 
 # The ``minimal_image`` session-scoped fixture is defined in
@@ -109,27 +88,15 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
     monkeypatch.setenv("WFC_PROJECT_ROOT", str(proj))
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{proj / '.wfc' / 'wfc.db'}")
 
-    # Container env manifest. Digest-pinned per ADR-019. Written BEFORE
-    # registration so _resolve_env can find the entry during register_method.
+    # Container env manifest. Digest-pinned. Written BEFORE
+    # registration so check_method_env can find the entry during register_method.
     wfc_dir = proj / ".wfc"
     wfc_dir.mkdir(exist_ok=True)
-    container_ref = f"docker://local/wfc-test-minimal@sha256:{image_digest}"
-    (wfc_dir / "envs.json").write_text(json.dumps({
-        "schema_version": 1,
-        "envs": {
-            "smoke-env": {
-                "backend": "pixi",
-                # Fixture image is plain python:3.11-slim; record the
-                # interpreter so dispatch skips the pixi default path.
-                "python": "python",
-                "source": "pixi.toml",
-                "container": container_ref,
-                "env_fingerprint": image_digest,
-                "built_from_lock": "pixi.lock",
-                "built_at": "2026-05-17T00:00:00Z",
-            }
-        },
-    }))
+    from tests.fixtures.conftest import write_env_record
+    # byo attach of the locally built image (raw docker build, no pixi/conda
+    # source); the image has the interpreter on PATH.
+    write_env_record(proj, "smoke-env", image="local/wfc-test-minimal",
+                     digest=image_digest)
 
     # Producer: writes "payload-v1" to WFC_RUN_DIR/output.txt.
     # Optional `trigger` input slot satisfies register_method's "every method
@@ -160,7 +127,7 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
         "    required: true\n"
         "params: {}\n"
         "executor: local\n"
-        "env: container:smoke-env\n"
+        "env: smoke-env\n"
     )
 
     # Consumer: reads WFC_INPUT_PATHS["data"], asserts it exists inside the
@@ -200,7 +167,7 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
         "    required: true\n"
         "params: {}\n"
         "executor: local\n"
-        "env: container:smoke-env\n"
+        "env: smoke-env\n"
     )
 
     # Register both methods via the production code path.
@@ -218,19 +185,22 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
     )
 
     # Sample data: a placeholder file under data/samples/s1/. Producer is a
-    # method-node root, so run-step's D-2 invariant requires an upstream
+    # method-node root, so run-step's root-input-required invariant requires an upstream
     # input_selector with sample data on disk. The producer itself doesn't
     # read this file (its WFC_INPUT_PATHS["trigger"] is unused).
-    sample_dir = proj / "data" / "samples" / "s1"
-    sample_dir.mkdir(parents=True, exist_ok=True)
-    (sample_dir / "trigger.txt").write_text("trigger")
+    source_dir = sample_source_dir(proj) / "s1"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    (source_dir / "trigger.txt").write_text("trigger")
+    register_sample_row(proj, "s1", source_dir / "trigger.txt")
+    # No restore here on purpose: this runs a real pipeline, whose
+    # restore_sample rule is what materializes data/samples/s1/trigger.txt.
 
     # Pipeline: input_selector -> producer (p1) -> consumer (c1).
     # Route the canvas-shaped PipelineInput through the SERVER ``_enrich_pipeline``
     # path (the real GUI /run export) instead of hand-building the engine JSON.
     # This exercises the seam the canvas exposes: node env, script_path, and
     # slot_outputs are all derived from the registered method contracts in the
-    # DB -- so the method.yaml ``env: container:smoke-env`` flows through
+    # DB -- so the method.yaml ``env: smoke-env`` flows through
     # verbatim and must resolve at run-step container dispatch end-to-end.
     pipeline_input = PipelineInput(
         name="seam",

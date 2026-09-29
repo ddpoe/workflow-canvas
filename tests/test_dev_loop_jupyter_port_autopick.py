@@ -1,6 +1,6 @@
-"""Tier 2 + Tier 1 tests for ``wfc jupyter`` port autopick (ADR-019 Cycle E).
+"""Tier 2 + Tier 1 tests for ``wfc jupyter`` port autopick.
 
-Covers US-2: when 8888 is occupied the command picks the next free port,
+Covers: when 8888 is occupied the command picks the next free port,
 forwards it as ``-p <resolved>:8888``, and **never** chooses port 8000
 even when bind would succeed (Dante's uniFLOW conflict).
 """
@@ -12,6 +12,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+
+from tests.fixtures.fakes import always_busy_socket, fake_subprocess_run
 
 from axiom_annotations import workflow
 
@@ -30,25 +32,17 @@ def _setup_project(tmp_path: Path) -> Path:
     (tmp_path / ".wfc" / "wf-canvas.toml").write_text(
         '[project]\nname="t"\n[database]\nurl="sqlite:///:memory:"\n'
     )
-    (tmp_path / ".wfc" / "envs.json").write_text(json.dumps({
-        "schema_version": 1,
-        "envs": {
-            "image-io": {
-                "backend": "pixi",
-                "source": "pixi.toml",
-                "container": CONTAINER_REF_DOCKER,
-                "env_fingerprint": "f" * 64,
-                "built_from_lock": "pixi.lock",
-                "built_at": "2026-05-17T00:00:00Z",
-            }
-        },
-    }))
+    # byo record: a registry image attached by digest is what production
+    # writes for a docker-registry ref like this one.
+    from tests.fixtures.conftest import write_env_record
+    write_env_record(tmp_path, "image-io", image="ghcr.io/dante/image-io",
+                     digest=VALID_DIGEST)
     return tmp_path
 
 
 @workflow(purpose="When port 8888 is occupied, wfc jupyter picks a different "
                   "free port, skips 8000 unconditionally, and forwards the "
-                  "resolved port via `-p <resolved>:8888` (US-2)")
+                  "resolved port via `-p <resolved>:8888`")
 def test_jupyter_port_autopicks_when_default_occupied(tmp_path, monkeypatch):
     proj = _setup_project(tmp_path)
     monkeypatch.chdir(proj)
@@ -72,9 +66,9 @@ def test_jupyter_port_autopicks_when_default_occupied(tmp_path, monkeypatch):
             captured_argv.append(list(argv))
             return _FakeResult()
 
-        with patch("wfc.dev_loop.subprocess.run", side_effect=_fake_run):
-            from wfc import dev_loop
-            rc = dev_loop.jupyter("image-io")
+        fake_subprocess_run(monkeypatch, _fake_run)
+        from wfc.environments import dev_loop
+        rc = dev_loop.jupyter("image-io")
 
         assert rc == 0
         assert captured_argv, "subprocess.run was not invoked"
@@ -102,7 +96,7 @@ def test_jupyter_port_autopicks_when_default_occupied(tmp_path, monkeypatch):
 
 def test_autopick_skips_8000_even_if_search_starts_there():
     """Tier 1 unit test: hard-skip must hold even when start_port=8000."""
-    from wfc.dev_loop import _autopick_port
+    from wfc.environments.dev_loop import _autopick_port
     port = _autopick_port(start_port=8000, max_port=8005)
     assert port != 8000
     assert 8001 <= port <= 8005
@@ -110,7 +104,7 @@ def test_autopick_skips_8000_even_if_search_starts_there():
 
 def test_autopick_raises_when_range_exhausted(monkeypatch):
     """Tier 1: when every port in the range is unavailable, raise cleanly."""
-    from wfc import dev_loop
+    from wfc.environments import dev_loop
 
     class _AlwaysBusy:
         def __init__(self, *args, **kwargs):
@@ -122,7 +116,7 @@ def test_autopick_raises_when_range_exhausted(monkeypatch):
         def close(self):
             pass
 
-    monkeypatch.setattr(dev_loop.socket, "socket", _AlwaysBusy)
+    always_busy_socket(monkeypatch)
     with pytest.raises(dev_loop._DevLoopError) as exc_info:
         dev_loop._autopick_port(start_port=8888, max_port=8890)
     assert "no free port" in exc_info.value.message

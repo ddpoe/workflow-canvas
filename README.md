@@ -1,6 +1,13 @@
 # Workflow Canvas
 
-Reproducible computational pipelines, managed from the command line (`wfc`) or a visual Canvas.
+[![PyPI](https://img.shields.io/pypi/v/workflow-canvas)](https://pypi.org/project/workflow-canvas/)
+[![Documentation](https://readthedocs.org/projects/workflow-canvas/badge/?version=latest)](https://workflow-canvas.readthedocs.io)
+[![License: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
+
+Workflow Canvas (`wfc`) is a Python tool for reproducible computational pipelines,
+managed from the command line or a browser-based visual Canvas. It is built for
+researchers and computational scientists who need to know exactly which code,
+container, parameters, and inputs produced every result.
 
 ![The Canvas Builder with the demo pipeline wired: three samples fanned across five methods](https://raw.githubusercontent.com/ddpoe/workflow-canvas/main/userdocs/guide/_images/builder-demo-pipeline.png)
 
@@ -127,6 +134,24 @@ Full user documentation is published at
 - **How-to** — Registration, the Canvas, Running & Inspecting Results, Sweeping Parameters & Fanning Out
 - **Reference** — CLI Reference, `method.yaml` schema, `wf-canvas.toml`
 - **Explanation** — How a Run Executes, Caching & Reproducibility, Project Anatomy, Storage & Provenance
+
+## Development: Layering Gate
+
+Path knowledge (`.runs`, `.wfc`, `.dvc`, `data/samples`, sentinel and
+workspace names, container mount roots) belongs to `wfc/layout/`. A static
+checker enforces this:
+
+```bash
+poetry run python tools/check_layering.py           # exit 0 = clean
+poetry run python tools/check_layering.py --sites   # list grandfathered sites
+poetry run python tools/check_catalog_coverage.py   # every catalog case in docs/system/ carries a witness link
+```
+
+Files that predate the rule are grandfathered by name inside the script.
+That list only ever shrinks: a new file may not add itself to the
+grandfather list without an approved request under `docs/pev-requests/`.
+Prose (docstrings, `help=` text, error messages) is exempt — the check
+matches only literals that flow into path expressions.
 
 ## License
 

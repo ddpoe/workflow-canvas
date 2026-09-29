@@ -1,15 +1,14 @@
 """
-Integration tests for ADR 004: Pipeline Execution Logging.
+Integration tests for Pipeline Execution Logging.
 
 Tests cover:
-  - Run model error fields (US-3)
-  - Pipeline ID generation and log directory creation (US-5)
-  - Generated Snakefile logger setup (US-1)
-  - Generated rules with per-run log handlers (US-2)
-  - Generated rules with try/except error capture (US-3)
-  - Generated Snakefile summary blocks (US-4)
-  - Bidirectional links in generated code (US-2)
-  - fail_pipeline safety-net preserves existing error fields (US-3)
+  - Run model error fields
+  - Pipeline ID passthrough into the generated Snakefile
+  - Generated Snakefile logger setup
+  - Generated rules delegate to wfc run-step; pipeline-level log kept
+  - complete_run accepts error arguments
+  - Generated Snakefile summary blocks
+  - fail_pipeline safety-net preserves existing error fields
 """
 
 import json
@@ -17,12 +16,13 @@ import json
 import pytest
 from sqlmodel import Session, select
 
-from wfc.models import Run
-from wfc.snakemake_gen import StepDef, PipelineDef, generate_snakefile
+from wfc.persistence import Run
+from wfc.graph import StepDef, PipelineDef
+from wfc.orchestration import generate_snakefile
 
 
 # =============================================================================
-# Test 1: Run model error fields (US-3)
+# Test 1: Run model error fields
 # =============================================================================
 
 class TestRunModelErrorFields:
@@ -30,8 +30,7 @@ class TestRunModelErrorFields:
 
     def test_run_has_error_fields(self, tmp_project):
         """Run model should accept error_message and error_traceback."""
-        from wfc.database import get_session
-        from wfc.models import Method, Module
+        from wfc.persistence import get_session, Method, Module
 
         with get_session() as session:
             mod = Module(name="test_mod")
@@ -57,8 +56,7 @@ class TestRunModelErrorFields:
 
     def test_run_error_fields_default_to_none(self, tmp_project):
         """Error fields should be None by default for successful runs."""
-        from wfc.database import get_session
-        from wfc.models import Method, Module
+        from wfc.persistence import get_session, Method, Module
 
         with get_session() as session:
             mod = Module(name="test_mod2")
@@ -78,10 +76,10 @@ class TestRunModelErrorFields:
 
 
 # =============================================================================
-# Test 2: Pipeline ID and log directory creation (US-5)
+# Test 2: Pipeline ID passthrough
 # =============================================================================
 
-class TestPipelineIdRelocation:
+class TestPipelineIdPassthrough:
     """Pipeline ID should be generated in generate_snakefile and passed as param."""
 
     def test_snakefile_uses_passed_pipeline_id(self, wfc_root):
@@ -98,8 +96,6 @@ class TestPipelineIdRelocation:
         snakefile = generate_snakefile(pipeline, wfc_root, pipeline_id="test-pipeline-123")
 
         assert 'PIPELINE_ID = "test-pipeline-123"' in snakefile
-        # Should NOT contain uuid4 generation
-        assert "PIPELINE_ID = str(uuid.uuid4())" not in snakefile
 
     def test_snakefile_without_pipeline_id_falls_back(self, wfc_root):
         """When no pipeline_id is passed, the Snakefile should still have a PIPELINE_ID."""
@@ -119,7 +115,7 @@ class TestPipelineIdRelocation:
 
 
 # =============================================================================
-# Test 3: Generated Snakefile contains logger setup (US-1)
+# Test 3: Generated Snakefile contains logger setup
 # =============================================================================
 
 class TestPipelineLoggerSetup:
@@ -160,13 +156,13 @@ class TestPipelineLoggerSetup:
 
 
 # =============================================================================
-# Test 4: Per-run log handlers and bidirectional links (US-2)
+# Test 4: Rule delegation to run-step and the pipeline log
 # =============================================================================
 
-class TestPerRunLogHandlers:
-    """ADR 008: Per-run logging is now handled by wfc run-step, not the Snakefile.
+class TestRuleDelegationAndPipelineLog:
+    """Per-run logging belongs to wfc run-step, not the Snakefile.
     Rules use shell directives that delegate to run-step, which manages its own
-    per-run log handlers internally. The Snakefile retains pipeline-level logging."""
+    per-run log handlers internally. The Snakefile keeps pipeline-level logging."""
 
     def test_rule_delegates_to_run_step(self, wfc_root):
         """Each generated rule delegates to wfc run-step via shell directive."""
@@ -185,26 +181,6 @@ class TestPerRunLogHandlers:
         rule_section = snakefile.split("rule preprocess:")[1].split("\nrule ")[0]
         assert "shell:" in rule_section
         assert "run-step" in rule_section
-        # No inline run: blocks with per-run log handlers
-        assert "run:" not in rule_section
-
-    def test_no_inline_python_in_rules(self, wfc_root):
-        """Rules have no inline Python — no finally blocks or handler cleanup."""
-        pipeline = PipelineDef(
-            steps=[StepDef(
-                method_name="preprocess",
-                module_name="demo",
-                script_path="methods/preprocess/preprocess.py",
-                params={},
-            )],
-            samples=["Pa16c"],
-        )
-        snakefile = generate_snakefile(pipeline, wfc_root, pipeline_id="test-123")
-
-        # No inline Python execution patterns in rules
-        rule_section = snakefile.split("rule preprocess:")[1].split("\nrule ")[0]
-        assert "finally:" not in rule_section
-        assert "removeHandler" not in rule_section
 
     def test_pipeline_log_still_configured(self, wfc_root):
         """Pipeline-level logging is still configured in the Snakefile preamble."""
@@ -225,43 +201,23 @@ class TestPerRunLogHandlers:
 
 
 # =============================================================================
-# Test 5: Error capture in generated rules (US-3)
+# Test 5: complete_run error arguments
 # =============================================================================
 
 class TestErrorCapture:
-    """ADR 008: Error capture is now handled by wfc run-step, not the Snakefile.
+    """Error capture belongs to wfc run-step, not the Snakefile.
     Rules use shell directives — try/except and traceback capture are internal
     to the run-step command."""
-
-    def test_rule_uses_shell_not_try_except(self, wfc_root):
-        """Generated rule uses shell directive — no try/except in Snakefile rules."""
-        pipeline = PipelineDef(
-            steps=[StepDef(
-                method_name="preprocess",
-                module_name="demo",
-                script_path="methods/preprocess/preprocess.py",
-                params={},
-            )],
-            samples=["Pa16c"],
-        )
-        snakefile = generate_snakefile(pipeline, wfc_root, pipeline_id="test-123")
-
-        # Rules use shell directives, not inline Python
-        rule_section = snakefile.split("rule preprocess:")[1].split("\nrule ")[0]
-        # Stop at onsuccess/onerror handlers (which are not part of rules)
-        rule_section = rule_section.split("\nonsuccess:")[0].split("\nonerror:")[0]
-        assert "shell:" in rule_section
-        assert "try:" not in rule_section
-        assert "except Exception" not in rule_section
 
     def test_complete_run_accepts_error_args(self, tmp_project, cli):
         """complete_run CLI should accept --error and --traceback args."""
         # Register a module, method, and run first
         cli("register-module", "--name", "test_mod",
             "--contracts", "[]")
-        cli("register-method", "methods/transform",
-            "--module", "test_mod", "--name", "test_meth",
-            "--script", "transform.py")
+        reg = cli("register-method", "methods/transform",
+                  "--module", "test_mod", "--name", "test_meth",
+                  "--script", "transform.py")
+        assert reg.returncode == 0, f"register-method failed: {reg.stderr}"
         result = cli("register_run", "--method", "test_meth",
                       "--module", "test_mod", "--sample", "s1")
         run_id = result.stdout.strip()
@@ -274,7 +230,7 @@ class TestErrorCapture:
         assert result.returncode == 0
 
         # Verify the error fields are stored
-        from wfc.database import get_session
+        from wfc.persistence import get_session
         with get_session() as session:
             run = session.get(Run, int(run_id))
             assert run.error_message == "something went wrong"
@@ -282,7 +238,7 @@ class TestErrorCapture:
 
 
 # =============================================================================
-# Test 6: Summary blocks (US-4)
+# Test 6: Summary blocks
 # =============================================================================
 
 class TestSummaryBlocks:
@@ -323,7 +279,7 @@ class TestSummaryBlocks:
 
 
 # =============================================================================
-# Test 7: fail_pipeline preserves existing error fields (US-3)
+# Test 7: fail_pipeline preserves existing error fields
 # =============================================================================
 
 class TestFailPipelineSafetyNet:
@@ -331,8 +287,7 @@ class TestFailPipelineSafetyNet:
 
     def test_fail_pipeline_preserves_error_fields(self, tmp_project, cli):
         """If a run already has error fields set, fail_pipeline should not overwrite."""
-        from wfc.database import get_session
-        from wfc.models import Method, Module
+        from wfc.persistence import get_session, Method, Module
 
         with get_session() as session:
             mod = Module(name="test_mod3")

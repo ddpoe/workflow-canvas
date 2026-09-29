@@ -1,10 +1,10 @@
-"""No-wfc contract tests for the user-env Dockerfile generators (ADR-019 G.2).
+"""No-wfc contract tests for the user-env Dockerfile generators.
 
 These are annotation-Tier-1, unmarked pure-function tests. They lock the
-*negative* invariant that the request calls the "no-wfc" guarantee: a generated
-user-env image must be a single upstream base + the user's declared deps, with
-**no wfc in the image** (per ADR-020 — Tier 2 env-var + file contract is the
-canonical method interface; pm-client/wfc is opt-in, never pre-installed).
+*negative* "no-wfc" guarantee: a generated user-env image must be a single
+upstream base + the user's declared deps, with **no wfc in the image**
+(Tier 2 env-var + file contract is the canonical method interface; wfc-client
+is opt-in, never pre-installed).
 
 What is asserted here (negatives + the non-root-readable chmod):
   - Exactly one `FROM`, and it is the upstream base — never `local/wfc-base`
@@ -12,12 +12,16 @@ What is asserted here (negatives + the non-root-readable chmod):
   - No `pip install wfc` / `pip install workflow-canvas`.
   - No `COPY wfc/` / `COPY pyproject.toml` (the project source is never copied
     into a user-env image).
-  - For pixi/conda, the recipe ends with `RUN chmod -R a+rX <env_dir>` at the
-    *backend-native* env prefix (pixi `/{name}/envs/default`, conda
-    `/opt/conda` — micromamba installs into `-n base`, whose prefix IS
-    /opt/conda; there is no /opt/conda/envs/{name} tree in the built image) —
-    the non-root-readable target that pairs with the runtime `--user` fix
-    (ADR-019 #9).
+  - For pixi/conda, the recipe's permissions pass is `RUN chmod -R a+rX
+    <env_dir>` at the *backend-native* env prefix (pixi
+    `/opt/.pixi/envs/{name}` — the env tree pixi materializes under the
+    WORKDIR /opt project dir; conda `/opt/conda` — micromamba installs into
+    `-n base`, whose prefix IS /opt/conda; there is no /opt/conda/envs/{name}
+    tree in the built image) — the non-root-readable target that pairs with
+    the runtime `--user` flag. For conda the chmod is bracketed
+    by `USER root` / `USER $MAMBA_USER` (the base ships /opt/conda
+    root-owned; chmod requires ownership) — the bracket itself is locked by
+    tests/test_conda_dockerfile_guard.py, not here.
 
 Deliberately NOT re-asserted here (already covered by
 `tests/test_dockerfile_generation.py`): pixi/conda base digest pinning and the
@@ -27,11 +31,10 @@ negatives + the per-backend chmod target.
 
 from __future__ import annotations
 
-from pathlib import Path
 
 import pytest
 
-from wfc.dockerfiles import generate_for_backend
+from wfc.environments.dockerfiles import generate_for_backend
 
 
 VALID_FREEZE = "numpy==1.26.4\npandas==2.2.1\n"
@@ -46,17 +49,15 @@ _BACKEND_CASES = [
         "pixi",
         {
             "env_name": "demo",
-            "pixi_lock_path": Path("/proj/pixi.lock"),
             "pip_freeze_content": VALID_FREEZE,
         },
-        "/demo/envs/default",
+        "/opt/.pixi/envs/demo",
         id="pixi",
     ),
     pytest.param(
         "conda",
         {
             "env_name": "demo",
-            "explicit_list_path": Path("/proj/explicit-list.txt"),
             "pip_freeze_content": VALID_FREEZE,
         },
         # micromamba's base env prefix — installs go to `-n base`, so the
@@ -72,7 +73,7 @@ def test_user_env_dockerfile_is_wfc_free_single_upstream(
     backend, kwargs, expected_env_dir
 ):
     """A generated user-env Dockerfile installs no wfc and builds on a single
-    upstream base. For pixi/conda it ends with a non-root-readable chmod of
+    upstream base. For pixi/conda it includes a non-root-readable chmod of
     the backend-native env dir."""
     dockerfile = generate_for_backend(backend, **kwargs)
     assert dockerfile is not None, f"{backend} should produce a Dockerfile"
@@ -115,9 +116,6 @@ def test_user_env_dockerfile_is_wfc_free_single_upstream(
         f"{backend}: expected `RUN chmod -R a+rX {expected_env_dir}` "
         f"(non-root-readable env dir, pairs with --user); got:\n{dockerfile}"
     )
-    # And nowhere does the (rejected) uniform /opt/user-env prefix appear —
-    # main parameterizes the env dir per backend by {env_name}.
-    assert "/opt/user-env" not in dockerfile
 
 
 def test_byo_backend_has_no_dockerfile():

@@ -1,4 +1,4 @@
-"""Teardown logic for ``wfc demo --remove`` (US-3).
+"""Teardown logic for ``wfc demo --remove``.
 
 Deletes ONLY by the ``__demo__`` tag / module cascade — never by matching
 method names against whatever is present. Because the reserved-prefix guard
@@ -12,7 +12,7 @@ enforcement is OFF here — nothing at the storage layer catches mistakes):
     -> methods -> ModuleContract -> module -> samples -> env -> files.
 
 The DVC cache and the output archive are NEVER touched — cached bytes are
-governed by ``wfc cache prune`` (ADR-018).
+governed by ``wfc cache prune``.
 """
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from .. import layout
 
 from .scaffold import (
     DEMO_ENV,
@@ -56,17 +57,17 @@ def remove_demo(
     from sqlmodel import select
 
     target = Path(target_dir or Path.cwd()).resolve()
-    marker = target / ".wfc" / "wf-canvas.toml"
-    db_path = target / ".wfc" / "wfc.db"
+    marker = layout.marker_path(target)
+    db_path = layout.db_path(target)
     if not marker.exists() or not db_path.exists():
         raise DemoError(
             f"{target} is not a Workflow Canvas project — nothing to remove"
         )
 
     with _project_env(target):
-        from ..database import get_session
-        from ..envs import load_manifest
-        from ..models import (
+        from ..persistence import get_session
+        from ..environments import load_manifest
+        from ..persistence import (
             Method,
             MethodContract,
             MethodVersion,
@@ -129,16 +130,17 @@ def remove_demo(
         # shipped set (partial-scaffold residue) — but a dir is only deleted
         # when NO surviving non-demo method claims it (checked below).
         candidate_method_dirs = sorted(set(method_names) | set(DEMO_METHODS))
+        samples_root = layout.samples_dir(target)
         sample_dirs = sorted(
-            p for p in (target / "data" / "samples").glob(f"{DEMO_MODULE}*")
+            p for p in samples_root.glob(f"{DEMO_MODULE}*")
             if p.is_dir()
-        ) if (target / "data" / "samples").exists() else []
+        ) if samples_root.exists() else []
         pipeline_file = target / "demo-pipeline.json"
-        build_dir = target / ".wfc" / "build" / DEMO_ENV
+        build_dir = layout.env_build_dir(target, DEMO_ENV)
 
         file_targets: list[Path] = []
         for m in candidate_method_dirs:
-            d = target / "methods" / m
+            d = layout.method_dir(target, m)
             if d.exists():
                 file_targets.append(d)
         file_targets.extend(sample_dirs)
@@ -167,12 +169,12 @@ def remove_demo(
         if purge_image:
             print(f"  Docker image {DEMO_IMAGE_TAG}")
 
-        # ---- Shared-env warning (D-5): non-demo methods on __demo__env ----
+        # ---- Shared-env warning: non-demo methods on __demo__env ----
         if env_present:
-            from ..cli import _methods_referencing_env
+            from ..registration import methods_referencing_env
 
             refs = [
-                r for r in _methods_referencing_env(DEMO_ENV)
+                r for r in methods_referencing_env(DEMO_ENV)
                 if not r.startswith(f"{DEMO_MODULE}/")
             ]
             if refs:
@@ -287,9 +289,14 @@ def remove_demo(
                 session.delete(s)
             session.commit()
 
-            # Surviving-method claims on the shared methods/<name>/ dirs:
-            # a user method with the same name (e.g. my-analysis/preprocess)
-            # keeps its snapshot directory.
+            # Surviving-method claims on the shared methods/<name>/ dirs.
+            # Every candidate name now carries the __demo__ prefix, and
+            # check_reserved_name refuses that prefix to every caller but
+            # `wfc demo`, so no user method can hold one — this set is empty
+            # in practice today. It is kept rather than deleted because it is
+            # the guard that becomes live again the day the prefix is removed
+            # (per-module snapshot directories), when a user method really
+            # could be named `preprocess` alongside the demo's.
             surviving_names = {
                 m.name
                 for m in session.exec(
@@ -301,7 +308,7 @@ def remove_demo(
 
         # ---- Env ----
         if env_present:
-            from ..envs import delete as delete_env
+            from ..environments import delete as delete_env
 
             try:
                 delete_env(DEMO_ENV, target)
@@ -312,7 +319,7 @@ def remove_demo(
         removed_files: list[Path] = []
         for f in file_targets:
             name = f.name
-            if f.parent == target / "methods" and name in surviving_names:
+            if f.parent == layout.methods_dir(target) and name in surviving_names:
                 print(
                     f"  keeping {f} — a surviving method named '{name}' "
                     f"still uses it"

@@ -1,8 +1,8 @@
 /**
- * Browser smoke (b) for the wfc demo cycle: a run with a PNG artifact
+ * Browser smoke for the wfc demo: a run with a PNG artifact
  * renders an inline <img> in the Artifacts tab; clicking opens the
  * lightbox; Escape closes it. Non-image artifacts keep their
- * download-link rows (strictly additive change).
+ * download-link rows.
  *
  * Route strategy mirrors history-pipelines.spec.ts: mock the /api/wfc/*
  * endpoints the History view and RunDetailPanel poll.
@@ -111,7 +111,7 @@ test.describe('Inline image preview + lightbox (smoke)', () => {
     const thumb = page.locator('.thumb-card .thumb-img');
     await expect(thumb).toHaveCount(1);
     await expect(thumb).toBeVisible({ timeout: 5_000 });
-    // Both artifacts still have their download-link rows (additive change).
+    // Both artifacts have their download-link rows, previewed or not.
     await expect(page.locator('.file-row', { hasText: 'figure.png' })).toBeVisible();
     await expect(page.locator('.file-row', { hasText: 'summary.csv' })).toBeVisible();
 

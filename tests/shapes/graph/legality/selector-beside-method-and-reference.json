@@ -1,0 +1,188 @@
+{
+  "id": "selector-beside-method-and-reference",
+  "case": "legality-accepted-implies-runnable",
+  "note": "A per-sample selector, an upstream method and a run reference feed m2 on three slots; the reference's run sample is the selector's: accepted at both moments.",
+  "document": {
+    "name": "selector-beside-method-and-reference",
+    "nodes": [
+      {
+        "id": "s",
+        "type": "input_selector",
+        "method": "",
+        "module": "",
+        "params": {},
+        "samples": [
+          "s1"
+        ],
+        "source": "registered",
+        "fan_mode": "out"
+      },
+      {
+        "id": "m1",
+        "type": "method",
+        "method": "filter",
+        "module": "mod",
+        "params": {}
+      },
+      {
+        "id": "m2",
+        "type": "method",
+        "method": "quantify",
+        "module": "mod",
+        "params": {}
+      },
+      {
+        "id": "r1",
+        "type": "run_reference",
+        "method": "",
+        "module": "",
+        "params": {},
+        "run_id": "7"
+      }
+    ],
+    "links": [
+      {
+        "source": "s",
+        "target": "m1",
+        "targetHandle": "data"
+      },
+      {
+        "source": "s",
+        "target": "m2",
+        "targetHandle": "raw"
+      },
+      {
+        "source": "m1",
+        "target": "m2",
+        "sourceHandle": "out",
+        "targetHandle": "mask"
+      },
+      {
+        "source": "r1",
+        "target": "m2",
+        "sourceHandle": "out",
+        "targetHandle": "model"
+      }
+    ],
+    "samples": [
+      "s1"
+    ]
+  },
+  "contract_map": {
+    "mod.filter": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/filter/filter.py",
+      "env": "container:base"
+    },
+    "mod.plot": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/plot/plot.py",
+      "env": "container:base"
+    },
+    "mod.qc": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/qc/qc.py",
+      "env": "container:base"
+    },
+    "mod.merge": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "sources": {
+          "required": true
+        }
+      },
+      "script_path": "methods/merge/merge.py",
+      "env": "container:base"
+    },
+    "mod.join": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        },
+        "other": {
+          "required": true
+        }
+      },
+      "script_path": "methods/join/join.py",
+      "env": "container:base"
+    },
+    "mod.quantify": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "raw": {
+          "required": true
+        },
+        "mask": {
+          "required": true
+        },
+        "model": {
+          "required": true
+        }
+      },
+      "script_path": "methods/quantify/quantify.py",
+      "env": "container:base"
+    }
+  },
+  "reference_outputs": {
+    "r1": {
+      "output_paths": {
+        "out": "/runs/7/out.csv"
+      },
+      "sample": "s1"
+    }
+  },
+  "package": {
+    "validation": "accept",
+    "load": "accept"
+  },
+  "client": {
+    "answers": true,
+    "candidate": {
+      "source": "m1",
+      "target": "m2",
+      "sourceHandle": "out",
+      "targetHandle": "mask"
+    },
+    "verdict": "accept"
+  }
+}

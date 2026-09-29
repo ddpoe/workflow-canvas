@@ -1,10 +1,10 @@
 """
-Integration test: Snakemake pipeline generation.
+Subsystem test: Snakemake pipeline generation.
 
 Story: We define a pipeline (steps + samples + param variants), generate
 a Snakefile, and verify the output is correct — proper rules, wildcard
-structure, cache-check logic, and variant expansion. This tests the
-snakemake_gen module end-to-end without actually running Snakemake.
+structure, and variant expansion. This tests the
+emitter (wfc.orchestration.snakemake) end-to-end without actually running Snakemake.
 
 Three modes are tested:
   1. Single-step pipeline (simplest case)
@@ -16,12 +16,9 @@ import json
 
 import pytest
 
-from wfc.snakemake_gen import StepDef, PipelineDef, generate_snakefile
+from wfc.graph import StepDef, PipelineDef
+from wfc.orchestration import generate_snakefile
 
-
-# =============================================================================
-# Helper
-# =============================================================================
 
 # =============================================================================
 # Single-step pipeline
@@ -61,7 +58,7 @@ class TestSingleStepGeneration:
         assert "{variant}" in snakefile
 
     def test_delegates_to_run_step(self, wfc_root):
-        """ADR 008: Every rule delegates to wfc run-step via shell directive."""
+        """Every rule delegates to wfc run-step via shell directive."""
         pipeline = PipelineDef(
             steps=[StepDef(
                 method_name="preprocess",
@@ -116,24 +113,20 @@ class TestCartesianGeneration:
         snakefile = generate_snakefile(pipeline, wfc_root)
 
         # filter_cells should take preprocess's output as input
-        # The workspace path is scoped by pipeline_id: .runs/workspace/{id}/preprocess/
+        # The sentinel path is scoped by pipeline_id: .runs/sentinels/{id}/preprocess/
         assert "/preprocess/" in snakefile
 
     def test_leaf_output_uses_unified_variant_wildcard(self, pipeline, wfc_root):
         """All output paths use a single {variant} wildcard (unified scheme)."""
         snakefile = generate_snakefile(pipeline, wfc_root)
 
-        # Unified scheme uses a single {variant} wildcard, not per-node wildcards
         assert "{variant}" in snakefile
-        assert "{preprocess_v}" not in snakefile
-        assert "{filter_cells_v}" not in snakefile
-        assert "{label_v}" not in snakefile
 
     def test_downstream_wires_input_from_upstream(self, pipeline, wfc_root):
         """Non-root steps receive upstream output as input via Snakemake DAG wiring."""
         snakefile = generate_snakefile(pipeline, wfc_root)
 
-        # ADR 008: parent run ID resolution is handled by run-step, not the Snakefile.
+        # parent run ID resolution is handled by run-step, not the Snakefile.
         # The Snakefile wires inputs via file paths — Snakemake resolves the DAG.
         filter_rule = snakefile.split("rule filter_cells:")[1].split("\nrule ")[0]
         assert "preprocess" in filter_rule  # input comes from preprocess output

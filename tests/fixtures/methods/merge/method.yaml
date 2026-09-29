@@ -16,4 +16,4 @@ outputs:
 params: {}
 
 executor: python
-env: container:fixture-env
+env: fixture-env
