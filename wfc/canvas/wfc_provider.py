@@ -1,6 +1,4 @@
-"""
-WFC Data Provider
-=================
+"""Data provider that serves wfc run history to the Workflow Canvas.
 
 Reads wfc's SQLite database (.wfc/wfc.db) and converts run data
 to the format expected by the Workflow Canvas history view.
@@ -13,24 +11,30 @@ Structure mapping:
 - Run.sample = dataSource              — the sample identifier
 """
 
-import os
 import json
+import os
 from contextlib import contextmanager
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, cast
+
+from sqlmodel import Session, col, select
+
+from wfc.persistence import (
+    Method,
+    Module,
+    Run,
+    RunAnnotation,
+    RunInput,
+    RunOutput,
+    Sample,
+    get_engine,
+)
 
 from .. import layout
 from ..contracts import COLLAPSED_SAMPLE
 from ..lineage.relation import cancelled_descendants, upstreams
-from typing import Dict, List, Optional, Any
-from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone
-
-from sqlmodel import Session, select
-
-from wfc.persistence import get_engine
-from wfc.persistence import (
-    Module, Method, Run, RunInput, RunOutput, RunAnnotation, Sample,
-)
 
 
 class ArtifactPathRefusedError(ValueError):
@@ -87,71 +91,70 @@ class WfcRun:
     timestamp: float = 0  # Unix timestamp in ms
     duration: float = 0  # Duration in seconds
     status: str = "unknown"
-    inputs: Dict[str, Any] = field(default_factory=dict)
-    outputs: Dict[str, Any] = field(default_factory=dict)
-    metrics: Dict[str, float] = field(default_factory=dict)
+    inputs: dict[str, Any] = field(default_factory=dict)
+    outputs: dict[str, Any] = field(default_factory=dict)
+    metrics: dict[str, float] = field(default_factory=dict)
     dataSource: str = ""  # sample name
     # Full lineage: every upstream run that fed this one, in slot order.
     # A method node with fan-in (multiple input slots from different
     # parents) contributes one entry per slot, so the frontend can walk the
     # real DAG.
-    parentRunIds: List[str] = field(default_factory=list)
+    parentRunIds: list[str] = field(default_factory=list)
     # Slot-aware view of the same data. ``slot`` is the method input name
     # (``experiment_config``, ``corrected_dir``, …), ``sourceRunId`` is the
     # run that produced it and ``sourceSlot`` is the output slot of that run
     # the input consumed (None when the input record names none). Order
     # matches ``parentRunIds``.
-    parents: List[Dict[str, Optional[str]]] = field(default_factory=list)
+    parents: list[dict[str, str | None]] = field(default_factory=list)
     # The samples this run read, as recorded at the claim: ``slot`` is the
     # method input the sample arrived on, ``sample`` the sample's name, in
     # record order. Sample reads are not parents: they never appear in
     # ``parents``, ``parentRunIds`` or ``upstreamRunIds``. Empty for a run
     # that read no sample or whose reads were never recorded.
-    sampleInputs: List[Dict[str, str]] = field(default_factory=list)
+    sampleInputs: list[dict[str, str]] = field(default_factory=list)
     experimentId: str = ""  # pipeline_id
     runName: str = ""
     user: str = ""
     favorite: bool = False
     nid: str = ""  # Node ID: auto-versioned (v1, v2...) or custom label
-    tags: List[str] = field(default_factory=list)
-    archivedAt: Optional[float] = None  # Unix ms; None = live (not archived)
+    tags: list[str] = field(default_factory=list)
+    archivedAt: float | None = None  # Unix ms; None = live (not archived)
     # Samples bundled into a collapsed fan-in run. Empty for normal per-sample
     # runs; populated when dataSource == COLLAPSED_SAMPLE so the UI can show
     # the real sample list instead of the collapsed-sample sentinel.
-    bundledSamples: List[str] = field(default_factory=list)
+    bundledSamples: list[str] = field(default_factory=list)
     # wfc-specific fields
-    pipelineId: Optional[str] = None
+    pipelineId: str | None = None
     # Human-readable pipeline name from the Builder toolbar at submission
     # time, read from the pipeline record on disk. None for legacy or
     # unnamed pipelines.
-    pipelineName: Optional[str] = None
-    scriptPath: Optional[str] = None
+    pipelineName: str | None = None
+    scriptPath: str | None = None
     # Populated for runs that ended in failure. Both NULL for successful
     # and in-progress runs.
-    error_message: Optional[str] = None
-    error_traceback: Optional[str] = None
+    error_message: str | None = None
+    error_traceback: str | None = None
     # Causality link for rows with status='cancelled': ID of the failed
     # run whose subtree caused this target to be skipped. NULL on
     # executed rows. Stored as string to match the ``parentRunId``
     # convention on the frontend (all run IDs are strings canvas-side).
-    cancelledDueToRunId: Optional[str] = None
+    cancelledDueToRunId: str | None = None
     # For cache-hit audit rows: the original run whose outputs were reused.
     # NULL for fresh executions. Surfaced in RunDetailPanel so users can
     # see "Cached from #N" and click through to the source.
-    cacheSourceRunId: Optional[str] = None
+    cacheSourceRunId: str | None = None
     # Resolved upstreams from the lineage relation: the input edges in slot
     # order, then ``cacheSourceRunId`` for a cache-hit row. The History
     # tab's views walk this field instead of re-deriving the rule.
-    upstreamRunIds: List[str] = field(default_factory=list)
+    upstreamRunIds: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return asdict(self)
 
 
 class WfcProvider:
-    """
-    Provider for reading wfc's SQLite database.
+    """Provider for reading wfc's SQLite database.
 
     Reads the project structure:
     {project_root}/
@@ -167,13 +170,14 @@ class WfcProvider:
     """
 
     def __init__(self, project_root: str):
-        """
-        Initialize provider with path to wfc project root.
+        """Initialize provider with path to wfc project root.
 
-        Parameters
-        ----------
-        project_root : str
-            Absolute path to the wfc project directory (contains .wfc/ and .runs/)
+        Args:
+            project_root: Absolute path to the wfc project directory (contains
+                .wfc/ and .runs/).
+
+        Raises:
+            FileNotFoundError: The project has no ``.wfc/wfc.db``.
         """
         self.project_root = Path(project_root)
         self.db_path = layout.db_path(self.project_root)
@@ -184,9 +188,9 @@ class WfcProvider:
                 f"Expected a wfc project at: {project_root}"
             )
 
-        self._runs: Dict[str, WfcRun] = {}
-        self._modules: Dict[int, str] = {}  # id → name
-        self._methods: Dict[int, Dict[str, Any]] = {}  # id → {name, module_id, script_path}
+        self._runs: dict[str, WfcRun] = {}
+        self._modules: dict[int, str] = {}  # id → name
+        self._methods: dict[int, dict[str, Any]] = {}  # id → {name, module_id, script_path}
         self._loaded = False
 
     @contextmanager
@@ -217,7 +221,7 @@ class WfcProvider:
             yield session
 
     @staticmethod
-    def _names_file(bound: Optional[str], expected: Path) -> bool:
+    def _names_file(bound: str | None, expected: Path) -> bool:
         """Return whether a bound SQLite database path names ``expected``.
 
         Args:
@@ -236,7 +240,7 @@ class WfcProvider:
 
         return _norm(bound) == _norm(expected)
 
-    def _load_bundled_samples(self, pipeline_id: str) -> List[str]:
+    def _load_bundled_samples(self, pipeline_id: str) -> list[str]:
         """Return the sample list bundled into a fan-in collapsed pipeline.
 
         Collapsed runs carry sample=COLLAPSED_SAMPLE in the DB; the real sample
@@ -262,7 +266,7 @@ class WfcProvider:
                     return [str(s) for s in samples]
         return []
 
-    def _load_pipeline_name(self, pipeline_id: str) -> Optional[str]:
+    def _load_pipeline_name(self, pipeline_id: str) -> str | None:
         """Return the pipeline name recorded at submission time.
 
         The name is read from ``pipeline.editable.json`` (which preserves
@@ -283,7 +287,7 @@ class WfcProvider:
                 return name
         return None
 
-    def _iso_to_epoch_ms(self, iso_str: Optional[str]) -> float:
+    def _iso_to_epoch_ms(self, iso_str: str | None) -> float:
         """Convert an ISO datetime string to Unix epoch milliseconds."""
         if not iso_str:
             return 0
@@ -302,7 +306,7 @@ class WfcProvider:
                 try:
                     dt = datetime.strptime(iso_str, fmt)
                     if dt.tzinfo is None:
-                        dt = dt.replace(tzinfo=timezone.utc)
+                        dt = dt.replace(tzinfo=UTC)
                     return dt.timestamp() * 1000
                 except ValueError:
                     continue
@@ -355,7 +359,7 @@ class WfcProvider:
         if value is None:
             return 0
         if isinstance(value, datetime):
-            dt = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+            dt = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
             return dt.timestamp() * 1000
         return self._iso_to_epoch_ms(value)
 
@@ -367,9 +371,9 @@ class WfcProvider:
         so concurrent readers must only ever observe a complete registry —
         old or new — never a cleared/partial one.
         """
-        runs: Dict[str, WfcRun] = {}
-        modules: Dict[int, str] = {}
-        methods: Dict[int, Dict[str, Any]] = {}
+        runs: dict[str, WfcRun] = {}
+        modules: dict[int, str] = {}
+        methods: dict[int, dict[str, Any]] = {}
 
         with self._session() as session:
             # Load modules
@@ -399,9 +403,9 @@ class WfcProvider:
             #   arrived on and the sample's name.
             # - neither: a parent whose run was deleted (``wfc demo
             #   --remove`` nulls the source), skipped.
-            parents_by_run: Dict[str, List[Dict[str, Optional[str]]]] = {}
-            samples_by_run: Dict[str, List[Dict[str, str]]] = {}
-            for ri in session.exec(select(RunInput).order_by(RunInput.id)):
+            parents_by_run: dict[str, list[dict[str, str | None]]] = {}
+            samples_by_run: dict[str, list[dict[str, str]]] = {}
+            for ri in session.exec(select(RunInput).order_by(col(RunInput.id))):
                 rid = str(ri.run_id)
                 if ri.source_run_id is not None:
                     parents_by_run.setdefault(rid, []).append({
@@ -445,7 +449,8 @@ class WfcProvider:
                 # Full parent list assembled above from run_inputs.
                 run_id_str = str(run_row.id)
                 parents_list = parents_by_run.get(run_id_str, [])
-                parent_run_ids = [p["sourceRunId"] for p in parents_list]
+                # Every parent entry above records its sourceRunId as a str.
+                parent_run_ids = [cast(str, p["sourceRunId"]) for p in parents_list]
 
                 # Build run name: method/sample for readability
                 sample = run_row.sample or ""
@@ -533,7 +538,7 @@ class WfcProvider:
         # input_selector(fan_mode="in"); the actual sample list is stored in
         # the pipeline.json at .runs/pipelines/<pipeline_id>/pipeline.json.
         # Cache per pipeline_id so we only read each file once.
-        pipeline_samples_cache: Dict[str, List[str]] = {}
+        pipeline_samples_cache: dict[str, list[str]] = {}
         for run in runs.values():
             if run.dataSource != COLLAPSED_SAMPLE or not run.pipelineId:
                 continue
@@ -545,7 +550,7 @@ class WfcProvider:
 
         # Resolve pipeline display names from the on-disk pipeline record,
         # cached per pipeline_id like the bundled-samples pass above.
-        pipeline_name_cache: Dict[str, Optional[str]] = {}
+        pipeline_name_cache: dict[str, str | None] = {}
         for run in runs.values():
             if not run.pipelineId:
                 continue
@@ -559,7 +564,7 @@ class WfcProvider:
         # (non-empty string) keep their value; runs without get the
         # auto-version but still occupy a version slot.
         from collections import defaultdict
-        groups: Dict[tuple, List[WfcRun]] = defaultdict(list)
+        groups: dict[tuple, list[WfcRun]] = defaultdict(list)
         for run in runs.values():
             key = (run.dataSource, run.method)
             groups[key].append(run)
@@ -581,12 +586,12 @@ class WfcProvider:
             f"{len(self._methods)} methods, {len(self._runs)} runs"
         )
 
-    def get_all_runs(self) -> List[Dict[str, Any]]:
+    def get_all_runs(self) -> list[dict[str, Any]]:
         """Get all runs in workflow canvas format."""
         self.load()
         return [run.to_dict() for run in self._runs.values()]
 
-    def run_records(self) -> Dict[str, WfcRun]:
+    def run_records(self) -> dict[str, WfcRun]:
         """Return the loaded run records by id, loading them first if needed.
 
         Lineage synthesis reads these records.
@@ -595,14 +600,14 @@ class WfcProvider:
             self.load()
         return self._runs
 
-    def get_run(self, run_id: str) -> Optional[Dict[str, Any]]:
+    def get_run(self, run_id: str) -> dict[str, Any] | None:
         """Get a specific run by ID."""
         if not self._loaded:
             self.load()
         run = self._runs.get(run_id)
         return run.to_dict() if run else None
 
-    def get_cancelled_descendants(self, run_id: str) -> List[Dict[str, Any]]:
+    def get_cancelled_descendants(self, run_id: str) -> list[dict[str, Any]]:
         """Return runs cancelled because this run (or its subtree) failed.
 
         The rule is the lineage package's :func:`cancelled_descendants`, a
@@ -613,13 +618,13 @@ class WfcProvider:
         runs = self._runs
         return [runs[rid].to_dict() for rid in cancelled_descendants(runs, run_id)]
 
-    def get_modules(self) -> List[str]:
+    def get_modules(self) -> list[str]:
         """Get list of unique module names."""
         if not self._loaded:
             self.load()
         return list(set(self._modules.values()))
 
-    def get_samples_detail(self) -> List[Dict[str, Any]]:
+    def get_samples_detail(self) -> list[dict[str, Any]]:
         """Get detailed info for all registered samples.
 
         Returns:
@@ -668,7 +673,7 @@ class WfcProvider:
             return value.strftime("%Y-%m-%d %H:%M:%S.%f")
         return value
 
-    def get_completed_runs(self) -> List[Dict[str, Any]]:
+    def get_completed_runs(self) -> list[dict[str, Any]]:
         """Get completed runs with their output slots.
 
         Returns:
@@ -694,7 +699,7 @@ class WfcProvider:
             })
         return result
 
-    def get_methods(self) -> List[Dict[str, Any]]:
+    def get_methods(self) -> list[dict[str, Any]]:
         """Get all registered methods with their module info."""
         if not self._loaded:
             self.load()
@@ -708,7 +713,7 @@ class WfcProvider:
             for m in self._methods.values()
         ]
 
-    def _named_outputs(self, run_id) -> List[tuple]:
+    def _named_outputs(self, run_id) -> list[tuple]:
         """Resolve a run's outputs to local cache paths, each with its name.
 
         Storage holds the rules. :func:`wfc.storage.provider_outputs`
@@ -743,7 +748,7 @@ class WfcProvider:
                 rid, project_dir=self.project_root, session=session
             )
 
-    def list_artifacts(self, run_id: str) -> List[Dict[str, Any]]:
+    def list_artifacts(self, run_id: str) -> list[dict[str, Any]]:
         """List top-level artifacts for a run from the DVC cache.
 
         One row per archived ``RunOutput``, named by
@@ -760,9 +765,9 @@ class WfcProvider:
                 or its outputs cannot be named apart.
         """
         image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}
-        artifacts: List[Dict[str, Any]] = []
+        artifacts: list[dict[str, Any]] = []
 
-        for name, ro, cache_path in self._named_outputs(run_id):
+        for name, _ro, cache_path in self._named_outputs(run_id):
             if cache_path.is_dir():
                 count = 0
                 total = 0
@@ -773,7 +778,7 @@ class WfcProvider:
                 # Direct children (one level) for the expand-in-place UI.
                 # Shallow by design — deep dirs still only show the first
                 # tier, matching the flat-list rendering in RunDetailPanel.
-                direct_children: List[Dict[str, Any]] = []
+                direct_children: list[dict[str, Any]] = []
                 try:
                     for child in sorted(
                         cache_path.iterdir(),
@@ -821,9 +826,10 @@ class WfcProvider:
         artifacts.sort(key=lambda a: (a["type"] != "dir", a["name"].lower()))
         return artifacts
 
-    def get_artifacts(self, run_ids: Optional[List[str]] = None, extensions: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-        """
-        Collect artifact file paths for the given runs (or all runs if None).
+    def get_artifacts(
+        self, run_ids: list[str] | None = None, extensions: list[str] | None = None
+    ) -> list[dict[str, Any]]:
+        """Collect artifact file paths for the given runs (or all runs if None).
 
         Args:
             run_ids: List of run IDs to search (None = all loaded runs).
@@ -849,7 +855,7 @@ class WfcProvider:
             if not run:
                 continue
 
-            for name, ro, cache_path in self._named_outputs(rid):
+            for name, _ro, cache_path in self._named_outputs(rid):
                 if cache_path.is_dir():
                     # Directory outputs are stored as real directories —
                     # enumerate member files so the zip keeps per-file entries.
@@ -891,7 +897,7 @@ class WfcProvider:
 
         return results
 
-    def get_artifact_path(self, run_id: str, artifact_name: str) -> Optional[Path]:
+    def get_artifact_path(self, run_id: str, artifact_name: str) -> Path | None:
         """Resolve an artifact display name to its local cache path.
 
         ``artifact_name`` is the name this provider hands out elsewhere,
@@ -913,7 +919,7 @@ class WfcProvider:
         _refuse_unsafe_artifact_name(artifact_name)
         requested = artifact_name
 
-        for name, ro, cache_path in self._named_outputs(run_id):
+        for name, _ro, cache_path in self._named_outputs(run_id):
             if cache_path.is_dir():
                 if requested == name:
                     return cache_path

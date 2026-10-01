@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from axiom_annotations import AutoStep, Step, task, workflow
-from sqlmodel import SQLModel, Session, create_engine
+from sqlmodel import Session, SQLModel, create_engine
 
 from .. import layout
 from . import accessor

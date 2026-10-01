@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from sqlmodel import select
+from sqlmodel import col, select
 
-from ...persistence import get_session
-from ...persistence import Method, Module, Run
+from ...persistence import Method, Module, Run, get_session
 from ..state import _server_project_root
 
 router = APIRouter()
@@ -45,9 +44,9 @@ def _env_blob_text(md5: str, project_root: Path) -> str:
     try:
         return read_env_content(md5, project_root)
     except InvalidEnvBlobHashError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except EnvBlobNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/api/registry/envs")
@@ -69,12 +68,12 @@ def get_registry_envs():
     with get_session() as session:
         # Methods grouped by env spec.
         methods = session.exec(select(Method)).all()
-        modules_by_id: Dict[int, str] = {
+        modules_by_id: dict[int, str] = {
             m.id: m.name for m in session.exec(select(Module)).all()
         }
 
-        by_env: Dict[str, Dict[str, Any]] = {}
-        method_ids_by_env: Dict[str, List[int]] = {}
+        by_env: dict[str, dict[str, Any]] = {}
+        method_ids_by_env: dict[str, list[int]] = {}
         for meth in methods:
             spec = meth.env
             row = by_env.setdefault(
@@ -95,7 +94,7 @@ def get_registry_envs():
         # Aggregate Run stats per env spec.
         for spec, method_ids in method_ids_by_env.items():
             runs = session.exec(
-                select(Run).where(Run.method_id.in_(method_ids))
+                select(Run).where(col(Run.method_id).in_(method_ids))
             ).all()
             row = by_env[spec]
             row["run_count"] = len(runs)
@@ -146,7 +145,7 @@ def get_registry_env_packages(spec: str):
         return {"spec": spec, "backend": backend, "captured": False, "packages": []}
 
     blob = _env_blob_text(record.source_fingerprint, project_root)
-    packages = parse_packages(blob, backend)
+    packages = parse_packages(blob, record.backend)
     return {"spec": spec, "backend": backend, "captured": True, "packages": packages}
 
 

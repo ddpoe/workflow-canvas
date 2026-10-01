@@ -1,4 +1,4 @@
-"""Pure blob -> package-list parser for registered env contents.
+r"""Pure blob -> package-list parser for registered env contents.
 
 A registered pixi/conda env stores a content-addressed ``source_fingerprint``
 blob in the DVC cache (assembled by :func:`wfc.environments.register`). That blob is
@@ -12,13 +12,12 @@ out).
 
 The delimiter is the single cross-module contract: :func:`wfc.environments.register`
 joins on :data:`PIP_FREEZE_DELIMITER` and :func:`parse_packages` splits on it.
-A full ``pixi.lock`` is multi-line YAML, so a single-``\\n`` join would be
+A full ``pixi.lock`` is multi-line YAML, so a single-``\n`` join would be
 ambiguous — this sentinel line cannot occur inside a lock file, an explicit
 list, or pip-freeze output.
 """
 
 from __future__ import annotations
-
 
 # =============================================================================
 # Cross-module blob contract

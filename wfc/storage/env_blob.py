@@ -106,8 +106,8 @@ def read_env_content(md5: str, project_dir: Path) -> str:
     # Path-traversal guard: the resolved path must stay under cache_root.
     try:
         blob_path.relative_to(cache_root)
-    except ValueError:
-        raise InvalidEnvBlobHashError("path traversal rejected")
+    except ValueError as exc:
+        raise InvalidEnvBlobHashError("path traversal rejected") from exc
 
     if not blob_path.is_file():
         raise EnvBlobNotFoundError(f"blob not found: {md5}")

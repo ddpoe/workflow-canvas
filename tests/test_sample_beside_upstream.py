@@ -30,6 +30,7 @@ from sqlmodel import select
 
 from tests.conftest import requires_docker
 from tests.fixtures.conftest import FIXTURE_ENV_NAME
+from tests.fixtures.fakes import stub_docker_image_inspect
 from tests.harness import (
     ENGINE,
     Behavior,
@@ -286,7 +287,7 @@ def test_a_missing_or_empty_sample_directory_is_refused_by_name(
 # =============================================================================
 
 def _refused_mid_chain() -> Scenario:
-    """head -> mid -> tail, where mid's link names an output head does not declare."""
+    """Head -> mid -> tail, where mid's link names an output head does not declare."""
     return Scenario(nodes=[
         selector(),
         node("head", inputs=[wire("sel")], output_files={"data": "data.csv"}),
@@ -362,6 +363,7 @@ def test_a_claim_refusal_is_a_visible_failure(git_project, monkeypatch):
 @workflow(purpose="wfc run-pipeline over a pipeline the engine reports as "
                   "failed prints one ERROR line on stderr and returns 1, "
                   "with the summary printed and no traceback")
+@pytest.mark.usefixtures("ready_preflight")
 def test_run_pipeline_reports_a_failed_pipeline_as_an_error_line(
         git_project, monkeypatch, capsys):
     from tests.fixtures.conftest import mocked_snakemake
@@ -380,6 +382,9 @@ def test_run_pipeline_reports_a_failed_pipeline_as_an_error_line(
                      "job is refused; everything around the spawn runs for "
                      "real")
     gen_patch, popen_patch = mocked_snakemake(1)
+    # The scenario env's image is in the Docker daemon (run_pipeline's env
+    # pre-flight probes it); the engine is stubbed, so no container runs.
+    stub_docker_image_inspect(monkeypatch, lambda ref: ref)
     with gen_patch, popen_patch:
         rc = cli_main(["run-pipeline", "--pipeline", str(project.pipeline_json),
                        "--project-root", str(project.root),

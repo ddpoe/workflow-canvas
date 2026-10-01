@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.reference.cli-reference @ eb11c8db6ae2; do not edit -->
+<!-- generated from pm_mvp::docs.consumer.reference.cli-reference @ 6f7abe87a494; do not edit -->
 
 # CLI Reference
 
@@ -37,11 +37,16 @@ In an existing project, `wfc init` lists what it would add and asks once before 
 
 A missing git or Docker does not stop `wfc init`: the files are still written, and the health table shows what to install. Install it, re-run `wfc init` to fill in what is missing, then run `wfc doctor`.
 
-| Arg | Description |
-|---|---|
-| `--dir` | Target directory (default: current directory) |
-| `--archive PATH` | Archive location, without prompting (default: `~/.wfc/archives/<project>`) |
-| `--yes` | Accept every default and apply the listed changes without asking (for scripts and CI) |
+```{eval-rst}
+.. argparse::
+   :module: wfc.cli
+   :func: build_parser
+   :prog: wfc
+   :path: init
+   :nodescription:
+   :noepilog:
+   :nodefault:
+```
 
 The `.wfc/wfc.db` database indexes everything in the archive and is not tracked in git. Back up the `.wfc/` directory to keep archived outputs recoverable.
 
@@ -64,15 +69,16 @@ Run `wfc init` first; `wfc demo` also needs Docker running. If a check fails, it
 
 `wfc demo --remove` deletes exactly what the demo added (its module, methods, samples, environment, runs, files and pipeline) and leaves everything you registered yourself. It lists what it will remove and asks first unless you pass `--yes`. Demo entries use the `__demo__` name prefix, which you cannot use for your own names.
 
-| Arg | Description |
-|---|---|
-| `--dir` | Initialised project directory (default: current directory) |
-| `--port` | Canvas port (default: `8500`) |
-| `--no-open` | Serve the Canvas without opening a browser |
-| `--force` | Replace an existing demo |
-| `--remove` | Remove every demo entity, run and file |
-| `--purge-image` | With `--remove`: also delete the `local/wfc-demo-env` Docker image |
-| `--yes` | With `--remove`: skip the confirmation prompt |
+```{eval-rst}
+.. argparse::
+   :module: wfc.cli
+   :func: build_parser
+   :prog: wfc
+   :path: demo
+   :nodescription:
+   :noepilog:
+   :nodefault:
+```
 
 For a walkthrough see [Exploring the Demo](../tutorials/wfc-demo.md).
 
@@ -80,12 +86,16 @@ For a walkthrough see [Exploring the Demo](../tutorials/wfc-demo.md).
 
 Start the Canvas web UI for the current project and print its address.
 
-| Arg | Description |
-|---|---|
-| `--host` | Bind address (default: `127.0.0.1`) |
-| `--port` | Port (default: `8500`) |
-| `--reload` | Restart the server when wfc's source changes (for wfc development) |
-| `--project-root` | Project directory to serve (default: the project containing the current directory) |
+```{eval-rst}
+.. argparse::
+   :module: wfc.cli
+   :func: build_parser
+   :prog: wfc
+   :path: canvas
+   :nodescription:
+   :noepilog:
+   :nodefault:
+```
 
 For a first-project walkthrough, see [Getting Started](../tutorials/getting-started.md).
 
@@ -101,12 +111,16 @@ Create a module, or update an existing one, with its output contracts. Contracts
 wfc register-module --name my_analysis --module-dir src/my_analysis
 ```
 
-| Arg | Description |
-|---|---|
-| `--name` | Module name (required) |
-| `--module-dir` | Directory holding the module's `module.yaml`, e.g. `src/my_analysis` |
-| `--contracts` | Contracts as a JSON file path or an inline JSON string, e.g. `[{"type":"output","name":"x","value_type":".parquet"}]`. Optional when a `module.yaml` is found |
-| `--description` | Module description |
+```{eval-rst}
+.. argparse::
+   :module: wfc.cli
+   :func: build_parser
+   :prog: wfc
+   :path: register-module
+   :nodescription:
+   :noepilog:
+   :nodefault:
+```
 
 ### wfc register-method
 
@@ -120,31 +134,46 @@ Register a method from its directory: find the script, scan a Python script for 
 
 The script is the one named by `--script`, else by the `script:` key in `method.yaml`, else the single `<name>.py`, `.R`, `.r` or `.sh` file in the directory. If the script cannot be found or the check fails, it prints an `ERROR:` line and registers nothing.
 
-| Arg | Description |
-|---|---|
-| `method_dir` | Method directory (positional), e.g. `src/my_analysis/filter_data` |
-| `--module` | Module the method belongs to (required) |
-| `--name` | Method name (default: the directory name) |
-| `--script` | Script file name in the directory |
+```{eval-rst}
+.. argparse::
+   :module: wfc.cli
+   :func: build_parser
+   :prog: wfc
+   :path: register-method
+   :nodescription:
+   :noepilog:
+   :nodefault:
+```
 
 ### wfc register-sample
 
 Register a data file or directory as a sample. wfc hashes the content, copies it into the project's DVC cache (the source stays where it is) and records it; the sample is pushed to the archive when one is reachable. Pipelines restore it into `data/samples/<name>/` when a run needs it. A sample name can be registered once.
 
-| Arg | Description |
-|---|---|
-| `--name` | Sample name (required) |
-| `--source` | Source file or directory (required) |
-| `--manifest` | Optional YAML file with a `description:` key, stored with the sample |
+```{eval-rst}
+.. argparse::
+   :module: wfc.cli
+   :func: build_parser
+   :prog: wfc
+   :path: register-sample
+   :nodescription:
+   :noepilog:
+   :nodefault:
+```
 
 ### wfc restore-sample
 
 Copy a registered sample from the cache into `data/samples/<name>/`, pulling it from the archive if it is not in the local cache. A file that is already present with the right content is left alone; a changed one is replaced. Pipelines run this for you before a step reads a sample.
 
-| Arg | Description |
-|---|---|
-| `--name` | Sample name (required) |
-| `--hash` | Expected content hash (default: the registered hash) |
+```{eval-rst}
+.. argparse::
+   :module: wfc.cli
+   :func: build_parser
+   :prog: wfc
+   :path: restore-sample
+   :nodescription:
+   :noepilog:
+   :nodefault:
+```
 
 See [Registration](../how-to/registration.md) for walkthroughs of all four.
 
@@ -165,17 +194,16 @@ Build a Docker image for an environment, pin it by digest, and record it in `.wf
 
 The image does not need wfc installed. wfc runs the method script directly with the env's interpreter (see `--interpreter`).
 
-| Arg | Description |
-|---|---|
-| `name` | Env name, the key in `.wfc/envs.json` (positional) |
-| `spec` | Local env to capture: `conda:<env>`, `pixi:<name>`, or `pixi:<proj>:<env>` (positional, optional). Cannot be combined with `--backend` or `--from` |
-| `--backend` | `pixi`, `conda` or `byo`. Required with `--from` and for `byo` |
-| `--from PATH` | Lock file or explicit list to build from |
-| `--image` | `docker://` image reference, for `byo` |
-| `--base-image` | Base image to build on instead of the default |
-| `--interpreter PATH` | Path of the interpreter inside the container that runs method scripts. Default: the env's Python for pixi and conda, `python` for `byo`. Set it for an R or bash env (for example `/opt/conda/bin/Rscript` or `/bin/bash`) or for a `byo` image whose Python is not on `PATH`. `--python PATH` is an alias |
-| `--dry-run` | Write the Dockerfile to `.wfc/build/<name>/Dockerfile` and stop without running Docker. Use it with `--from` |
-| `--force` | Replace an existing env of the same name |
+```{eval-rst}
+.. argparse::
+   :module: wfc.cli
+   :func: build_parser
+   :prog: wfc
+   :path: register-env
+   :nodescription:
+   :noepilog:
+   :nodefault:
+```
 
 **Examples:**
 
@@ -203,18 +231,31 @@ Print a table of the registered envs with columns NAME, BACKEND, CONTAINER (the 
 
 `wfc show-env <name>`, where `<name>` is the env's name. Print one env's record: `name`, `backend`, `source`, `container`, `python` (the interpreter path), `env_fingerprint`, `source_fingerprint`, `built_from_lock` and `built_at`.
 
-| Arg | Description |
-|---|---|
-| `name` | Env name (positional) |
+```{eval-rst}
+.. argparse::
+   :module: wfc.cli
+   :func: build_parser
+   :prog: wfc
+   :path: show-env
+   :nodescription:
+   :noepilog:
+   :nodefault:
+```
 
 ### wfc delete-env
 
 `wfc delete-env <name> [--force]`, where `<name>` is the env's name. Remove an env from `.wfc/envs.json`. If methods use the env, wfc lists them first; they stay registered, so re-register them against another env. It asks for confirmation unless you pass `--force`. The Docker image itself is not deleted.
 
-| Arg | Description |
-|---|---|
-| `name` | Env name (positional) |
-| `--force` | Skip the confirmation prompt |
+```{eval-rst}
+.. argparse::
+   :module: wfc.cli
+   :func: build_parser
+   :prog: wfc
+   :path: delete-env
+   :nodescription:
+   :noepilog:
+   :nodefault:
+```
 
 See [Registering an Environment](../tutorials/registering-an-environment.md) for a walkthrough.
 
@@ -228,27 +269,46 @@ Each container is removed when the command ends. Anything you change inside it, 
 
 `wfc jupyter <env> [--port PORT]`, where `<env>` is the env's name. Start Jupyter Lab in the env's container. Open the `http://127.0.0.1:<port>/?token=...` URL that Jupyter prints.
 
-| Arg | Description |
-|---|---|
-| `env` | Env name (positional) |
-| `--port` | Host port for Jupyter (default: the first free port from 8888 to 8999) |
+```{eval-rst}
+.. argparse::
+   :module: wfc.cli
+   :func: build_parser
+   :prog: wfc
+   :path: jupyter
+   :nodescription:
+   :noepilog:
+   :nodefault:
+```
 
 ### wfc shell
 
 `wfc shell <env>`, where `<env>` is the env's name. Open an interactive shell (`bash`, or `sh` if the image has no bash) in the env's container.
 
-| Arg | Description |
-|---|---|
-| `env` | Env name (positional) |
+```{eval-rst}
+.. argparse::
+   :module: wfc.cli
+   :func: build_parser
+   :prog: wfc
+   :path: shell
+   :nodescription:
+   :noepilog:
+   :nodefault:
+```
 
 ### wfc exec
 
 `wfc exec <env> <cmd...>`, where `<env>` is the env's name and `<cmd...>` is the command to run and its arguments. Everything after the env name is passed through as the command. Output can be piped or redirected, for example `wfc exec myenv cat file.txt > out.txt`.
 
-| Arg | Description |
-|---|---|
-| `env` | Env name (positional) |
-| `cmd...` | Command and its arguments (positional) |
+```{eval-rst}
+.. argparse::
+   :module: wfc.cli
+   :func: build_parser
+   :prog: wfc
+   :path: exec
+   :nodescription:
+   :noepilog:
+   :nodefault:
+```
 
 
 ## Pipeline Commands
@@ -257,14 +317,16 @@ Each container is removed when the command ends. Anything you change inside it, 
 
 Run a pipeline file from the command line. This is the same run the Canvas Run button starts. wfc generates a Snakefile from the pipeline, runs it with Snakemake, and then archives the outputs unless you pass `--no-archive`.
 
-| Arg | Description |
-|---|---|
-| `--pipeline` | Pipeline JSON file (required) |
-| `--cores` | Number of jobs Snakemake runs at once (default: `4`) |
-| `--project-root` | Project directory (default: current directory) |
-| `--snakefile` | Where to write the generated Snakefile (default: `.runs/pipelines/<pipeline-id>/Snakefile`) |
-| `--archive` / `--no-archive` | Archive outputs after the run (default: on). Archive later with `wfc cache archive` |
-| `--keep-going` | Keep running independent branches after a step fails, instead of stopping at the first failure |
+```{eval-rst}
+.. argparse::
+   :module: wfc.cli
+   :func: build_parser
+   :prog: wfc
+   :path: run-pipeline
+   :nodescription:
+   :noepilog:
+   :nodefault:
+```
 
 When every step succeeds, the command exits 0. When a step fails, it prints the pipeline summary and then one `ERROR: <message>` line naming the failure, and exits 1. If the pipeline cannot start (for example, a sample it reads cannot be found), it prints the `ERROR:` line with the fix and exits 1 without running anything.
 
@@ -274,9 +336,16 @@ When every step succeeds, the command exits 0. When a step fails, it prints the 
 
 Archive run outputs that are not archived yet: hash each file, copy it into the DVC cache, and record it. Use it after `wfc run-pipeline --no-archive`. It prints progress per file and saves each one as it finishes, so after an interruption, running it again archives only what is left.
 
-| Arg | Description |
-|---|---|
-| `--run-id` | Archive only this run's outputs |
+```{eval-rst}
+.. argparse::
+   :module: wfc.cli
+   :func: build_parser
+   :prog: wfc
+   :path: cache archive
+   :nodescription:
+   :noepilog:
+   :nodefault:
+```
 
 ### wfc cache prune
 
@@ -284,27 +353,33 @@ Free disk space. By default, `wfc cache prune` removes run directories under `.r
 
 Before deleting anything it checks that the archive is reachable, and stops if it is not. Runs with outputs that are not archived yet are skipped with a warning; run `wfc cache archive` first. With `--include-local`, entries whose content has not been pushed to the archive are kept.
 
-| Arg | Description |
-|---|---|
-| `--all` | Remove every run directory and, with `--include-local`, every local cache entry, not only unreferenced ones |
-| `--include-local` | Also remove entries from the local DVC cache (`.dvc/cache/`) |
-| `--dry-run` | Print what would be deleted and delete nothing |
-| `--force` | Skip the confirmation prompt and the archive check, and also delete local cache entries that were never pushed to the archive. Those files cannot be recovered |
+```{eval-rst}
+.. argparse::
+   :module: wfc.cli
+   :func: build_parser
+   :prog: wfc
+   :path: cache prune
+   :nodescription:
+   :noepilog:
+   :nodefault:
+```
 
 ### wfc export
 
 `wfc export <run-id> <slot> <dest>`, where `<run-id>` is the run to export from, `<slot>` is the output slot, and `<dest>` is where to write the copy. For example, `wfc export 412 masks results/masks.png`.
 
-Copy a run's output out of the cache into a file you own, or print where it is. Cache files are read-only (see [Storage & Provenance](../explanation/storage-and-provenance.md)); the exported copy is writable. For a run that reused a cached result, the original run's output is exported.
+Copy a run's output out of the cache into a file you own, or print where it is (for example, `p=$(wfc export 412 masks --path)`). Cache files are read-only (see [Storage & Provenance](../explanation/storage-and-provenance.md)); the exported copy is writable. For a run that reused a cached result, the original run's output is exported.
 
-| Arg | Description |
-|---|---|
-| `run_id` | Run to export from (positional) |
-| `slot` | Output slot to export (positional). Omit it to list the run's output slots and file names |
-| `dest` | Destination file or directory (positional). An existing directory receives the file under its own name |
-| `--all` | Export every output of the run into `dest`, which must be a directory |
-| `--path` | Print the read-only local path instead of copying, e.g. `p=$(wfc export 412 masks --path)`. With `--all`, prints one `name<TAB>path` line per output |
-| `--force` | Overwrite an existing destination file |
+```{eval-rst}
+.. argparse::
+   :module: wfc.cli
+   :func: build_parser
+   :prog: wfc
+   :path: export
+   :nodescription:
+   :noepilog:
+   :nodefault:
+```
 
 If any requested output cannot be exported, nothing is written and the command exits 1 with the reason.
 

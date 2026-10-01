@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel
-
 
 # =============================================================================
 # Pydantic models
@@ -14,35 +13,35 @@ from pydantic import BaseModel
 
 class PipelineNode(BaseModel):
     id: str
-    type: Optional[str] = "method"  # "method" | "input_selector" | "run_reference"
+    type: str | None = "method"  # "method" | "input_selector" | "run_reference"
     method: str = ""
-    module: Optional[str] = None
-    params: Dict[str, Any] = {}
-    position: Optional[Dict[str, float]] = None
-    label: Optional[str] = None  # custom NID from canvas node
-    samples: Optional[List[str]] = None  # input_selector: selected samples
-    run_id: Optional[str] = None  # run_reference: selected run ID
-    source: Optional[str] = None  # input_selector: source type
-    fan_mode: Optional[str] = None  # input_selector: "out" (default, per-sample) | "in" (bundle)
+    module: str | None = None
+    params: dict[str, Any] = {}
+    position: dict[str, float] | None = None
+    label: str | None = None  # custom NID from canvas node
+    samples: list[str] | None = None  # input_selector: selected samples
+    run_id: str | None = None  # run_reference: selected run ID
+    source: str | None = None  # input_selector: source type
+    fan_mode: str | None = None  # input_selector: "out" (default, per-sample) | "in" (bundle)
 
 
 class PipelineLink(BaseModel):
     source: str
     target: str
-    sourceHandle: Optional[str] = None
-    targetHandle: Optional[str] = None
+    sourceHandle: str | None = None
+    targetHandle: str | None = None
 
 
 class PipelineInput(BaseModel):
-    name: Optional[str] = None
-    nodes: List[PipelineNode]
-    links: List[PipelineLink] = []
-    samples: List[str] = []
+    name: str | None = None
+    nodes: list[PipelineNode]
+    links: list[PipelineLink] = []
+    samples: list[str] = []
     # Parameter-sweep fields carried through to the emitter (wfc/orchestration/snakemake.py).
     # The canvas compiles its richer authoring state (sample_overrides, etc.)
     # into these two fields before POSTing — see frontend pipeline.ts.
-    param_sets: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None
-    explicit_combos: Optional[List[Dict[str, Any]]] = None
+    param_sets: dict[str, dict[str, dict[str, Any]]] | None = None
+    explicit_combos: list[dict[str, Any]] | None = None
     # When true, pass --keep-going to Snakemake so a failure in one job
     # doesn't cancel independent jobs. Useful for fan-out pipelines where
     # one bad sample shouldn't block the rest. Default off (fail-fast).
@@ -52,4 +51,4 @@ class PipelineInput(BaseModel):
     # Graph's resolve_variables before _enrich_pipeline. The pre-
     # substitution form is also persisted as pipeline.editable.json so
     # History "Open in canvas" can rehydrate variables and bind chips.
-    variables: Optional[Dict[str, Any]] = None
+    variables: dict[str, Any] | None = None

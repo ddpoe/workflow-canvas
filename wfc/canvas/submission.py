@@ -17,7 +17,7 @@ import threading
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 from axiom_annotations import AutoStep, Step, task, workflow
 
@@ -63,7 +63,7 @@ class RunNotReady(SubmissionRefused):
             renders for pre-run errors.
     """
 
-    def __init__(self, payload: Dict[str, Any]) -> None:
+    def __init__(self, payload: dict[str, Any]) -> None:
         super().__init__(payload["message"])
         self.payload = payload
 
@@ -78,10 +78,10 @@ class SubmittedPipeline:
     """
 
     pipeline_id: str
-    step_map: Dict[str, str]
+    step_map: dict[str, str]
 
 
-def _enrich_pipeline(pipeline: "PipelineInput") -> Dict[str, Any]:
+def _enrich_pipeline(pipeline: PipelineInput) -> dict[str, Any]:
     """Enrich a PipelineJSON payload with script paths and slot_outputs from the DB.
 
     The canvas sends minimal node data (id, method, module, params).
@@ -102,7 +102,7 @@ def _enrich_pipeline(pipeline: "PipelineInput") -> Dict[str, Any]:
     return enrich_document(pipeline.model_dump())
 
 
-def _classify_pipeline_error(exc: Exception) -> Dict[str, Any]:
+def _classify_pipeline_error(exc: Exception) -> dict[str, Any]:
     """Map a pre-run exception to a structured payload for the canvas UI.
 
     The UI shows the raw message by default (it's already human-readable —
@@ -128,7 +128,7 @@ def _classify_pipeline_error(exc: Exception) -> Dict[str, Any]:
     return {"kind": "unknown", "message": message}
 
 
-def _readiness_payload(check) -> Dict[str, Any]:
+def _readiness_payload(check) -> dict[str, Any]:
     """Build a kind-tagged payload from a not-ready readiness CheckResult.
 
     Maps a failing ``check_docker`` / ``check_git`` result to the same
@@ -221,7 +221,7 @@ def run_in_background(
             pass  # The entry was removed while the run ended; nothing reads it.
 
 
-def submitted_document(pipeline: PipelineInput) -> Dict[str, Any]:
+def submitted_document(pipeline: PipelineInput) -> dict[str, Any]:
     """The posted pipeline as a document, in the form it was submitted.
 
     Variables and ``{$var}`` refs stay intact. The run route keeps this form
@@ -234,10 +234,10 @@ def submitted_document(pipeline: PipelineInput) -> Dict[str, Any]:
     Returns:
         The document dict.
     """
-    document: Dict[str, Any] = {
+    document: dict[str, Any] = {
         "name": pipeline.name,
         "nodes": [n.model_dump(exclude_none=True) for n in pipeline.nodes],
-        "links": [l.model_dump(exclude_none=True) for l in pipeline.links],
+        "links": [link.model_dump(exclude_none=True) for link in pipeline.links],
         "samples": pipeline.samples,
     }
     if pipeline.param_sets:
@@ -311,9 +311,9 @@ def submit_pipeline(pipeline: PipelineInput, project_root: Path) -> SubmittedPip
     try:
         pipeline_json = prepare_document(pre_sub_dict)
     except UnknownVariableError as exc:
-        raise SubmissionRefused(f"Unknown pipeline variable: '{exc.name}'")
+        raise SubmissionRefused(f"Unknown pipeline variable: '{exc.name}'") from exc
     except ValueError as exc:
-        raise SubmissionRefused(str(exc))
+        raise SubmissionRefused(str(exc)) from exc
 
     口 = Step(step_num=5, name="Write the frozen document and the editable form",
              purpose="Mint the pipeline id, create its run directory through "

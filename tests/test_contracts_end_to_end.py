@@ -42,9 +42,9 @@ from wfc.registration import load_contract_map
 ENV = DEFAULT_ENV_NAME
 #: The legacy spelling: refused at registration, stripped once by every reader.
 LEGACY_ENV = f"container:{ENV}"
-#: The manifest's image as dispatch hands it to ``docker run``: the byo
-#: record's ``local/<name>`` repo at the stub digest, ``docker://`` stripped.
-IMAGE_REF = f"local/{ENV}@sha256:{STUB_DIGEST}"
+#: The manifest's image as dispatch hands it to ``docker run``: the record
+#: names the ``local/<name>`` repo, so Docker gets the bare stub image ID.
+IMAGE_REF = f"sha256:{STUB_DIGEST}"
 COLUMNS = {"strict": ["cell_id"],
            "from_params": [{"params": ["marker"], "pattern": "{}_mean"}]}
 A = ("a", "s1", "default")

@@ -18,9 +18,9 @@ import os
 import sys
 from pathlib import Path
 
-from .. import layout
+from axiom_annotations import Step, task
 
-from axiom_annotations import task, Step
+from .. import layout
 from ..persistence import project_root as get_project_root
 
 
@@ -146,72 +146,49 @@ def run_dispatch(
                      "when the invocation carries no document), look up its "
                      "built image in the manifest, read executor and gpus, "
                      "and enforce container-only execution")
-    from ..contracts import WFC_ENV_VARS, parse_env_spec, parse_method_yaml
+    from ..contracts import WFC_ENV_VARS, parse_method_yaml
+    from .node_env import node_env_value, resolve_node_env
 
     project_root = get_project_root()
 
-    # The document's value for this node, when the invocation carries a
-    # document. Execution is container-only: there is no host-Python
-    # fallback and no default env — every node must name a built container
-    # env (see the no-container ending below).
-    document_env: str | None = None
-    if pipeline_json and Path(pipeline_json).exists():
-        raw_pj = json.loads(Path(pipeline_json).read_text())
-        nm = {str(n["id"]): n for n in raw_pj["nodes"]}
-        mm = {n["method"]: n for n in raw_pj["nodes"] if n.get("method")}
-        nc = nm.get(node_id) or mm.get(node_id) or {}
-        document_env = nc.get("env", nc.get("env_strategy", "")) or ""
-
     # Re-parse method.yaml (cheap) for ``executor`` and ``gpus`` without
-    # threading the contract dict from the claim phase — and, for an
-    # inline-args invocation with no document, for the env the method
-    # itself declares. A document that names an env nothing built still
-    # ends no-container: the declaration is read only when there is no
-    # document at all.
+    # threading the contract dict from the claim phase.
     method_executor = "local"
     method_gpus = False
-    declared_env = ""
     try:
         contract = parse_method_yaml(Path(script_path).resolve().parent)
         if contract is not None:
             method_executor = contract.get("executor") or "local"
             method_gpus = bool(contract.get("gpus", False))
-            declared_env = contract.get("env") or ""
     except Exception:
         pass
 
-    env_value = document_env if document_env is not None else declared_env
-    env_name = ""
-    env_error = ""
-    if env_value:
-        try:
-            env_name = parse_env_spec(env_value)
-        except ValueError as exc:
-            env_error = str(exc)
+    # The node's env, by the rule the pre-flights share: the document's
+    # value when the invocation carries a document (a document naming an
+    # env nothing built still ends no-container), else the method's own
+    # declaration. Execution is container-only: there is no host-Python
+    # fallback and no default env — every node must name a built container
+    # env (see the no-container ending below).
+    env_value = node_env_value(node_id, pipeline_json, script_path)
+    node_env = resolve_node_env(env_value, project_root)
+    env_name = node_env.name
+    env_error = node_env.error
 
-    # Manifest lookup by the parsed name. The record and the name are
-    # retained for interpreter resolution at the argv-build step
-    # (resolve_env_python: recorded field -> per-backend default -> bare
-    # "python"). No recursive-dispatch guard is needed: the container runs
-    # the method script directly under the env's own interpreter — there is
-    # no in-container wfc entrypoint at all, so recursion is impossible by
-    # construction.
+    # The record and the name are retained for interpreter resolution at
+    # the argv-build step (resolve_env_python: recorded field -> per-backend
+    # default -> bare "python"). No recursive-dispatch guard is needed: the
+    # container runs the method script directly under the env's own
+    # interpreter — there is no in-container wfc entrypoint at all, so
+    # recursion is impossible by construction. Dispatch never rebuilds or
+    # probes: the pre-flights made the image runnable before any claim.
     container_image_ref: str | None = None
-    env_record = None
+    env_record = node_env.record
     lookup_name = env_name
-    if env_name:
-        try:
-            from ..environments import get as _envs_get, strip_docker_scheme
-            record = _envs_get(env_name, project_root)
-            if record is not None and getattr(record, "container", ""):
-                env_record = record
-                # Strip docker:// prefix; the docker CLI accepts the bare
-                # registry/repo@digest form. (Apptainer wants docker://;
-                # build_apptainer_command re-prefixes.)
-                container_image_ref = strip_docker_scheme(record.container)
-        except Exception:
-            container_image_ref = None
-            env_record = None
+    if env_record is not None:
+        from ..environments import daemon_ref
+        # What Docker is handed: a local env's bare image ID, or a registry
+        # image's <host>/<path>@sha256:<hex>.
+        container_image_ref = daemon_ref(env_record.container)
 
     # Container-only enforcement: if no container image resolved (a value
     # outside the grammar, an unknown env name, or a non-container env
@@ -413,8 +390,10 @@ def _run_method_subprocess(
     stdout_log: Path,
     stderr_log: Path,
 ):
-    """Run the method's ``docker run`` command, tee'ing stdout/stderr to
-    per-run log files AND the parent process's std streams.
+    """Run the method's ``docker run`` command, tee'ing its output.
+
+    Stdout and stderr go to per-run log files AND the parent process's std
+    streams.
 
     Execution is container-only, so ``cmd`` is always the
     assembled ``docker run ...`` argv (there is no host-Python path). Per-run

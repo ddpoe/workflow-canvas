@@ -26,14 +26,15 @@ rows: every row the author sees is blocked by it.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any
 
-from axiom_annotations import workflow, Step, AutoStep
+from axiom_annotations import Step, workflow
 from sqlmodel import select
 
-from ..persistence import Method, Module, Run, Sample
-from ..persistence import get_session, project_root as get_project_root
+from ..persistence import Method, Module, Run, Sample, get_session
+from ..persistence import project_root as get_project_root
 
 CACHED_LOCAL = "cached_local"
 CACHED_REMOTE = "cached_remote"

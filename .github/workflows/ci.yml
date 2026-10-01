@@ -1,0 +1,140 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure git
+        # The tests create and commit to throwaway repositories.
+        run: |
+          git config --global user.name "CI"
+          git config --global user.email "ci@example.com"
+          git config --global init.defaultBranch main
+      - name: Enable long paths (Windows)
+        if: runner.os == 'Windows'
+        run: git config --system core.longpaths true
+      - run: pipx install poetry
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: poetry
+      # Some tests drive the Canvas's TypeScript through Node (22.6+); they skip without it.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install
+        run: |
+          poetry env use python
+          poetry install --with dev
+      - name: Test workflow-canvas
+        run: poetry run pytest
+      - name: Test wfc-client
+        run: poetry run pytest wfc-client/tests
+
+  client:
+    # wfc-client runs inside users' method containers and supports Python 3.9+.
+    name: wfc-client (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.13"]
+    defaults:
+      run:
+        working-directory: wfc-client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install . pytest
+      - run: pytest tests
+
+  lint:
+    name: Lint and type check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pipx install poetry
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: poetry
+      - name: Install
+        run: |
+          poetry env use python
+          poetry install --with dev
+      - name: ruff
+        run: poetry run ruff check --output-format github
+      - name: mypy
+        run: poetry run mypy
+
+  docs:
+    name: Docs build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: userdocs/requirements.txt
+      # The same install and build commands Read the Docs runs (.readthedocs.yaml).
+      - run: pip install -r userdocs/requirements.txt
+      - run: sphinx-build -W --keep-going -c userdocs/_sphinx -b html userdocs/guide _site
+
+  frontend:
+    name: Canvas front end
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: wfc/canvas/static
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: wfc/canvas/static/package-lock.json
+      - run: npm ci
+      - run: npm test
+
+  integration:
+    # Needs Linux containers, which GitHub's Windows and macOS runners do not provide.
+    name: Integration (Docker)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure git
+        run: |
+          git config --global user.name "CI"
+          git config --global user.email "ci@example.com"
+          git config --global init.defaultBranch main
+      - run: pipx install poetry
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: poetry
+      - name: Install
+        run: |
+          poetry env use python
+          poetry install --with dev
+      - name: Integration tests
+        run: poetry run pytest -m integration

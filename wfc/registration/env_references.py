@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from sqlmodel import select
+from sqlmodel import col, select
 
 from ..contracts import parse_env_spec
 from ..persistence import Method, Module, get_session
@@ -33,7 +33,7 @@ def methods_referencing_env(env_name: str) -> list[str]:
     references: list[str] = []
     with get_session() as session:
         rows = session.exec(
-            select(Method, Module).join(Module, Method.module_id == Module.id)
+            select(Method, Module).join(Module, col(Method.module_id) == col(Module.id))
         ).all()
         for method, module in rows:
             try:

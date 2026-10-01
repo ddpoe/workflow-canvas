@@ -38,8 +38,8 @@ from __future__ import annotations
 import logging
 import sys
 from collections import Counter
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 from axiom_annotations import Step, task
 from sqlmodel import select
@@ -233,7 +233,8 @@ def recorded_output_slots(run_id: int, *, session=None) -> list[str]:
     run = session.get(Run, run_id)
     if run is None:
         return []
-    return [r.slot for r in _checked_output_rows(session, run)]
+    # _checked_output_rows refuses a record without a slot, so none is dropped.
+    return [r.slot for r in _checked_output_rows(session, run) if r.slot is not None]
 
 
 def _slot_listing(rows: Sequence[RunOutput]) -> str:
@@ -581,7 +582,8 @@ def _resolve_output_in_session(
     rows = _checked_output_rows(session, run)
     if not rows:
         raise UnknownOutputError(f"Run {run_id} has no recorded outputs.")
-    available = [ro.slot for ro in rows]
+    # _checked_output_rows refuses a record without a slot, so none is dropped.
+    available = [ro.slot for ro in rows if ro.slot is not None]
 
     if slot is None:
         raise UnknownOutputError(
@@ -641,6 +643,7 @@ def _local_entry_path(
 
     project_dir = Path(project_dir)
     content_hash = ro.content_hash
+    assert content_hash is not None, "callers pass an archived record"
     check_entry_shape(project_dir, content_hash, output_repair(run_id))
     where = f"run {run_id}, output '{ro.slot}' (content_hash={content_hash})"
     location = output_location(ro, project_dir)

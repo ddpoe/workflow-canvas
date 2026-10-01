@@ -26,11 +26,10 @@ import socket
 import subprocess
 import sys
 import tomllib
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Optional, Sequence
 
 from .. import layout
-
 
 # Port that uniFLOW (a Konica Minolta print server) squats on Dante's local
 # Windows machine -- it 302-redirects to :8443 and breaks anything that
@@ -94,14 +93,16 @@ def _resolve_env_and_runtime(env_name: str) -> tuple[str, Path, Path]:
         env_name: Name of the env (key in ``.wfc/envs.json::envs``).
 
     Returns:
-        ``(image_ref, project_root, dvc_cache_dir)`` -- image_ref has any
-        ``docker://`` prefix stripped so it's ready for the bare-ref form
-        ``build_docker_command`` expects.
+        ``(image_ref, project_root, dvc_cache_dir)`` -- image_ref is the
+        daemon ref :func:`~wfc.environments.runnable.ensure_runnable`
+        returns, the form ``build_docker_command`` hands Docker; a missing
+        local image has been rebuilt first.
 
     Raises:
         _DevLoopError: When the project root is missing, the executor is
-            ``slurm``, the env is not registered, or the env is not a
-            container env (empty ``container`` field).
+            ``slurm``, the env is not registered, the env is not a
+            container env (empty ``container`` field), or its missing
+            image is refused or fails to rebuild.
     """
     # The canonical resolver (imported here so dev-loop stays light at
     # import time): WFC_PROJECT_ROOT validated against the marker, else the
@@ -141,10 +142,14 @@ def _resolve_env_and_runtime(env_name: str) -> tuple[str, Path, Path]:
             f"Dev-loop commands require a container env."
         )
 
-    # The docker CLI takes the bare registry/repo@digest form; dispatch
-    # strips the scheme through the same helper.
-    from .argv import strip_docker_scheme
-    container_ref = strip_docker_scheme(container_ref)
+    # What Docker is handed: the record's daemon ref, once the daemon is
+    # known to hold the image (a missing local env is rebuilt from its
+    # staged build context, or refused naming the command that recreates it).
+    from .runnable import ensure_runnable
+    try:
+        container_ref = ensure_runnable(env_name, record, project_root)
+    except RuntimeError as exc:  # a refusal, or a failed rebuild
+        raise _DevLoopError(f"ERROR: {exc}") from exc
 
     dvc_cache_dir = layout.dvc_cache_dir(project_root)
     return container_ref, project_root, dvc_cache_dir
@@ -337,7 +342,7 @@ def exec_(env_name: str, cmd_argv: Sequence[str]) -> int:
     return _run_subprocess(argv)
 
 
-def jupyter(env_name: str, port: Optional[int] = None) -> int:
+def jupyter(env_name: str, port: int | None = None) -> int:
     """Launch Jupyter Lab inside an ephemeral container of the env's image.
 
     The Jupyter server inside the container always binds 8888 (the inner

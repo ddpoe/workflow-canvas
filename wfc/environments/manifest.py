@@ -37,10 +37,8 @@ import os
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional
 
 from .. import layout
-
 
 MANIFEST_SCHEMA_VERSION = 1
 MANIFEST_FILENAME = layout.ENV_MANIFEST_FILENAME
@@ -61,25 +59,25 @@ class EnvRecord:
     """
 
     backend: str
-    source: Optional[str]
+    source: str | None
     container: str
     env_fingerprint: str
     built_at: str
-    built_from_lock: Optional[str] = None
+    built_from_lock: str | None = None
     # md5 of the captured package-list blob (lock/explicit-list + an explicit
     # delimiter + pip-freeze), recorded for EVERY pixi/conda registration that
     # stages source content — both live-spec capture and ``--from`` file mode.
     # ``None`` for byo and for legacy/no-source registrations. Retrievable via
     # ``GET /api/registry/envs/blob/<md5>`` and parsed by
     # :func:`wfc.environments.packages.parse_packages`.
-    source_fingerprint: Optional[str] = None
+    source_fingerprint: str | None = None
     # Container-side path of the env's Python interpreter, recorded at
     # registration: computed for pixi/conda from the generator recipe;
     # ``"python"`` for byo (overridable via ``wfc register-env --python``).
     # ``None`` for records written before this field existed — dispatch
     # falls back to the per-backend default via :func:`resolve_env_python`
     # (identical values by construction, so no re-registration is needed).
-    python: Optional[str] = None
+    python: str | None = None
 
     def to_dict(self) -> dict:
         """Return a plain dict suitable for JSON serialization.
@@ -90,14 +88,14 @@ class EnvRecord:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict) -> "EnvRecord":
+    def from_dict(cls, data: dict) -> EnvRecord:
         """Reconstruct an ``EnvRecord`` from a JSON-loaded dict.
 
         Unknown keys (including a stray ``name`` key) are ignored so a
         record written by an older or newer wfc can still be read without
         crashing — forward-compat for additive fields only.
         """
-        allowed = {f.name for f in cls.__dataclass_fields__.values()}  # type: ignore[attr-defined]
+        allowed = {f.name for f in cls.__dataclass_fields__.values()}
         return cls(**{k: v for k, v in data.items() if k in allowed})
 
 
@@ -211,7 +209,7 @@ def list_envs(project_dir: Path) -> list[tuple[str, EnvRecord]]:
     return [(name, EnvRecord.from_dict(envs[name])) for name in sorted(envs)]
 
 
-def get(name: str, project_dir: Path) -> Optional[EnvRecord]:
+def get(name: str, project_dir: Path) -> EnvRecord | None:
     """Return the env record for *name*, or ``None`` if missing.
 
     Args:
@@ -230,7 +228,7 @@ def get(name: str, project_dir: Path) -> Optional[EnvRecord]:
 
 def env_record_for_spec(
     spec: str, project_dir: Path
-) -> tuple[Optional[EnvRecord], Optional[str]]:
+) -> tuple[EnvRecord | None, str | None]:
     """Resolve a ``Method.env`` spec to its registered record and backend.
 
     Takes the spec through the env-spec grammar's read side (a legacy

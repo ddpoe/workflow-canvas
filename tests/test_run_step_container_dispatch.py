@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from axiom_annotations import Step, workflow
 
-from tests.fixtures.fakes import stub_dev_loop_launch
+from tests.fixtures.fakes import stub_dev_loop_launch, stub_docker_image_inspect
 from tests.harness import (
     Phase,
     STUB_DIGEST,
@@ -26,9 +26,10 @@ from tests.harness import (
 
 
 ENV_NAME = "image-io"
-# local/<name> is the repo shape production's pixi local-build path records.
-CONTAINER_REF_BARE = f"local/{ENV_NAME}@sha256:{STUB_DIGEST}"
-CONTAINER_REF_DOCKER = f"docker://{CONTAINER_REF_BARE}"
+# The env is recorded as docker://local/<name>@sha256:<image ID>, the shape
+# production's pixi local-build path records. Docker is handed its daemon
+# ref: the bare image ID, which both image stores run and neither pulls.
+DAEMON_REF = f"sha256:{STUB_DIGEST}"
 
 
 def _dispatch_scenario(method_name: str, **node_fields) -> Scenario:
@@ -73,15 +74,17 @@ def test_run_step_container_dispatch_docker_argv(git_project, monkeypatch):
     assert cmd[1] == "run"
     assert "--rm" in cmd
     assert "--user" in cmd
-    # Image ref present (digest-pinned, no docker:// prefix in argv).
-    assert CONTAINER_REF_BARE in cmd
+    # The image is named by the daemon ref: the local env's bare image ID,
+    # never local/<name>@sha256:, which the classic store pulls.
+    assert DAEMON_REF in cmd
+    assert not any(a.startswith(("local/", "docker://")) for a in cmd)
     # Inner argv runs the method script DIRECTLY under the env's resolved
     # interpreter — no `-m wfc`, no in-container wfc entrypoint at all. The
     # outer host run-step owns run-state; the image needs nothing
     # wfc-related. The env record
     # declares backend=pixi with no recorded `python`, so the resolver
     # falls back to the pixi per-backend default for env name "image-io".
-    image_idx = cmd.index(CONTAINER_REF_BARE)
+    image_idx = cmd.index(DAEMON_REF)
     inner = cmd[image_idx + 1:]
     assert inner == [
         "/opt/.pixi/envs/image-io/bin/python",
@@ -125,7 +128,7 @@ def test_run_step_passes_a_script_outside_the_root_through_unchanged(
 
     target = ("ml_train", "s1", "default")
     cmd = obs.dispatch_cmd(target)
-    inner = cmd[cmd.index(CONTAINER_REF_BARE) + 1:]
+    inner = cmd[cmd.index(DAEMON_REF) + 1:]
     assert len(inner) == 2
     script_arg = inner[1]
     assert script_arg == str(
@@ -159,6 +162,8 @@ def test_dispatch_and_dev_loop_argv_agree_on_user_binds_and_workdir(
         return 0
 
     stub_dev_loop_launch(monkeypatch, fake_run_subprocess)
+    # The daemon holds the env's image, so the dev loop rebuilds nothing.
+    stub_docker_image_inspect(monkeypatch, DAEMON_REF)
     assert dev_loop.exec_(ENV_NAME, ["python", "-c", "print(1)"]) == 0
     (exec_argv,) = launched
 
@@ -170,7 +175,7 @@ def test_dispatch_and_dev_loop_argv_agree_on_user_binds_and_workdir(
     def _parts(argv):
         """The ``docker run --rm`` prefix, and the builder's run options
         from ``--user`` up to the image ref."""
-        image_idx = argv.index(CONTAINER_REF_BARE)
+        image_idx = argv.index(DAEMON_REF)
         user_idx = argv.index("--user")
         return argv[:3], argv[user_idx:image_idx]
 

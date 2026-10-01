@@ -16,19 +16,22 @@ import shlex
 from pathlib import Path
 
 import pytest
-
 from axiom_annotations import workflow
 
-from tests.fixtures.fakes import fake_subprocess_run, stub_docker_command_builder
-
+from tests.fixtures.fakes import (
+    fake_subprocess_run,
+    stub_docker_build,
+    stub_docker_command_builder,
+    stub_docker_image_inspect,
+    stub_docker_pull,
+)
+from wfc.environments.docker import ImageNotFoundError
 
 VALID_DIGEST = "a" * 64
-CONTAINER_REF_DOCKER = (
-    f"docker://ghcr.io/dante/image-io@sha256:{VALID_DIGEST}"
-)
-CONTAINER_REF_BARE = (
-    f"ghcr.io/dante/image-io@sha256:{VALID_DIGEST}"
-)
+#: The env is a locally built pixi env, recorded as
+#: docker://local/image-io@sha256:<image ID>; Docker is handed its daemon
+#: ref, the bare image ID.
+DAEMON_REF = f"sha256:{VALID_DIGEST}"
 
 
 @pytest.fixture(autouse=True)
@@ -47,11 +50,10 @@ def _setup_project(tmp_path: Path, *, executor: str | None = None) -> Path:
     if executor is not None:
         toml += f'[executor]\ntype="{executor}"\n'
     (tmp_path / ".wfc" / "wf-canvas.toml").write_text(toml)
-    # byo record: a registry image attached by digest is what production
-    # writes for a docker-registry ref like this one.
+    # A pixi env built locally: the record production writes names the
+    # local/<name> repo with the image ID in the digest slot.
     from tests.fixtures.conftest import write_env_record
-    write_env_record(tmp_path, "image-io", image="ghcr.io/dante/image-io",
-                     digest=VALID_DIGEST)
+    write_env_record(tmp_path, "image-io", backend="pixi", digest=VALID_DIGEST)
     return tmp_path
 
 
@@ -65,13 +67,15 @@ def _setup_project(tmp_path: Path, *, executor: str | None = None) -> Path:
 def test_dev_loop_reuses_container_runner_helper(tmp_path, monkeypatch):
     proj = _setup_project(tmp_path)
     monkeypatch.chdir(proj)
+    # The daemon holds the env's image, so nothing is rebuilt.
+    stub_docker_image_inspect(monkeypatch, DAEMON_REF)
 
     sentinel_argv = [
         "docker", "run", "--rm",
         "--user", "1000:1000",
         "-v", "/proj:/work", "-w", "/work",
         "-v", "/dvc:/dvc-cache",
-        CONTAINER_REF_BARE,
+        DAEMON_REF,
         # Inner argv gets appended by the helper from the caller's input;
         # tests check it landed correctly via the spy below.
     ]
@@ -112,7 +116,7 @@ def test_dev_loop_reuses_container_runner_helper(tmp_path, monkeypatch):
 
     # Shell call: image ref + project root + dvc cache + sh fallback inner.
     shell_call = calls[0]
-    assert shell_call["image_ref"] == CONTAINER_REF_BARE
+    assert shell_call["image_ref"] == DAEMON_REF
     assert shell_call["project_root"] == proj.resolve()
     assert shell_call["dvc_cache_dir"] == (proj / ".dvc" / "cache").resolve() \
         or shell_call["dvc_cache_dir"] == proj / ".dvc" / "cache"
@@ -121,7 +125,7 @@ def test_dev_loop_reuses_container_runner_helper(tmp_path, monkeypatch):
 
     # Exec call: same image/root, user's literal cmd as inner_argv.
     exec_call = calls[1]
-    assert exec_call["image_ref"] == CONTAINER_REF_BARE
+    assert exec_call["image_ref"] == DAEMON_REF
     assert exec_call["inner_argv"] == ["python", "-c", "print(1)"]
 
     # The argv handed to subprocess.run must include the per-verb
@@ -141,6 +145,71 @@ def test_dev_loop_reuses_container_runner_helper(tmp_path, monkeypatch):
         joined = " ".join(argv)
         assert ":/work" in joined
         assert ":/dvc-cache" in joined
+
+
+@workflow(purpose="wfc shell and wfc exec on a pixi env whose image the "
+                  "Docker daemon lacks rebuild it through ensure_runnable from "
+                  "the staged build context before the docker run argv is "
+                  "built, and hand Docker the rebuilt image ID; nothing is "
+                  "pulled")
+def test_dev_loop_rebuilds_a_missing_env_before_the_argv(tmp_path, monkeypatch):
+    from wfc import environments as envs_mod
+
+    (tmp_path / ".wfc").mkdir()
+    (tmp_path / ".wfc" / "wf-canvas.toml").write_text(
+        '[project]\nname="t"\n[database]\nurl="sqlite:///:memory:"\n')
+    monkeypatch.chdir(tmp_path)
+    stub_docker_build(monkeypatch, None)
+    stub_docker_image_inspect(monkeypatch, DAEMON_REF)
+    envs_mod.register(
+        name="image-io", backend="pixi",
+        source={"pixi_lock_content":
+                    "version: 6\nenvironments:\n  image-io:\n    packages: {}\n",
+                "pixi_toml_content": '[project]\nname = "image-io"\n',
+                "pip_freeze_content": "numpy==1.26.4\n"},
+        project_dir=tmp_path,
+    )
+
+    new_ref = "sha256:" + "b" * 64
+    events: list[str] = []
+
+    def inspect(ref):
+        # Only the rebuilt image exists: by its build tag or its image ID.
+        if ref in ("local/image-io:_wfc-build", new_ref) and "build" in events:
+            return new_ref
+        raise ImageNotFoundError(f"Error: No such image: {ref}")
+
+    def build(build_dir, tag):
+        events.append("build")
+
+    stub_docker_image_inspect(monkeypatch, inspect)
+    stub_docker_build(monkeypatch, build)
+    stub_docker_pull(monkeypatch, AssertionError("a local/ image was pulled"))
+
+    image_refs: list[str] = []
+
+    def _fake_build(image_ref, project_root, dvc_cache_dir, inner_argv,
+                    *, uid, gid, gpus=False):
+        events.append("argv")
+        image_refs.append(image_ref)
+        return ["docker", "run", "--rm", image_ref, *inner_argv]
+
+    class _FakeResult:
+        returncode = 0
+
+    fake_subprocess_run(monkeypatch, lambda argv, check=False: _FakeResult())
+    with stub_docker_command_builder(_fake_build):
+        from wfc.environments import dev_loop
+
+        assert dev_loop.shell("image-io") == 0
+        assert dev_loop.exec_("image-io", ["python", "-V"]) == 0
+
+    # One rebuild, before the first argv; the second verb finds it present
+    # through the rebuilt record.
+    assert events[:2] == ["build", "argv"]
+    assert events.count("build") == 1
+    assert image_refs == [new_ref, new_ref]
+    assert envs_mod.get("image-io", tmp_path).container         == "docker://local/image-io@" + new_ref
 
 
 # ---------------------------------------------------------------------------

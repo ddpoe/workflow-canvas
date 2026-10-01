@@ -13,7 +13,8 @@ database, disk or provider. Turning rows into records is the caller's job.
 from __future__ import annotations
 
 from collections import deque
-from typing import Dict, List, Mapping, Optional, Protocol, Sequence
+from collections.abc import Mapping, Sequence
+from typing import Protocol
 
 
 class RunRecord(Protocol):
@@ -28,13 +29,30 @@ class RunRecord(Protocol):
             it; ``None`` otherwise.
     """
 
-    id: str
-    parentRunIds: Sequence[str]
-    cacheSourceRunId: Optional[str]
-    cancelledDueToRunId: Optional[str]
+    # Read-only members, so a record with a narrower field type (a list for
+    # ``parentRunIds``) still satisfies the protocol.
+    @property
+    def id(self) -> str:
+        """The run's id."""
+        ...
+
+    @property
+    def parentRunIds(self) -> Sequence[str]:
+        """The upstream run of each input edge, in slot order."""
+        ...
+
+    @property
+    def cacheSourceRunId(self) -> str | None:
+        """The run whose outputs a cache-hit row reused."""
+        ...
+
+    @property
+    def cancelledDueToRunId(self) -> str | None:
+        """The failed run that caused a cancelled row."""
+        ...
 
 
-def upstreams(record: RunRecord) -> List[str]:
+def upstreams(record: RunRecord) -> list[str]:
     """Return a run's upstreams: input edges in slot order, then the reuse edge.
 
     Each upstream is listed once, at its first position. The first upstream
@@ -47,7 +65,7 @@ def upstreams(record: RunRecord) -> List[str]:
     Returns:
         Upstream run ids, input edges first, without repeats.
     """
-    result: List[str] = []
+    result: list[str] = []
     for parent in record.parentRunIds:
         if parent not in result:
             result.append(parent)
@@ -57,7 +75,7 @@ def upstreams(record: RunRecord) -> List[str]:
     return result
 
 
-def ancestors(records: Mapping[str, RunRecord], run_id: str) -> List[str]:
+def ancestors(records: Mapping[str, RunRecord], run_id: str) -> list[str]:
     """Return every run upstream of ``run_id``, breadth-first, each once.
 
     Args:
@@ -73,7 +91,7 @@ def ancestors(records: Mapping[str, RunRecord], run_id: str) -> List[str]:
     if start is None:
         return []
     seen = {run_id}
-    found: List[str] = []
+    found: list[str] = []
     frontier = deque(upstreams(start))
     while frontier:
         current = frontier.popleft()
@@ -88,7 +106,7 @@ def ancestors(records: Mapping[str, RunRecord], run_id: str) -> List[str]:
     return found
 
 
-def descendants(records: Mapping[str, RunRecord], run_id: str) -> List[str]:
+def descendants(records: Mapping[str, RunRecord], run_id: str) -> list[str]:
     """Return every run downstream of ``run_id``, depth-first, each once.
 
     The inverse of :func:`ancestors`: a run is a child of each of its
@@ -102,12 +120,12 @@ def descendants(records: Mapping[str, RunRecord], run_id: str) -> List[str]:
         Descendant ids in pre-order. A cycle in hand-edited records
         terminates.
     """
-    children: Dict[str, List[str]] = {}
+    children: dict[str, list[str]] = {}
     for record in records.values():
         for upstream in upstreams(record):
             children.setdefault(upstream, []).append(record.id)
     seen = {run_id}
-    found: List[str] = []
+    found: list[str] = []
     stack = list(reversed(children.get(run_id, [])))
     while stack:
         current = stack.pop()
@@ -119,7 +137,7 @@ def descendants(records: Mapping[str, RunRecord], run_id: str) -> List[str]:
     return found
 
 
-def cancelled_descendants(records: Mapping[str, RunRecord], run_id: str) -> List[str]:
+def cancelled_descendants(records: Mapping[str, RunRecord], run_id: str) -> list[str]:
     """Return the runs cancelled because ``run_id`` failed.
 
     The answer is a filter on each record's cancellation pointer, not a walk.

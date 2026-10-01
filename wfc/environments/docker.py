@@ -3,7 +3,7 @@
 Centralizes the ``docker`` CLI invocations wfc makes while building and
 registering envs (``wfc register-env``); runtime dispatch assembles its
 ``docker run`` argv in :mod:`wfc.environments.argv` instead. Tests mock
-the three functions here rather than ``subprocess.run`` directly, which
+the four functions here rather than ``subprocess.run`` directly, which
 keeps the boundary small.
 
 Functions:
@@ -13,6 +13,9 @@ Functions:
   caller's PATH / DOCKER_HOST / HOME / proxy vars survive the spawn.
 - :func:`image_inspect` — ``docker image inspect <ref> --format '{{.Id}}'``.
   Returns the digest string verbatim, including the ``sha256:`` prefix.
+- :func:`repo_digest` — the ``RepoDigests`` entry for one repository: the
+  registry digest a byo registration records for an image outside
+  ``local/``.
 - :func:`pull` — ``docker pull <ref>``. Only used on the BYO branch when
   the image is not already present in the local daemon.
 
@@ -27,6 +30,7 @@ the tail of the combined stream; the others attach stderr verbatim.)
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -34,7 +38,6 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Union
 
 from axiom_annotations import task
 
@@ -60,7 +63,7 @@ def _format_elapsed(seconds: float) -> str:
 
 
 @task(purpose="Run docker build -t <tag> <dir> with BuildKit enabled")
-def build(dockerfile_dir: Union[str, Path], tag: str) -> None:
+def build(dockerfile_dir: str | Path, tag: str) -> None:
     """Run ``docker build -t <tag> <dockerfile_dir>`` with BuildKit on.
 
     BuildKit is required by the Dockerfile generators (they emit
@@ -151,6 +154,16 @@ def build(dockerfile_dir: Union[str, Path], tag: str) -> None:
         )
 
 
+class ImageNotFoundError(RuntimeError):
+    """``docker image inspect`` reached the daemon, and it has no such image."""
+
+
+#: What the daemon prints for an image it lacks, on the classic and the
+#: containerd image stores. Any other inspect failure (a daemon that is not
+#: running, permission denied) is not a missing image.
+_NO_SUCH_IMAGE = ("no such image", "no such object")
+
+
 def image_inspect(ref: str) -> str:
     """Return the local image digest for *ref* via ``docker image inspect``.
 
@@ -167,8 +180,9 @@ def image_inspect(ref: str) -> str:
         The digest string, including the ``sha256:`` prefix.
 
     Raises:
-        RuntimeError: If docker exits non-zero (typically because the
-            image is not present in the local daemon).
+        ImageNotFoundError: If the daemon answered and has no such image.
+        RuntimeError: If docker exits non-zero for any other reason (the
+            daemon is unreachable, permission denied).
     """
     cmd = ["docker", "image", "inspect", ref, "--format", "{{.Id}}"]
     proc = subprocess.run(
@@ -182,11 +196,87 @@ def image_inspect(ref: str) -> str:
         check=False,
     )
     if proc.returncode != 0:
+        message = (f"docker image inspect {ref!r} failed "
+                   f"(exit {proc.returncode}):\n{proc.stderr}")
+        if any(marker in proc.stderr.lower() for marker in _NO_SUCH_IMAGE):
+            raise ImageNotFoundError(message)
+        raise RuntimeError(message)
+    return proc.stdout.strip()
+
+
+#: Docker Hub's registry hosts, which ``RepoDigests`` omits from a name.
+_DOCKER_HUB_HOSTS = ("docker.io/", "index.docker.io/", "registry-1.docker.io/")
+
+
+def _familiar_repository(repository: str) -> str:
+    """Return *repository* in the familiar form ``RepoDigests`` lists it in.
+
+    Docker lists a Docker Hub repository without its registry host, and an
+    official image without ``library/``: ``docker.io/library/alpine`` is
+    listed as ``alpine``. Any other registry's name is kept whole.
+
+    Args:
+        repository: A ``<host>/<path>`` repository name, without tag or
+            digest.
+
+    Returns:
+        The name as ``RepoDigests`` spells it.
+    """
+    for host in _DOCKER_HUB_HOSTS:
+        if repository.startswith(host):
+            repository = repository.removeprefix(host)
+            break
+    return repository.removeprefix("library/")
+
+
+def repo_digest(ref: str, repository: str) -> str:
+    """Return the registry digest the local daemon records for *repository*.
+
+    Reads ``docker image inspect <ref> --format '{{json .RepoDigests}}'``
+    and returns the digest of the entry whose repository is *repository*.
+    That is the manifest digest the registry serves, and the one a
+    ``<repository>@sha256:<hex>`` reference resolves on every image store.
+    ``.Id`` (see :func:`image_inspect`) is not: on the classic store it is
+    the image's config digest.
+
+    Args:
+        ref: Image reference understood by the local docker daemon.
+        repository: The ``<host>/<path>`` repository the digest belongs to.
+            A Docker Hub name matches in either its full or familiar form.
+
+    Returns:
+        The digest string, including the ``sha256:`` prefix.
+
+    Raises:
+        RuntimeError: If docker exits non-zero, or the image lists no
+            registry digest for *repository* (a locally built image lists
+            none).
+    """
+    cmd = ["docker", "image", "inspect", ref, "--format", "{{json .RepoDigests}}"]
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if proc.returncode != 0:
         raise RuntimeError(
             f"docker image inspect {ref!r} failed (exit {proc.returncode}):\n"
             f"{proc.stderr}"
         )
-    return proc.stdout.strip()
+    entries = json.loads(proc.stdout.strip() or "null") or []
+    wanted = _familiar_repository(repository)
+    for entry in entries:
+        name, _, digest = entry.partition("@")
+        if digest and _familiar_repository(name) == wanted:
+            return digest
+    raise RuntimeError(
+        f"image {ref!r} has no registry digest for {repository!r} "
+        f"(RepoDigests: {entries}). Pull it from its registry, or build it "
+        f"locally under the local/ namespace."
+    )
 
 
 def pull(ref: str) -> None:

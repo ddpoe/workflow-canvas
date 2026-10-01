@@ -1,5 +1,7 @@
-"""Identity -- the Tier 0 fingerprint primitive: what are these bytes, what
-code is this method, what did this run consume, what is this run's identity.
+"""Identity -- the Tier 0 fingerprint primitive.
+
+It answers what these bytes are, what code a method is, what a run
+consumed, and what a run's identity is.
 
 Four families, each a function from values to a hex digest. Documented by
 ``docs/system/identity.json``.

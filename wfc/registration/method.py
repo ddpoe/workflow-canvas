@@ -1,11 +1,13 @@
-"""Method registration: AST-scan a method's script and register it with its
-tracked functions, parameters and contract, write its source snapshot, and
-commit it to git.
+"""Method registration: scan a method's script, register it, snapshot and commit it.
+
+The script is AST-scanned and registered with its tracked functions,
+parameters and contract; its source snapshot is written and committed to git.
 
 ``register_method`` is the workflow, and each of its nine steps is a task.
 Steps 2 to 9 share one database session, which commits only after the
 snapshot is written and the git commit is made. A refusal at any step leaves
-no rows, no snapshot change and no commit."""
+no rows, no snapshot change and no commit.
+"""
 
 from __future__ import annotations
 
@@ -15,17 +17,19 @@ from pathlib import Path
 from axiom_annotations import AutoStep, task, workflow
 from sqlmodel import Session, select
 
-from ..contracts import parse_method_yaml
 from .. import layout
+from ..contracts import parse_method_yaml
 from ..persistence import (
-    get_session,
-    project_root as get_project_root,
     Method,
     MethodContract,
     Module,
     ModuleContract,
     ParamDef,
     TrackedFunction,
+    get_session,
+)
+from ..persistence import (
+    project_root as get_project_root,
 )
 from .ast_scanner import ScriptInfo, scan_script
 from .discovery import (
@@ -100,7 +104,7 @@ def _locate_and_scan(
     # (even empty). Absent -> permissive mode.
     helpers_decl = contract_data.get("helpers") if contract_data is not None else None
     strict_helpers = helpers_decl is not None
-    if strict_helpers:
+    if helpers_decl is not None:
         helper_paths = _resolve_declared_helpers(
             method_dir, get_project_root(), helpers_decl, script_path
         )
@@ -306,6 +310,7 @@ def _upsert_method(
         session.refresh(method)
         print(f"Updated method '{method_name}' (id={method.id}, env={env_name})")
 
+    assert method.id is not None  # assigned by the flush
     return method.id
 
 
@@ -384,7 +389,8 @@ def _sync_tracked_functions(
 
 
 @task(
-    purpose="Store method.yaml slot definitions in the database (parsed at step 1) and refuse literal saves that don't match the declared outputs",
+    purpose="Store method.yaml slot definitions in the database (parsed at step 1) and refuse "
+            "literal saves that don't match the declared outputs",
     inputs="open session, method id, method name, parsed method.yaml, AST scan, script path",
     outputs="the method's MethodContract row, flushed; warnings printed for dynamic or unreachable saves",
 )
@@ -527,7 +533,7 @@ def _check_module_contract(
             )
         print(f"  module contract: validated ({len(required_outputs)} required output(s))")
     elif required_outputs and contract_data is None:
-        print(f"  module contract: skipped (no method.yaml to validate)")
+        print("  module contract: skipped (no method.yaml to validate)")
 
 
 @workflow(purpose="AST-scan a method script and register it with tracked functions and parameters")

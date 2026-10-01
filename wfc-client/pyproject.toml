@@ -32,3 +32,17 @@ axiom-annotations = ">=0.1.0,<0.2.0"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+# Type checking: `mypy` from this directory (strict; the package ships py.typed).
+[tool.mypy]
+# The oldest target current mypy accepts; the package itself supports 3.9.
+python_version = "3.10"
+files = ["wfc_client"]
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+# axiom-annotations ships no type information.
+[[tool.mypy.overrides]]
+module = ["axiom_annotations", "axiom_annotations.*"]
+ignore_missing_imports = true

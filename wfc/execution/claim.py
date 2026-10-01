@@ -26,20 +26,22 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import NamedTuple, Sequence
+from typing import NamedTuple
 
-from sqlmodel import select
-
-from axiom_annotations import workflow, task, Step, AutoStep
+from axiom_annotations import AutoStep, Step, task, workflow
+from sqlmodel import col, select
 
 from .. import layout
 from ..graph import document_node, inbound_wiring
-from ..persistence import Method, Module, Run, RunInput, RunOutput, Sample
-from ..persistence import get_session, project_root as get_project_root
+from ..persistence import Method, Module, Run, RunInput, RunOutput, Sample, get_session
+from ..persistence import project_root as get_project_root
 from ..storage import (
-    OUTPUT_MISSING, OUTPUT_REMOTE, has_malformed_output_records,
+    OUTPUT_MISSING,
+    OUTPUT_REMOTE,
+    has_malformed_output_records,
     output_location,
 )
 from .parents import ParentEntry, parse_parent_entries, spell_parent_entry
@@ -183,7 +185,6 @@ def resolve_input_identities(
             row, or an entry naming no output is wired to a run whose
             recorded outputs are not exactly one.
     """
-
     from ..identity import SampleIdentity, UpstreamRunIdentity
     from ..storage import recorded_output_slots
 
@@ -340,8 +341,8 @@ def classify_cache_key(
     with get_session() as session:
         stmt = (
             select(Run)
-            .join(Method, Run.method_id == Method.id)
-            .join(Module, Method.module_id == Module.id)
+            .join(Method, col(Run.method_id) == col(Method.id))
+            .join(Module, col(Method.module_id) == col(Module.id))
             .where(Method.name == method_name)
             .where(Module.name == module_name)
             .where(Run.sample == sample)
@@ -349,14 +350,14 @@ def classify_cache_key(
             .where(Run.cache_key == cache_key)
             .where(Run.cache_source_run_id == None)  # noqa: E711  exclude audit rows
         )
-        stmt = stmt.order_by(Run.finished_at.desc())  # type: ignore[union-attr]
+        stmt = stmt.order_by(col(Run.finished_at).desc())
         first_incomplete: CacheVerdict | None = None
         for run in session.exec(stmt).all():
             if has_malformed_output_records(run.id, session=session):
                 continue
             rows = session.exec(
                 select(RunOutput).where(RunOutput.run_id == run.id)
-                .order_by(RunOutput.id)
+                .order_by(col(RunOutput.id))
             ).all()
             verdict = _verdict_for_run(run.id, rows, project_dir)
             if verdict.status != OUTPUTS_MISSING:
@@ -484,8 +485,8 @@ def method_fingerprints(method_name: str, method_env: str) -> tuple[str, str]:
         parse_method_yaml,
         render_contract_projection,
     )
-    from ..identity import build_code_fingerprint
     from ..environments import resolve_env_fingerprint
+    from ..identity import build_code_fingerprint
 
     if not method_env:
         raise ValueError(
@@ -703,7 +704,6 @@ def compose_cache_key(
             names no output on an upstream whose recorded outputs are not
             exactly one.
     """
-
     params = params or {}
     if not method_env:
         raise ValueError(
@@ -788,7 +788,6 @@ def candidate_cache_key(
             source copy cannot be fingerprinted, or a parent reference is not
             an integer run id.
     """
-
     with get_session() as session:
         mod = session.exec(
             select(Module).where(Module.name == module_name)
@@ -953,6 +952,24 @@ def pre_run(
     verbs do, and also enforces version discipline.
 
     Args:
+        method_name: The registered method to run.
+        module_name: The module the method belongs to.
+        sample: The sample identity the run is for (``COLLAPSED_SAMPLE`` for
+            a collapsed fan-in root).
+        params: The run's parameters; part of the cache key and stored on the
+            run row. ``None`` means no parameters.
+        parent_run_ids: Parent entries as ``"input:output:run"`` or
+            ``"input:run"``; they enter the cache key and become the run's
+            lineage rows.
+        pipeline_id: The pipeline this run belongs to, stored on the run row.
+        nf_process_name: The Nextflow process name, stored on the run row.
+        repo_path: Directory within the git repository the commit is read
+            from when ``git_commit`` is not supplied.
+        git_commit: A pre-resolved commit SHA; when ``None`` the commit is
+            read from ``repo_path`` and a dirty tree is refused. Recorded as
+            audit metadata on the method version, not part of the cache key.
+        nid: The node's display label, stored on the run row and used to
+            name the step in a missing-input refusal.
         node_id: The pipeline node this run is for, as the document spells
             its id; stamped on the run row (the new run and a cache-hit
             audit row alike). ``None`` leaves the row's node unrecorded.
@@ -993,9 +1010,10 @@ def pre_run(
             either because the document does not wire it, or because it
             wires it and the input was not delivered.
     """
-
-    from ..registration.method_version import get_or_create_version  # from its defining module, so the AutoStep edge resolves
-    from ..version import DirtyRepositoryError, get_git_commit
+    from ..registration.method_version import (
+        get_or_create_version,  # from its defining module, so the AutoStep edge resolves
+    )
+    from ..version import get_git_commit
 
     params = params or {}
 
@@ -1026,7 +1044,7 @@ def pre_run(
             raise ValueError(
                 f"Method '{method_name}' not found in module '{module_name}'"
             )
-        method_id: int = method.id  # type: ignore[assignment]
+        method_id: int = method.id
         method_env: str = method.env
         # The registered contract's input declaration, read off the row
         # already in hand rather than through the whole-registry contract
@@ -1096,8 +1114,8 @@ def pre_run(
                 status="completed",
                 pipeline_id=pipeline_id,
                 nf_process_name=nf_process_name,
-                started_at=datetime.now(timezone.utc),
-                finished_at=datetime.now(timezone.utc),
+                started_at=datetime.now(UTC),
+                finished_at=datetime.now(UTC),
                 version_id=version_id,
                 cache_key=cache_key,
                 cache_source_run_id=source_run_id,
@@ -1131,7 +1149,7 @@ def pre_run(
             status="running",
             pipeline_id=pipeline_id,
             nf_process_name=nf_process_name,
-            started_at=datetime.now(timezone.utc),
+            started_at=datetime.now(UTC),
             version_id=version_id,
             cache_key=cache_key,
             env_fingerprint=env_fingerprint,
@@ -1169,7 +1187,6 @@ def register_run(
     ``["sources:5", "sources:8"]``).  Each entry becomes a ``RunInput`` row
     carrying its input slot and the source slot it names.
     """
-
     parent_entries: list[ParentEntry] = []
     if parent_run_ids:
         parent_entries = parse_parent_entries(parent_run_ids, step=method_name)
@@ -1198,7 +1215,7 @@ def register_run(
             status="running",
             pipeline_id=pipeline_id,
             nf_process_name=nf_process_name,
-            started_at=datetime.now(timezone.utc),
+            started_at=datetime.now(UTC),
         )
         session.add(run)
         session.commit()
@@ -1219,18 +1236,17 @@ def lookup_run(method_name: str, sample: str, nf_process_name: str | None = None
     Legacy verb — pipelines resolve their parents through the run_id.txt
     sidecars and take the claim phase's cache answer instead.
     """
-
     with get_session() as session:
         stmt = (
             select(Run)
-            .join(Method, Run.method_id == Method.id)
+            .join(Method, col(Run.method_id) == col(Method.id))
             .where(Method.name == method_name)
             .where(Run.sample == sample)
             .where(Run.status == "completed")
         )
         if nf_process_name is not None:
             stmt = stmt.where(Run.nf_process_name == nf_process_name)
-        stmt = stmt.order_by(Run.finished_at.desc())  # type: ignore[union-attr]
+        stmt = stmt.order_by(col(Run.finished_at).desc())
         run = session.exec(stmt).first()
         return run.id if run else None
 
@@ -1293,7 +1309,6 @@ def run_claim(
         resolves every entry it is handed and branches on the list being
         empty.
     """
-
     口 = Step(step_num=1, name="Resolve step config",
              purpose="Load node config from pipeline JSON or inline args")
     if pipeline_json is None:

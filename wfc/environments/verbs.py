@@ -3,9 +3,12 @@
 Each body takes plain values, prints what the verb prints and returns its
 exit code; ``wfc/cli.py`` parses the arguments and calls it.
 
-``register-env`` runs in three parts: the argument checks
-(:func:`_check_register_args`), the staging by mode (:func:`_stage_source`),
-and the call to :func:`wfc.environments.register` (:func:`_register_record`).
+``register-env`` runs in four parts: the argument checks
+(:func:`_check_register_args`), the existing-name refusal and the caller's
+Docker gate, the staging by mode (:func:`_stage_source`), and the call to
+:func:`wfc.environments.register` (:func:`_register_record`).  Like
+``delete-env``'s references, the Docker probe arrives as a value (a callable),
+so this package never imports Execution.
 
 ``delete-env`` takes the methods that reference the env as a value.  The
 caller reads them from the registry, so this package never imports
@@ -15,8 +18,8 @@ Registration.
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import Optional
 
 from axiom_annotations import task
 
@@ -115,6 +118,7 @@ def show_env(name: str) -> int:
     )
     width = max(len(k) for k in keys)
     for key in keys:
+        value: object
         if key == "name":
             value = name
         else:
@@ -189,18 +193,20 @@ def delete_env(name: str, *, references: list[str], force: bool = False) -> int:
 def register_env(
     name: str,
     *,
-    spec: Optional[str] = None,
-    backend: Optional[str] = None,
-    from_path: Optional[str] = None,
-    image: Optional[str] = None,
-    base_image: Optional[str] = None,
+    spec: str | None = None,
+    backend: str | None = None,
+    from_path: str | None = None,
+    image: str | None = None,
+    base_image: str | None = None,
     force: bool = False,
     dry_run: bool = False,
-    interpreter_path: Optional[str] = None,
-    python_path: Optional[str] = None,
+    interpreter_path: str | None = None,
+    python_path: str | None = None,
+    docker_gate: Callable[[], str | None],
 ) -> int:
-    """``wfc register-env <name> [<spec>] [--backend X] [--from PATH]``: build
-    a container image for an env and register it in ``.wfc/envs.json``.
+    """Build a container image for an env and register it in ``.wfc/envs.json``.
+
+    Implements ``wfc register-env <name> [<spec>] [--backend X] [--from PATH]``.
 
     Three input modes are accepted:
 
@@ -251,6 +257,15 @@ def register_env(
         dry_run: ``--dry-run``: render the Dockerfile and stop.
         interpreter_path: ``--interpreter``: the recorded interpreter.
         python_path: ``--python``: the legacy spelling of ``--interpreter``.
+        docker_gate: The Docker readiness probe, passed in by the caller
+            (this package never imports Execution). It returns the message to
+            print when Docker cannot build, or ``None`` when it can.
+
+    The checks run cheapest first, so each refusal the user can fix on the
+    command line is reported even on a host with no Docker: the argument
+    checks, then (after ``--dry-run``'s early return, which never touches
+    Docker) the existing-name refusal, then ``docker_gate``, then staging
+    and the build.
 
     Returns:
         0 on success (the image reference is printed); 1 on any refusal.
@@ -288,6 +303,17 @@ def register_env(
             project_dir=project_dir,
         )
 
+    # ---- Existing name, then Docker: both before any staging ----
+    try:
+        _refuse_existing_name(name=name, force=force, project_dir=project_dir)
+    except _Refused as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    docker_message = docker_gate()
+    if docker_message is not None:
+        print(docker_message, file=sys.stderr)
+        return 1
+
     # ---- Full build path ----
     try:
         source = _stage_source(
@@ -317,13 +343,13 @@ def register_env(
 
 def _check_register_args(
     *,
-    spec: Optional[str],
-    backend: Optional[str],
-    from_path: Optional[str],
+    spec: str | None,
+    backend: str | None,
+    from_path: str | None,
     dry_run: bool,
-    interpreter_path: Optional[str],
-    python_path: Optional[str],
-) -> tuple[str, bool, Optional[str]]:
+    interpreter_path: str | None,
+    python_path: str | None,
+) -> tuple[str, bool, str | None]:
     """The argument checks of ``register-env``, run before any staging or Docker work.
 
     Args:
@@ -343,7 +369,7 @@ def _check_register_args(
         _Refused: The arguments contradict each other or name no source.
     """
     # ---- Mutex enforcement: typed-spec ⨯ --backend ⨯ --from ----
-    inferred_backend: Optional[str] = (
+    inferred_backend: str | None = (
         _typed_spec_backend(spec) if spec else None
     )
 
@@ -381,6 +407,8 @@ def _check_register_args(
         )
 
     resolved_backend = inferred_backend or backend
+    # The refusals above leave a typed spec or --backend to name it.
+    assert resolved_backend is not None
 
     # pixi/conda registration must name its source explicitly (file mode
     # or live-spec capture).
@@ -421,10 +449,10 @@ def _check_register_args(
 def _stage_source(
     *,
     live: bool,
-    spec: Optional[str],
+    spec: str | None,
     backend: str,
-    from_path: Optional[str],
-    image: Optional[str],
+    from_path: str | None,
+    image: str | None,
     project_dir: Path,
 ) -> dict:
     """The staging by mode: shape the *source* payload :func:`wfc.environments.register` takes.
@@ -468,15 +496,39 @@ def _stage_source(
     return {"image": image}
 
 
+def _refuse_existing_name(*, name: str, force: bool, project_dir: Path) -> None:
+    """Refuse a name ``.wfc/envs.json`` already records, before Docker is asked.
+
+    :func:`wfc.environments.register` makes the same check as its own guard;
+    making it here too lets the refusal reach a user whose host has no Docker.
+
+    Args:
+        name: The env name.
+        force: ``--force``: replace an existing record.
+        project_dir: The wfc project root.
+
+    Raises:
+        _Refused: *name* is recorded and ``force`` is ``False``, or the
+            manifest cannot be read.
+    """
+    from .build import refuse_existing_name
+    from .manifest import load_manifest
+
+    try:
+        refuse_existing_name(load_manifest(project_dir), name, force)
+    except (FileExistsError, ValueError) as exc:
+        raise _Refused(str(exc)) from exc
+
+
 def _register_record(
     *,
     name: str,
     backend: str,
     source: dict,
-    base_image: Optional[str],
+    base_image: str | None,
     force: bool,
     project_dir: Path,
-    python_override: Optional[str],
+    python_override: str | None,
 ):
     """The call to :func:`wfc.environments.register`.
 
@@ -511,7 +563,7 @@ def _register_record(
         raise _Refused(str(exc)) from exc
 
 
-def _typed_spec_backend(spec: str) -> Optional[str]:
+def _typed_spec_backend(spec: str) -> str | None:
     """Infer backend from a typed env spec, or ``None`` if not typed.
 
     Recognized prefixes:
@@ -550,16 +602,16 @@ def _stage_live_env_source(live_spec: str, project_dir: Path) -> dict:
         FileNotFoundError: If a required source file (pixi.lock,
             pixi.toml) is missing from the resolved env's project dir.
     """
-    from .introspect import (
-        PIP_MISSING_SENTINEL,
-        conda_list_explicit,
-        pip_freeze_best_effort,
-    )
     from ..persistence import read_config
     from .host import (
         _find_python_in_env,
         resolve_conda_env_dir,
         resolve_python_for_env,
+    )
+    from .introspect import (
+        PIP_MISSING_SENTINEL,
+        conda_list_explicit,
+        pip_freeze_best_effort,
     )
 
     config = read_config(project_dir)
@@ -656,8 +708,8 @@ def _register_env_dry_run(
     *,
     name: str,
     backend: str,
-    base_image: Optional[str],
-    image: Optional[str],
+    base_image: str | None,
+    image: str | None,
     project_dir: Path,
 ) -> int:
     """``wfc register-env <name> --from <path> --backend X --dry-run``.

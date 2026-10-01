@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
 
 from axiom_annotations import task
 
@@ -66,7 +65,7 @@ def _canonical_param_type(param_name: str, value, source: Path) -> str:
     inputs="Path to a method directory (may or may not contain method.yaml)",
     outputs="Normalised contract dict with inputs/outputs/params/executor/env/script/helpers/gpus, or None",
 )
-def parse_method_yaml(method_dir: Path) -> Optional[dict]:
+def parse_method_yaml(method_dir: Path) -> dict | None:
     """Parse ``method.yaml`` from a method directory.
 
     If the file does not exist, returns ``None`` so callers can skip
@@ -239,7 +238,7 @@ def parse_method_yaml(method_dir: Path) -> Optional[dict]:
     inputs="Path to a module directory (may or may not contain module.yaml)",
     outputs="Normalised module dict with description and contracts, or None",
 )
-def parse_module_yaml(module_dir: Path) -> Optional[dict]:
+def parse_module_yaml(module_dir: Path) -> dict | None:
     """Parse ``module.yaml`` from a module directory.
 
     If the file does not exist, returns ``None`` so callers can skip

@@ -91,6 +91,8 @@ def _make_writable(path: Path | str) -> None:
     protected entries/copies (the Windows read-only attribute blocks
     ``unlink``/``rmtree``).  Silent best-effort: failures surface later as
     the actual delete/replace error, which is more informative.
+    A symlink is left alone, so replacing a checkout that holds one never
+    changes the mode of what it points at.
 
     Args:
         path: Path (file or directory) to make writable.
@@ -101,9 +103,11 @@ def _make_writable(path: Path | str) -> None:
             os.chmod(path, 0o755)
             for root, dirs, files in os.walk(path):
                 for name in dirs:
-                    os.chmod(os.path.join(root, name), 0o755)
+                    if not os.path.islink(os.path.join(root, name)):
+                        os.chmod(os.path.join(root, name), 0o755)
                 for name in files:
-                    os.chmod(os.path.join(root, name), 0o644)
+                    if not os.path.islink(os.path.join(root, name)):
+                        os.chmod(os.path.join(root, name), 0o644)
         else:
             os.chmod(path, 0o644)
     except OSError:
@@ -363,13 +367,28 @@ def _checkout_files(dest: Path) -> dict[str, Path]:
     }
 
 
+def _holds_symlink(dest: Path) -> bool:
+    """Whether any entry under a checkout, file or directory, is a symlink.
+
+    A checkout only ever holds copies, so a link is a hand edit.  The walk
+    never follows a link, so a directory link is seen as itself even where
+    ``rglob`` would skip it.
+    """
+    for root, dirs, files in os.walk(dest):
+        for name in dirs + files:
+            if os.path.islink(os.path.join(root, name)):
+                return True
+    return False
+
+
 def _checkout_verifies(dest: Path, entries: list[tuple[str, str]]) -> bool:
     """Whether a destination directory holds exactly the manifest's files.
 
-    The full check: every member's bytes are hashed.  It runs when a
-    checkout is built or when there is no trustworthy stamp.
+    The full check: every member's bytes are hashed, and a checkout that
+    holds a symlink anywhere fails.  It runs when a checkout is built or
+    when there is no trustworthy stamp.
     """
-    if not dest.is_dir():
+    if not dest.is_dir() or _holds_symlink(dest):
         return False
     want = dict(entries)
     have = _checkout_files(dest)
@@ -389,8 +408,11 @@ def _stamp_record(md5: str, dest: Path) -> dict:
 
 def _stamp_matches(stamp: Path, md5: str, dest: Path,
                    entries: list[tuple[str, str]]) -> bool:
-    """The cheap check: a stamp for this hash whose names, sizes and mtimes
-    match the checkout as it is now.  No member's bytes are read.
+    """The cheap check: whether the stamp vouches for the checkout as it is now.
+
+    The stamp must be for this hash, its names, sizes and mtimes must
+    match the checkout, and the checkout must hold no symlink. No member's
+    bytes are read.
 
     Args:
         stamp: The stamp file.
@@ -401,7 +423,7 @@ def _stamp_matches(stamp: Path, md5: str, dest: Path,
     Returns:
         True when the stamp vouches for the checkout.
     """
-    if not (stamp.is_file() and dest.is_dir()):
+    if not (stamp.is_file() and dest.is_dir()) or _holds_symlink(dest):
         return False
     try:
         recorded = json.loads(stamp.read_text(encoding="utf-8"))

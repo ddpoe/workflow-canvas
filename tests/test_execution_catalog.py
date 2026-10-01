@@ -12,11 +12,13 @@ each run, so each test states only what its own case is about.
 from __future__ import annotations
 
 import pytest
-
 from axiom_annotations import Step, workflow
 
-from tests.fixtures.fakes import stub_readiness_probes, stub_record_writers
-
+from tests.fixtures.fakes import (
+    stub_docker_image_inspect,
+    stub_readiness_probes,
+    stub_record_writers,
+)
 from tests.harness import (
     Behavior,
     Phase,
@@ -460,20 +462,29 @@ def test_mid_pipeline_failure_cancels_the_descendants(git_project, monkeypatch):
 # catalog.not-runnable
 # =============================================================================
 
+@pytest.mark.parametrize("verb", ["run-step", "run-pipeline"])
 @workflow(purpose="A failing readiness probe stops execution at the door with "
-                  "the one-door message, before anything dispatches")
+                  "the one-door message, before anything dispatches: for one "
+                  "step, and for a whole pipeline before its env pre-flight "
+                  "can mistake a stopped daemon for a missing image")
 def test_readiness_probe_failure_stops_before_dispatch(git_project, monkeypatch,
-                                                       capsys):
+                                                       capsys, verb):
     from wfc.cli import cli_main
 
     project = build_project(Scenario(), root=git_project, monkeypatch=monkeypatch)
     stub_readiness_probes(monkeypatch, git=None, docker="fail")
+    stub_docker_image_inspect(
+        monkeypatch, AssertionError("an image was probed while Docker was down"))
 
-    rc = cli_main([
-        "run-step", "--node-id", "n1", "--sample", "s1", "--variant", "default",
-        "--pipeline-json", str(project.pipeline_json),
-        "--pipeline-id", project.pipeline_id,
-    ])
+    if verb == "run-step":
+        argv = ["run-step", "--node-id", "n1", "--sample", "s1",
+                "--variant", "default",
+                "--pipeline-json", str(project.pipeline_json),
+                "--pipeline-id", project.pipeline_id]
+    else:
+        argv = ["run-pipeline", "--pipeline", str(project.pipeline_json),
+                "--project-root", str(project.root)]
+    rc = cli_main(argv)
 
     assert rc == 1
     assert "isn't ready to run" in capsys.readouterr().err

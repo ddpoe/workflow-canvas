@@ -9,9 +9,11 @@ from sqlmodel import select
 
 from ..contracts import parse_module_yaml
 from ..persistence import (
-    get_session,
     Module,
     ModuleContract,
+    get_session,
+)
+from ..persistence import (
     project_root as get_project_root,
 )
 
@@ -51,6 +53,8 @@ def register_module(
         module_dir: Optional path to module directory containing ``module.yaml``.
             When provided and ``contracts`` is None, contracts and description
             are read from the YAML file.
+        allow_reserved: Permit a reserved ``__demo__*`` module name; only
+            ``wfc demo`` passes ``True``.
 
     Returns:
         The module ID (existing or newly created).

@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
+from axiom_annotations import task
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
-from axiom_annotations import task
-
-from ..persistence import get_session, MethodVersion
+from ..persistence import MethodVersion, get_session
 
 
 @task(purpose="Return the MethodVersion id for a method's code fingerprint, "
@@ -44,7 +43,7 @@ def get_or_create_version(method_id: int, code_fingerprint: str, git_commit: str
             )
         ).first()
         if existing is not None:
-            return existing.id  # type: ignore[return-value]
+            return existing.id
 
     # Slow path: try to INSERT, fall back to SELECT if another worker beat us.
     try:
@@ -53,13 +52,13 @@ def get_or_create_version(method_id: int, code_fingerprint: str, git_commit: str
                 method_id=method_id,
                 code_fingerprint=code_fingerprint,
                 git_commit=git_commit,
-                recorded_at=datetime.now(timezone.utc),
+                recorded_at=datetime.now(UTC),
             )
             session.add(version)
             session.commit()
             session.refresh(version)
             return version.id  # type: ignore[return-value]
-    except IntegrityError:
+    except IntegrityError as exc:
         # Another concurrent worker inserted the same (method_id, code_fingerprint)
         # first — retrieve their row.
         with get_session() as session:
@@ -74,5 +73,5 @@ def get_or_create_version(method_id: int, code_fingerprint: str, git_commit: str
                     f"get_or_create_version: INSERT failed with IntegrityError "
                     f"but follow-up SELECT found nothing for "
                     f"method_id={method_id}, code_fingerprint={code_fingerprint!r}"
-                )
-            return existing.id  # type: ignore[return-value]
+                ) from exc
+            return existing.id

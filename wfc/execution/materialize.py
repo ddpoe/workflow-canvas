@@ -14,10 +14,10 @@ Each parent-slot source resolves through Storage's ``resolve_input``.
 """
 from __future__ import annotations
 
-from axiom_annotations import task, Step, AutoStep
-from ..graph import selector_slot as graph_selector_slot
+from axiom_annotations import AutoStep, Step, task
 
 from ..contracts import COLLAPSED_SAMPLE
+from ..graph import selector_slot as graph_selector_slot
 from ..persistence import project_root as get_project_root
 from .parents import parse_parent_entries
 
@@ -144,13 +144,13 @@ def run_materialize(
         record tail, which marks the run row failed with the message and
         prints it.
     """
-    from ..storage.resolve import resolve_input  # from its defining module, so the AutoStep edge resolves
     from ..storage import (
         InputUnavailableError,
         MalformedEntryError,
         MalformedSampleRecordError,
         sample_data_path,
     )
+    from ..storage.resolve import resolve_input  # from its defining module, so the AutoStep edge resolves
 
     口 = Step(step_num=1, name="Classify input sources",
              purpose="Derive each input slot's source kind (parent-slot / "
@@ -196,6 +196,8 @@ def run_materialize(
                 )
             slot_paths.setdefault(entry.input_slot, []).append(str(resolved))
     except (InputUnavailableError, MalformedEntryError) as exc:
+        # Only the per-entry resolve inside the loop raises these.
+        assert entry is not None
         return _failed(
             f"node '{node_id}' could not resolve input slot "
             f"'{entry.input_slot}' from parent run {entry.run_id}: {exc} "
@@ -273,6 +275,7 @@ def run_materialize(
                     f"'{sample}' into input slot '{slot}': {reason}"
                 )
             else:
+                assert data is not None  # present implies a path
                 slot_paths.setdefault(slot, []).append(str(data.resolve()))
 
     口 = Step(step_num=4, name="Merge references and enforce root input",

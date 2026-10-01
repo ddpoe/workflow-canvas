@@ -1,5 +1,4 @@
-"""
-wfc/version.py — Git-commit discipline.
+"""wfc/version.py — Git-commit discipline.
 
 Public functions:
   get_git_commit(repo_path)             Fail-fast on dirty working tree.
@@ -28,7 +27,9 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import sys
 import time
+from collections.abc import Sequence
 from pathlib import Path
 
 from .persistence import project_root
@@ -105,7 +106,7 @@ def _stop_tree(proc: subprocess.Popen) -> None:
     Args:
         proc: The git process that ran out of time.
     """
-    if os.name == "nt":
+    if sys.platform == "win32":
         try:
             subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
@@ -171,12 +172,12 @@ def _git(args: list[str], cwd: Path | str,
 # =============================================================================
 
 def get_git_commit(repo_path: Path | str | None = None) -> str:
-    """Return the current HEAD git commit SHA (40 hex chars).
+    r"""Return the current HEAD git commit SHA (40 hex chars).
 
     Args:
         repo_path: Directory within the git repository. Defaults to the
             resolved workflow-canvas project root (not ``Path.cwd()`` — the
-            Snakemake hot path runs with cwd rewritten to ``C:\\Windows`` on
+            Snakemake hot path runs with cwd rewritten to ``C:\Windows`` on
             Windows and ``wfc run-step`` must still find the real repo).
 
     Returns:
@@ -247,7 +248,7 @@ def git_toplevel(directory: Path | str) -> Path | None:
 
 def commit_paths(
     repo_root: Path | str,
-    paths: list[Path | str],
+    paths: Sequence[Path | str],
     message: str,
     *,
     require_repo: bool = True,

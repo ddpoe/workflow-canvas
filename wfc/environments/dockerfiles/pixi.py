@@ -1,4 +1,4 @@
-"""Pixi-backend Dockerfile generator.
+r"""Pixi-backend Dockerfile generator.
 
 Pure function: in goes the env name + lock/freeze inputs, out comes a
 Dockerfile string. No disk I/O, no subprocess. The caller supplies the
@@ -12,10 +12,10 @@ Recipe:
   FROM <PIXI_BASE>                                # digest-pinned
   WORKDIR /opt                                    # pixi reads pixi.toml from cwd
   COPY pixi.toml pixi.lock /opt/
-  RUN --mount=type=cache,target=/root/.cache/rattler \\
+  RUN --mount=type=cache,target=/root/.cache/rattler \
       pixi install --locked --environment <env>   # tool-pinned env materialization
   COPY pip-freeze.txt /opt/
-  RUN --mount=type=cache,target=/root/.cache/pip \\
+  RUN --mount=type=cache,target=/root/.cache/pip \
       /opt/.pixi/envs/<env>/bin/python -m pip install --no-deps -r /opt/pip-freeze.txt
   RUN chmod -R a+rX /opt/.pixi/envs/<env>         # pair w/ --user
 
@@ -32,15 +32,13 @@ builds (BuildKit-only — :func:`wfc.environments.docker.build` sets
 
 from __future__ import annotations
 
-from typing import Optional
-
 from .bases import PIXI_BASE, PIXI_LOCK_MAX_VERSION
 
 
 def validate_lock_for_env(lock_text: str, env_name: str) -> None:
     """Fail fast when a staged pixi.lock cannot build *env_name*.
 
-    Two checks, both raising ``ValueError`` at register time instead of
+    Three checks, each raising ``ValueError`` at register time instead of
     letting ``docker build`` surface a cryptic in-container pixi error:
 
     * **Lock format version** — the lock is written by the user's local
@@ -53,19 +51,25 @@ def validate_lock_for_env(lock_text: str, env_name: str) -> None:
       ``environments`` block must define it. Rejected naming the keys
       the lock actually has (most pixi projects define exactly one,
       ``default``).
+    * **linux-64 packages** — the image is linux-64, so the environment's
+      ``packages`` block must have a ``linux-64`` entry. A lock made on
+      Windows or macOS lists only that host's platform unless linux-64 was
+      added to the workspace; rejected naming the platforms it has and the
+      commands that add linux-64.
 
     Lenient by design when the lock does not parse as a YAML mapping or
-    lacks the ``version`` key / ``environments`` block — those shapes are
-    left for the build to surface; this guard only covers the two
-    known-confusing failures.
+    lacks the ``version`` key / ``environments`` block / ``packages``
+    entries — those shapes are left for the build to surface; this guard
+    only covers the known-confusing failures.
 
     Args:
         lock_text: Full text of the staged ``pixi.lock``.
         env_name: The env name the generator will materialize.
 
     Raises:
-        ValueError: Lock format version too new, or *env_name* missing
-            from the lock's ``environments`` block.
+        ValueError: Lock format version too new, *env_name* missing
+            from the lock's ``environments`` block, or no linux-64
+            packages for it.
     """
     import yaml
 
@@ -101,6 +105,18 @@ def validate_lock_for_env(lock_text: str, env_name: str) -> None:
             f"installed verbatim via `pixi install --environment "
             f"{env_name}` inside the image build, so it must match an "
             f"environment defined in the lock (usually `default`)."
+        )
+
+    env_block = environments.get(env_name) if isinstance(environments, dict) else None
+    packages = env_block.get("packages") if isinstance(env_block, dict) else None
+    if isinstance(packages, dict) and packages and "linux-64" not in packages:
+        platforms = ", ".join(sorted(packages))
+        raise ValueError(
+            f"pixi.lock has no linux-64 packages for environment "
+            f"{env_name!r} (it has: {platforms}). Images run on linux-64. "
+            f"Add the platform and re-lock, then register again:\n"
+            f"    pixi workspace platform add linux-64\n"
+            f"    pixi install"
         )
 
 
@@ -140,7 +156,7 @@ def env_python_path(env_name: str) -> str:
 def generate(
     env_name: str,
     pip_freeze_content: str,
-    base_image: Optional[str] = None,
+    base_image: str | None = None,
 ) -> str:
     """Render a pixi-backend Dockerfile.
 

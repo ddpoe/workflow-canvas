@@ -102,4 +102,5 @@ explanation/caching-and-reproducibility
 reference/cli-reference
 reference/method-yaml-schema
 reference/wf-canvas-toml
+reference/wfc-client-api
 ```

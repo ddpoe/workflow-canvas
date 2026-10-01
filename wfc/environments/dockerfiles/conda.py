@@ -1,4 +1,4 @@
-"""Conda-backend Dockerfile generator.
+r"""Conda-backend Dockerfile generator.
 
 Pure function: in goes the env name + explicit-list/freeze inputs, out
 comes a Dockerfile string. No disk I/O, no subprocess. The caller
@@ -11,10 +11,10 @@ Recipe:
   # syntax=docker/dockerfile:1.4
   FROM <MICROMAMBA_BASE>                          # digest-pinned
   COPY explicit-list.txt /opt/
-  RUN --mount=type=cache,target=/opt/conda/pkgs \\
+  RUN --mount=type=cache,target=/opt/conda/pkgs \
       micromamba install -y -n base -f /opt/explicit-list.txt
   COPY pip-freeze.txt /opt/
-  RUN --mount=type=cache,target=/root/.cache/pip \\
+  RUN --mount=type=cache,target=/root/.cache/pip \
       pip install --no-deps -r /opt/pip-freeze.txt
   USER root                                       # /opt/conda is root-owned
   RUN chmod -R a+rX <env_dir>                     # pair w/ --user
@@ -42,11 +42,8 @@ builds (BuildKit-only — :func:`wfc.environments.docker.build` sets
 
 from __future__ import annotations
 
-from typing import Optional
-
 from ..introspect import PIP_MISSING_SENTINEL
 from .bases import MICROMAMBA_BASE
-
 
 # Where the micromamba base image keeps its ``base`` env. Verified
 # empirically against mambaorg/micromamba (2026-07-18): ``micromamba env
@@ -62,7 +59,7 @@ CONDA_ENV_PYTHON = f"{CONDA_ENV_DIR}/bin/python"
 def generate(
     env_name: str,
     pip_freeze_content: str,
-    base_image: Optional[str] = None,
+    base_image: str | None = None,
 ) -> str:
     """Render a conda/micromamba-backend Dockerfile.
 
@@ -130,3 +127,72 @@ def generate(
         "",
     ]
     return "\n".join(lines)
+
+
+# Conda platform directories (the ``<channel>/<platform>/<file>`` segment of a
+# package URL) whose packages cannot be installed into the linux-64 image.
+# Only these names are read from URLs, so a mirror or local channel with an
+# unusual path layout is never mistaken for a foreign platform.
+_FOREIGN_PLATFORMS = frozenset({
+    "win-32", "win-64", "win-arm64",
+    "osx-64", "osx-arm64",
+    "linux-32", "linux-aarch64", "linux-armv6l", "linux-armv7l",
+    "linux-ppc64le", "linux-s390x", "linux-riscv64",
+})
+
+
+def validate_explicit_list_platform(explicit_list: str, env_name: str) -> None:
+    """Fail fast when a conda explicit list was captured on a non-Linux host.
+
+    An explicit list names exact package files, and :func:`generate`
+    installs them without solving, so a list captured on Windows or macOS
+    unpacks ``win-64`` / ``osx-*`` packages into the Linux image and the
+    build fails later (or yields an image that cannot run). The platform is
+    read from the list's ``# platform:`` header, or, without one, from the
+    platform directory in each package URL.
+
+    Lenient by design when neither names a known foreign platform: the
+    build is left to judge.
+
+    Args:
+        explicit_list: Full text of the staged explicit list.
+        env_name: The env name being registered, used in the instructions.
+
+    Raises:
+        ValueError: The list targets a platform other than ``linux-64``,
+            with the commands that produce a linux-64 list instead.
+    """
+    header_platform = None
+    url_platforms: set[str] = set()
+    for raw in explicit_list.splitlines():
+        line = raw.strip()
+        if line.startswith("# platform:"):
+            header_platform = line.split(":", 1)[1].strip()
+        elif "://" in line:
+            parts = line.split("#", 1)[0].rstrip("/").split("/")
+            if len(parts) >= 2 and parts[-2] in _FOREIGN_PLATFORMS:
+                url_platforms.add(parts[-2])
+
+    if header_platform is not None:
+        foreign = {header_platform} - {"linux-64", "noarch"}
+    else:
+        foreign = url_platforms
+    if not foreign:
+        return
+
+    captured_on = ", ".join(sorted(foreign))
+    raise ValueError(
+        f"This conda env was captured on {captured_on}, but images run on "
+        f"linux-64. A conda capture installs the exact package files it "
+        f"lists, and {captured_on} packages cannot run in a Linux image.\n"
+        f"Generate a linux-64 package list from the same env and register "
+        f"that. conda-lock is a separate tool; preferably install it in a "
+        f"new environment, not the one wfc runs in: conda create -n "
+        f"conda-lock -c conda-forge conda-lock, then conda activate "
+        f"conda-lock and run:\n"
+        f"    conda env export -n <your-conda-env> --from-history > environment.yml\n"
+        f"    conda-lock -f environment.yml -p linux-64 --kind explicit\n"
+        f"    wfc register-env {env_name} --backend conda --from conda-linux-64.lock\n"
+        f"Or capture the env on Linux (or WSL), or use a pixi environment, "
+        f"which solves for linux-64 from any machine."
+    )

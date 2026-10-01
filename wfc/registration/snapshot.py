@@ -4,7 +4,8 @@ Method registration's last step copies the registered script set into
 ``methods/<name>/``, so the code fingerprint reads the registered copy.
 Declared helpers from outside the method directory are copied under
 ``HELPER_SNAPSHOT_DIR``; the purge removes snapshot scripts that the
-method no longer declares."""
+method no longer declares.
+"""
 
 from __future__ import annotations
 
@@ -16,7 +17,6 @@ from axiom_annotations import task
 from .. import layout
 from ..identity import collect_method_scripts
 from ..persistence import project_root as get_project_root
-
 
 # Reserved snapshot subdirectory for out-of-dir declared helpers (strict
 # helpers mode). Out-of-dir helpers are copied under
@@ -198,4 +198,4 @@ def _write_snapshot(
         _purge_stale_snapshot_scripts(registered_dir, expected_scripts)
         print(f"  source snapshot: copied to {registered_dir}")
     else:
-        print(f"  source snapshot: already at registered location")
+        print("  source snapshot: already at registered location")

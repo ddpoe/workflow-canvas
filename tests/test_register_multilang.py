@@ -337,12 +337,18 @@ def test_strict_helpers_mode(multilang_project):
     assert _get_method("escape") is None
 
 
-def test_register_env_rejects_both_interpreter_and_python(multilang_project, capsys):
+def test_register_env_rejects_both_interpreter_and_python(
+    multilang_project, capsys, monkeypatch,
+):
     """--interpreter and --python are the same recorded field; both given
-    is ambiguous and rejected before any staging or docker work."""
+    is ambiguous and rejected before any staging or docker work, even on a
+    host with no Docker."""
     import argparse
 
+    from tests.fixtures.fakes import stub_readiness_probes
     from wfc.cli import _cli_register_env
+
+    stub_readiness_probes(monkeypatch, docker="fail")
 
     args = argparse.Namespace(
         name="dupe", spec=None, from_path=None, backend="byo",

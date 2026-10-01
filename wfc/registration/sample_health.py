@@ -40,9 +40,10 @@ look the bytes up by -- it is the malformed record ``load_sample_hashes`` and
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Literal
+from typing import Literal
 
 from sqlmodel import select
 
@@ -82,8 +83,11 @@ class SampleHealth:
 
 
 def _entry_is_whole(project_dir: Path, content_hash: str) -> bool:
-    """Whether the local cache holds the whole entry (a directory: manifest
-    and every member).  A malformed entry is not a usable local copy."""
+    """Whether the local cache holds the whole entry.
+
+    For a directory, that is the manifest and every member. A malformed entry
+    is not a usable local copy.
+    """
     from ..storage import entry_is_local
 
     return entry_is_local(project_dir, content_hash)

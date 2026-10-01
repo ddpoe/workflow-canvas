@@ -116,6 +116,7 @@ def test_a_sample_row_with_no_content_hash_is_refused(tmp_project, capsys):
 @workflow(purpose="`wfc run-pipeline` delivers the malformed-record refusal as "
                   "the verb's own one-line message and a non-zero return, not "
                   "as an exception escaping to the top level")
+@pytest.mark.usefixtures("ready_preflight")
 def test_run_pipeline_delivers_the_malformed_record_refusal_as_a_message(
     tmp_project, monkeypatch, capsys
 ):

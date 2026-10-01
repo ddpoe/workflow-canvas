@@ -12,33 +12,34 @@ so readers go through this module (``state._wfc_provider``) or
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Protocol, cast
 
 from fastapi import HTTPException
 
-from ..persistence import get_session, project_root as _resolve_project_root
+from ..persistence import get_session
+from ..persistence import project_root as _resolve_project_root
 from ..storage import unarchived_outputs
 from .wfc_provider import WfcProvider
-
 
 # ---------------------------------------------------------------------------
 # Provider state
 # ---------------------------------------------------------------------------
 
-_wfc_provider: Optional[WfcProvider] = None
+_wfc_provider: WfcProvider | None = None
 
 # ---------------------------------------------------------------------------
 # Active job tracking (one entry per submitted pipeline)
 # ---------------------------------------------------------------------------
 
-_active_jobs: Dict[str, Dict[str, Any]] = {}
+_active_jobs: dict[str, dict[str, Any]] = {}
 
 # ---------------------------------------------------------------------------
 # Archive job tracking (single archive pass at a time)
 # ---------------------------------------------------------------------------
 
-_archive_job: Dict[str, Any] = {"thread": None, "progress": None}
+_archive_job: dict[str, Any] = {"thread": None, "progress": None}
 _archive_lock = threading.RLock()
 
 
@@ -62,13 +63,13 @@ def _server_project_root() -> Path:
     return _resolve_project_root()
 
 
-def _pending_archive_snapshot() -> Dict[str, Any]:
+def _pending_archive_snapshot() -> dict[str, Any]:
     """Group unarchived outputs by run — the initial progress payload.
 
     Reads Storage's ``unarchived_outputs``, the selection ``archive_outputs``
     archives: RunOutput rows with NULL content_hash on completed runs.
     """
-    per_run: Dict[int, Dict[str, Any]] = {}
+    per_run: dict[int, dict[str, Any]] = {}
     with get_session() as session:
         for ro, run in unarchived_outputs(session):
             entry = per_run.get(ro.run_id)
@@ -101,7 +102,15 @@ def _pending_archive_snapshot() -> Dict[str, Any]:
     }
 
 
-def _make_archive_progress_writer():
+class _ArchiveProgressWriter(Protocol):
+    """The archive progress callback, carrying its eager-snapshot ``ensure``."""
+
+    ensure: Callable[[], None]
+
+    def __call__(self, run_id: Any, output_name: str, status: str) -> None: ...
+
+
+def _make_archive_progress_writer() -> _ArchiveProgressWriter:
     """Build a (run_id, output_name, status) callback feeding ``_archive_job``.
 
     Lazily snapshots pending outputs on first event, so the same writer
@@ -111,7 +120,7 @@ def _make_archive_progress_writer():
     reached a terminal status the live progress handle is cleared and
     archive-status falls back to plain DB counts.
     """
-    state: Dict[str, Any] = {"progress": None, "index": None}
+    state: dict[str, Any] = {"progress": None, "index": None}
 
     def ensure() -> None:
         if state["progress"] is None:
@@ -164,8 +173,9 @@ def _make_archive_progress_writer():
                 if _archive_job.get("progress") is progress:
                     _archive_job["progress"] = None
 
-    writer.ensure = ensure
-    return writer
+    progress_writer = cast(_ArchiveProgressWriter, writer)
+    progress_writer.ensure = ensure
+    return progress_writer
 
 
 def _require_provider() -> WfcProvider:

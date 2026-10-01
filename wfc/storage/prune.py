@@ -12,12 +12,12 @@ import sys
 from pathlib import Path
 
 from axiom_annotations import task
-from sqlmodel import select
+from sqlmodel import col, select
 
 from .. import layout
+from ..identity import is_directory_hash
 from ..persistence import get_session
 from ..persistence import project_root as get_project_root
-from ..identity import is_directory_hash
 from .cache import _cache_dir, _make_writable, manifest_members
 
 
@@ -27,8 +27,9 @@ def referenced_run_ids() -> set[int]:
     Returns:
         Set of integer run IDs that have at least one RunOutput row.
     """
-    from ..persistence import get_session, RunOutput
     from sqlmodel import select
+
+    from ..persistence import RunOutput, get_session
 
     with get_session() as session:
         rows = session.exec(select(RunOutput.run_id)).all()
@@ -41,8 +42,9 @@ def referenced_content_hashes() -> set[str]:
     Returns:
         Set of MD5 hex strings from all RunOutput rows with non-null content_hash.
     """
-    from ..persistence import get_session, RunOutput
     from sqlmodel import select
+
+    from ..persistence import RunOutput, get_session
 
     with get_session() as session:
         rows = session.exec(select(RunOutput.content_hash)).all()
@@ -101,7 +103,7 @@ def prune_run_archives(
     *,
     all_archives: bool = False,
     dry_run: bool = False,
-    exclude_run_ids: "set[int] | None" = None,
+    exclude_run_ids: set[int] | None = None,
 ) -> list[Path]:
     """Remove unreferenced run archive directories from .runs/.
 
@@ -193,17 +195,20 @@ def prune_dvc_cache(
     except Exception:
         remote_active = False
     if remote_active and not force:
-        from ..persistence import get_session, RunOutput as _RO, Sample as _S
         from sqlmodel import select as _sel
+
+        from ..persistence import RunOutput as _RO
+        from ..persistence import Sample as _S
+        from ..persistence import get_session
 
         with get_session() as session:
             for r in session.exec(
-                _sel(_RO).where(_RO.pushed_at.is_(None))  # type: ignore[union-attr]
+                _sel(_RO).where(col(_RO.pushed_at).is_(None))
             ).all():
                 if r.content_hash:
                     unpushed_hashes.add(r.content_hash)
             for s in session.exec(
-                _sel(_S).where(_S.pushed_at.is_(None))  # type: ignore[union-attr]
+                _sel(_S).where(col(_S.pushed_at).is_(None))
             ).all():
                 if s.content_hash:
                     unpushed_hashes.add(s.content_hash)
@@ -315,7 +320,7 @@ def cache_prune(
     _exclude_run_ids: set[int] = set()
     with get_session() as _guard_session:
         unarchived = _guard_session.exec(
-            select(_RunOutput).where(_RunOutput.content_hash.is_(None))  # type: ignore[union-attr]
+            select(_RunOutput).where(col(_RunOutput.content_hash).is_(None))
         ).all()
         if unarchived:
             _exclude_run_ids = {ro.run_id for ro in unarchived}

@@ -38,7 +38,6 @@ def capture_env_content(env_spec: str) -> str:
         ValueError: If *env_spec* is not a ``container:`` spec, or its
             image or digest is empty.
     """
-
     if env_spec.startswith("container:"):
         # Container-backend precompute path. The spec is
         # ``container:<image>@sha256:<hex>``. We split on the last

@@ -296,8 +296,7 @@
       "default": null,
       "dest": "name",
       "nargs": null,
-      "option_strings": [],
-      "required": true
+      "option_strings": []
     },
     {
       "choices": null,
@@ -423,16 +422,14 @@
       "default": null,
       "dest": "env",
       "nargs": null,
-      "option_strings": [],
-      "required": true
+      "option_strings": []
     },
     {
       "choices": null,
       "default": null,
       "dest": "cmd",
       "nargs": "...",
-      "option_strings": [],
-      "required": false
+      "option_strings": []
     },
     {
       "choices": null,
@@ -452,24 +449,21 @@
       "default": null,
       "dest": "run_id",
       "nargs": null,
-      "option_strings": [],
-      "required": true
+      "option_strings": []
     },
     {
       "choices": null,
       "default": null,
       "dest": "slot",
       "nargs": "?",
-      "option_strings": [],
-      "required": false
+      "option_strings": []
     },
     {
       "choices": null,
       "default": null,
       "dest": "dest",
       "nargs": "?",
-      "option_strings": [],
-      "required": false
+      "option_strings": []
     },
     {
       "choices": null,
@@ -618,8 +612,7 @@
       "default": null,
       "dest": "env",
       "nargs": null,
-      "option_strings": [],
-      "required": true
+      "option_strings": []
     },
     {
       "choices": null,
@@ -821,16 +814,14 @@
       "default": null,
       "dest": "name",
       "nargs": null,
-      "option_strings": [],
-      "required": true
+      "option_strings": []
     },
     {
       "choices": null,
       "default": null,
       "dest": "spec",
       "nargs": "?",
-      "option_strings": [],
-      "required": false
+      "option_strings": []
     },
     {
       "choices": [
@@ -934,8 +925,7 @@
       "default": null,
       "dest": "method_dir",
       "nargs": null,
-      "option_strings": [],
-      "required": true
+      "option_strings": []
     },
     {
       "choices": null,
@@ -1469,8 +1459,7 @@
       "default": null,
       "dest": "env",
       "nargs": null,
-      "option_strings": [],
-      "required": true
+      "option_strings": []
     },
     {
       "choices": null,
@@ -1490,8 +1479,7 @@
       "default": null,
       "dest": "name",
       "nargs": null,
-      "option_strings": [],
-      "required": true
+      "option_strings": []
     },
     {
       "choices": null,

@@ -36,7 +36,8 @@ def check_method_env(env_spec: str, project_dir: Path) -> str:
             not be read when it is present but fails to load.
     """
     from ..contracts import ENV_SPEC_FORM, validate_container_ref, validate_env_name
-    from .manifest import get as _env_get, load_manifest
+    from .manifest import get as _env_get
+    from .manifest import load_manifest
 
     def _refusal(problem: str) -> ValueError:
         try:

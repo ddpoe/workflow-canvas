@@ -4,9 +4,19 @@
 # extensions actually loaded). axiom-graph is NOT needed here: the MyST pages
 # under userdocs/guide and userdocs/reference are committed, so RTD only runs
 # Sphinx.
+#
+# The API reference pages import the in-repo wfc and wfc_client packages
+# (conf.py puts them on sys.path) instead of installing workflow-canvas.
+# Importing them needs only the last two packages below, not wfc's full
+# runtime dependencies (Snakemake, DVC, ...).
 sphinx>=8.0,<9.0
 sphinx-book-theme>=1.1
 myst-parser>=5.1,<6.0
 sphinxcontrib-mermaid>=1.0
 sphinx-sitemap>=2.6
 sphinxext-opengraph>=0.9
+sphinx-argparse>=0.5
+# Imported by the CLI reference (wfc.cli loads the database models) and the
+# Python API page (wfc_client's one dependency, zero-dependency itself).
+sqlmodel>=0.0.14
+axiom-annotations>=0.1.0,<0.2.0

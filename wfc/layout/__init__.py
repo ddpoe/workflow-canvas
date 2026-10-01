@@ -42,12 +42,9 @@ from .root import (
     root_candidates,
 )
 from .tree import (
-    CHECKOUTS_DIR_NAME,
-    checkout_dir,
-    checkout_stamp,
-    checkouts_dir,
     ARTIFACT_STORE_NAME,
     BUILD_DIR_NAME,
+    CHECKOUTS_DIR_NAME,
     DATA_DIR_NAME,
     DB_FILENAME,
     ENV_MANIFEST_FILENAME,
@@ -67,6 +64,9 @@ from .tree import (
     STATE_DIR_NAME,
     WORKSPACE_DIR_NAME,
     artifact_store,
+    checkout_dir,
+    checkout_stamp,
+    checkouts_dir,
     database_url,
     db_path,
     db_relpath,

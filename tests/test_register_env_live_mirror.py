@@ -28,6 +28,7 @@ from tests.fixtures.fakes import (
     fake_pip_freeze,
     stub_docker_build,
     stub_docker_image_inspect,
+    stub_readiness_probes,
 )
 from wfc.environments import EnvRecord
 from wfc.environments.host import _local_pixi_env_dir, _resolve_pixi_standalone
@@ -150,8 +151,18 @@ def test_stage_from_path_rejects_byo_and_inherit(tmp_path):
 # =============================================================================
 # CLI mutex enforcement
 # =============================================================================
+#
+# Given a host with no Docker: each refusal is the verb's own, reported
+# before the Docker gate is asked.
 
-def test_register_env_mutex_typed_spec_with_backend_errors(cli):
+
+@pytest.fixture
+def no_docker(monkeypatch):
+    """A host whose Docker probe fails."""
+    stub_readiness_probes(monkeypatch, docker="fail")
+
+
+def test_register_env_mutex_typed_spec_with_backend_errors(cli, no_docker):
     """Positional typed-spec + --backend is contradictory — must error
     BEFORE any docker subprocess fires."""
     result = cli("register-env", "my", "conda:cell_pose", "--backend", "conda")
@@ -160,7 +171,7 @@ def test_register_env_mutex_typed_spec_with_backend_errors(cli):
     assert "--backend" in result.stderr
 
 
-def test_register_env_mutex_typed_spec_with_from_errors(cli):
+def test_register_env_mutex_typed_spec_with_from_errors(cli, no_docker):
     """Positional typed-spec captures from a live env; --from is for file
     mode. Combining them is contradictory."""
     result = cli(
@@ -171,14 +182,14 @@ def test_register_env_mutex_typed_spec_with_from_errors(cli):
     assert "--from" in result.stderr
 
 
-def test_register_env_from_without_backend_errors(cli):
+def test_register_env_from_without_backend_errors(cli, no_docker):
     """--from needs --backend to know which generator filename to stage as."""
     result = cli("register-env", "my", "--from", "explicit.txt")
     assert result.returncode == 1
     assert "--backend" in result.stderr
 
 
-def test_register_env_backend_alone_pixi_conda_errors_with_guidance(cli):
+def test_register_env_backend_alone_pixi_conda_errors_with_guidance(cli, no_docker):
     """``--backend pixi|conda`` without ``--from`` or a typed spec errors
     before any docker subprocess and names both supported modes, so the user
     knows which one to use."""

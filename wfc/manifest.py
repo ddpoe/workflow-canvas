@@ -37,11 +37,11 @@ class ManifestResults:
         metrics: Mapping of metric name -> scalar value.
     """
 
-    outputs: "dict[str, Path]" = field(default_factory=dict)
-    metrics: "dict[str, object]" = field(default_factory=dict)
+    outputs: dict[str, Path] = field(default_factory=dict)
+    metrics: dict[str, object] = field(default_factory=dict)
 
 
-def read_results_manifest(run_dir: "Path | str") -> "ManifestResults | None":
+def read_results_manifest(run_dir: Path | str) -> ManifestResults | None:
     """Read and validate ``${run_dir}/_wfc_results.json``.
 
     Args:
@@ -84,17 +84,17 @@ def read_results_manifest(run_dir: "Path | str") -> "ManifestResults | None":
             f"and 'metrics' fields."
         )
 
-    resolved: "dict[str, Path]" = {}
+    resolved: dict[str, Path] = {}
     for name, rel_path in outputs_raw.items():
         candidate = (run_dir / rel_path).resolve()
         try:
             candidate.relative_to(run_dir)
-        except ValueError:
+        except ValueError as exc:
             raise ValueError(
                 f"Results manifest output '{name}' resolves to {candidate}, "
                 f"which is outside the run_dir {run_dir}. Manifest output "
                 f"paths must be relative to WFC_RUN_DIR and stay inside it."
-            )
+            ) from exc
         if not candidate.exists():
             raise ValueError(
                 f"Results manifest output '{name}' points at {candidate}, "

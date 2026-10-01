@@ -20,8 +20,8 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from .. import layout
 
+from .. import layout
 from .scaffold import (
     DEMO_ENV,
     DEMO_IMAGE_TAG,
@@ -54,7 +54,7 @@ def remove_demo(
     Raises:
         DemoError: If *target_dir* is not an initialised project.
     """
-    from sqlmodel import select
+    from sqlmodel import col, select
 
     target = Path(target_dir or Path.cwd()).resolve()
     marker = layout.marker_path(target)
@@ -65,7 +65,6 @@ def remove_demo(
         )
 
     with _project_env(target):
-        from ..persistence import get_session
         from ..environments import load_manifest
         from ..persistence import (
             Method,
@@ -80,6 +79,7 @@ def remove_demo(
             RunOutput,
             Sample,
             TrackedFunction,
+            get_session,
         )
 
         # ---- Compute the demo-owned set from the DB (tag / cascade only) ----
@@ -99,7 +99,7 @@ def remove_demo(
             method_names = [m.name for m in methods]
             runs = (
                 session.exec(
-                    select(Run).where(Run.method_id.in_(method_ids))  # type: ignore[attr-defined]
+                    select(Run).where(col(Run.method_id).in_(method_ids))
                 ).all()
                 if method_ids
                 else []
@@ -110,7 +110,7 @@ def remove_demo(
             # user samples like 'mydemo__x'.
             samples = session.exec(
                 select(Sample).where(
-                    Sample.name.startswith(DEMO_MODULE, autoescape=True)  # type: ignore[attr-defined]
+                    col(Sample.name).startswith(DEMO_MODULE, autoescape=True)
                 )
             ).all()
             sample_names = [s.name for s in samples]
@@ -195,17 +195,17 @@ def remove_demo(
             if run_ids:
                 for model in (RunInput, RunOutput):
                     for row in session.exec(
-                        select(model).where(model.run_id.in_(run_ids))  # type: ignore[attr-defined]
+                        select(model).where(col(model.run_id).in_(run_ids))
                     ).all():
                         session.delete(row)
                 for row in session.exec(
                     select(RunAnnotation).where(
-                        RunAnnotation.run_id.in_(run_ids)  # type: ignore[attr-defined]
+                        col(RunAnnotation.run_id).in_(run_ids)
                     )
                 ).all():
                     session.delete(row)
                 for r in session.exec(
-                    select(Run).where(Run.id.in_(run_ids))  # type: ignore[attr-defined]
+                    select(Run).where(col(Run.id).in_(run_ids))
                 ).all():
                     session.delete(r)
                 session.commit()
@@ -216,14 +216,14 @@ def remove_demo(
                 # run — nulling is cheap and makes teardown robust.
                 for survivor in session.exec(
                     select(Run).where(
-                        Run.cache_source_run_id.in_(run_ids)  # type: ignore[attr-defined]
+                        col(Run.cache_source_run_id).in_(run_ids)
                     )
                 ).all():
                     survivor.cache_source_run_id = None
                     session.add(survivor)
                 for survivor in session.exec(
                     select(Run).where(
-                        Run.cancelled_due_to_run_id.in_(run_ids)  # type: ignore[attr-defined]
+                        col(Run.cancelled_due_to_run_id).in_(run_ids)
                     )
                 ).all():
                     survivor.cancelled_due_to_run_id = None
@@ -233,7 +233,7 @@ def remove_demo(
                 # demo method's output).
                 for ri in session.exec(
                     select(RunInput).where(
-                        RunInput.source_run_id.in_(run_ids)  # type: ignore[attr-defined]
+                        col(RunInput.source_run_id).in_(run_ids)
                     )
                 ).all():
                     ri.source_run_id = None
@@ -241,30 +241,30 @@ def remove_demo(
                 session.commit()
 
             if method_ids:
-                for model in (MethodContract, MethodVersion):
+                for method_model in (MethodContract, MethodVersion):
                     for row in session.exec(
-                        select(model).where(
-                            model.method_id.in_(method_ids)  # type: ignore[attr-defined]
+                        select(method_model).where(
+                            col(method_model.method_id).in_(method_ids)
                         )
                     ).all():
                         session.delete(row)
                 tfs = session.exec(
                     select(TrackedFunction).where(
-                        TrackedFunction.method_id.in_(method_ids)  # type: ignore[attr-defined]
+                        col(TrackedFunction.method_id).in_(method_ids)
                     )
                 ).all()
                 tf_ids = [tf.id for tf in tfs]
                 if tf_ids:
                     for pd in session.exec(
                         select(ParamDef).where(
-                            ParamDef.tracked_function_id.in_(tf_ids)  # type: ignore[attr-defined]
+                            col(ParamDef.tracked_function_id).in_(tf_ids)
                         )
                     ).all():
                         session.delete(pd)
                 for tf in tfs:
                     session.delete(tf)
                 for m in session.exec(
-                    select(Method).where(Method.id.in_(method_ids))  # type: ignore[attr-defined]
+                    select(Method).where(col(Method.id).in_(method_ids))
                 ).all():
                     session.delete(m)
                 session.commit()
@@ -283,7 +283,7 @@ def remove_demo(
 
             for s in session.exec(
                 select(Sample).where(
-                    Sample.name.startswith(DEMO_MODULE, autoescape=True)  # type: ignore[attr-defined]
+                    col(Sample.name).startswith(DEMO_MODULE, autoescape=True)
                 )
             ).all():
                 session.delete(s)
@@ -301,7 +301,7 @@ def remove_demo(
                 m.name
                 for m in session.exec(
                     select(Method).where(
-                        Method.name.in_(candidate_method_dirs)  # type: ignore[attr-defined]
+                        col(Method.name).in_(candidate_method_dirs)
                     )
                 ).all()
             }

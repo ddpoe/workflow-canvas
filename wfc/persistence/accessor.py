@@ -1,4 +1,4 @@
-"""The project-root accessor.
+r"""The project-root accessor.
 
 :func:`project_root` answers which project this process works in. The rule is
 Layout's (:func:`wfc.layout.resolve_project_root`); this module owns the two
@@ -9,7 +9,7 @@ Resolution is explicit rather than taken from the working directory at each
 call. That keeps a subprocess whose working directory is not the project on
 the project its environment names: a Snakemake shell rule on a Windows UNC
 path, for one, where cmd.exe rewrites the working directory to
-``C:\\Windows\\``.
+``C:\Windows\``.
 """
 
 import os

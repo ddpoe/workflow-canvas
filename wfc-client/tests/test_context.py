@@ -143,11 +143,10 @@ def test_public_surface_is_pure_stdlib():
     import wfc_client.context as ctxmod
     import wfc_client.decorator as decmod
     import wfc_client.main as mainmod
-    import wfc_client.errors as errmod
 
     import ast
 
-    for mod in (ctxmod, decmod, mainmod, errmod):
+    for mod in (ctxmod, decmod, mainmod):
         src = open(mod.__file__, encoding="utf-8").read()
         tree = ast.parse(src)
         imported_roots = set()

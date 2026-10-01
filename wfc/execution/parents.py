@@ -29,7 +29,8 @@ is enforced where slot names are declared, in
 """
 from __future__ import annotations
 
-from typing import Iterable, NamedTuple
+from collections.abc import Iterable
+from typing import NamedTuple
 
 
 class ParentEntry(NamedTuple):

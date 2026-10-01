@@ -41,8 +41,8 @@ source slot to the upstream's one recorded output, are all the caller's
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Iterable, Sequence
 
 from axiom_annotations import task
 

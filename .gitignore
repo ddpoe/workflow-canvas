@@ -20,6 +20,7 @@ build/
 .ruff_cache/
 .snakemake/
 docs/_build/
+userdocs/_build/
 Snakefile
 Snakefile_selective
 

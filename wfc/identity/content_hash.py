@@ -25,9 +25,9 @@ import hashlib
 import json
 import os
 import posixpath
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 _CHUNK_SIZE = 1 << 20  # 1 MiB -- stream large files without loading into memory
 
@@ -122,7 +122,9 @@ def is_directory_hash(content_hash: str | None) -> bool:
     Returns:
         True for a directory's hash.
     """
-    return bool(content_hash) and content_hash.endswith(DIR_HASH_SUFFIX)
+    if not content_hash:
+        return False
+    return content_hash.endswith(DIR_HASH_SUFFIX)
 
 
 def manifest_bytes(entries: Iterable[tuple[str, str]]) -> bytes:

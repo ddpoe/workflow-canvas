@@ -1,6 +1,8 @@
-"""The registration git commit: commit what a method registration wrote, by
-pathspec, so the method's code version is in git before a run's claim reads it
-and nothing the user staged is swept in."""
+"""The registration git commit: commit what a method registration wrote.
+
+The commit is made by pathspec, so the method's code version is in git before
+a run's claim reads it and nothing the user staged is swept in.
+"""
 
 from __future__ import annotations
 

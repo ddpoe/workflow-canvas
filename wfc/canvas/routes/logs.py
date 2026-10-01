@@ -6,15 +6,14 @@ import asyncio
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlmodel import select
 
 from ... import layout
-from ...persistence import get_session
-from ...persistence import Run
+from ...persistence import Run, get_session
 from ..state import _server_project_root
 
 router = APIRouter()
@@ -29,7 +28,7 @@ _LOG_LIVE_POLL_SECONDS = 0.2
 _LOG_LIVE_MAX_WALL_SECONDS = 60 * 60
 
 
-def _log_tail_lines(path: Path, n: int) -> List[str]:
+def _log_tail_lines(path: Path, n: int) -> list[str]:
     """Return the last ``n`` newline-separated lines from ``path`` via seek-from-end.
 
     Reads backward in 8 KiB chunks; never slurps the full file.
@@ -53,7 +52,7 @@ def _log_tail_lines(path: Path, n: int) -> List[str]:
     return text.splitlines()[-n:]
 
 
-def _log_read_full_lines(path: Path) -> List[str]:
+def _log_read_full_lines(path: Path) -> list[str]:
     if not path.exists():
         return []
     return path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -63,7 +62,7 @@ def _log_map_terminal_status(db_status: str) -> str:
     return "success" if db_status == "completed" else db_status
 
 
-def _log_sse(payload: Dict[str, Any]) -> str:
+def _log_sse(payload: dict[str, Any]) -> str:
     return f"data: {json.dumps(payload)}\n\n"
 
 
@@ -81,8 +80,8 @@ async def stream_run_logs(run_id: str, full: int = 0, tail: int = 500):
     """
     try:
         rid = int(run_id)
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=f"Run not found: {run_id}") from exc
 
     with get_session() as session:
         row = session.exec(select(Run).where(Run.id == rid)).first()
@@ -115,7 +114,7 @@ async def stream_run_logs(run_id: str, full: int = 0, tail: int = 500):
             )
             for line in err_lines:
                 yield _log_sse({"type": "stderr", "data": line})
-            terminal_payload: Dict[str, Any] = {
+            terminal_payload: dict[str, Any] = {
                 "type": "terminal",
                 "status": _log_map_terminal_status(status),
             }
@@ -162,7 +161,7 @@ async def stream_run_logs(run_id: str, full: int = 0, tail: int = 500):
                         yield _log_sse({"type": kind, "data": line})
 
             if cur_status != "running":
-                payload: Dict[str, Any] = {
+                payload: dict[str, Any] = {
                     "type": "terminal",
                     "status": _log_map_terminal_status(cur_status),
                 }

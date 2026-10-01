@@ -7,7 +7,9 @@
 # the source pages live in userdocs/guide/ (guide tracks + reference pages in
 # one tree). Because the config dir and source dir differ, the native `sphinx:`
 # key (which assumes srcdir == confdir) cannot be used; the site is built
-# explicitly.
+# explicitly. The API reference pages are generated at build time from the
+# in-repo wfc/ and wfc-client/ sources (autodoc + sphinx-argparse); conf.py
+# adds them to sys.path, so no package install step is needed.
 version: 2
 
 build:

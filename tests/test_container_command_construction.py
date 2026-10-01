@@ -17,6 +17,7 @@ it: dispatch rejects the cluster executor (``executor=slurm``).
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -42,11 +43,17 @@ def _expected_posix(p: str) -> str:
 @pytest.mark.parametrize(
     "gpus,use_windows_paths",
     [
-        (False, False),  # default POSIX shape, no GPU
-        (True,  False),  # --gpus all is injected ahead of the image ref
-        (False, True),   # Windows-style host paths normalised to POSIX in bind specs
+        # default POSIX shape, no GPU
+        pytest.param(False, False, id="shape_no_gpu"),
+        # --gpus all is injected ahead of the image ref
+        pytest.param(True, False, id="with_gpus"),
+        # Windows-style host paths normalised to POSIX in bind specs; a
+        # Windows host path only reaches the builder on a Windows host.
+        pytest.param(False, True, id="normalises_windows_paths",
+                     marks=pytest.mark.skipif(
+                         sys.platform != "win32",
+                         reason="Windows host paths occur only on Windows")),
     ],
-    ids=["shape_no_gpu", "with_gpus", "normalises_windows_paths"],
 )
 def test_build_docker_command(tmp_path, gpus, use_windows_paths):
     """Verbatim argv shape: --rm, --user, two binds, -w /work, image, inner argv.

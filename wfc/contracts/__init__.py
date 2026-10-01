@@ -32,7 +32,6 @@ from .columns import (
 )
 from .declarations import parse_method_yaml, parse_module_yaml
 from .enrichment import enrich_pipeline
-from .fingerprint import render_contract_projection
 from .envspec import (
     ENV_NAME_RULE,
     ENV_SPEC_FORM,
@@ -42,6 +41,7 @@ from .envspec import (
     validate_container_ref,
     validate_env_name,
 )
+from .fingerprint import render_contract_projection
 from .slots import (
     is_directory_slot,
     output_slot_filename,

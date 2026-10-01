@@ -17,10 +17,11 @@ import contextlib
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, NamedTuple
+from typing import NamedTuple
 
-from axiom_annotations import workflow, Step, AutoStep
+from axiom_annotations import AutoStep, Step, workflow
 
 from ..graph import PipelineDef
 from .snakemake import generate_snakefile

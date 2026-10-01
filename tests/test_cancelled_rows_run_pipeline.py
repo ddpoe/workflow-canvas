@@ -20,13 +20,11 @@ from __future__ import annotations
 import json
 
 import pytest
+from axiom_annotations import Step, workflow
 from sqlmodel import select
 
-from axiom_annotations import workflow, Step
-
-from wfc.persistence import get_session, Run
-
 from tests.fixtures.conftest import mocked_snakemake
+from tests.fixtures.fakes import stub_docker_image_inspect
 from tests.fixtures.routes import canvas_client
 from tests.harness import (
     Scenario,
@@ -38,7 +36,7 @@ from tests.harness import (
     selector,
     wire,
 )
-
+from wfc.persistence import Run, get_session
 
 #: Both run_pipeline scenarios fan the same two samples across the DAG.
 SAMPLES = ["S1", "S2"]
@@ -49,6 +47,10 @@ B_S1 = ("b", "S1", "default")
 B_S2 = ("b", "S2", "default")
 C_S1 = ("c", "S1", "default")
 C_S2 = ("c", "S2", "default")
+
+#: The scenario env's image is in the Docker daemon: run_pipeline's env
+#: pre-flight finds it present. The engine is stubbed, so no container runs.
+_IMAGE_PRESENT = lambda ref: ref  # noqa: E731
 
 
 # =============================================================================
@@ -200,6 +202,7 @@ def test_keep_going_partial_prune_writes_cancelled_rows_for_failed_sample_only(
          purpose="Keep-going returncode 0 -- success path invokes walk")
 
     gen_patch, popen_patch = mocked_snakemake(0)
+    stub_docker_image_inspect(monkeypatch, _IMAGE_PRESENT)
     with gen_patch, popen_patch:
         run_pipeline(
             pipeline_path=str(project.pipeline_json),
@@ -278,6 +281,7 @@ def test_hard_abort_writes_cancelled_rows_for_all_sample_descendants(
          purpose="Hard-abort returncode != 0 drives fail_pipeline + walk")
 
     gen_patch, popen_patch = mocked_snakemake(1)
+    stub_docker_image_inspect(monkeypatch, _IMAGE_PRESENT)
     with gen_patch, popen_patch:
         with pytest.raises(RuntimeError, match="Snakemake pipeline failed"):
             run_pipeline(
@@ -351,6 +355,7 @@ def test_cancelled_run_keeps_its_rows_and_still_walks_and_raises(
     assert obs.run_row(A_S2)["status"] == "running"
 
     gen_patch, popen_patch = mocked_snakemake(1)
+    stub_docker_image_inspect(monkeypatch, _IMAGE_PRESENT)
     with gen_patch, popen_patch:
         with pytest.raises(RuntimeError, match="Snakemake pipeline failed"):
             run_pipeline(
@@ -426,6 +431,7 @@ def test_pack_counts_a_cache_hit_target_once_after_run_pipeline(git_project,
                  "what the post-pipeline door exists to observe")
 
     gen_patch, popen_patch = mocked_snakemake(0)
+    stub_docker_image_inspect(monkeypatch, _IMAGE_PRESENT)
     with gen_patch, popen_patch:
         run_pipeline(
             pipeline_path=str(obs.project.pipeline_json),

@@ -118,12 +118,14 @@ def test_generated_pixi_dockerfile_builds_and_records_live_interpreter(tmp_path)
     # The manifest records the generator's env python, and that exact
     # path runs inside the built image (what run-step will exec).
     assert record.python == env_python_path("default")
-    # Run the image via the exact daemon-side ref run-step passes: the manifest
-    # container string with the docker:// scheme stripped (repo@digest), not an
-    # image-ID slice. This exercises the string run-step actually dispatches.
-    image_ref = record.container[len("docker://"):]
+    # Run the image by the daemon ref run-step hands Docker (the local
+    # env's bare image ID), with pulling forbidden: the run must find the
+    # built image on this host's store, classic or containerd.
+    from wfc.environments import daemon_ref
+    image_ref = daemon_ref(record.container)
     run_proc = subprocess.run(
-        ["docker", "run", "--rm", image_ref, record.python, "--version"],
+        ["docker", "run", "--rm", "--pull=never", image_ref,
+         record.python, "--version"],
         capture_output=True,
         text=True,
         timeout=300,

@@ -445,6 +445,12 @@ requires_conda = pytest.mark.skipif(
     reason="conda not reachable on PATH (required to list a real conda env)",
 )
 
+requires_conda_lock = pytest.mark.skipif(
+    shutil.which("conda-lock") is None,
+    reason="conda-lock not on PATH (a separate install, not a wfc "
+           "dependency; required to solve a conda spec for linux-64)",
+)
+
 requires_pip = pytest.mark.skipif(
     not _pip_available(),
     reason="pip not runnable under this interpreter (required for pip freeze)",

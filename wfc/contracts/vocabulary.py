@@ -7,7 +7,6 @@ backend site can read a vocabulary value without creating a cycle.
 
 from __future__ import annotations
 
-
 # =============================================================================
 # Collapsed-sample sentinel
 # =============================================================================

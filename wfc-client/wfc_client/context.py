@@ -21,22 +21,26 @@ RESULTS_FILENAME = "_wfc_results.json"
 
 
 class RunContext:
-    """Runtime context for a wfc-managed method script.
+    """The run context passed to your ``@wfc.method`` function as ``ctx``.
 
-    Reads the canonical ``WFC_*`` environment variables the host sets
-    before launching the user process, and records declared outputs and
-    metrics for the host to archive after the process exits.
+    :func:`wfc_client.run` creates it from the environment variables wfc
+    sets when it runs the step (``WFC_RUN_DIR``, ``WFC_INPUT_PATHS`` and
+    ``WFC_PARAMS``), so you do not create one yourself. Use it to find the
+    step's input files and parameters, and to record the output files and
+    metrics the step produces.
 
     Attributes:
-        run_dir: ``WFC_RUN_DIR`` — the directory the host can read after
-            the container exits. All declared outputs must resolve inside
-            this directory.
-        workdir: A scratch directory at ``WFC_RUN_DIR/_workdir/``, created
-            on access. The host deletes it after archiving.
-        params: Parsed ``WFC_PARAMS`` dict.
+        run_dir (pathlib.Path): The step's run directory. Every output file
+            you record with :meth:`save_artifact` must be inside it.
+        params (dict): The parameter values for this run, keyed by
+            parameter name.
+
+    Raises:
+        RuntimeError: If ``WFC_RUN_DIR`` is not set, which means the script
+            was not started by wfc.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         run_dir_env = os.environ.get("WFC_RUN_DIR")
         if not run_dir_env:
             raise RuntimeError(
@@ -48,20 +52,19 @@ class RunContext:
         self.params = json.loads(os.environ.get("WFC_PARAMS", "{}"))
 
         self._input_paths = json.loads(os.environ.get("WFC_INPUT_PATHS", "{}"))
-        self._outputs: "dict[str, str]" = {}
-        self._metrics: "dict[str, object]" = {}
-        self._workdir: "Path | None" = None
+        self._outputs: dict[str, str] = {}
+        self._metrics: dict[str, object] = {}
+        self._workdir: Path | None = None
 
     @property
     def workdir(self) -> Path:
-        """Scratch directory at ``WFC_RUN_DIR/_workdir/`` (created on access).
+        """A working directory for output files, created on first use.
 
-        Located inside ``WFC_RUN_DIR`` so files written here automatically
-        satisfy ``save_artifact``'s path-inside-run_dir constraint and are
-        reachable by the host after the container exits.
+        It is ``_workdir/`` inside :attr:`run_dir`, so any file you write
+        here can be recorded with :meth:`save_artifact`.
 
         Returns:
-            The path to the scratch directory.
+            The path to the directory.
         """
         if self._workdir is None:
             wd = self.run_dir / "_workdir"
@@ -69,54 +72,56 @@ class RunContext:
             self._workdir = wd
         return self._workdir
 
-    def input(self, slot_name: str) -> "list[Path]":
-        """Return resolved input paths for an input slot.
+    def input(self, slot_name: str) -> list[Path]:
+        """Return the files connected to an input slot.
 
         Args:
-            slot_name: The input slot name as declared in ``method.yaml``.
+            slot_name: The input name, as declared under ``inputs:`` in
+                ``method.yaml``.
 
         Returns:
-            A list of resolved :class:`~pathlib.Path` objects from
-            ``WFC_INPUT_PATHS`` for that slot, or an empty list if the
-            slot has no inputs.
+            The paths of the slot's input files. A slot that collects
+            several upstream outputs returns one path per file. The list
+            is empty when nothing is connected to the slot.
         """
         paths = self._input_paths.get(slot_name, [])
         return [Path(p) for p in paths]
 
-    def save_artifact(self, name: str, source_path) -> None:
-        """Record that the file at ``source_path`` is the declared output ``name``.
+    def save_artifact(self, name: str, source_path: str | os.PathLike[str]) -> None:
+        """Record a file you have written as the output ``name``.
 
-        Does **not** copy, move, read, or serialize the file. The only
-        guard is that ``source_path`` must resolve to a path inside
-        ``WFC_RUN_DIR`` (the bind-mounted directory the host can read
-        after the container exits). Output *type/extension* correctness is
-        validated host-side after the run, not here.
+        Write the file first, then call this. The file is not copied or
+        read here; wfc collects it after the script exits and checks it
+        against the output's declared type in ``method.yaml``.
 
         Args:
-            name: The declared output name (from ``method.yaml``).
-            source_path: Path to the already-written output file. Must
-                resolve inside ``WFC_RUN_DIR``; use ``ctx.workdir`` or
-                ``ctx.run_dir / 'name.ext'``.
+            name: The output name, as declared under ``outputs:`` in
+                ``method.yaml``.
+            source_path: Path to the written file. It must be inside
+                :attr:`run_dir`; write it under :attr:`workdir` or
+                directly in ``ctx.run_dir``.
 
         Raises:
-            ValueError: If ``source_path`` resolves outside ``WFC_RUN_DIR``.
+            ValueError: If ``source_path`` is outside :attr:`run_dir`.
         """
         resolved = Path(source_path).resolve()
         try:
             rel = resolved.relative_to(self.run_dir)
-        except ValueError:
+        except ValueError as exc:
             raise ValueError(
                 f"save_artifact source must be inside WFC_RUN_DIR (got {source_path}). "
                 f"Use ctx.workdir or write to ctx.run_dir / 'name.ext'."
-            )
+            ) from exc
         self._outputs[name] = rel.as_posix()
 
-    def log_metric(self, name: str, value) -> None:
-        """Record a scalar metric.
+    def log_metric(self, name: str, value: object) -> None:
+        """Record a single value, such as a row count or a score, for this run.
+
+        Recording the same name again replaces the earlier value.
 
         Args:
-            name: Metric name.
-            value: Scalar value (number, string, bool).
+            name: The metric name.
+            value: A number, string or boolean.
         """
         self._metrics[name] = value
 

@@ -1,6 +1,7 @@
 # Workflow Canvas
 
 [![PyPI](https://img.shields.io/pypi/v/workflow-canvas)](https://pypi.org/project/workflow-canvas/)
+[![CI](https://github.com/ddpoe/workflow-canvas/actions/workflows/ci.yml/badge.svg)](https://github.com/ddpoe/workflow-canvas/actions/workflows/ci.yml)
 [![Documentation](https://readthedocs.org/projects/workflow-canvas/badge/?version=latest)](https://workflow-canvas.readthedocs.io)
 [![License: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 
@@ -32,7 +33,7 @@ results are reproducible and re-running an unchanged pipeline does no duplicate 
 
 ## Requirements
 
-- **Python 3.11+** — required (the config parser uses stdlib `tomllib`).
+- **Python 3.12** — required (the config parser uses stdlib `tomllib`).
 - **Docker** — required. Methods always run inside a container; nothing runs without a working Docker installation. `wfc init` pre-flights it and `wfc doctor` checks it.
 - **Git** — required, but **local only**. wfc records a commit per run and refuses to run on uncommitted code. No GitHub account, login, or network is involved; wfc never pushes.
 
@@ -132,26 +133,15 @@ Full user documentation is published at
 
 - **Tutorials** — Getting Started, Exploring the Demo, Authoring a Method Script, Registering an Environment, Writing Contracts
 - **How-to** — Registration, the Canvas, Running & Inspecting Results, Sweeping Parameters & Fanning Out
-- **Reference** — CLI Reference, `method.yaml` schema, `wf-canvas.toml`
+- **Reference** — CLI Reference, Python API (`wfc-client`), `method.yaml` schema, `wf-canvas.toml`
 - **Explanation** — How a Run Executes, Caching & Reproducibility, Project Anatomy, Storage & Provenance
 
-## Development: Layering Gate
+## Contributing
 
-Path knowledge (`.runs`, `.wfc`, `.dvc`, `data/samples`, sentinel and
-workspace names, container mount roots) belongs to `wfc/layout/`. A static
-checker enforces this:
-
-```bash
-poetry run python tools/check_layering.py           # exit 0 = clean
-poetry run python tools/check_layering.py --sites   # list grandfathered sites
-poetry run python tools/check_catalog_coverage.py   # every catalog case in docs/system/ carries a witness link
-```
-
-Files that predate the rule are grandfathered by name inside the script.
-That list only ever shrinks: a new file may not add itself to the
-grandfather list without an approved request under `docs/pev-requests/`.
-Prose (docstrings, `help=` text, error messages) is exempt — the check
-matches only literals that flow into path expressions.
+Bug reports, questions and pull requests are welcome. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for how to set up a development environment,
+run the tests and build the docs, and the [Code of Conduct](CODE_OF_CONDUCT.md)
+for how we work together.
 
 ## License
 

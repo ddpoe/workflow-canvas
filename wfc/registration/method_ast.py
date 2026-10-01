@@ -46,7 +46,7 @@ def _is_save_artifact_call(node: ast.Call) -> bool:
     return isinstance(func, ast.Attribute) and func.attr == "save_artifact"
 
 
-def _literal_name_arg(node: ast.Call) -> "str | None":
+def _literal_name_arg(node: ast.Call) -> str | None:
     """Return the first positional arg if it is a string literal, else None."""
     if not node.args:
         return None
@@ -56,7 +56,7 @@ def _literal_name_arg(node: ast.Call) -> "str | None":
     return None
 
 
-def _is_obviously_unreachable(stack: "list[ast.AST]") -> bool:
+def _is_obviously_unreachable(stack: list[ast.AST]) -> bool:
     """Return True if any enclosing ``if`` has an obviously-false test.
 
     Only ``if False:`` and ``if 0:`` (in the body, not the else) count as
@@ -75,10 +75,10 @@ def _is_obviously_unreachable(stack: "list[ast.AST]") -> bool:
 
 
 def validate_save_artifacts(
-    script_path: "Path | str",
-    declared_outputs: "list[str]",
-    required_outputs: "list[str] | None" = None,
-) -> "list[str]":
+    script_path: Path | str,
+    declared_outputs: list[str],
+    required_outputs: list[str] | None = None,
+) -> list[str]:
     """Validate ``ctx.save_artifact`` literal names against declared outputs.
 
     Args:
@@ -102,9 +102,9 @@ def validate_save_artifacts(
     source = script_path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(script_path))
 
-    saved_literals: "set[str]" = set()
-    warnings: "list[str]" = []
-    unknown_literals: "list[str]" = []
+    saved_literals: set[str] = set()
+    warnings: list[str] = []
+    unknown_literals: list[str] = []
 
     # Only inspect bodies of @wfc.method-decorated functions (body only).
     decorated = [

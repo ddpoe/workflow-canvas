@@ -1,8 +1,5 @@
 """
-ContractViolation message shape + save_artifact boundary.
-
-``ContractViolation`` is the host-side error type for column/contract
-validation. It lives in the pure-stdlib ``wfc_client`` package.
+The save_artifact path boundary.
 
 Under the single-results-channel model a method declares each output by
 writing a file and calling ``ctx.save_artifact(name, path)``; return values
@@ -13,58 +10,19 @@ correctness is validated host-side after the run.
 
 import pytest
 
-from axiom_annotations import task, Step
+from axiom_annotations import Step, workflow
 
-from wfc_client import ContractViolation, RunContext
+from wfc_client import RunContext
 
 
-@task(purpose="ContractViolation message shape + save_artifact path-boundary guard")
-class TestContractViolationAndBoundary:
-    """ContractViolation message shape and the save_artifact path boundary."""
-
-    # ------------------------------------------------------------------
-    # ContractViolation constructor / message-shape (no I/O)
-    # ------------------------------------------------------------------
-
-    def test_extra_outputs_field_stored(self):
-        """extra_outputs passed to ContractViolation is stored on the instance."""
-        口 = Step(
-            step_num=1,
-            name="Construct with extra_outputs",
-            purpose="Verify the field is initialised and accessible")
-        exc = ContractViolation(method="sirna_filter", extra_outputs=["ghost"])
-        assert exc.extra_outputs == ["ghost"]
-
-    def test_extra_outputs_in_error_message(self):
-        """Error message contains the 'Undeclared outputs returned' section with the key."""
-        口 = Step(
-            step_num=1,
-            name="Construct ContractViolation",
-            purpose="Build exception with one undeclared output key")
-        exc = ContractViolation(
-            method="sirna_filter",
-            module="data_preprocessing",
-            extra_outputs=["ghost"])
-        msg = str(exc)
-        assert "Undeclared outputs returned" in msg
-        assert "ghost" in msg
-
-    def test_no_extra_outputs_section_absent(self):
-        """When extra_outputs is empty the 'Undeclared outputs' section is not printed."""
-        口 = Step(
-            step_num=1,
-            name="Construct with no extras",
-            purpose="Build a missing-outputs violation and inspect message")
-        exc = ContractViolation(
-            method="sirna_filter",
-            missing_outputs=["filtered"],
-            available_outputs=[])
-        assert "Undeclared outputs returned" not in str(exc)
+class TestSaveArtifactBoundary:
+    """The save_artifact path boundary."""
 
     # ------------------------------------------------------------------
     # save_artifact path boundary: path-inside-WFC_RUN_DIR only
     # ------------------------------------------------------------------
 
+    @workflow(purpose="save_artifact rejects a source path outside WFC_RUN_DIR before recording it")
     def test_save_artifact_rejects_path_outside_run_dir(self, tmp_path, monkeypatch):
         """A source path outside WFC_RUN_DIR raises an immediate, clear error."""
         口 = Step(
@@ -87,6 +45,7 @@ class TestContractViolationAndBoundary:
             ctx.save_artifact("filtered", outside)
         assert "WFC_RUN_DIR" in str(exc_info.value)
 
+    @workflow(purpose="save_artifact accepts any extension for a path inside WFC_RUN_DIR")
     def test_save_artifact_does_not_validate_extension(self, tmp_path, monkeypatch):
         """The client records the path without checking extension/type.
 

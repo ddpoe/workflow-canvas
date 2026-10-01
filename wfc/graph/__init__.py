@@ -1,5 +1,7 @@
-"""Graph — the Tier 0 declared wiring: what a pipeline document says and
-everything computable from it alone.
+"""Graph — the Tier 0 declared wiring of a pipeline document.
+
+It covers what a pipeline document says and everything computable from it
+alone.
 
 The load (parse, reference binding, order and legality, collapse, the
 column cross-check moment), the order questions, sample x variant expansion
@@ -40,12 +42,12 @@ from .load import (
     cross_check_columns_moment,
     document_node,
     inbound_wiring,
-    reference_link_error,
-    selector_slot,
     load_pipeline,
     parse_document,
     propagate_collapse,
+    reference_link_error,
     reference_nodes,
+    selector_slot,
 )
 from .model import PipelineDef, StepDef, carries_sample_bundle, reads_per_sample
 from .order import find_leaf_nodes, topo_sort_steps

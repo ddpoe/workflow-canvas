@@ -6,8 +6,16 @@ runs it; collect turns the method's exit into outputs and metrics; record
 writes the rows, sentinel, and sidecars every other phase's exits funnel
 into.
 
+A standalone step (no pipeline id, as an argument or in the environment)
+first asks Environments to make its env runnable, which rebuilds a locally
+built image the Docker daemon lost, so the claim reads the rebuilt env's
+fingerprint. A step the engine invokes inside a pipeline never does:
+``run_pipeline`` made every env runnable before the run's commit.
+
 Exit routing:
 
+- An env that cannot be made runnable refuses a standalone step before
+  the claim: nothing is registered.
 - A claim failure returns before the record tail runs: no run is
   registered, and inside a pipeline only the refused target's
   claim-refusal outcome sidecar is written for the pipeline-end walk.
@@ -19,15 +27,19 @@ Exit routing:
 """
 from __future__ import annotations
 
-from axiom_annotations import workflow, AutoStep
+import os
+import sys
+
+from axiom_annotations import AutoStep, workflow
 
 from .. import layout
+from ..persistence import project_root as get_project_root
 from .claim import run_claim
 from .collect import run_collect
 from .dispatch import run_dispatch
 from .materialize import run_materialize
+from .node_env import preflight_step_env
 from .record import run_record
-from ..persistence import project_root as get_project_root
 
 
 @workflow(purpose="Execute a single pipeline step: claim, materialize, "
@@ -49,7 +61,13 @@ def run_step(
 ) -> int:
     """Execute a single pipeline step end-to-end.
 
-    Runs the five-phase execution protocol:
+    A standalone invocation (no pipeline id, as an argument or in
+    ``WFC_PIPELINE_ID``) first asks Environments' ``ensure_runnable`` for
+    its env, rebuilding a locally built image the Docker daemon lost, so the
+    claim reads the rebuilt env's fingerprint; a refusal returns 1 before
+    anything is registered. An engine-invoked step skips this: the pipeline
+    made its envs runnable before the run's commit. It then runs the
+    five-phase execution protocol:
 
     1. Claim — resolve step config and parent runs from sentinel sidecars,
        register the run via ``pre_run``, carry its cache answer.
@@ -93,8 +111,23 @@ def run_step(
     Returns:
         0 on success, 1 on failure.
     """
+    # Standalone means no pipeline id at all, by the claim's own rule (the
+    # argument, else WFC_PIPELINE_ID). The engine sets the id for every node
+    # it runs, and run_pipeline already made those envs runnable.
+    in_pipeline = (pipeline_id if pipeline_id is not None
+                   else os.environ.get("WFC_PIPELINE_ID")) is not None
+    if not in_pipeline:
+        _document = (pipeline_json if pipeline_json is not None
+                     else os.environ.get("WFC_PIPELINE_JSON"))
+        口 = AutoStep(step_num=1, name="Make a standalone step's env runnable")
+        try:
+            preflight_step_env(node_id, _document, script_path,
+                               get_project_root())
+        except RuntimeError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
 
-    口 = AutoStep(step_num=1, name="Claim")
+    口 = AutoStep(step_num=2, name="Claim")
     claim = run_claim(
         node_id=node_id,
         sample=sample,
@@ -133,7 +166,7 @@ def run_step(
         # sentinel and writes the audit-row sidecar for lineage.
         ending = {"ending": "cached"}
     else:
-        口 = AutoStep(step_num=2, name="Materialize")
+        口 = AutoStep(step_num=3, name="Materialize")
         mat = run_materialize(
             node_id=node_id,
             sample=sample,
@@ -148,7 +181,7 @@ def run_step(
             ending = mat
 
     if ending["ending"] == "completed" and claim["flag"] != "CACHED":
-        口 = AutoStep(step_num=3, name="Dispatch")
+        口 = AutoStep(step_num=4, name="Dispatch")
         dsp = run_dispatch(
             node_id=node_id,
             sample=sample,
@@ -165,7 +198,7 @@ def run_step(
             slot_types=claim["slot_types"],
         )
         if dsp["ok"]:
-            口 = AutoStep(step_num=4, name="Collect")
+            口 = AutoStep(step_num=5, name="Collect")
             col = run_collect(
                 method_name=claim["method_name"],
                 run_id=run_id,
@@ -180,7 +213,7 @@ def run_step(
         else:
             ending = dsp
 
-    口 = AutoStep(step_num=5, name="Record")
+    口 = AutoStep(step_num=6, name="Record")
     rc = run_record(
         ending=ending["ending"],
         run_id=run_id,

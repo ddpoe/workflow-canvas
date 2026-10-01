@@ -6,13 +6,12 @@ Tables:
   run_annotations, samples
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Optional, List
+from typing import Optional
 
-from sqlmodel import SQLModel, Field, Relationship, Column
 from sqlalchemy import JSON, UniqueConstraint, text
-
+from sqlmodel import Column, Field, Relationship, SQLModel
 
 # =============================================================================
 # Push-status enum
@@ -44,13 +43,13 @@ class Module(SQLModel, table=True):
 
     __tablename__ = "modules"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     name: str = Field(unique=True, index=True, max_length=200)
-    description: Optional[str] = None
+    description: str | None = None
 
     # relationships
-    methods: List["Method"] = Relationship(back_populates="module")
-    contracts: List["ModuleContract"] = Relationship(back_populates="module")
+    methods: list["Method"] = Relationship(back_populates="module")
+    contracts: list["ModuleContract"] = Relationship(back_populates="module")
 
 
 class Method(SQLModel, table=True):
@@ -58,10 +57,10 @@ class Method(SQLModel, table=True):
 
     __tablename__ = "methods"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     module_id: int = Field(foreign_key="modules.id", index=True)
     name: str = Field(index=True, max_length=200)
-    script_path: Optional[str] = Field(default=None, max_length=500)
+    script_path: str | None = Field(default=None, max_length=500)
     # Required typed env spec or named shared env (e.g. "pixi:image-io",
     # "conda:analysis", "container:<name>", "byo", or a bare manifest name).
     # No Python-side default — a method must declare an env (enforced at
@@ -77,11 +76,11 @@ class Method(SQLModel, table=True):
     )
 
     # relationships
-    module: Optional[Module] = Relationship(back_populates="methods")
-    tracked_functions: List["TrackedFunction"] = Relationship(back_populates="method")
-    runs: List["Run"] = Relationship(back_populates="method")
+    module: Module | None = Relationship(back_populates="methods")
+    tracked_functions: list["TrackedFunction"] = Relationship(back_populates="method")
+    runs: list["Run"] = Relationship(back_populates="method")
     contract: Optional["MethodContract"] = Relationship(back_populates="method")
-    versions: List["MethodVersion"] = Relationship(back_populates="method")
+    versions: list["MethodVersion"] = Relationship(back_populates="method")
 
 
 class MethodVersion(SQLModel, table=True):
@@ -101,16 +100,16 @@ class MethodVersion(SQLModel, table=True):
         UniqueConstraint("method_id", "code_fingerprint", name="uq_method_version"),
     )
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     method_id: int = Field(foreign_key="methods.id", index=True)
     code_fingerprint: str = Field(max_length=64)
-    git_commit: Optional[str] = Field(default=None, max_length=40)
-    recorded_at: Optional[datetime] = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+    git_commit: str | None = Field(default=None, max_length=40)
+    recorded_at: datetime | None = Field(
+        default_factory=lambda: datetime.now(UTC)
     )
 
     # relationships
-    method: Optional[Method] = Relationship(back_populates="versions")
+    method: Method | None = Relationship(back_populates="versions")
 
 
 # =============================================================================
@@ -122,14 +121,14 @@ class TrackedFunction(SQLModel, table=True):
 
     __tablename__ = "tracked_functions"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     method_id: int = Field(foreign_key="methods.id", index=True)
     function_name: str = Field(max_length=200)
     ordinal: int = Field(default=0)
 
     # relationships
-    method: Optional[Method] = Relationship(back_populates="tracked_functions")
-    param_defs: List["ParamDef"] = Relationship(back_populates="tracked_function")
+    method: Method | None = Relationship(back_populates="tracked_functions")
+    param_defs: list["ParamDef"] = Relationship(back_populates="tracked_function")
 
 
 class ParamDef(SQLModel, table=True):
@@ -137,14 +136,14 @@ class ParamDef(SQLModel, table=True):
 
     __tablename__ = "param_defs"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     tracked_function_id: int = Field(foreign_key="tracked_functions.id", index=True)
     param_name: str = Field(max_length=200)
-    param_type: Optional[str] = Field(default=None, max_length=100)
-    default_value: Optional[str] = None
+    param_type: str | None = Field(default=None, max_length=100)
+    default_value: str | None = None
 
     # relationships
-    tracked_function: Optional[TrackedFunction] = Relationship(back_populates="param_defs")
+    tracked_function: TrackedFunction | None = Relationship(back_populates="param_defs")
 
 
 # =============================================================================
@@ -156,55 +155,55 @@ class Run(SQLModel, table=True):
 
     __tablename__ = "runs"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     method_id: int = Field(foreign_key="methods.id", index=True)
-    params: Optional[dict] = Field(default=None, sa_column=Column(JSON))
-    sample: Optional[str] = Field(default=None, max_length=200, index=True)
+    params: dict | None = Field(default=None, sa_column=Column(JSON))
+    sample: str | None = Field(default=None, max_length=200, index=True)
     status: str = Field(default="running", max_length=50)
-    pipeline_id: Optional[str] = Field(default=None, max_length=200, index=True)
-    nf_process_name: Optional[str] = Field(default=None, max_length=200)
+    pipeline_id: str | None = Field(default=None, max_length=200, index=True)
+    nf_process_name: str | None = Field(default=None, max_length=200)
     # started_at is nullable: cancelled rows (written post-hoc at pipeline-end
     # by ``_write_cancelled_rows``) never executed and carry ``started_at=None``.
-    started_at: Optional[datetime] = Field(default=None)
-    finished_at: Optional[datetime] = None
-    metrics: Optional[dict] = Field(default=None, sa_column=Column(JSON))
+    started_at: datetime | None = Field(default=None)
+    finished_at: datetime | None = None
+    metrics: dict | None = Field(default=None, sa_column=Column(JSON))
     # Versioning & caching
-    version_id: Optional[int] = Field(default=None, foreign_key="method_versions.id", index=True)
-    cache_key: Optional[str] = Field(default=None, max_length=64, index=True)
-    cache_source_run_id: Optional[int] = Field(default=None, foreign_key="runs.id")
+    version_id: int | None = Field(default=None, foreign_key="method_versions.id", index=True)
+    cache_key: str | None = Field(default=None, max_length=64, index=True)
+    cache_source_run_id: int | None = Field(default=None, foreign_key="runs.id")
     # env_fingerprint: 32-char MD5 hex of the DVC-cached env content blob
     # captured at pre_run time (lock + pip freeze, or a container env's
     # image fingerprint).  Folded into the cache key so env drift
     # invalidates cache.  Nullable for backward compat with pre-env-fp runs.
-    env_fingerprint: Optional[str] = Field(default=None, max_length=32)
+    env_fingerprint: str | None = Field(default=None, max_length=32)
     # cache_source_run_id is set when a run reused a previous run's outputs;
     # the run still appears in the audit log, it just did not re-execute.
     # Error persistence
-    error_message: Optional[str] = Field(default=None)
-    error_traceback: Optional[str] = Field(default=None)
+    error_message: str | None = Field(default=None)
+    error_traceback: str | None = Field(default=None)
     # Causality link for cancelled rows: points at the nearest failed ancestor
     # in the frozen pipeline DAG. Populated only for ``status='cancelled'``
     # rows written post-hoc by ``_write_cancelled_rows`` at pipeline-end.
     # NULL on executed rows and on cancelled rows whose failed ancestor could
     # not be resolved (defensive -- shouldn't happen in practice).
-    cancelled_due_to_run_id: Optional[int] = Field(
+    cancelled_due_to_run_id: int | None = Field(
         default=None, foreign_key="runs.id", index=True
     )
     # NID: custom run label from canvas node (nullable = auto-version)
-    nid: Optional[str] = Field(default=None, max_length=200)
+    nid: str | None = Field(default=None, max_length=200)
     # The pipeline node the run executed, by the node's raw document id (a
     # standalone run-step records its --node-id as given). NULL for runs no
     # node wrote, e.g. register_run. Not indexed: readers select by
     # pipeline_id and match node_id in memory.
-    node_id: Optional[str] = Field(default=None, max_length=200)
+    node_id: str | None = Field(default=None, max_length=200)
 
     # relationships
-    method: Optional[Method] = Relationship(back_populates="runs")
-    inputs: List["RunInput"] = Relationship(
+    method: Method | None = Relationship(back_populates="runs")
+    inputs: list["RunInput"] = Relationship(
         back_populates="run",
         sa_relationship_kwargs={"foreign_keys": "[RunInput.run_id]"},
     )
-    outputs: List["RunOutput"] = Relationship(back_populates="run")
+    outputs: list["RunOutput"] = Relationship(back_populates="run")
     annotation: Optional["RunAnnotation"] = Relationship(
         back_populates="run",
         sa_relationship_kwargs={"uselist": False, "cascade": "all, delete-orphan"},
@@ -224,17 +223,17 @@ class RunAnnotation(SQLModel, table=True):
 
     run_id: int = Field(foreign_key="runs.id", primary_key=True)
     favorite: bool = Field(default=False)
-    tags: List[str] = Field(default_factory=list, sa_column=Column(JSON))
+    tags: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     # When set, the run is soft-deleted: hidden from default views but still
     # in the DB. Hard delete is only permitted after archiving. NULL = live.
     # Timestamp (not bool) so the UI can show "archived 3d ago" and future
     # auto-retention policies can act on age.
-    archived_at: Optional[datetime] = Field(default=None)
-    updated_at: Optional[datetime] = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+    archived_at: datetime | None = Field(default=None)
+    updated_at: datetime | None = Field(
+        default_factory=lambda: datetime.now(UTC)
     )
 
-    run: Optional[Run] = Relationship(back_populates="annotation")
+    run: Run | None = Relationship(back_populates="annotation")
 
 
 class ModuleContract(SQLModel, table=True):
@@ -247,17 +246,19 @@ class ModuleContract(SQLModel, table=True):
 
     __tablename__ = "module_contracts"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     module_id: int = Field(foreign_key="modules.id", index=True)
     contract_type: str = Field(max_length=50)       # 'output' or 'metric'
     name: str = Field(max_length=200)               # artifact name or metric name
-    value_type: Optional[str] = Field(default=None, max_length=100)  # '.parquet', 'int', etc.
+    value_type: str | None = Field(default=None, max_length=100)  # '.parquet', 'int', etc.
     required: bool = Field(default=True)
 
     # relationships
-    module: Optional[Module] = Relationship(back_populates="contracts")
+    module: Module | None = Relationship(back_populates="contracts")
 
     class Config:
+        """Model configuration naming the ``module_contracts`` table."""
+
         table_name = "module_contracts"
 
 
@@ -272,23 +273,23 @@ class RunInput(SQLModel, table=True):
 
     __tablename__ = "run_inputs"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     run_id: int = Field(foreign_key="runs.id", index=True)
-    source_run_id: Optional[int] = Field(default=None, foreign_key="runs.id")
-    input_name: Optional[str] = Field(default=None, max_length=200)
+    source_run_id: int | None = Field(default=None, foreign_key="runs.id")
+    input_name: str | None = Field(default=None, max_length=200)
     # The output slot of the upstream run that fed ``input_name``, taken from
     # the parent entry (``input:output:run``). NULL when the entry named no
     # output (the two-part ``input:run`` and bare ``run`` forms).
-    source_slot: Optional[str] = Field(default=None, max_length=200)
-    artifact_path: Optional[str] = Field(default=None, max_length=500)
+    source_slot: str | None = Field(default=None, max_length=200)
+    artifact_path: str | None = Field(default=None, max_length=500)
     # On a sample row: the registered sample the run read into
     # ``input_name``, and that sample's content hash at claim time -- the
     # same hash the run's cache key is over. NULL on a parent row.
-    sample_name: Optional[str] = Field(default=None, max_length=200)
-    content_hash: Optional[str] = Field(default=None, max_length=36)
+    sample_name: str | None = Field(default=None, max_length=200)
+    content_hash: str | None = Field(default=None, max_length=36)
 
     # relationships
-    run: Optional[Run] = Relationship(
+    run: Run | None = Relationship(
         back_populates="inputs",
         sa_relationship_kwargs={"foreign_keys": "[RunInput.run_id]"},
     )
@@ -299,16 +300,16 @@ class RunOutput(SQLModel, table=True):
 
     __tablename__ = "run_outputs"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     run_id: int = Field(foreign_key="runs.id", index=True)
     # The contract output slot this record fills. Every output is found by
     # its slot; a run with an output record that lacks one has a malformed
     # record. One record per (run_id, slot), kept by the collect phase's
     # insert-or-update rather than a database constraint.
-    slot: Optional[str] = Field(default=None, max_length=200)
+    slot: str | None = Field(default=None, max_length=200)
     # The file name the method saved the output under, for display.
-    output_name: Optional[str] = Field(default=None, max_length=200)
-    artifact_path: Optional[str] = Field(default=None, max_length=500)
+    output_name: str | None = Field(default=None, max_length=200)
+    artifact_path: str | None = Field(default=None, max_length=500)
     # artifact_type has no default — must be passed explicitly at every write site.
     # Valid values: "module_file", "method_file", "module_directory", "method_directory".
     # Only "module_file" rows participate in wfc.identity.build_input_fingerprint().
@@ -317,25 +318,25 @@ class RunOutput(SQLModel, table=True):
     # Size and mtime captured at write time (from the file on disk).
     # mtime is read from the source file before any copy so calendar-day variation
     # in copy timestamps doesn't poison fingerprints for re-registered identical content.
-    file_size: Optional[int] = None
-    file_mtime: Optional[float] = None
+    file_size: int | None = None
+    file_mtime: float | None = None
     # Content-addressed hash (md5 hex; a directory's is its manifest's md5
     # plus ``.dir``).  NULL until the post-pipeline archive pass (or
     # ``wfc cache archive``) hashes the output, and on rows from runs
     # recorded before DVC integration.
-    content_hash: Optional[str] = Field(default=None, max_length=36)
+    content_hash: str | None = Field(default=None, max_length=36)
 
     # Async push-to-remote bookkeeping. ``push_status`` defaults to
     # ``deferred`` (the no-remote-configured terminal). The CLI flips it to
     # ``pending`` at row-insert time when a remote is configured; the push
     # worker drives the lifecycle from there.
     push_status: str = Field(default=PushStatus.deferred.value, max_length=20, index=True)
-    pushed_at: Optional[datetime] = Field(default=None)
+    pushed_at: datetime | None = Field(default=None)
     push_attempts: int = Field(default=0)
-    push_error: Optional[str] = Field(default=None)
+    push_error: str | None = Field(default=None)
 
     # relationships
-    run: Optional[Run] = Relationship(back_populates="outputs")
+    run: Run | None = Relationship(back_populates="outputs")
 
 
 # =============================================================================
@@ -353,19 +354,19 @@ class MethodContract(SQLModel, table=True):
 
     __tablename__ = "method_contracts"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     method_id: int = Field(foreign_key="methods.id", unique=True, index=True)
-    input_slots: Optional[dict] = Field(default=None, sa_column=Column(JSON))
+    input_slots: dict | None = Field(default=None, sa_column=Column(JSON))
     # {slot_name: {type, required, multiple, description}}
-    output_slots: Optional[dict] = Field(default=None, sa_column=Column(JSON))
+    output_slots: dict | None = Field(default=None, sa_column=Column(JSON))
     # {slot_name: {type, required, description}}
-    params_schema: Optional[dict] = Field(default=None, sa_column=Column(JSON))
+    params_schema: dict | None = Field(default=None, sa_column=Column(JSON))
     # {param_name: {type, required, default, description}}
     executor: str = Field(default="python", max_length=50)
     # "python" | "nextflow"  (forward-looking: NF shim generation)
 
     # relationships
-    method: Optional[Method] = Relationship(back_populates="contract")
+    method: Method | None = Relationship(back_populates="contract")
 
 
 # =============================================================================
@@ -384,25 +385,25 @@ class Sample(SQLModel, table=True):
 
     __tablename__ = "samples"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     name: str = Field(unique=True, index=True, max_length=200)
     source_path: str = Field(max_length=500)
     registered_path: str = Field(max_length=500)
     file_type: str = Field(max_length=50)
-    registered_at: Optional[datetime] = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+    registered_at: datetime | None = Field(
+        default_factory=lambda: datetime.now(UTC)
     )
     # Size and mtime captured from the source file *before* the copy.
     # Post-copy timestamps vary by calendar day and would produce different mtimes
     # for identical content re-registered later, poisoning cache fingerprints.
     # For a directory: the sum of its files' sizes and the newest file's mtime.
-    file_size: Optional[int] = None
-    file_mtime: Optional[float] = None
+    file_size: int | None = None
+    file_mtime: float | None = None
     # Number of files in a directory sample; NULL for a file sample.
-    file_count: Optional[int] = None
+    file_count: int | None = None
     # Free-text description from the registration manifest (or the canvas
     # form). Metadata only: never part of the content hash or a cache key.
-    description: Optional[str] = None
+    description: str | None = None
     # "copy" = wfc owns the file (default); "link" = wfc records path only (deferred).
     registration_mode: str = Field(default="copy", max_length=20)
     # DVC content hash (MD5). Always set by register_sample, which is the
@@ -411,11 +412,11 @@ class Sample(SQLModel, table=True):
     # integration left it NULL — such a row is a malformed record and is
     # refused loudly (load_sample_hashes, restore_sample), never degraded
     # around, so it is re-registered rather than migrated.
-    content_hash: Optional[str] = Field(default=None, max_length=36)
+    content_hash: str | None = Field(default=None, max_length=36)
 
     # Async push-to-remote bookkeeping for sample registrations.
     # Same shape and defaults as RunOutput; the same push worker drains both.
     push_status: str = Field(default=PushStatus.deferred.value, max_length=20, index=True)
-    pushed_at: Optional[datetime] = Field(default=None)
+    pushed_at: datetime | None = Field(default=None)
     push_attempts: int = Field(default=0)
-    push_error: Optional[str] = Field(default=None)
+    push_error: str | None = Field(default=None)

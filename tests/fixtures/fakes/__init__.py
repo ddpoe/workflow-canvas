@@ -24,8 +24,9 @@ Index by boundary:
   fake_pip_freeze.
 
 **docker** -- register-env's registry calls and the dev loop's launch.
-  stub_docker_image_inspect, stub_docker_pull, stub_docker_build,
-  refuse_docker, stub_docker_command_builder, stub_dev_loop_launch.
+  stub_docker_image_inspect, stub_docker_repo_digest, stub_docker_pull,
+  stub_docker_build, refuse_docker, stub_docker_command_builder,
+  stub_dev_loop_launch.
 
 **engine** -- the method process, the Snakemake spawn, the phases.
   stub_method_process (the harness's stub rung), mocked_snakemake,
@@ -60,6 +61,7 @@ from .docker import (
     stub_docker_command_builder,
     stub_docker_image_inspect,
     stub_docker_pull,
+    stub_docker_repo_digest,
 )
 from .engine import (
     fake_engine_process,
@@ -85,8 +87,8 @@ from .process import (
     refusing_process,
     stub_binary_lookup,
     stub_interactive_prompt,
-    stub_terminal,
     stub_server_bind,
+    stub_terminal,
     stub_wall_clock,
 )
 from .readiness import (
@@ -138,7 +140,8 @@ __all__ = [
     "stub_interactive_prompt", "stub_terminal", "stub_server_bind", "stub_wall_clock",
     "fake_conda_list_explicit", "fake_pip_freeze",
     # docker
-    "stub_docker_image_inspect", "stub_docker_pull", "stub_docker_build",
+    "stub_docker_image_inspect", "stub_docker_repo_digest",
+    "stub_docker_pull", "stub_docker_build",
     "refuse_docker", "stub_docker_command_builder", "stub_dev_loop_launch",
     # engine
     "stub_method_process", "mocked_snakemake", "fake_engine_process",

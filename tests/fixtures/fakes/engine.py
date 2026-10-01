@@ -178,7 +178,11 @@ def fake_engine_process(*, returncode: int = 0, launch=None,
 
     def spawn(cmd, *args, **kwargs):
         argv = cmd if isinstance(cmd, (list, tuple)) else [cmd]
-        if only_snakemake and not (argv and argv[0] == "snakemake"):
+        # The engine launches as ``<interpreter> -m snakemake``; a bare
+        # ``snakemake`` program counts too.
+        is_engine = bool(argv) and (argv[0] == "snakemake"
+                                    or list(argv[1:3]) == ["-m", "snakemake"])
+        if only_snakemake and not is_engine:
             return real_popen(cmd, *args, **kwargs)
         if launch is not None:
             launch(argv, **kwargs)

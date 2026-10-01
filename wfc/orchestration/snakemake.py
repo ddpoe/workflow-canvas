@@ -1,5 +1,4 @@
-"""
-The Snakefile emitter (wildcard-based).
+"""The Snakefile emitter (wildcard-based).
 
 Generates ONE rule per method using wildcards for samples and parameter variants.
 No rule explosion — the number of rules equals the number of pipeline steps,
@@ -26,15 +25,18 @@ import json
 import textwrap
 from pathlib import Path
 
-from axiom_annotations import workflow, task, Step, AutoStep
+from axiom_annotations import AutoStep, Step, task, workflow
 
 from .. import layout
 from ..contracts import COLLAPSED_SAMPLE
 from ..graph import (
-    PipelineDef, StepDef, carries_sample_bundle, find_leaf_nodes, reads_per_sample,
+    PipelineDef,
+    StepDef,
+    carries_sample_bundle,
+    find_leaf_nodes,
+    reads_per_sample,
 )
 from ..graph.expansion import resolve_variant_model  # from its defining module, so the AutoStep edge resolves
-
 
 # =============================================================================
 # Internal helpers
@@ -120,7 +122,7 @@ def _input_path(
         or any(len(v) > 1 for v in step.inputs.values())
         or len(step.inputs) > 1
     ):
-        result: dict[str, list[str]] = {}
+        result: dict[str, str | list[str]] = {}
         for slot, upstream_ids in step.inputs.items():
             result[slot] = [
                 _output_path(uid, step_map, pipeline_id=pipeline_id)
@@ -250,8 +252,8 @@ def _generate_rule(
     lines.append(f"    output: \"{out}\"")
 
     # -- params: pass variant and node_id through Snakemake params --
-    lines.append(f'    params:')
-    lines.append(f'        variant="{{variant}}",')
+    lines.append('    params:')
+    lines.append('        variant="{variant}",')
     lines.append(f'        node_id="{nid}"')
 
     # -- shell: delegate everything to wfc run-step --
@@ -283,7 +285,7 @@ def _generate_rule(
     # Collapsed steps have no `{sample}` wildcard (it was baked to __all__).
     # Pass the literal so wfc run-step records the run at COLLAPSED_SAMPLE.
     sample_arg = COLLAPSED_SAMPLE if step.sample_collapsed else "{wildcards.sample}"
-    lines.append(f'    shell:')
+    lines.append('    shell:')
     lines.append(f'        "{{sys.executable}} -m wfc run-step '
                  f'--node-id {{params.node_id}} '
                  f'--sample {sample_arg} '
@@ -374,7 +376,6 @@ def generate_snakefile(
                      "logger, and run-step env vars")
 
     # ── Header ──────────────────────────────────────────────────────────────
-    variant_counts = {m: len(vs) for m, vs in resolved_params.items()}
     if pipeline.explicit_combos:
         total_runs_est = len(pipeline.explicit_combos) * len(pipeline.steps)
         mode = "selective"

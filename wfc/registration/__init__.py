@@ -40,7 +40,6 @@ from .method_version import get_or_create_version
 from .module import register_module
 from .sample import register_sample
 from .sample_hashes import MalformedSampleError, load_sample_hashes
-from .sample_manifest import SampleManifestError, read_sample_manifest
 from .sample_health import (
     SampleHealth,
     SampleState,
@@ -50,6 +49,7 @@ from .sample_health import (
     load_sample_health,
     preflight_sample_content,
 )
+from .sample_manifest import SampleManifestError, read_sample_manifest
 from .snapshot import HELPER_SNAPSHOT_DIR
 
 __all__ = [

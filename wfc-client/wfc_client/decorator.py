@@ -5,30 +5,44 @@ Pure stdlib; no wfc / pandas imports.
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
+from typing import Any, TypeVar
+
+F = TypeVar("F", bound=Callable[..., Any])
 
 # Module-level registry of @method-decorated functions for this method module.
 # ``run()`` resolves exactly one entry; zero or more than one is an error.
-_registry: "list[Callable]" = []
+_registry: list[Callable[..., Any]] = []
 
 
-def method(func: Callable) -> Callable:
-    """Mark a function as the wfc method entry point.
+def method(func: F) -> F:
+    """Mark a function as the method script's entry point.
 
-    The decorated function takes a single ``ctx`` argument (a
-    :class:`wfc_client.context.RunContext`). It produces outputs by
-    calling ``ctx.save_artifact(name, path)`` and metrics via
-    ``ctx.log_metric(name, value)``. Its return value is ignored — there
-    is no return-value parsing.
+    Decorate exactly one function per script. :func:`wfc_client.run`
+    calls it with a :class:`~wfc_client.RunContext` as its only argument.
+    The function records each output file with
+    :meth:`~wfc_client.RunContext.save_artifact` and each metric with
+    :meth:`~wfc_client.RunContext.log_metric`. Its return value is ignored.
 
-    Decorating is a no-op at import time beyond registration; dispatch
-    happens when :func:`wfc_client.main.run` is called.
+    Example::
+
+        import wfc_client as wfc
+
+        @wfc.method
+        def qc(ctx):
+            clean_path = ctx.workdir / "clean.csv"
+            ...  # write the file
+            ctx.save_artifact("clean", clean_path)
+            ctx.log_metric("kept_rows", 100)
+
+        if __name__ == "__main__":
+            wfc.run()
 
     Args:
-        func: The method function to decorate. Should accept ``(ctx)``.
+        func: The function to mark. It takes one argument, the run context.
 
     Returns:
-        The original function, unchanged, with ``_wfc_method = True`` set.
+        The same function, unchanged.
     """
     func._wfc_method = True  # type: ignore[attr-defined]
     _registry.append(func)

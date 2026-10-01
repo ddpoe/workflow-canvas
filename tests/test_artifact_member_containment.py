@@ -6,8 +6,9 @@ the status a browser sees. The run is driven through the harness, archived
 through production, and read through the directory's checkout.
 
 Declared fixture deviation: ``test_a_symlink_out_of_a_checkout_is_refused``
-plants a symlink in a checkout, which neither collection (it refuses
-symlinks) nor checkout writes; it is the state a hand edit leaves.
+plants a symlink in a checkout, to a file in one case and to a directory in
+the other, which neither collection (it refuses symlinks) nor checkout
+writes; it is the state a hand edit leaves.
 """
 from __future__ import annotations
 
@@ -74,21 +75,44 @@ def test_member_route_serves_members_and_refuses_traversal(tmp_project,
     assert "backslash" in refused.json()["detail"]
 
 
-@workflow(purpose="A member that resolves outside its output through a "
-                  "symlink is refused, not served")
-def test_a_symlink_out_of_a_checkout_is_refused(tmp_project, monkeypatch):
-    from wfc.canvas.wfc_provider import ArtifactPathRefusedError
+def _checkout_tree(checkout):
+    """Every entry under a checkout by relative path, and which are links."""
+    entries, links = [], []
+    for root, dirs, files in os.walk(checkout):
+        for name in dirs + files:
+            path = os.path.join(root, name)
+            rel = os.path.relpath(path, checkout).replace(os.sep, "/")
+            entries.append(rel)
+            if os.path.islink(path):
+                links.append(rel)
+    return sorted(entries), links
 
+
+@pytest.mark.parametrize("kind", ["file", "directory"])
+@workflow(purpose="A symlink planted in a directory output's checkout, to a "
+                  "file or to a directory, fails the checkout's checks: the "
+                  "checkout is rebuilt to exactly the output's files and the "
+                  "link is never served")
+def test_a_symlink_out_of_a_checkout_is_refused(tmp_project, monkeypatch, kind):
     rid, provider = _archived_run(tmp_project, monkeypatch)
     checkout = provider.get_artifact_path(rid, "tiles")
-    outside = tmp_project / "secret.txt"
-    outside.write_text("not an output\n")
-    link = checkout / "leak.txt"
+    assert _checkout_tree(checkout) == (["t0.png", "t1.png"], [])
+
+    outside_dir = tmp_project / "outside"
+    outside_dir.mkdir()
+    (outside_dir / "secret.txt").write_text("not an output\n")
     os.chmod(checkout, 0o755)
     try:
-        link.symlink_to(outside)
+        if kind == "file":
+            (checkout / "leak.txt").symlink_to(outside_dir / "secret.txt")
+        else:
+            (checkout / "leak").symlink_to(outside_dir, target_is_directory=True)
     except OSError as exc:
         pytest.skip(f"this host cannot create a symlink ({exc})")
+    leaked = "tiles/leak.txt" if kind == "file" else "tiles/leak/secret.txt"
 
-    with pytest.raises(ArtifactPathRefusedError, match="outside the output"):
-        provider.get_artifact_path(rid, "tiles/leak.txt")
+    assert provider.get_artifact_path(rid, leaked) is None
+    rebuilt = provider.get_artifact_path(rid, "tiles")
+    assert _checkout_tree(rebuilt) == (["t0.png", "t1.png"], [])
+    assert (rebuilt / "t0.png").read_bytes() == b"PNG-a"
+    assert (outside_dir / "secret.txt").read_text() == "not an output\n"

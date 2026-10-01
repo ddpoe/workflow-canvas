@@ -1,5 +1,4 @@
-"""
-Workflow Canvas -- FastAPI backend.
+"""Workflow Canvas -- FastAPI backend.
 
 All data comes from the live wfc SQLite database.
 
@@ -44,6 +43,7 @@ _STATIC_DIR = Path(__file__).parent / "static" / "dist"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Load the provider for the resolved project root at server startup."""
     # The project this server serves is the canonical resolver's answer.
     # No resolvable project means no server: the resolver's error propagates
     # and startup fails, rather than a server that silently serves whatever

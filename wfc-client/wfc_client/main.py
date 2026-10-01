@@ -17,18 +17,23 @@ from .context import RunContext
 from .decorator import _registry
 
 
-@task(purpose="Run the module's one @wfc.method function and write its results manifest")
+# axiom-annotations ships no type information, so its decorators are untyped.
+@task(  # type: ignore[untyped-decorator]
+    purpose="Run the module's one @wfc.method function and write its results manifest"
+)
 def run() -> None:
-    """Run the single ``@wfc.method``-decorated function in this module.
+    """Run the script's ``@wfc.method`` function.
 
-    Resolves exactly one decorated function. Builds a ``RunContext`` from
-    the ``WFC_*`` env vars, calls ``func(ctx)``, then writes the results
-    manifest. The function's return value is ignored; all outputs flow
-    through ``ctx.save_artifact`` and all metrics through ``ctx.log_metric``.
+    Call it at the end of the method script, under
+    ``if __name__ == "__main__":``. It builds a :class:`~wfc_client.RunContext`
+    from the environment wfc sets for the step, calls the decorated function
+    with it, and then writes the recorded outputs and metrics to
+    ``_wfc_results.json`` in the run directory, where wfc collects them
+    after the script exits.
 
     Raises:
-        RuntimeError: If zero or more than one ``@wfc.method`` function is
-            registered in this module.
+        RuntimeError: If the script has no ``@wfc.method`` function or more
+            than one, or if the script was not started by wfc.
     """
     口 = Step(step_num=1, name="Find the method function",
              purpose="Require exactly one @wfc.method in the module registry")

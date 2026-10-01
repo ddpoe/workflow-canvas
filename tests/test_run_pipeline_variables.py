@@ -19,7 +19,7 @@ import json
 import pytest
 from axiom_annotations import Step, workflow
 
-from tests.fixtures.fakes import fake_engine_process
+from tests.fixtures.fakes import fake_engine_process, stub_docker_image_inspect
 from tests.harness import Scenario, build_project, node, selector, wire
 from wfc import layout
 
@@ -69,6 +69,9 @@ def test_run_pipeline_substitutes_variables_before_the_load(git_project, monkeyp
     Step(step_num=2, name="Run through run_pipeline with the Snakemake spawn stubbed",
          purpose="Substitution, the load, the freeze and generation all run "
                  "for real; only the snakemake process is a stub")
+    # The scenario env's image is in the Docker daemon (run_pipeline's env
+    # pre-flight probes it); the engine is stubbed, so no container runs.
+    stub_docker_image_inspect(monkeypatch, lambda ref: ref)
     with fake_engine_process():
         run_pipeline(
             pipeline_path=str(project.pipeline_json),

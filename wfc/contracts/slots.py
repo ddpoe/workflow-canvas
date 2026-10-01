@@ -16,9 +16,9 @@ translation and no silent default: a missing or blank value is rejected.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Dict, Mapping
-
+from typing import cast
 
 # Canonical directory marker; ``dir`` is an accepted alias. The one marker
 # set: registration-time validation, enrichment and node-config directory
@@ -162,7 +162,7 @@ def output_slot_filename(slot_name: str, canonical_type: str) -> str:
 def resolve_node_outputs(
     node_cfg: Mapping[str, object],
     ws_base: Path,
-) -> Dict[str, Path]:
+) -> dict[str, Path]:
     """Resolve a node's declared output slots to workspace paths.
 
     For each entry in the node's ``slot_outputs``, build an absolute
@@ -187,12 +187,12 @@ def resolve_node_outputs(
         order mirrors the order of ``slot_outputs``.  For the legacy
         fallback, the mapping has exactly one entry with key ``"output"``.
     """
-    slot_outputs = node_cfg.get("slot_outputs") or {}
+    slot_outputs = cast(Mapping[str, str], node_cfg.get("slot_outputs") or {})
     if not slot_outputs:
         output_ext = node_cfg.get("output_ext", ".parquet") or ".parquet"
         return {"output": ws_base / f"output{output_ext}"}
 
-    result: Dict[str, Path] = {}
+    result: dict[str, Path] = {}
     for slot_name, filename in slot_outputs.items():
         result[slot_name] = ws_base / filename
     return result
@@ -223,7 +223,7 @@ def is_directory_slot(
         True if the slot is declared as a directory slot, False
         otherwise.
     """
-    slot_types = node_cfg.get("slot_types") or {}
+    slot_types = cast(Mapping[str, object], node_cfg.get("slot_types") or {})
     slot_type = slot_types.get(slot_name)
     if not isinstance(slot_type, str):
         return False

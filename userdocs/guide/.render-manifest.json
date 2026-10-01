@@ -37,7 +37,7 @@
   },
   "reference/cli-reference.md": {
     "doc_id": "pm_mvp::docs.consumer.reference.cli-reference",
-    "hash": "eb11c8db6ae2"
+    "hash": "6f7abe87a494"
   },
   "reference/method-yaml-schema.md": {
     "doc_id": "pm_mvp::docs.consumer.reference.method-yaml-schema",
@@ -46,6 +46,10 @@
   "reference/wf-canvas-toml.md": {
     "doc_id": "pm_mvp::docs.consumer.reference.wf-canvas-toml",
     "hash": "b451fb3ebc1e"
+  },
+  "reference/wfc-client-api.md": {
+    "doc_id": "pm_mvp::docs.consumer.reference.wfc-client-api",
+    "hash": "b863cb41817d"
   },
   "tutorials/authoring-a-method-script.md": {
     "doc_id": "pm_mvp::docs.consumer.tutorials.authoring-a-method-script",

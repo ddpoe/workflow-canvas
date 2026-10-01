@@ -12,7 +12,6 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-
 # =============================================================================
 # Environment resolution
 # =============================================================================
@@ -106,8 +105,8 @@ def _resolve_pixi_standalone(
     raise ValueError(
         f"No pixi environment found for '{name}'.\n"
         f"Searched:\n  " + "\n  ".join(searched) + "\n"
-        f"Run `pixi install` in the environment directory first, "
-        f"or set [pixi] root in .wfc/wf-canvas.toml."
+        "Run `pixi install` in the environment directory first, "
+        "or set [pixi] root in .wfc/wf-canvas.toml."
     )
 
 
@@ -151,8 +150,8 @@ def _resolve_pixi_project_env(
     raise ValueError(
         f"No pixi environment found for project '{project}', env '{env}'.\n"
         f"Searched:\n  " + "\n  ".join(searched) + "\n"
-        f"Run `pixi install` in the project directory first, "
-        f"or set [pixi] root in .wfc/wf-canvas.toml."
+        "Run `pixi install` in the project directory first, "
+        "or set [pixi] root in .wfc/wf-canvas.toml."
     )
 
 

@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "workflow-canvas"
-version = "0.6.0"
+version = "0.6.1"
 description = "Reproducible computational pipelines with containerized methods, content-addressed caching, run lineage, and a visual pipeline builder; compiles to Snakemake"
 authors = ["Dante <dantepoe@noboundssolutions.com>"]
 license = "BSD-3-Clause"
@@ -42,7 +42,7 @@ Changelog = "https://github.com/ddpoe/workflow-canvas/blob/main/CHANGELOG.md"
 Issues = "https://github.com/ddpoe/workflow-canvas/issues"
 
 [tool.poetry.dependencies]
-python = ">=3.11,<3.13"
+python = ">=3.12,<3.13"
 sqlmodel = ">=0.0.14"
 pydantic = ">=2.0.0"
 snakemake = ">=8.0"
@@ -51,7 +51,7 @@ numpy = ">=1.24"
 pyarrow = ">=14.0"
 axiom-annotations = "^0.1.0"
 dvc = "^3.67.1"
-wfc-client = ">=0.1.0,<0.2.0"
+wfc-client = ">=0.2.0,<0.3.0"
 # The canvas is a default dependency: `pip install workflow-canvas` then
 # `wfc canvas` works.
 fastapi = ">=0.110"
@@ -78,6 +78,10 @@ mkdocs = "^1.6.1"
 mkdocs-material = "^9.7.6"
 matplotlib = "^3.10.8"
 moto = {version = ">=5.0", extras = ["server"]}
+ruff = ">=0.6"
+mypy = ">=1.11"
+types-pyyaml = "^6.0.12.20260906"
+types-psutil = "^7.2.2.20260906"
 
 [tool.poetry.group.docs.dependencies]
 sphinx = ">=8.0,<9.0"
@@ -87,6 +91,7 @@ sphinxcontrib-mermaid = ">=1.0"
 myst-parser = "^5.1.0"
 sphinx-sitemap = ">=2.6"
 sphinxext-opengraph = ">=0.9"
+sphinx-argparse = ">=0.5"
 
 [tool.poetry.scripts]
 workflow-canvas = "wfc.__main__:main"
@@ -109,3 +114,69 @@ addopts = [
 
 # pytest-html report defaults (override with CLI flags)
 # Run:  pytest tests/e2e/ --html=reports/e2e_dashboard.html --self-contained-html
+
+# Linting: `poetry run ruff check` (add `--fix` to apply the safe fixes).
+# Docstrings follow the Google convention and are checked by the D rules.
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+include = ["wfc/**/*.py", "wfc-client/wfc_client/**/*.py"]
+# wfc-client supports Python 3.9, so its code keeps 3.9-compatible syntax.
+per-file-target-version = { "wfc-client/**" = "py39" }
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "UP", "B", "D"]
+ignore = [
+    "B905",   # zip() without strict=: most zips here pair lists built together
+    "UP042",  # StrEnum changes str() of members, which persisted values rely on
+    "D105",   # magic methods
+    "D107",   # __init__ arguments are documented in the class docstring (Google style)
+]
+# `口 = Step(...)` is the axiom-annotations step-marker idiom.
+dummy-variable-rgx = "^(_+|口|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.lint.per-file-ignores]
+# FastAPI copies route and model docstrings into the OpenAPI schema.
+"wfc/canvas/routes/*.py" = ["D101", "D103"]
+"wfc/canvas/models.py" = ["D101"]
+# Example method scripts shipped with `wfc demo`, and a build helper.
+"wfc/demo/assets/**" = ["D"]
+"wfc/canvas/static/scripts/**" = ["D"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.isort]
+known-first-party = ["wfc", "wfc_client"]
+
+# Type checking: `poetry run mypy` (the paths and settings below; no arguments needed).
+[tool.mypy]
+python_version = "3.12"
+files = ["wfc", "wfc-client/wfc_client"]
+exclude = [
+    '^wfc/demo/assets/',
+    '^wfc/canvas/static/',
+]
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+# Third-party packages that ship neither inline types nor a stub package.
+[[tool.mypy.overrides]]
+module = ["axiom_annotations", "axiom_annotations.*", "dvc", "dvc.*"]
+ignore_missing_imports = true
+
+# wfc-client is small and public API: check it strictly.
+[[tool.mypy.overrides]]
+module = ["wfc_client", "wfc_client.*"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_calls = true
+disallow_untyped_decorators = true
+disallow_any_generics = true
+disallow_subclassing_any = true
+check_untyped_defs = true
+warn_return_any = true
+no_implicit_reexport = true
+strict_equality = true
+extra_checks = true

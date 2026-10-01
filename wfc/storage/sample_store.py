@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
 
@@ -76,7 +76,7 @@ def store_sample_bytes(source_path: Path, project_root: Path) -> StoredSample:
             push_error = str(exc) or type(exc).__name__
         if push_error is None:
             push_status = PushStatus.pushed
-            pushed_at = datetime.now(timezone.utc)
+            pushed_at = datetime.now(UTC)
         else:
             push_status = PushStatus.failed
             print(

@@ -12,7 +12,8 @@ session or an import from ``wfc``.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from axiom_annotations import Step, task
 
@@ -38,7 +39,7 @@ _SYSTEM_NODE_TYPES = ("input_selector", "run_reference")
 def enrich_pipeline(
     sparse_doc: Mapping[str, Any],
     contract_map: Mapping[str, Mapping[str, Any]],
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Enrich a sparse pipeline document against a contract map.
 
     A method node is identified by its module and method together
@@ -62,7 +63,7 @@ def enrich_pipeline(
             unusable (a stored contract that predates registration-time
             validation still fails loud here rather than misnaming its file).
     """
-    nodes: list[Dict[str, Any]] = []
+    nodes: list[dict[str, Any]] = []
 
     口 = Step(step_num=1, name="Walk the document's nodes",
              purpose="Pass system nodes through with their own fields; enrich "
@@ -71,7 +72,7 @@ def enrich_pipeline(
         node_type = node.get("type") or "method"
 
         if node_type in _SYSTEM_NODE_TYPES:
-            node_dict: Dict[str, Any] = {
+            node_dict: dict[str, Any] = {
                 "id": node["id"],
                 "type": node_type,
                 "method": "",
@@ -101,7 +102,7 @@ def enrich_pipeline(
                  purpose="Each declared slot type is the file extension or the "
                          "directory marker, normalised to its canonical form; "
                          "an unusable stored type fails loud here")
-        canonical_types: Dict[str, str] = {}
+        canonical_types: dict[str, str] = {}
         for slot_name, slot_spec in info.get("output_slots", {}).items():
             raw_type = slot_spec.get("type") if isinstance(slot_spec, dict) else slot_spec
             canonical_types[slot_name] = validate_output_slot_type(slot_name, raw_type)
@@ -139,16 +140,16 @@ def enrich_pipeline(
              purpose="Links keep their optional slot handles under the engine's "
                      "names; name, param_sets and explicit_combos pass through "
                      "only when the sparse document carried them")
-    links: list[Dict[str, str]] = []
+    links: list[dict[str, str]] = []
     for link in sparse_doc.get("links", []):
-        entry: Dict[str, str] = {"source": link["source"], "target": link["target"]}
+        entry: dict[str, str] = {"source": link["source"], "target": link["target"]}
         if link.get("sourceHandle"):
             entry["source_slot"] = link["sourceHandle"]
         if link.get("targetHandle"):
             entry["target_slot"] = link["targetHandle"]
         links.append(entry)
 
-    result: Dict[str, Any] = {
+    result: dict[str, Any] = {
         "nodes": nodes,
         "links": links,
         "samples": sparse_doc.get("samples", []),

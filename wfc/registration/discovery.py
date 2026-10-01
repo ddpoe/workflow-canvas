@@ -1,11 +1,14 @@
-"""Script discovery: locate a method's script, resolve its declared helpers, and
-refuse recognized scripts that are neither."""
+"""Script discovery for method registration.
+
+Locates a method's script, resolves its declared helpers, and refuses
+recognized scripts that are neither.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from ..identity import collect_method_scripts, RECOGNIZED_SCRIPT_EXTENSIONS
+from ..identity import RECOGNIZED_SCRIPT_EXTENSIONS, collect_method_scripts
 from .snapshot import HELPER_SNAPSHOT_DIR
 
 

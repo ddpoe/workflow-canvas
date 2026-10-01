@@ -18,7 +18,8 @@ enriching it again would drop nothing but cost a read.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from axiom_annotations import Step, task
 
@@ -51,7 +52,7 @@ _ENRICHED_KEYS = ("script", "slot_outputs", "slot_types", "env")
 _CANVAS_LINK_KEYS = ("sourceHandle", "targetHandle")
 
 
-def enrich_document(document: Mapping[str, Any]) -> Dict[str, Any]:
+def enrich_document(document: Mapping[str, Any]) -> dict[str, Any]:
     """Enrich a document against the registered contract map.
 
     The contract fills what the document does not say: a node's own
@@ -91,7 +92,7 @@ def enrich_document(document: Mapping[str, Any]) -> Dict[str, Any]:
               "the one preparation the canvas, run-pipeline and the cache preview share",
       inputs="A pipeline document, sparse (canvas form) or already enriched",
       outputs="The substituted, enriched document the composer loads")
-def prepare_document(document: Mapping[str, Any]) -> Dict[str, Any]:
+def prepare_document(document: Mapping[str, Any]) -> dict[str, Any]:
     """Substitute and enrich a pipeline document.
 
     Args:

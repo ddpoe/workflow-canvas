@@ -17,3 +17,13 @@
         min-width: 15rem;
     }
 }
+
+/* CLI reference: indent each flag list under its "Named/Positional
+   Arguments" label, with each flag's description a further step in. */
+.bd-article p.rubric[id$="-arguments"] + dl.option-list {
+    margin-left: 1.5rem;
+}
+
+.bd-article dl.option-list > dd {
+    margin-left: 1.5rem;
+}

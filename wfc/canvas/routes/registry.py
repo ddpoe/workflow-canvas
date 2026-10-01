@@ -6,14 +6,13 @@ import hashlib
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlmodel import select
 
-from ...persistence import get_session
-from ...persistence import Module, Run
+from ...persistence import Module, Run, get_session
 from ..state import _server_project_root
 
 router = APIRouter()
@@ -34,7 +33,7 @@ def get_registry_modules():
     """
     with get_session() as session:
         modules = session.exec(select(Module)).all()
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
         for mod in modules:
             contracts = [
                 {
@@ -65,12 +64,12 @@ def get_registry_methods():
     read the validation cache, so it is always null.
     """
     with get_session() as session:
-        run_counts: Dict[int, int] = {}
+        run_counts: dict[int, int] = {}
         for row in session.exec(select(Run.method_id)).all():
             run_counts[row] = run_counts.get(row, 0) + 1
 
         modules = session.exec(select(Module)).all()
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
         for mod in modules:
             for meth in mod.methods:
                 out.append({
@@ -92,7 +91,7 @@ def get_registry_methods():
 # runs the check on demand and reads the cache; GET /api/registry/methods
 # does not read it, so the list's `validated` is always null.
 
-_method_validate_cache: Dict[tuple, Dict[str, Any]] = {}
+_method_validate_cache: dict[tuple, dict[str, Any]] = {}
 
 
 def _default_run_import_check(python_bin: str, script_path: str):
@@ -123,7 +122,7 @@ def _default_run_import_check(python_bin: str, script_path: str):
 _run_import_check_fn = _default_run_import_check
 
 
-def _script_fingerprint(script_path: Path) -> Optional[str]:
+def _script_fingerprint(script_path: Path) -> str | None:
     if not script_path.exists():
         return None
     return hashlib.sha256(script_path.read_bytes()).hexdigest()
@@ -134,7 +133,7 @@ class MethodValidateRequest(BaseModel):
     method: str
 
 
-_LANG_BY_EXT: Dict[str, str] = {
+_LANG_BY_EXT: dict[str, str] = {
     ".py": "python",
     ".R": "r",
     ".r": "r",
@@ -182,15 +181,15 @@ def get_registry_method_detail(module_name: str, method_name: str):
     method_dir = (project_root / script_rel).parent.resolve()
     try:
         method_dir.relative_to(project_root)
-    except ValueError:
+    except ValueError as exc:
         raise HTTPException(
             status_code=400,
             detail=f"method directory escapes project root (path traversal): {script_rel}",
-        )
+        ) from exc
     if not method_dir.is_dir():
         return {"files": [], "contract": contract_out}
 
-    files: List[Dict[str, Any]] = []
+    files: list[dict[str, Any]] = []
     for entry in sorted(method_dir.iterdir()):
         if not entry.is_file():
             continue
@@ -228,7 +227,7 @@ def validate_registry_method(req: MethodValidateRequest):
     script_path = _server_project_root() / script_rel
     fingerprint = _script_fingerprint(script_path)
 
-    pre_checks: List[Dict[str, Any]] = []
+    pre_checks: list[dict[str, Any]] = []
     if fingerprint is None:
         pre_checks.append({
             "status": "fail",
@@ -285,19 +284,19 @@ _register_module_fn = _default_register_module
 class ContractSpec(BaseModel):
     type: str  # "output" | "metric" | "input" | "param"
     name: str
-    value_type: Optional[str] = None
+    value_type: str | None = None
     required: bool = True
 
 
 class ModuleRegisterRequest(BaseModel):
     name: str
-    description: Optional[str] = None
-    folder: Optional[str] = None
-    contracts: List[ContractSpec] = []
+    description: str | None = None
+    folder: str | None = None
+    contracts: list[ContractSpec] = []
 
 
-def _module_pre_checks(req: ModuleRegisterRequest) -> List[Dict[str, Any]]:
-    checks: List[Dict[str, Any]] = []
+def _module_pre_checks(req: ModuleRegisterRequest) -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = []
     with get_session() as session:
         existing = session.exec(
             select(Module).where(Module.name == req.name)
@@ -330,11 +329,11 @@ def register_module_endpoint(req: ModuleRegisterRequest, dryRun: bool = False):
             contracts=[c.model_dump() for c in req.contracts],
         )
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except TypeError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return {"ok": True, "preChecks": checks, "module": {"name": req.name}}
 
@@ -352,13 +351,13 @@ def get_registry_samples():
     from ...persistence import Sample
 
     with get_session() as session:
-        run_counts: Dict[str, int] = {}
+        run_counts: dict[str, int] = {}
         for row in session.exec(select(Run.sample)).all():
             if row:
                 run_counts[row] = run_counts.get(row, 0) + 1
 
         samples = session.exec(select(Sample).order_by(Sample.name)).all()
-        out: List[Dict[str, Any]] = [
+        out: list[dict[str, Any]] = [
             {
                 "name": s.name,
                 "source": s.source_path,
@@ -385,11 +384,11 @@ _register_method_fn = _default_register_method
 class MethodRegisterRequest(BaseModel):
     directory: str
     module: str
-    method_name: Optional[str] = None
+    method_name: str | None = None
 
 
-def _method_register_pre_checks(req: MethodRegisterRequest) -> List[Dict[str, Any]]:
-    checks: List[Dict[str, Any]] = []
+def _method_register_pre_checks(req: MethodRegisterRequest) -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = []
 
     # --- directory ---
     directory = (req.directory or "").strip()
@@ -463,9 +462,9 @@ def register_method_endpoint(req: MethodRegisterRequest, dryRun: bool = False):
             method_name=req.method_name,
         )
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return {"ok": True, "preChecks": checks, "method": {"name": req.method_name or Path(req.directory).name}}
 
@@ -483,17 +482,17 @@ def fs_browse(path: str = ""):
     target = (project_root / path).resolve()
     try:
         target.relative_to(project_root)
-    except ValueError:
+    except ValueError as exc:
         raise HTTPException(
             status_code=400,
             detail=f"path escapes project root (path traversal): {path}",
-        )
+        ) from exc
     if not target.exists():
         raise HTTPException(status_code=404, detail=f"not found: {path}")
     if not target.is_dir():
         raise HTTPException(status_code=400, detail=f"not a directory: {path}")
 
-    entries: List[Dict[str, Any]] = []
+    entries: list[dict[str, Any]] = []
     for entry in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
         if entry.name.startswith("."):
             continue
@@ -511,8 +510,8 @@ def fs_browse(path: str = ""):
 class SampleRegisterRequest(BaseModel):
     name: str
     source: str
-    registration_mode: Optional[str] = "copy"
-    description: Optional[str] = None
+    registration_mode: str | None = "copy"
+    description: str | None = None
 
 
 @router.post("/api/registry/samples")
@@ -528,10 +527,10 @@ def register_sample_endpoint(req: SampleRegisterRequest):
             description=req.description,
         )
     except DvcNotConfiguredError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return {"ok": True, "sample": {"name": req.name}}

@@ -113,7 +113,7 @@ def build_code_fingerprint(
     for script_file in script_files:
         rel_path = script_file.relative_to(source_dir).as_posix()
         content = script_file.read_text(encoding="utf-8")
-        hasher.update(f"{rel_path}:{content}".encode("utf-8"))
-    hasher.update(f"contract:{contract_projection}".encode("utf-8"))
+        hasher.update(f"{rel_path}:{content}".encode())
+    hasher.update(f"contract:{contract_projection}".encode())
 
     return hasher.hexdigest()

@@ -21,7 +21,6 @@ from __future__ import annotations
 
 from typing import Final
 
-
 # -----------------------------------------------------------------------------
 # Pixi base — used when method.yaml declares pixi.toml + pixi.lock
 # -----------------------------------------------------------------------------

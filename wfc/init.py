@@ -1,5 +1,4 @@
-"""
-Project initializer — scaffold a new wfc project directory.
+"""Project initializer — scaffold a new wfc project directory.
 
 Creates the `.wfc/` config directory, `modules/` and `methods/` directories,
 `.runs/` artifact store, `.gitignore`, and initializes the SQLite database
@@ -17,10 +16,11 @@ from __future__ import annotations
 import subprocess
 import textwrap
 from pathlib import Path
+
+from axiom_annotations import Step, workflow
+
 from . import layout
 from .execution.pipeline import ENGINE_STATE_DIR_NAME
-
-from axiom_annotations import workflow, Step
 
 # Default config template (TOML). It holds only keys wfc reads: the [dvc]
 # section. `[pixi] root` and `[conda] root` are optional overrides a user may
@@ -579,7 +579,7 @@ def init_project(
                      "cache and credentials out of git")
     created["dvc"] = False
     if plan.dvc_setup and plan.dvc_config is not None:
-        from .storage import init_dvc, DvcNotInstalledError
+        from .storage import DvcNotInstalledError, init_dvc
         try:
             init_dvc(project_dir, plan.dvc_config)
             created["dvc"] = True

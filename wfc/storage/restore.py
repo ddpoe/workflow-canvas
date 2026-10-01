@@ -65,7 +65,7 @@ def sample_data_path(project_root: Path, sample: Sample | str) -> Path | None:
     """
     if isinstance(sample, str):
         with get_session() as session:
-            row = session.exec(
+            row: Sample | None = session.exec(
                 select(Sample).where(Sample.name == sample)
             ).first()
         if row is None:
@@ -165,6 +165,8 @@ def restore_sample(
         except MalformedSampleRecordError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             sys.exit(1)
+        # Given a row (not a name), sample_data_path always returns a path.
+        assert dest is not None
 
         # Restore from DVC cache (handles idempotency: skips if dest
         # already exists with matching hash, replaces if mismatched)
@@ -221,7 +223,7 @@ def restore_sample(
 
 
 def _touch_sentinel(project_root: Path, name: str) -> None:
-    """Write the Snakemake readiness sentinel for a restored sample.
+    r"""Write the Snakemake readiness sentinel for a restored sample.
 
     Sample files live in the DVC cache rather than under
     ``data/samples/<name>/``, so Snakemake cannot use the sample file
@@ -229,7 +231,7 @@ def _touch_sentinel(project_root: Path, name: str) -> None:
     ``<project_root>/data/samples/<name>/.sample_ready``; its parent
     directory is created if missing. The path is absolute via
     ``get_project_root()`` so it is cwd-independent, which matters on
-    Windows UNC shell rules where ``cmd.exe`` rewrites cwd to ``C:\\Windows``.
+    Windows UNC shell rules where ``cmd.exe`` rewrites cwd to ``C:\Windows``.
 
     Args:
         project_root: Project root directory.

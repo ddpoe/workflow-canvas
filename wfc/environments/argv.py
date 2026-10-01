@@ -33,8 +33,8 @@ GPU plumbing:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 from axiom_annotations import task
 
@@ -44,11 +44,11 @@ from .. import layout
 def strip_docker_scheme(ref: str) -> str:
     """Return *ref* without its ``docker://`` scheme.
 
-    Manifest records carry the scheme; the docker CLI takes the bare
-    ``<host>/<path>@sha256:<hex>`` form. :func:`build_apptainer_command`
-    re-adds the scheme, which Apptainer needs. Dispatch, the dev loop and
-    the byo registration all strip through here. A ref without the scheme
-    comes back unchanged.
+    The byo registration strips a user-supplied reference through here
+    before probing or pulling it. :func:`build_apptainer_command` re-adds
+    the scheme, which Apptainer needs. A ``docker run`` caller takes
+    :func:`daemon_ref` instead, which also names a local env by its image
+    ID. A ref without the scheme comes back unchanged.
 
     Args:
         ref: An image reference, with or without ``docker://``.
@@ -57,6 +57,40 @@ def strip_docker_scheme(ref: str) -> str:
         The reference without the scheme.
     """
     return ref.removeprefix("docker://")
+
+
+#: Repository prefix of every env image wfc builds locally (pixi, conda)
+#: and of the demo's locally built byo image.
+_LOCAL_REPOSITORY_PREFIX = "local/"
+
+
+def daemon_ref(record_container: str) -> str:
+    """Return the image reference to hand Docker for a recorded env.
+
+    A record's container is ``docker://<host>/<path>@sha256:<hex>``. For a
+    registry image that ``@sha256:`` is the registry digest, and the bare
+    ``<host>/<path>@sha256:<hex>`` runs on every image store. A locally
+    built env is recorded as ``docker://local/<name>@sha256:<hex>`` with
+    its image ID in the digest slot; only the containerd store resolves
+    that, and the classic store pulls ``local/<name>`` instead. So a
+    ``local/`` record is handed over as its bare image ID,
+    ``sha256:<hex>``, which both stores run and neither pulls.
+
+    Dispatch and the dev loop hand Docker what this returns; no caller
+    parses ``local/`` itself.
+
+    Args:
+        record_container: The record's container ref, with or without the
+            ``docker://`` scheme.
+
+    Returns:
+        ``sha256:<hex>`` for a ``local/`` image, otherwise the reference
+        without its scheme.
+    """
+    bare = strip_docker_scheme(record_container)
+    if bare.startswith(_LOCAL_REPOSITORY_PREFIX) and "@" in bare:
+        return bare.rsplit("@", 1)[1]
+    return bare
 
 
 @task(purpose="Assemble the docker run argv — image ref, project + DVC-cache bind "
@@ -83,11 +117,9 @@ def build_docker_command(
                    <run_step_argv...>
 
     Args:
-        image_ref: Digest-pinned image reference (e.g.
-            ``ghcr.io/dante/image-io@sha256:<hex>``). No scheme prefix --
-            the caller has already validated the ref via
-            :func:`wfc.contracts.validate_container_ref` and stripped the
-            ``docker://`` prefix with :func:`strip_docker_scheme`.
+        image_ref: The record's daemon ref from :func:`daemon_ref`:
+            ``sha256:<hex>`` for a local env, or a registry image's
+            ``ghcr.io/dante/image-io@sha256:<hex>``. No scheme prefix.
         project_root: Absolute host path to the wfc project. Mounted at
             ``/work`` inside the container; ``-w /work`` makes the project
             root the container's cwd.

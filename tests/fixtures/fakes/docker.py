@@ -1,10 +1,11 @@
 """Docker boundary: the registry calls of register-env and the dev loop's launch.
 
-``wfc.environments.docker`` has three entry points a registration reaches --
-``image_inspect``, ``pull``, ``build`` -- and the register-env tests replace
-them with a digest, a recorder, a raiser or a refuser. One entry per entry
-point, each taking the replacement the site wrote; ``refuse_docker`` arms all
-three at once for a test that proves docker is never reached.
+``wfc.environments.docker`` has four entry points a registration reaches --
+``image_inspect``, ``repo_digest``, ``pull``, ``build`` -- and the
+register-env tests replace them with a digest, a recorder, a raiser or a
+refuser. One entry per entry point, each taking the replacement the site
+wrote; ``refuse_docker`` arms all four at once for a test that proves docker
+is never reached.
 """
 
 from __future__ import annotations
@@ -28,9 +29,12 @@ def _as_callable(replacement):
 
 @fake(
     boundary="wfc.environments.docker.image_inspect -- docker image inspect, "
-             "the digest probe of a byo registration and of a fresh build",
-    preserves="the registration's own sequencing (probe, pull on a miss, "
-              "probe again, compare with a supplied digest)",
+             "the digest probe of a byo registration and of a fresh build, "
+             "and ensure_runnable's presence probe of a local/ image, where "
+             "a missing image is an ImageNotFoundError",
+    preserves="the caller's own sequencing (a registration's probe, pull on "
+              "a miss, probe again, compare with a supplied digest; "
+              "ensure_runnable's probe, then rebuild or refuse)",
     not_proven="that the daemon holds the image or reports that digest",
     backed_by="pm_mvp::tests.integration.test_pixi_dockerfile_builds::"
               "test_generated_pixi_dockerfile_builds_and_records_live_interpreter",
@@ -47,6 +51,32 @@ def stub_docker_image_inspect(monkeypatch, replacement) -> None:
     from wfc.environments import docker as docker_runner
 
     monkeypatch.setattr(docker_runner, "image_inspect",
+                        _as_callable(replacement))
+
+
+@fake(
+    boundary="wfc.environments.docker.repo_digest -- docker image inspect "
+             "of RepoDigests, the registry digest a byo registration records "
+             "for an image outside local/",
+    preserves="the registration's own sequencing (probe, pull on a miss, "
+              "read the registry digest, compare with a supplied digest)",
+    not_proven="that the daemon lists that RepoDigest for the repository, or "
+               "that Docker Hub names match in their familiar form",
+    backed_by="pm_mvp::tests.integration.test_multilang_methods::"
+              "test_python_to_r_pipeline_hands_off_across_languages",
+)
+def stub_docker_repo_digest(monkeypatch, replacement) -> None:
+    """Replace ``repo_digest``.
+
+    Args:
+        monkeypatch: An active ``pytest.MonkeyPatch``.
+        replacement: A digest string (``"sha256:..."``) returned for every
+            ref; an exception raised for every ref; or a callable
+            ``(ref, repository) -> str`` that decides per call.
+    """
+    from wfc.environments import docker as docker_runner
+
+    monkeypatch.setattr(docker_runner, "repo_digest",
                         _as_callable(replacement))
 
 
@@ -93,7 +123,8 @@ def stub_docker_build(monkeypatch, replacement=None) -> None:
 
 
 @fake(
-    boundary="wfc.environments.docker.build / pull / image_inspect together",
+    boundary="wfc.environments.docker.build / pull / image_inspect / "
+             "repo_digest together",
     preserves="everything before the first docker call -- name validation, "
               "lock validation, the manifest check",
     not_proven="anything past the refusal; the entry proves docker was NOT "
@@ -114,7 +145,7 @@ def refuse_docker(monkeypatch, reason: str = "docker must not be reached"
     def never(*args, **kwargs):
         raise AssertionError(reason)
 
-    for entry_point in ("build", "pull", "image_inspect"):
+    for entry_point in ("build", "pull", "image_inspect", "repo_digest"):
         monkeypatch.setattr(docker_runner, entry_point, never)
 
 

@@ -19,7 +19,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import PurePath
 
-from axiom_annotations import task, Step, AutoStep
+from axiom_annotations import AutoStep, Step, task
 
 from ..contracts import COLLAPSED_SAMPLE, cross_check_columns
 from .model import PipelineDef, StepDef

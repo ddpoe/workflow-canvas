@@ -1,5 +1,4 @@
-"""
-AST scanner for method scripts.
+"""AST scanner for method scripts.
 
 Parses method scripts (``{method_name}.py``) to extract:
   - Public function signatures (name, parameters, type annotations, defaults)

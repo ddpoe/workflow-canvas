@@ -9,12 +9,14 @@ substituted form and ``pipeline.editable.json`` the pre-substitution one.
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 
 
 class UnknownVariableError(KeyError):
-    """Raised when a pipeline contains a {$var: name} ref but ``variables``
-    has no entry for ``name``. Caller (canvas server) translates to HTTP 400.
+    """Raised when a pipeline references a variable that is not defined.
+
+    The pipeline contains a {$var: name} ref but ``variables`` has no entry
+    for ``name``. Caller (canvas server) translates to HTTP 400.
     """
 
     def __init__(self, name: str) -> None:
@@ -32,7 +34,7 @@ def _is_var_ref(v: Any) -> bool:
     )
 
 
-def _substitute(v: Any, variables: Dict[str, Any]) -> Any:
+def _substitute(v: Any, variables: dict[str, Any]) -> Any:
     """Replace a single value if it is a var ref; otherwise return as-is.
 
     One-pass: if the substituted value itself is a var ref, raise, so a
@@ -52,7 +54,7 @@ def _substitute(v: Any, variables: Dict[str, Any]) -> Any:
     return resolved
 
 
-def resolve_variables(pipeline: Dict[str, Any]) -> Dict[str, Any]:
+def resolve_variables(pipeline: dict[str, Any]) -> dict[str, Any]:
     """Substitute ``{"$var": name}`` refs in a pipeline dict with literals.
 
     Pure walker over ``nodes[].params`` and ``param_sets[node_id][variant]``.
@@ -79,7 +81,7 @@ def resolve_variables(pipeline: Dict[str, Any]) -> Dict[str, Any]:
 
     # Normalize variables to {name: value}: accept either {value, type}
     # or a bare value.
-    variables: Dict[str, Any] = {}
+    variables: dict[str, Any] = {}
     for name, entry in raw_vars.items():
         if isinstance(entry, dict) and "value" in entry:
             variables[name] = entry["value"]
@@ -100,12 +102,12 @@ def resolve_variables(pipeline: Dict[str, Any]) -> Dict[str, Any]:
     # Walk param_sets[node_id][variant_name][param_name].
     ps = out.get("param_sets")
     if isinstance(ps, dict):
-        new_ps: Dict[str, Any] = {}
+        new_ps: dict[str, Any] = {}
         for node_id, variants in ps.items():
             if not isinstance(variants, dict):
                 new_ps[node_id] = variants
                 continue
-            new_variants: Dict[str, Any] = {}
+            new_variants: dict[str, Any] = {}
             for vname, vparams in variants.items():
                 if not isinstance(vparams, dict):
                     new_variants[vname] = vparams

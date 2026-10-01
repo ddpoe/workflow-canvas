@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -22,23 +22,23 @@ router = APIRouter()
 # rename/removal here surfaces as a TS compile error.
 class NodeRunState(BaseModel):
     status: str
-    error: Optional[str] = None
-    error_run_id: Optional[str] = None
-    error_sample: Optional[str] = None
-    tally: Optional[Dict[str, int]] = None
-    run_ids: Optional[List[str]] = None
-    upstream_node_id: Optional[str] = None
-    upstream_run_id: Optional[str] = None
-    cancelled_due_to_run_id: Optional[str] = None
+    error: str | None = None
+    error_run_id: str | None = None
+    error_sample: str | None = None
+    tally: dict[str, int] | None = None
+    run_ids: list[str] | None = None
+    upstream_node_id: str | None = None
+    upstream_run_id: str | None = None
+    cancelled_due_to_run_id: str | None = None
     # Cache-hit surface. Set when
     # the newest Run row for this node that has ``cache_source_run_id``
     # populated (the cache-hit audit row). Frontend uses these to emit
     # CACHE_HIT into the per-node state machine and to render the
     # cache-hit banner in InspectorPanel without spawning a streaming
     # actor for a run that has nothing to stream.
-    cache_hit: Optional[bool] = None
-    original_run_id: Optional[str] = None
-    cache_key: Optional[str] = None
+    cache_hit: bool | None = None
+    original_run_id: str | None = None
+    cache_key: str | None = None
     # Per-node async push state. Always present (never absent on
     # the wire) so the frontend can read them without missing-field branches.
     # ``push_state`` is the aggregated state for this node's outputs:
@@ -56,10 +56,10 @@ class NodeRunState(BaseModel):
 class WorkflowStatusResponse(BaseModel):
     job_id: str
     overall_status: str
-    node_states: Dict[str, NodeRunState]
+    node_states: dict[str, NodeRunState]
     thread_alive: bool
     log: str
-    error: Optional[Any] = None
+    error: Any | None = None
 
 
 @router.post("/api/workflow/run")
@@ -80,9 +80,9 @@ def run_workflow(pipeline: PipelineInput):
     try:
         submitted = submit_pipeline(pipeline, _server_project_root())
     except RunNotReady as exc:
-        raise HTTPException(status_code=409, detail=exc.payload)
+        raise HTTPException(status_code=409, detail=exc.payload) from exc
     except SubmissionRefused as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return {
         "status": "submitted",

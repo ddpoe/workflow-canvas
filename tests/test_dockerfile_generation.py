@@ -166,14 +166,89 @@ def test_validate_lock_accepts_matching_env_and_tolerates_missing_version():
     )
 
 
+def test_validate_lock_rejects_env_without_linux_64_packages():
+    """A lock made on Windows lists only win-64 unless linux-64 was added to
+    the workspace; the image is linux-64, so it fails upfront naming the
+    platforms the lock has and the commands that add linux-64. A lock that
+    has linux-64 beside other platforms passes."""
+    from wfc.environments.dockerfiles.pixi import validate_lock_for_env
+
+    win_only = (
+        "version: 6\nenvironments:\n  default:\n    packages:\n"
+        "      win-64:\n      - conda: https://conda.anaconda.org/conda-forge/"
+        "win-64/python-3.11.0-h.conda\n"
+    )
+    with pytest.raises(ValueError) as exc:
+        validate_lock_for_env(win_only, "default")
+
+    msg = str(exc.value)
+    assert "linux-64" in msg
+    assert "win-64" in msg
+    assert "pixi workspace platform add linux-64" in msg
+
+    validate_lock_for_env(
+        "version: 6\nenvironments:\n  default:\n    packages:\n"
+        "      linux-64: []\n      win-64: []\n",
+        "default",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tier 1: conda explicit-list validation — register-time platform guard
+# ---------------------------------------------------------------------------
+
+def _explicit_list(platform, header=True):
+    lines = ["# This file may be used to create an environment using:"]
+    if header:
+        lines.append(f"# platform: {platform}")
+    lines += [
+        "@EXPLICIT",
+        f"https://repo.anaconda.com/pkgs/main/{platform}/python-3.11.16-h_0.conda#0b03",
+        "https://repo.anaconda.com/pkgs/main/noarch/tzdata-2026c-h_0.conda#1c2d",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+@pytest.mark.parametrize("platform", ["win-64", "osx-arm64"])
+@pytest.mark.parametrize("header", [True, False], ids=["header", "urls-only"])
+def test_validate_explicit_list_rejects_non_linux_capture(platform, header):
+    """An explicit list captured on Windows or macOS fails naming the
+    platform and the three commands that produce a linux-64 list for the
+    env being registered, whether the platform comes from the header or
+    only from the package URLs."""
+    from wfc.environments.dockerfiles.conda import validate_explicit_list_platform
+
+    with pytest.raises(ValueError) as exc:
+        validate_explicit_list_platform(_explicit_list(platform, header), "my-env")
+
+    msg = str(exc.value)
+    assert platform in msg
+    assert "--from-history" in msg
+    assert "conda-lock -f environment.yml -p linux-64 --kind explicit" in msg
+    assert "wfc register-env my-env --backend conda --from conda-linux-64.lock" in msg
+
+
+def test_validate_explicit_list_accepts_linux_and_unrecognized_urls():
+    """A linux-64 list passes, with or without its header; a list whose URLs
+    carry no recognizable platform directory is left for the build."""
+    from wfc.environments.dockerfiles.conda import validate_explicit_list_platform
+
+    validate_explicit_list_platform(_explicit_list("linux-64"), "my-env")
+    validate_explicit_list_platform(_explicit_list("linux-64", header=False), "my-env")
+    validate_explicit_list_platform(
+        "@EXPLICIT\nhttps://x/pkg-1.0.tar.bz2\nfile:///C:/channel/pkg-2.0.conda\n",
+        "my-env",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tier 3: CLI dry-run writes Dockerfile without invoking docker
 # ---------------------------------------------------------------------------
 
 @workflow(
-    purpose="wfc register-env --dry-run writes .wfc/build/<name>/Dockerfile, "
-            "prints the absolute path, exits 0, and never invokes docker; "
-            ".wfc/envs.json is untouched.",
+    purpose="On a host with no Docker, wfc register-env --dry-run writes "
+            ".wfc/build/<name>/Dockerfile, prints the absolute path, exits 0, "
+            "and never invokes docker; .wfc/envs.json is untouched.",
 )
 def test_dry_run_writes_dockerfile_no_docker_invoked(
     cli, tmp_project, monkeypatch,
@@ -204,6 +279,8 @@ def test_dry_run_writes_dockerfile_no_docker_invoked(
         return real_run(cmd, *args, **kwargs)
 
     fake_subprocess_run(monkeypatch, _spy_run)
+    # A host with no Docker: the probe fails, and --dry-run never asks it.
+    stub_readiness_probes(monkeypatch, docker="fail")
 
     口 = Step(step_num=2, name="Run register-env --dry-run",
              purpose="Should write .wfc/build/foo/Dockerfile and print the path")

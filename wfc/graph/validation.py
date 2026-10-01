@@ -10,7 +10,7 @@ a shape question.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any
 
 from axiom_annotations import task
 
@@ -19,7 +19,7 @@ def _node_type(node: dict) -> str:
     return node.get("type") or "method"
 
 
-def second_selector_errors(method_selectors: Dict[str, List[str]]) -> List[str]:
+def second_selector_errors(method_selectors: dict[str, list[str]]) -> list[str]:
     """The second-selector rule, written once for both moments.
 
     A method node fed by more than one per-sample ``input_selector`` is
@@ -36,7 +36,7 @@ def second_selector_errors(method_selectors: Dict[str, List[str]]) -> List[str]:
     Returns:
         One message per offending method node, naming it and every selector.
     """
-    errors: List[str] = []
+    errors: list[str] = []
     for node_id, selectors in method_selectors.items():
         if len(selectors) < 2:
             continue
@@ -51,9 +51,9 @@ def second_selector_errors(method_selectors: Dict[str, List[str]]) -> List[str]:
 
 
 def fan_in_upstream_errors(
-    fan_in_upstreams: Dict[str, List[str]],
-    upstream_link_counts: Dict[str, int],
-) -> List[str]:
+    fan_in_upstreams: dict[str, list[str]],
+    upstream_link_counts: dict[str, int],
+) -> list[str]:
     """The fan-in sole-upstream rule, written once for both moments.
 
     A fan-in selector delivers one bundle of samples to one consumer, and
@@ -83,7 +83,7 @@ def fan_in_upstream_errors(
     Returns:
         One message per offending method node.
     """
-    errors: List[str] = []
+    errors: list[str] = []
     for node_id, selectors in fan_in_upstreams.items():
         if not selectors:
             continue
@@ -110,7 +110,7 @@ def fan_in_upstream_errors(
               "unknown methods, unconnected required slots, one edge per "
               "slot (reference fan-in exempt), fan-in shapes, one per-sample "
               "selector per method node, method roots")
-def validate_structure(document: dict, contract_map: dict) -> Dict[str, Any]:
+def validate_structure(document: dict, contract_map: dict) -> dict[str, Any]:
     """Validate a pipeline graph's structure against a contract map.
 
     Args:
@@ -123,8 +123,8 @@ def validate_structure(document: dict, contract_map: dict) -> Dict[str, Any]:
     Returns:
         ``{"valid": bool, "errors": [str], "warnings": [str]}``.
     """
-    errors: List[str] = []
-    warnings: List[str] = []
+    errors: list[str] = []
+    warnings: list[str] = []
 
     nodes: list[dict] = list(document.get("nodes") or [])
     links: list[dict] = list(document.get("links") or [])
@@ -172,10 +172,10 @@ def validate_structure(document: dict, contract_map: dict) -> Dict[str, Any]:
     reference_node_ids = {
         str(n.get("id")) for n in nodes if _node_type(n) == "run_reference"
     }
-    slot_edges: Dict[tuple, List[str]] = {}
+    slot_edges: dict[tuple, list[str]] = {}
     for lnk in links:
-        key = (str(lnk.get("target")), str(lnk.get("targetHandle") or ""))
-        slot_edges.setdefault(key, []).append(str(lnk.get("source")))
+        slot_key = (str(lnk.get("target")), str(lnk.get("targetHandle") or ""))
+        slot_edges.setdefault(slot_key, []).append(str(lnk.get("source")))
     for (tgt, slot), sources in slot_edges.items():
         if all(s in reference_node_ids for s in sources):
             continue
@@ -195,7 +195,7 @@ def validate_structure(document: dict, contract_map: dict) -> Dict[str, Any]:
     # 2. A method node whose upstreams include a fan-in selector must have
     #    exactly one upstream (the selector) -- multi-selector or
     #    mixed-kind upstreams on a fan-in consumer are out of scope.
-    fan_in_selectors: Dict[str, dict] = {}
+    fan_in_selectors: dict[str, dict] = {}
     for node in nodes:
         if _node_type(node) == "input_selector" and (node.get("fan_mode") or "out") == "in":
             fan_in_selectors[str(node.get("id"))] = node
@@ -207,14 +207,14 @@ def validate_structure(document: dict, contract_map: dict) -> Dict[str, Any]:
 
     if fan_in_selectors:
         # Group links by target for multi-upstream detection.
-        upstreams_by_target: Dict[str, List[str]] = {}
+        upstreams_by_target: dict[str, list[str]] = {}
         for lnk in links:
             upstreams_by_target.setdefault(
                 str(lnk.get("target")), []
             ).append(str(lnk.get("source")))
 
-        fan_in_upstreams: Dict[str, List[str]] = {}
-        upstream_link_counts: Dict[str, int] = {}
+        fan_in_upstreams: dict[str, list[str]] = {}
+        upstream_link_counts: dict[str, int] = {}
         for node in nodes:
             if _node_type(node) != "method":
                 continue
@@ -231,7 +231,7 @@ def validate_structure(document: dict, contract_map: dict) -> Dict[str, Any]:
         str(n.get("id")) for n in nodes
         if _node_type(n) == "input_selector" and (n.get("fan_mode") or "out") != "in"
     }
-    method_selectors: Dict[str, List[str]] = {}
+    method_selectors: dict[str, list[str]] = {}
     for node in nodes:
         if _node_type(node) != "method":
             continue

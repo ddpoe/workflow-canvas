@@ -64,6 +64,7 @@ The content hash is ``wfc.identity``'s and every path is ``wfc.layout``'s;
 this package calls them and composes neither.
 """
 
+from .archive import archive_outputs, cache_archive, unarchived_outputs
 from .cache import (
     MalformedEntryError,
     cache_file,
@@ -76,13 +77,13 @@ from .cache import (
     restore_from_cache,
     sample_repair,
 )
-from .transport import PushOutcome, has_remote_configured, pull, pull_cache, push
-from .setup import (
-    DvcNotConfiguredError,
-    DvcNotInstalledError,
-    check_remote_reachable,
-    ensure_dvc_ready,
-    init_dvc,
+from .egress import copy_out
+from .env_blob import (
+    EnvBlobError,
+    EnvBlobNotFoundError,
+    InvalidEnvBlobHashError,
+    read_env_content,
+    store_env_content,
 )
 from .prune import (
     cache_prune,
@@ -93,15 +94,7 @@ from .prune import (
     scan_dvc_cache_entries,
     scan_run_archives,
 )
-from .archive import archive_outputs, cache_archive, unarchived_outputs
-from .env_blob import (
-    EnvBlobError,
-    EnvBlobNotFoundError,
-    InvalidEnvBlobHashError,
-    read_env_content,
-    store_env_content,
-)
-from .egress import copy_out
+from .push_worker import first_push_status
 from .resolve import (
     OUTPUT_LOCAL,
     OUTPUT_MISSING,
@@ -116,18 +109,25 @@ from .resolve import (
     UnknownRunError,
     exportable_outputs,
     has_malformed_output_records,
-    recorded_output_slots,
     output_export_name,
     output_export_names,
     output_location,
     provider_outputs,
+    recorded_output_slots,
     resolve_input,
     resolve_output,
     resolve_run_reference_outputs,
 )
 from .restore import MalformedSampleRecordError, restore_sample, sample_data_path
-from .push_worker import first_push_status
 from .sample_store import StoredSample, store_sample_bytes
+from .setup import (
+    DvcNotConfiguredError,
+    DvcNotInstalledError,
+    check_remote_reachable,
+    ensure_dvc_ready,
+    init_dvc,
+)
+from .transport import PushOutcome, has_remote_configured, pull, pull_cache, push
 
 __all__ = [
     "OUTPUT_LOCAL",

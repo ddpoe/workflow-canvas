@@ -1,5 +1,4 @@
-"""
-wfc CLI: the command-line verbs.
+"""wfc CLI: the command-line verbs.
 
 Pipeline verbs, invoked as ``python -m wfc <verb>``. A generated Snakefile's
 rules delegate to ``run-step``; its ``onerror`` handler is what calls
@@ -16,12 +15,12 @@ rules delegate to ``run-step``; its ``onerror`` handler is what calls
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
 from . import layout
 from .persistence import project_root as get_project_root
-
 
 # =============================================================================
 # Helpers
@@ -50,11 +49,29 @@ def _not_runnable_message(piece: str, reason: str, hint: str = "") -> str:
 # Env-manifest CLI helpers
 # =============================================================================
 
+def _docker_gate() -> str | None:
+    """The Docker pre-gate ``register-env`` and ``run-pipeline`` ask first.
+
+    ``docker build`` would otherwise fail with a raw subprocess error, so a
+    failing daemon probe is reframed into the one-door not-runnable message.
+
+    Returns:
+        The message to print when the Docker probe fails, else ``None``.
+    """
+    from .execution.readiness import check_docker
+
+    dock = check_docker()
+    if dock.status == "fail":
+        return _not_runnable_message("docker", dock.message, dock.fix_hint)
+    return None
+
+
 def _cli_register_env(args) -> int:
     """``wfc register-env``: turn the parsed arguments into values for the verb.
 
-    The body, with its three input modes, is
-    :func:`wfc.environments.verbs.register_env`.
+    The body, with its three input modes and the order of its refusals, is
+    :func:`wfc.environments.verbs.register_env`; the Docker probe is passed
+    in as :func:`_docker_gate`.
 
     Args:
         args: The parsed ``register-env`` arguments.
@@ -75,6 +92,7 @@ def _cli_register_env(args) -> int:
         dry_run=args.dry_run,
         interpreter_path=getattr(args, "interpreter_path", None),
         python_path=getattr(args, "python_path", None),
+        docker_gate=_docker_gate,
     )
 
 
@@ -83,6 +101,7 @@ def _cli_register_env(args) -> int:
 # =============================================================================
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the argparse parser for the low-level ``workflow-canvas`` verbs."""
     parser = argparse.ArgumentParser(prog="workflow-canvas", description="Workflow Canvas CLI")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -147,7 +166,7 @@ def build_parser() -> argparse.ArgumentParser:
     rss = sub.add_parser("restore-sample", help="Restore a sample from DVC cache to data/samples/")
     rss.add_argument("--name", required=True, help="Sample identifier")
     rss.add_argument("--hash", default=None, dest="content_hash",
-                     help="Expected content hash (optional; looked up from DB if omitted)")
+                     help="Expected content hash (default: the registered hash)")
 
     # -- finalize_pipeline --
     finalize = sub.add_parser("finalize_pipeline", help="Log successful pipeline completion")
@@ -169,15 +188,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     # -- init --
     init_p = sub.add_parser("init", help="Scaffold a new wfc project directory")
-    init_p.add_argument("--dir", default=".", help="Target directory (default: current dir)")
+    init_p.add_argument("--dir", default=".", help="Target directory (default: current directory)")
     init_p.add_argument("--git", action="store_true",
-                        help="(no-op) git is initialized by default.")
+                        help=argparse.SUPPRESS)
     init_p.add_argument("--archive", default=None, metavar="PATH",
-                        help="DVC archive location (a directory path, or a "
-                             "DVC remote URL like s3://). "
-                             "Default: ~/.wfc/archives/<project>")
+                        help="Archive location, without prompting: a directory "
+                             "path or a DVC remote URL such as s3://bucket/path "
+                             "(default: ~/.wfc/archives/<project>)")
     init_p.add_argument("--yes", action="store_true", dest="assume_yes",
-                        help="Run non-interactively, accepting all defaults")
+                        help="Accept every default and apply the listed changes "
+                             "without asking (for scripts and CI)")
 
     # -- doctor --
     sub.add_parser(
@@ -200,13 +220,13 @@ def build_parser() -> argparse.ArgumentParser:
              "project (tear it down with `wfc demo --remove`)",
     )
     dm.add_argument("--dir", dest="demo_dir", default=None,
-                    help="Existing initialised project directory (default: cwd)")
+                    help="Initialised project directory (default: current directory)")
     dm.add_argument("--port", type=int, default=8500,
                     help="Canvas port (default: 8500)")
     dm.add_argument("--no-open", action="store_true", dest="no_open",
                     help="Scaffold and serve without opening a browser")
     dm.add_argument("--force", action="store_true",
-                    help="Re-register over an existing demo")
+                    help="Replace an existing demo")
     dm.add_argument("--remove", action="store_true", dest="remove",
                     help="Remove every demo-owned entity, run, and file")
     dm.add_argument("--purge-image", action="store_true", dest="purge_image",
@@ -239,7 +259,8 @@ def build_parser() -> argparse.ArgumentParser:
                          'Optional if --module-dir has module.yaml. '
                          'Example: [{"type":"output","name":"x","value_type":".parquet"}]')
     rm.add_argument("--module-dir", default=None,
-                    help="Path to module directory containing module.yaml (contracts loaded from file)")
+                    help="Directory holding the module's module.yaml, e.g. "
+                         "src/my_analysis (default: modules/<name>/)")
 
     # -- register-method --
     rme = sub.add_parser("register-method", help="AST-scan method script and register method + params")
@@ -247,24 +268,27 @@ def build_parser() -> argparse.ArgumentParser:
     rme.add_argument("--module", required=True, help="Module name this method belongs to")
     rme.add_argument("--name", default=None, help="Method name (defaults to directory name)")
     rme.add_argument("--script", default=None,
-                     help="Script filename to scan (default: {method_name}.py)")
+                     help="Script file name in the method directory (default: the "
+                          "method.yaml script: key, else the one <name>.py, .R, .r "
+                          "or .sh file)")
 
     # -- run-pipeline --
     rp = sub.add_parser("run-pipeline", help="Generate Snakefile and run the pipeline")
     rp.add_argument("--pipeline", required=True, help="Path to the pipeline JSON file")
     rp.add_argument("--project-root", default=None,
-                    help="wfc project directory (git repo with method commits). Defaults to cwd.")
+                    help="Project directory (default: the project containing the "
+                         "current directory)")
     rp.add_argument("--wfc-root", default=None,
-                    help="Unused; accepted for compatibility. The generated file "
-                         "finds wfc through the interpreter that runs Snakemake.")
-    rp.add_argument("--cores", type=int, default=4, help="Snakemake cores (default: 4)")
+                    help=argparse.SUPPRESS)
+    rp.add_argument("--cores", type=int, default=4, help="Number of jobs Snakemake runs at once (default: 4)")
     rp.add_argument("--snakefile", default=None,
                     help="Where to write the Snakefile (default: the pipeline's log "
                          "directory, <project-root>/.runs/pipelines/<id>/Snakefile)")
     rp.add_argument("--archive", action="store_true", default=True, dest="archive",
                     help="Archive outputs after pipeline completion (default: on)")
     rp.add_argument("--no-archive", action="store_false", dest="archive",
-                    help="Skip output archiving after pipeline completion")
+                    help="Skip output archiving; archive later with "
+                         "wfc cache archive")
     rp.add_argument("--keep-going", action="store_true", default=False, dest="keep_going",
                     help="Pass --keep-going to Snakemake: a failed job doesn't "
                          "cancel independent jobs (useful for fan-out pipelines)")
@@ -273,10 +297,12 @@ def build_parser() -> argparse.ArgumentParser:
     cv = sub.add_parser("canvas", help="Launch the workflow canvas web UI")
     cv.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
     cv.add_argument("--port", type=int, default=8500, help="Bind port (default: 8500)")
-    cv.add_argument("--reload", action="store_true", help="Enable auto-reload (development mode)")
+    cv.add_argument("--reload", action="store_true",
+                    help="Restart the server when wfc's source changes (for wfc development)")
     cv.add_argument("--project-root", default=None,
-                    help="Path to wfc project directory (default: cwd). "
-                         "The directory must contain .wfc/wfc.db.")
+                    help="Project directory to serve (default: the project "
+                         "containing the current directory). It must contain "
+                         ".wfc/wfc.db.")
 
     # -- run-step --
     rs_cmd = sub.add_parser("run-step", help="Execute a single pipeline step end-to-end")
@@ -311,7 +337,7 @@ def build_parser() -> argparse.ArgumentParser:
     ps_cmd.add_argument("--pipeline-id", required=True, help="Pipeline execution ID")
 
     # -- list-envs --
-    le_cmd = sub.add_parser(
+    sub.add_parser(
         "list-envs",
         help="List container envs in .wfc/envs.json",
     )
@@ -333,7 +359,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--force", action="store_true",
         help=(
             "Skip the confirmation prompt "
-            "(the warn-on-reference listing still prints)."
+            "(the list of methods that use the env still prints)."
         ),
     )
 
@@ -357,21 +383,20 @@ def build_parser() -> argparse.ArgumentParser:
     re_cmd.add_argument("name", help="Env name (key in .wfc/envs.json)")
     re_cmd.add_argument(
         "spec", nargs="?", default=None,
-        help="Optional typed env spec to capture from a live env "
-             "(conda:<env>, pixi:<name>, pixi:<proj>:<env>). Mutually "
-             "exclusive with --backend and --from.",
+        help="Local env to capture: conda:<env>, pixi:<name> or "
+             "pixi:<proj>:<env>. Cannot be combined with --backend or "
+             "--from.",
     )
     re_cmd.add_argument(
         "--backend", default=None,
         choices=["pixi", "conda", "byo"],
-        help="Build backend. Inferred from positional typed-spec when "
-             "present; required for --from (pixi|conda) and byo mode.",
+        help="Build backend. Required with --from and for byo; inferred "
+             "from spec when capturing a local env.",
     )
     re_cmd.add_argument(
         "--from", dest="from_path", default=None, metavar="PATH",
-        help="File-mode: copy this file into the build context under "
-             "the generator's expected filename (explicit-list.txt for "
-             "conda, pixi.lock for pixi). Requires explicit --backend.",
+        help="Lock file (pixi.lock) or conda explicit list to build "
+             "from. Requires --backend.",
     )
     re_cmd.add_argument("--image", default=None,
                         help="docker:// reference for --backend byo")
@@ -379,31 +404,25 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Override the default base image for this env")
     re_cmd.add_argument(
         "--interpreter", dest="interpreter_path", default=None, metavar="PATH",
-        help="Container-side path of the env's interpreter, recorded "
-             "verbatim in .wfc/envs.json and used by `wfc run-step` to "
-             "launch method scripts (e.g. '/opt/conda/bin/Rscript' for R, "
-             "'/bin/bash' for bash, or a python path for byo images whose "
-             "Python is not on PATH). Never validated against the host — "
-             "the path is resolved inside the container at run time "
-             "(default: computed per backend; byo defaults to 'python').",
+        help="Path of the interpreter inside the container that runs "
+             "method scripts, e.g. /opt/conda/bin/Rscript for R, /bin/bash "
+             "for bash, or the Python of a byo image whose Python is not on "
+             "PATH (default: the env's Python for pixi and conda, 'python' "
+             "for byo).",
     )
     re_cmd.add_argument(
         "--python", dest="python_path", default=None, metavar="PATH",
-        help="Alias for --interpreter (kept for compatibility). Pass only "
-             "one of the two.",
+        help="Alias for --interpreter. Pass only one of the two.",
     )
     re_cmd.add_argument(
         "--dry-run", action="store_true",
         help="Write the Dockerfile to .wfc/build/<name>/Dockerfile and "
-             "exit; do NOT invoke docker. Requires --from file mode for "
-             "pixi/conda; live-env capture (positional typed specs) is "
-             "not supported under --dry-run.",
+             "stop without running Docker. Use it with --from.",
     )
     re_cmd.add_argument(
         "--force", action="store_true",
-        help="Overwrite an existing manifest entry for <name>. "
-             "Default behavior is to error if the env is already "
-             "registered.",
+        help="Replace an existing env of the same name (without it, "
+             "registering an existing name is an error).",
     )
 
     # -- dev-loop commands --
@@ -426,9 +445,8 @@ def build_parser() -> argparse.ArgumentParser:
     jup_cmd.add_argument("env", help="Env name (key in .wfc/envs.json)")
     jup_cmd.add_argument(
         "--port", type=int, default=None,
-        help="Host port to forward to the container's 8888. "
-             "Default: autopick the first free port in 8888-8999 "
-             "(port 8000 is always skipped due to local conflicts).",
+        help="Host port for Jupyter (default: the first free port "
+             "from 8888 to 8999)",
     )
 
     # -- shell --
@@ -461,7 +479,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     prune_cmd.add_argument(
         "--all", action="store_true", dest="prune_all",
-        help="Remove all run archives regardless of reference status",
+        help="Remove every run directory and, with --include-local, every "
+             "local cache entry, not only unreferenced ones",
     )
     prune_cmd.add_argument(
         "--include-local", action="store_true",
@@ -473,10 +492,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     prune_cmd.add_argument(
         "--force", action="store_true",
-        help="Skip the confirmation prompt AND prune unpushed cache entries. "
-             "Without it, a hash whose Sample/RunOutput row has no pushed_at "
-             "is kept: its bytes never reached the archive, so deleting it "
-             "is permanent loss. With it, those entries are deleted too.",
+        help="Skip the confirmation prompt and the archive check, and also "
+             "delete local cache entries that were never pushed to the "
+             "archive. Those files cannot be recovered.",
     )
 
     # -- cache archive (deferred output archiving) --
@@ -510,11 +528,13 @@ def build_parser() -> argparse.ArgumentParser:
     export_cmd.add_argument("run_id", type=int, help="Run ID to export from")
     export_cmd.add_argument(
         "slot", nargs="?", default=None,
-        help="Output slot to export (omit to list the run's output slots)",
+        help="Output slot to export (omit to list the run's output slots "
+             "and file names)",
     )
     export_cmd.add_argument(
         "dest", nargs="?", default=None,
-        help="Destination file or directory for the exported copy",
+        help="Destination file or directory. An existing directory "
+             "receives the file under its own name",
     )
     export_cmd.add_argument(
         "--all", action="store_true", dest="export_all",
@@ -533,9 +553,47 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+_NEGATIVE_NUMBER = re.compile(r"^-\d+$|^-\d*\.\d+$")
+
+
+def _export_options_last(argv: list[str]) -> list[str]:
+    """Move ``wfc export``'s options after its positionals, keeping each group's order.
+
+    ``export`` has one required positional and two optional ones (slot,
+    dest). When an option sits between them (``export 412 --all ./out``),
+    Python 3.12's early patch releases let the optional positionals match
+    nothing in the first run of positionals, so ``./out`` is left over as an
+    unrecognized argument; later releases hold them back. With every
+    positional string in one contiguous run, argparse matches that run
+    against the positionals in declaration order on every release, so the
+    parse is the same everywhere. Every ``export`` option is a flag that
+    takes no value, so moving one never separates it from a value. After a
+    ``--`` the order is the user's and is left alone.
+
+    Args:
+        argv: The command line after the program name.
+
+    Returns:
+        ``argv`` with an ``export`` command's option strings moved last;
+        any other command line unchanged.
+    """
+    if not argv or argv[0] != "export" or "--" in argv:
+        return argv
+
+    def is_option(token: str) -> bool:
+        return (token.startswith("-") and token != "-"
+                and not _NEGATIVE_NUMBER.match(token))
+
+    rest = argv[1:]
+    return ([argv[0]] + [t for t in rest if not is_option(t)]
+            + [t for t in rest if is_option(t)])
+
+
 def cli_main(argv: list[str] | None = None) -> int:
+    """Parse ``argv`` and run the selected verb, returning its exit code."""
     parser = build_parser()
-    args = parser.parse_args(argv)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(_export_options_last(argv))
 
     if args.command == "register_run":
         params = json.loads(args.params) if args.params else None
@@ -679,9 +737,8 @@ def cli_main(argv: list[str] | None = None) -> int:
         return 0
 
     elif args.command == "doctor":
-        from .execution.readiness import run_all_checks
+        from .execution.readiness import default_project_dir, run_all_checks
         from .preflight import render_health_table
-        from .execution.readiness import default_project_dir
         results = run_all_checks(default_project_dir())
         print(render_health_table(results))
         # Non-zero on any FAIL (WARN does not flip the gate).
@@ -784,6 +841,13 @@ def cli_main(argv: list[str] | None = None) -> int:
         return 0
 
     elif args.command == "run-pipeline":
+        # Docker-down pre-gate, as run-step has: without it the env
+        # pre-flight's image probe is the first thing to meet a stopped
+        # daemon.
+        docker_down = _docker_gate()
+        if docker_down:
+            print(docker_down, file=sys.stderr)
+            return 1
         from .execution import run_pipeline
         from .registration import MalformedSampleError, UnreachableSampleError
         try:
@@ -875,17 +939,6 @@ def cli_main(argv: list[str] | None = None) -> int:
         return verbs.delete_env(args.name, references=references, force=args.force)
 
     elif args.command == "register-env":
-        # Docker-down pre-gate: `docker build` would otherwise fail with a raw
-        # subprocess error. Reframe that specific shape into the one-door message.
-        # SKIP the gate on --dry-run: dry-run renders the Dockerfile WITHOUT
-        # touching Docker (it must succeed daemon-up or daemon-down).
-        if not getattr(args, "dry_run", False):
-            from .execution.readiness import check_docker
-            _dock = check_docker()
-            if _dock.status == "fail":
-                print(_not_runnable_message("docker", _dock.message, _dock.fix_hint),
-                      file=sys.stderr)
-                return 1
         return _cli_register_env(args)
 
     elif args.command == "jupyter":

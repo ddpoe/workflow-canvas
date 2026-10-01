@@ -75,9 +75,9 @@ def load_wfc_data(config: WfcConfig):
             "runs": len(state._wfc_provider.get_all_runs()),
         }
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.post("/api/wfc/refresh")
@@ -93,7 +93,7 @@ def refresh_wfc_data():
             "runs": len(prov.get_all_runs()),
         }
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 # =============================================================================

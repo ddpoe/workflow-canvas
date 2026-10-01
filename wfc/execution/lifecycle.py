@@ -19,20 +19,19 @@ import shutil
 import sys
 import threading
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from sqlmodel import select
-
-from axiom_annotations import workflow, task, Step
+from axiom_annotations import Step, task, workflow
+from sqlmodel import col, select
 
 from .. import layout
 from ..contracts import COLLAPSED_SAMPLE
-from ..persistence import Method, Module, Run
-from ..persistence import get_session, project_root as get_project_root
 from ..orchestration import EngineOutcome
+from ..persistence import Method, Module, Run, get_session
 
 
 def sweep_legacy_workspace(project_root: Path) -> bool:
@@ -357,7 +356,6 @@ def cancel_pipeline(pipeline_id: str, project_root: str | None = None) -> int:
     Returns:
         Number of rows flipped.
     """
-
     with get_session() as session:
         stmt = (
             select(Run)
@@ -367,7 +365,7 @@ def cancel_pipeline(pipeline_id: str, project_root: str | None = None) -> int:
         in_flight = session.exec(stmt).all()
         for run in in_flight:
             run.status = "cancelled"
-            run.finished_at = datetime.now(timezone.utc)
+            run.finished_at = datetime.now(UTC)
             if run.error_message is None:
                 run.error_message = "Cancelled by user"
         session.commit()
@@ -382,7 +380,6 @@ def fail_pipeline(pipeline_id: str) -> None:
 
     Already-completed runs are left untouched (their data is safe in .runs/{id}/).
     """
-
     with get_session() as session:
         stmt = (
             select(Run)
@@ -392,7 +389,7 @@ def fail_pipeline(pipeline_id: str) -> None:
         in_flight = session.exec(stmt).all()
         for run in in_flight:
             run.status = "failed"
-            run.finished_at = datetime.now(timezone.utc)
+            run.finished_at = datetime.now(UTC)
             # Only set error fields if not already populated
             # (the try/except in the generated rule may have already called
             # complete_run with error details before fail_pipeline runs)
@@ -455,7 +452,6 @@ def _write_cancelled_rows(pipeline_id: str, project_root: str) -> int:
     Returns:
         Number of cancelled rows written (useful for tests / logging).
     """
-
     from ..graph import document_node, expand_step_combos, resolve_variant_model
     from .composer import load_pipeline_from_path
 
@@ -553,7 +549,7 @@ def _write_cancelled_rows(pipeline_id: str, project_root: str) -> int:
             key = _key(r.node_id, r.sample or "", r.params)
             prior = failed_by_key.get(key)
             if prior is None or (r.id is not None and r.id < prior):
-                failed_by_key[key] = r.id  # type: ignore[assignment]
+                failed_by_key[key] = r.id
 
         def _method_row(step) -> Method | None:
             """The registered method a step runs, warning once when it is gone."""
@@ -611,13 +607,13 @@ def _write_cancelled_rows(pipeline_id: str, project_root: str) -> int:
                 if method_row is None:
                     continue
                 failed_row = Run(
-                    method_id=method_row.id,  # type: ignore[arg-type]
+                    method_id=method_row.id,
                     params=params,
                     sample=sample,
                     status="failed",
                     pipeline_id=pipeline_id,
                     started_at=None,
-                    finished_at=datetime.now(timezone.utc),
+                    finished_at=datetime.now(UTC),
                     error_message=message,
                     node_id=raw_id_by_step[step.node_id],
                 )
@@ -648,7 +644,7 @@ def _write_cancelled_rows(pipeline_id: str, project_root: str) -> int:
             # Frontier carries a list of node ids at the current depth;
             # BFS proceeds level-by-level so all equidistant hits land
             # in the same sweep.
-            frontier: list[str] = list(step_by_nid.get(start_nid).depends_on) \
+            frontier: list[str] = list(step_by_nid[start_nid].depends_on) \
                 if start_nid in step_by_nid else []
             while frontier:
                 level_hits: list[int] = []
@@ -718,7 +714,7 @@ def _write_cancelled_rows(pipeline_id: str, project_root: str) -> int:
                     continue
 
                 new_row = Run(
-                    method_id=method_row.id,  # type: ignore[arg-type]
+                    method_id=method_row.id,
                     params=params,
                     sample=effective_sample,
                     status="cancelled",
@@ -799,7 +795,7 @@ def summarize_pipeline(pipeline_id: str) -> PipelineSummary:
     """
     with get_session() as session:
         rows = session.exec(
-            select(Run).where(Run.pipeline_id == pipeline_id).order_by(Run.id)
+            select(Run).where(Run.pipeline_id == pipeline_id).order_by(col(Run.id))
         ).all()
     counts = {"completed": 0, "cached": 0, "failed": 0, "cancelled": 0, "running": 0}
     failures: list[dict] = []

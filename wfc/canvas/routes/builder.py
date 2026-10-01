@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from sqlmodel import select
 
-from ...persistence import get_session
-from ...persistence import MethodContract, Module, Run
+from ...persistence import MethodContract, Module, Run, get_session
 from ..models import PipelineInput
 from ..state import _require_provider
 
@@ -29,11 +28,11 @@ def get_modules():
     """
     with get_session() as session:
         modules = session.exec(select(Module)).all()
-        result: Dict[str, Any] = {}
+        result: dict[str, Any] = {}
         for mod in modules:
-            methods_dict: Dict[str, Any] = {}
+            methods_dict: dict[str, Any] = {}
             for meth in mod.methods:
-                mc: Optional[MethodContract] = meth.contract
+                mc: MethodContract | None = meth.contract
                 methods_dict[meth.name] = {
                     "inputs":        mc.input_slots   if mc else {},
                     "outputs":       mc.output_slots  if mc else {},
@@ -79,8 +78,8 @@ def validate_workflow(pipeline: PipelineInput):
 
 
 @router.get("/api/contracts/{method_full}/output_columns")
-def get_output_columns(method_full: str, slot: str, params: Optional[str] = None,
-                       run_id: Optional[str] = None):
+def get_output_columns(method_full: str, slot: str, params: str | None = None,
+                       run_id: str | None = None):
     """Resolve declared output columns for a method's slot.
 
     The canvas inspector calls this for params declared with
@@ -105,17 +104,18 @@ def get_output_columns(method_full: str, slot: str, params: Optional[str] = None
         not done here per the no-introspection constraint).
     """
     import json as _json
+
     from ...contracts import resolve_columns
 
-    parsed_params: Dict[str, Any] = {}
+    parsed_params: dict[str, Any] = {}
     if run_id:
         # Look up Run.params in the wfc DB for run_reference upstream.
         _require_provider()
         with get_session() as session:
             try:
                 rid = int(run_id)
-            except ValueError:
-                raise HTTPException(status_code=400, detail=f"Invalid run_id: {run_id}")
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=f"Invalid run_id: {run_id}") from exc
             run = session.get(Run, rid)
             if not run:
                 raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
@@ -125,7 +125,7 @@ def get_output_columns(method_full: str, slot: str, params: Optional[str] = None
         try:
             parsed_params = _json.loads(params)
         except _json.JSONDecodeError as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid params JSON: {exc}")
+            raise HTTPException(status_code=400, detail=f"Invalid params JSON: {exc}") from exc
 
     if "." not in method_full:
         raise HTTPException(status_code=400, detail="method must be 'module.method'")

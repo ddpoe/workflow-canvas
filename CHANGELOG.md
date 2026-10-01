@@ -4,6 +4,33 @@ Notable changes to Workflow Canvas. The format follows [Keep a Changelog](https:
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-09-30
+
+### Upgrading
+- Workflow Canvas now requires Python 3.12. Python 3.11 is no longer supported.
+
+### Added
+- API reference in the docs: the CLI Reference now lists every command's arguments straight from the parser, and a new Python API page documents `wfc-client` (`method`, `run`, `RunContext`).
+- `CONTRIBUTING.md` (development setup, tests, docs build) and a Code of Conduct.
+- Continuous integration on every push: tests on Linux, Windows and macOS for Python 3.12, `wfc-client` on Python 3.9 and 3.13, linting (ruff), type checking (mypy), the docs build and the Canvas front-end tests.
+- Both packages ship type information (`py.typed`).
+- A local env whose Docker image was deleted is rebuilt once from the build context `wfc register-env` saved, before a pipeline, a standalone `wfc run-step`, or `wfc shell`/`exec`/`jupyter` uses it. If the context is gone or no longer matches the recorded env, wfc stops and names the command that recreates it (`wfc register-env <name> --force`, or `wfc demo --force` for the demo env).
+
+### Changed
+- Requires `wfc-client` 0.2.0, which narrates its run with `axiom-annotations` markers (its one dependency). The demo image installs the same version.
+- `wfc <command> --help` describes each flag more fully, including defaults and accepted values.
+- `wfc register-env --backend byo` records a registry image by its registry digest, and an `@sha256:` pin you supply is checked against that digest.
+
+### Fixed
+- Envs registered with `wfc register-env` now run on classic Docker Engine (for example Docker on a Linux server), not only on Docker Desktop.
+- A stopped Docker daemon is reported as Docker not running, instead of as a missing env image. `wfc run-pipeline` checks Docker before starting, as `register-env` and `run-step` do.
+- `wfc register-env` reports argument errors and an already-registered name before checking for Docker.
+- A directory output's checkout that contains a symlink is rebuilt, so no link is ever served.
+- `wfc export <run> --all <dir>` no longer fails with "unrecognized arguments" on early Python 3.12 releases (such as Ubuntu 24.04's 3.12.3).
+- `wfc register-env` no longer fails partway through `docker build` for a conda env captured on Windows or macOS. A conda capture lists the exact package files for your computer's platform, and images run Linux, so registration now stops before building, names the platform, and prints the commands that produce a Linux package list (`conda env export --from-history`, then `conda-lock -f environment.yml -p linux-64 --kind explicit`, then `wfc register-env <name> --backend conda --from conda-linux-64.lock`). `conda-lock` is a separate tool; install it in its own environment (`conda create -n conda-lock -c conda-forge conda-lock`), not the one wfc runs in. Capturing on Linux or WSL, or using a pixi env, also works.
+- `wfc register-env` no longer fails partway through `docker build` for a conda env captured on Windows or macOS. A conda capture lists the exact package files for your computer's platform, and images run Linux, so registration now stops before building, names the platform, and prints the commands that produce a Linux package list (`conda env export --from-history`, then `conda-lock -f environment.yml -p linux-64 --kind explicit`, then `wfc register-env <name> --backend conda --from conda-linux-64.lock`). `conda-lock` is a separate tool; install it in its own environment (`conda create -n conda-lock -c conda-forge conda-lock`), not the one wfc runs in. Capturing on Linux or WSL, or using a pixi env, also works.
+- A `pixi.lock` whose environment has no `linux-64` packages (a pixi project created on Windows or macOS lists only that platform by default) now stops before building and prints `pixi workspace platform add linux-64`, instead of failing inside `docker build`.
+
 ## [0.6.0] — 2026-09-29
 
 ### Upgrading

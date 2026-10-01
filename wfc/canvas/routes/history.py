@@ -3,17 +3,15 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlmodel import select
 
 from ... import layout
-from ...persistence import get_session
-from ...persistence import Run
+from ...persistence import Run, get_session
 from ..state import _require_provider
 
 router = APIRouter()
@@ -94,7 +92,7 @@ def get_pipeline_editable(pipeline_id: str):
         raise HTTPException(
             status_code=500,
             detail=f"Pipeline editable form for {pipeline_id} unreadable: {exc}",
-        )
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +127,7 @@ def get_pipeline_document(pipeline_id: str):
         raise HTTPException(
             status_code=500,
             detail=f"Pipeline document for {pipeline_id} is unreadable: {exc}",
-        )
+        ) from exc
 
 
 @router.get("/api/pipelines/demo")
@@ -154,7 +152,7 @@ def get_demo_pipeline():
         raise HTTPException(
             status_code=500,
             detail=f"demo-pipeline.json is unreadable: {exc}",
-        )
+        ) from exc
 
 
 @router.get("/api/runs/{run_id}/lineage-pipeline")
@@ -179,7 +177,7 @@ def get_run_lineage_pipeline(run_id: str):
     try:
         return synthesize_lineage_pipeline(provider.run_records(), run_id)
     except LineageSynthesisError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 class RunPatchRequest(BaseModel):
@@ -193,10 +191,10 @@ class RunPatchRequest(BaseModel):
     `archived_at` timestamp column: ``true`` sets it to now, ``false``
     clears it.
     """
-    nid: Optional[str] = None
-    favorite: Optional[bool] = None
-    tags: Optional[List[str]] = None
-    archived: Optional[bool] = None
+    nid: str | None = None
+    favorite: bool | None = None
+    tags: list[str] | None = None
+    archived: bool | None = None
 
 
 @router.patch("/api/wfc/run/{run_id}")
@@ -206,8 +204,8 @@ def patch_wfc_run(run_id: str, patch: RunPatchRequest):
 
     try:
         rid_int = int(run_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid run id: {run_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid run id: {run_id}") from exc
 
     with get_session() as session:
         run = session.get(Run, rid_int)
@@ -233,8 +231,8 @@ def patch_wfc_run(run_id: str, patch: RunPatchRequest):
             if patch.tags is not None:
                 ann.tags = list(patch.tags)
             if patch.archived is not None:
-                ann.archived_at = datetime.now(timezone.utc) if patch.archived else None
-            ann.updated_at = datetime.now(timezone.utc)
+                ann.archived_at = datetime.now(UTC) if patch.archived else None
+            ann.updated_at = datetime.now(UTC)
             session.add(ann)
 
         session.commit()

@@ -88,16 +88,15 @@ def test_generated_conda_dockerfile_builds_r_env_no_pip(tmp_path):
     ), record.container
     assert record.python == "/opt/conda/bin/Rscript"
 
-    # Run the recorded interpreter by the exact ref run-step passes to
-    # docker. register records the built image's {{.Id}}, and
-    # `local/r-smoke@sha256:<Id>` resolves only under Docker's containerd
-    # image store — on a classic-graphdriver daemon this run fails even
-    # though the build succeeded. That failure reproduces a REAL run-step
-    # failure (run-step dispatches the identical ref), so treat it as
-    # signal, not flakiness.
-    ref = record.container.removeprefix("docker://")
+    # Run the recorded interpreter by the daemon ref run-step hands
+    # Docker, with pulling forbidden. register records the built image's
+    # {{.Id}}, and the daemon ref is that bare image ID, which both the
+    # classic and the containerd image store run without a pull.
+    from wfc.environments import daemon_ref
+    ref = daemon_ref(record.container)
     run_proc = subprocess.run(
-        ["docker", "run", "--rm", ref, record.python, "--version"],
+        ["docker", "run", "--rm", "--pull=never", ref,
+         record.python, "--version"],
         capture_output=True,
         text=True,
         timeout=300,

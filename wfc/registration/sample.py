@@ -1,5 +1,7 @@
-"""Sample registration: refuse, hand the bytes (a file's or a directory's) to
-Storage's sample store, and write the sample row."""
+"""Sample registration: refuse bad requests, store the bytes, write the sample row.
+
+The bytes (a file's or a directory's) are handed to Storage's sample store.
+"""
 
 from __future__ import annotations
 
@@ -11,9 +13,11 @@ from sqlmodel import select
 from .. import layout
 from ..identity import directory_manifest
 from ..persistence import (
-    get_session,
-    project_root as get_project_root,
     Sample,
+    get_session,
+)
+from ..persistence import (
+    project_root as get_project_root,
 )
 
 

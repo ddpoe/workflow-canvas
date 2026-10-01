@@ -25,7 +25,6 @@ from __future__ import annotations
 
 from .context import RunContext
 from .decorator import method
-from .errors import ContractViolation
 from .main import run
 
-__all__ = ["method", "run", "RunContext", "ContractViolation"]
+__all__ = ["method", "run", "RunContext"]

@@ -9,7 +9,7 @@ and each output's location. A refused document is data in the response
 
 from __future__ import annotations
 
-from typing import List, Literal, Optional
+from typing import Literal
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -41,18 +41,18 @@ class CacheStatusRowModel(BaseModel):
         "cached_local", "cached_remote", "outputs_missing",
         "new_step_changed", "new_upstream_reruns", "blocked",
     ]
-    reason: Optional[str] = None
-    cache_key: Optional[str] = None
-    source_run_id: Optional[int] = None
-    source_nid: Optional[str] = None
-    outputs: List[CacheStatusOutput] = []
+    reason: str | None = None
+    cache_key: str | None = None
+    source_run_id: int | None = None
+    source_nid: str | None = None
+    outputs: list[CacheStatusOutput] = []
 
 
 class CacheStatusResponse(BaseModel):
     """Every target's row, or the load's refusal that blocks them all."""
 
-    rows: List[CacheStatusRowModel]
-    blocked_reason: Optional[str] = None
+    rows: list[CacheStatusRowModel]
+    blocked_reason: str | None = None
 
 
 @router.post("/api/wfc/cache-status", response_model=CacheStatusResponse)

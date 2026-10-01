@@ -8,12 +8,23 @@
 #     userdocs/guide <output-dir>
 
 import os
+import sys
+from collections import Counter
 from pathlib import Path
+
+from docutils import nodes
+from sphinx.transforms import SphinxTransform
+
+# The API reference pages document the code in this repository, not an
+# installed copy: autodoc reads wfc_client from wfc-client/, and
+# sphinx-argparse reads the CLI parser from wfc/cli.py.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path[:0] = [str(_REPO_ROOT), str(_REPO_ROOT / "wfc-client")]
 
 project = "Workflow Canvas"
 author = "Dante Poe"
 copyright = "2026, Dante Poe"
-release = "0.6.0"
+release = "0.6.1"
 
 REPO_URL = "https://github.com/ddpoe/workflow-canvas"
 PYPI_URL = "https://pypi.org/project/workflow-canvas/"
@@ -21,7 +32,27 @@ PYPI_URL = "https://pypi.org/project/workflow-canvas/"
 html_title = "Workflow Canvas"
 html_logo = "static/wfc-logo.svg"
 
-extensions = ["myst_parser", "sphinxcontrib.mermaid", "sphinx_sitemap", "sphinxext.opengraph"]
+extensions = [
+    "myst_parser",
+    "sphinxcontrib.mermaid",
+    "sphinx_sitemap",
+    "sphinxext.opengraph",
+    "sphinx.ext.autodoc",
+    "sphinx.ext.napoleon",
+    "sphinxarg.ext",
+]
+
+# Docstrings are Google style.
+napoleon_google_docstring = True
+napoleon_numpy_docstring = False
+
+# Importing wfc.cli (for the CLI reference) loads the database models at
+# module level, so userdocs/requirements.txt installs sqlmodel (the only
+# third-party package on that import path besides axiom-annotations). The
+# models subclass SQLModel with table=True, which autodoc_mock_imports
+# cannot stand in for.
+autodoc_typehints = "signature"
+autodoc_member_order = "bysource"
 
 # Read the Docs sets the canonical URL of the version being built
 # (e.g. https://workflow-canvas.readthedocs.io/en/latest/); local builds fall
@@ -127,5 +158,40 @@ def _write_search_files(app, exception):
     (outdir / "robots.txt").write_text(f"User-agent: *\nAllow: /\n\nSitemap: {html_baseurl}sitemap.xml\n", encoding="utf-8")
 
 
+class _TidyCliArguments(SphinxTransform):
+    """Fit sphinx-argparse output under the CLI reference's command headings.
+
+    sphinx-argparse puts each argument group ("Positional Arguments",
+    "Named Arguments") in its own section, which would add two headings per
+    command to the page's contents panel. Each group becomes a rubric (a
+    label that is not a heading) instead.
+
+    It also shows each argument's help exactly as `wfc <command> --help`
+    prints it: without this, smart quotes turn `--remove` into an en dash
+    plus a word and curl the quotes in JSON examples. Runs before Sphinx's
+    SmartQuotes transform (750) and before the contents panel is collected.
+    """
+
+    default_priority = 700
+
+    def apply(self, **kwargs):
+        groups = []
+        for option_list in self.document.findall(nodes.option_list):
+            option_list["support_smartquotes"] = False
+            section = option_list.parent
+            if isinstance(section, nodes.section) and isinstance(section[0], nodes.title):
+                groups.append(section)
+        # Each group has an id unique to its command (wfc-init-named-arguments)
+        # and one that repeats on every command; only unique ids are kept.
+        id_counts = Counter(i for section in groups for i in section["ids"])
+        for section in groups:
+            ids = [i for i in section["ids"] if id_counts[i] == 1]
+            rubric = nodes.rubric("", "", *section[0].children)
+            section.replace_self([rubric, *section.children[1:]])
+            # replace_self copies the section's ids onto the rubric; reset them.
+            rubric["ids"] = ids
+
+
 def setup(app):
+    app.add_transform(_TidyCliArguments)
     app.connect("build-finished", _write_search_files)

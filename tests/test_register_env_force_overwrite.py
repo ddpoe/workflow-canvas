@@ -12,15 +12,21 @@ from pathlib import Path
 
 import pytest
 
-from tests.fixtures.fakes import stub_docker_build, stub_docker_image_inspect
+from tests.fixtures.fakes import (
+    stub_docker_build,
+    stub_docker_image_inspect,
+    stub_readiness_probes,
+)
 
 from axiom_annotations import workflow, Step
 
 
 @workflow(
-    purpose="wfc register-env on an existing env errors actionably (exit "
-            "non-zero, message names env and points at --force, manifest "
-            "unchanged); --force rebuilds and overwrites the manifest "
+    purpose="On a host with no Docker, wfc register-env on an existing env "
+            "errors actionably (exit non-zero, message names env and points "
+            "at --force, manifest unchanged), and --force reaches the Docker "
+            "gate's not-runnable message; with Docker up, --force rebuilds "
+            "and overwrites the manifest "
             "entry with the new digest. Methods referencing the env are "
             "NOT touched — they resolve through the manifest at run-step "
             "time and pick up the new digest automatically."
@@ -65,9 +71,11 @@ def test_register_env_force_overwrites_existing(tmp_path, monkeypatch, capsys):
     stub_docker_build(monkeypatch, lambda d, t: None)
     stub_docker_image_inspect(monkeypatch, f"sha256:{new_digest}")
 
-    口 = Step(step_num=2, name="Run CLI without --force, expect non-zero exit",
+    口 = Step(step_num=2, name="Run CLI without --force on a host with no Docker",
              purpose="Default behavior must refuse to clobber; message must "
-                     "name the env and point at --force.")
+                     "name the env and point at --force. The refusal is the "
+                     "verb's own, reported before Docker is asked.")
+    stub_readiness_probes(monkeypatch, docker="fail")
     rc = cli_main([
         "register-env", "image-io", "--from", "pixi.lock", "--backend", "pixi",
     ])
@@ -80,10 +88,26 @@ def test_register_env_force_overwrites_existing(tmp_path, monkeypatch, capsys):
     manifest = json.loads((tmp_path / ".wfc" / "envs.json").read_text())
     assert manifest["envs"]["image-io"]["container"] == f"image-io@sha256:{old_digest}"
 
-    口 = Step(step_num=3, name="Re-run with --force, expect overwrite",
+    口 = Step(step_num=3, name="Re-run with --force on a host with no Docker",
+             purpose="A request that passes every check of its own stops at "
+                     "the Docker gate with the not-runnable message; the "
+                     "manifest is unchanged.")
+    rc = cli_main([
+        "register-env", "image-io", "--from", "pixi.lock", "--backend", "pixi",
+        "--force",
+    ])
+    captured = capsys.readouterr()
+    assert rc != 0
+    assert "This project isn't ready to run" in captured.err
+    assert "wfc doctor" in captured.err
+    manifest = json.loads((tmp_path / ".wfc" / "envs.json").read_text())
+    assert manifest["envs"]["image-io"]["container"] == f"image-io@sha256:{old_digest}"
+
+    口 = Step(step_num=4, name="Re-run with --force and Docker up, expect overwrite",
              purpose="Manifest container field flips to the new digest; "
                      "old image is intentionally NOT deleted from the "
                      "docker daemon (users prune manually).")
+    stub_readiness_probes(monkeypatch, docker="ok")
     rc = cli_main([
         "register-env", "image-io", "--from", "pixi.lock", "--backend", "pixi",
         "--force",

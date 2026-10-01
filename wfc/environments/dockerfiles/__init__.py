@@ -13,12 +13,10 @@ built locally and never pushed.
 
 from __future__ import annotations
 
-from typing import Optional
-
 from . import byo, conda, pixi
 
 
-def generate_for_backend(backend: str, **kwargs) -> Optional[str]:
+def generate_for_backend(backend: str, **kwargs) -> str | None:
     """Dispatch to the per-backend ``generate(...)`` function.
 
     Args:

@@ -18,11 +18,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from axiom_annotations import task, Step
+from axiom_annotations import Step, task
 
 from .. import layout
 from ..identity import DirectoryContentError, DirectoryManifest, directory_manifest
-from ..persistence import get_session, project_root as get_project_root
+from ..persistence import get_session
+from ..persistence import project_root as get_project_root
 
 
 @task(purpose="Collect phase: read the results manifest, scan declared output "
@@ -63,7 +64,6 @@ def run_collect(
         "ending": "refused-output", ...}`` when a directory output holds a
         symlink, a case-only name collision or no files.
     """
-
     run_dir = layout.run_archive_dir(get_project_root(), run_id)
 
     口 = Step(step_num=1, name="Read results manifest",

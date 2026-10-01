@@ -10,15 +10,15 @@ the job's step map, its thread's liveness and its recorded error as values.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any
 
 from axiom_annotations import AutoStep, task, workflow
-from sqlmodel import select
+from sqlmodel import col, select
 
-from ..persistence import get_session
-from ..persistence import Run, RunOutput
+from ..persistence import Run, RunOutput, get_session
 
 # The newest failure's message is capped so the Inspector panel stays compact.
 _ERROR_MESSAGE_CAP = 600
@@ -43,15 +43,15 @@ class RunRecord:
             for, when that run is one of the pipeline's rows.
     """
 
-    run_id: Optional[int]
-    node_id: Optional[str]
-    status: Optional[str]
-    sample: Optional[str]
-    error_message: Optional[str]
-    cache_source_run_id: Optional[int]
-    cache_key: Optional[str]
-    cancelled_due_to_run_id: Optional[int] = None
-    cause_node_id: Optional[str] = None
+    run_id: int | None
+    node_id: str | None
+    status: str | None
+    sample: str | None
+    error_message: str | None
+    cache_source_run_id: int | None
+    cache_key: str | None
+    cancelled_due_to_run_id: int | None = None
+    cause_node_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -64,7 +64,7 @@ class OutputRecord:
     """
 
     node_id: str
-    push_status: Optional[str]
+    push_status: str | None
 
 
 @dataclass(frozen=True)
@@ -78,13 +78,14 @@ class CancelCause:
     """
 
     run_id: str
-    node_id: Optional[str]
+    node_id: str | None
 
 
 @dataclass(frozen=True)
 class NodeTallies:
-    """Per-node tallies of a pipeline's rows, each keyed by the node id the
-    rows recorded.
+    """Per-node tallies of a pipeline's rows.
+
+    Each tally is keyed by the node id the rows recorded.
 
     Attributes:
         counts: Row count per status; ``running``, ``completed`` and
@@ -102,13 +103,13 @@ class NodeTallies:
             names one.
     """
 
-    counts: Dict[str, Dict[str, int]]
-    status: Dict[str, str]
-    run_ids: Dict[str, List[str]]
-    errors: Dict[str, Dict[str, Any]]
-    cache_hits: Dict[str, Dict[str, Any]]
-    push_counts: Dict[str, Dict[str, int]]
-    cancel_causes: Dict[str, CancelCause] = field(default_factory=dict)
+    counts: dict[str, dict[str, int]]
+    status: dict[str, str]
+    run_ids: dict[str, list[str]]
+    errors: dict[str, dict[str, Any]]
+    cache_hits: dict[str, dict[str, Any]]
+    push_counts: dict[str, dict[str, int]]
+    cancel_causes: dict[str, CancelCause] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -122,11 +123,11 @@ class PipelineStatus:
     """
 
     overall_status: str
-    node_states: Dict[str, Dict[str, Any]]
+    node_states: dict[str, dict[str, Any]]
     log: str
 
 
-def _aggregate_tally(tally: Dict[str, int]) -> str:
+def _aggregate_tally(tally: dict[str, int]) -> str:
     """Collapse a per-sample tally into a single display state."""
     if tally.get("running", 0) > 0:
         return "running"
@@ -149,7 +150,7 @@ def _aggregate_tally(tally: Dict[str, int]) -> str:
     return "unknown"
 
 
-def _aggregate_push(bucket: Dict[str, int]) -> str:
+def _aggregate_push(bucket: dict[str, int]) -> str:
     """Collapse a push-status bucket into a single display state.
 
     Any failed row dominates; otherwise any in-flight is
@@ -178,7 +179,7 @@ def _aggregate_push(bucket: Dict[str, int]) -> str:
     outputs="Run records (newest first) and output records, each carrying its "
             "node id",
 )
-def read_pipeline_rows(pipeline_id: str) -> Tuple[List[RunRecord], List[OutputRecord]]:
+def read_pipeline_rows(pipeline_id: str) -> tuple[list[RunRecord], list[OutputRecord]]:
     """Read a pipeline's run and output rows.
 
     Args:
@@ -188,18 +189,18 @@ def read_pipeline_rows(pipeline_id: str) -> Tuple[List[RunRecord], List[OutputRe
         The run records, newest first, and the output records. An output
         record is read only for a run that recorded its node.
     """
-    run_records: List[RunRecord] = []
-    output_records: List[OutputRecord] = []
+    run_records: list[RunRecord] = []
+    output_records: list[OutputRecord] = []
     with get_session() as session:
         runs = session.exec(
             select(Run)
             .where(Run.pipeline_id == pipeline_id)
-            .order_by(Run.started_at.desc())
+            .order_by(col(Run.started_at).desc())
         ).all()
         # run id -> node id over the pipeline's rows: names the node of a
         # cancellation's cause and joins the outputs below. A cause run that
         # is not among these rows leaves the cause's node unset.
-        run_id_to_node: Dict[int, str] = {
+        run_id_to_node: dict[int, str] = {
             r.id: r.node_id for r in runs
             if r.id is not None and r.node_id is not None
         }
@@ -219,7 +220,7 @@ def read_pipeline_rows(pipeline_id: str) -> Tuple[List[RunRecord], List[OutputRe
         if run_id_to_node:
             outputs = session.exec(
                 select(RunOutput).where(
-                    RunOutput.run_id.in_(list(run_id_to_node.keys()))  # type: ignore[union-attr]
+                    col(RunOutput.run_id).in_(list(run_id_to_node.keys()))
                 )
             ).all()
             for ro in outputs:
@@ -256,25 +257,25 @@ def tally_nodes(
     # Tally per-sample statuses per node so the canvas can show a
     # "mixed" aggregate when fan-out samples diverge (one failed, rest
     # succeeded, etc.). A flat last-write-wins dict would hide this.
-    counts: Dict[str, Dict[str, int]] = {}
+    counts: dict[str, dict[str, int]] = {}
     # Also collect run_ids per node so the canvas can point the Output tab
     # at a specific Run row for streaming. Ordered newest-first by started_at
     # so run_ids[0] is the most recent attempt.
-    run_ids: Dict[str, List[str]] = {}
+    run_ids: dict[str, list[str]] = {}
     # Most-recent failed/cancelled run per node so the canvas can show a
     # one-liner on the node without the user having to open the log stream.
-    errors: Dict[str, Dict[str, Any]] = {}
+    errors: dict[str, dict[str, Any]] = {}
     # Cache-hit detection. A node is rendered as a cache hit from its newest
     # Run row that carries ``cache_source_run_id`` (the audit row written by
     # the engine when cache reuse skipped real execution).
-    cache_hits: Dict[str, Dict[str, Any]] = {}
+    cache_hits: dict[str, dict[str, Any]] = {}
     # Per-node push aggregates, counted across all RunOutput rows belonging
     # to runs in this pipeline.
-    push_counts: Dict[str, Dict[str, int]] = {}
+    push_counts: dict[str, dict[str, int]] = {}
     # The failed run behind the newest cancelled row per node, so the
     # canvas can tell a node cancelled by an upstream failure from one the
     # user stopped.
-    cancel_causes: Dict[str, CancelCause] = {}
+    cancel_causes: dict[str, CancelCause] = {}
 
     for ro in outputs:
         bucket = push_counts.setdefault(
@@ -346,8 +347,8 @@ def tally_nodes(
     outputs="Node states for the method nodes that have rows, in step-map order",
 )
 def project_node_states(
-    step_map: Dict[str, str], tallies: NodeTallies,
-) -> Dict[str, Dict[str, Any]]:
+    step_map: dict[str, str], tallies: NodeTallies,
+) -> dict[str, dict[str, Any]]:
     """Project the node tallies onto the canvas nodes.
 
     Each node of the step map is looked up in the tallies by its own id --
@@ -364,14 +365,14 @@ def project_node_states(
     Returns:
         The node states of the method nodes that have rows.
     """
-    node_states: Dict[str, Dict[str, Any]] = {}
+    node_states: dict[str, dict[str, Any]] = {}
     for node_id, method_name in step_map.items():
         if not method_name:
             continue  # skip system nodes
         status = tallies.status.get(node_id)
         if status:
             tally = tallies.counts[node_id]
-            entry: Dict[str, Any] = {
+            entry: dict[str, Any] = {
                 "status": status,
                 "tally": dict(tally),
                 # run_ids newest-first so consumers can treat run_ids[0] as
@@ -428,11 +429,11 @@ def project_node_states(
     outputs="Node states for every method node; push fields always present",
 )
 def settle_unstarted_nodes(
-    step_map: Dict[str, str],
-    node_states: Dict[str, Dict[str, Any]],
+    step_map: dict[str, str],
+    node_states: dict[str, dict[str, Any]],
     thread_alive: bool,
     error: Any,
-) -> Dict[str, Dict[str, Any]]:
+) -> dict[str, dict[str, Any]]:
     """Settle the method nodes that have no rows.
 
     Args:
@@ -485,7 +486,7 @@ def settle_unstarted_nodes(
     outputs="The overall status",
 )
 def derive_overall_status(
-    node_states: Dict[str, Dict[str, Any]], thread_alive: bool, error: Any,
+    node_states: dict[str, dict[str, Any]], thread_alive: bool, error: Any,
     cancel_requested: bool = False,
 ) -> str:
     """Derive the overall status of a pipeline.
@@ -552,7 +553,7 @@ def derive_overall_status(
     inputs="The pipeline's log directory, or None",
     outputs="The log text; empty when there is no directory or no file",
 )
-def read_pipeline_log(log_dir: Optional[str]) -> str:
+def read_pipeline_log(log_dir: str | None) -> str:
     """Read a pipeline's captured log files.
 
     Args:
@@ -585,10 +586,10 @@ def read_pipeline_log(log_dir: Optional[str]) -> str:
 )
 def aggregate_pipeline_status(
     pipeline_id: str,
-    step_map: Dict[str, str],
+    step_map: dict[str, str],
     thread_alive: bool,
     error: Any,
-    log_dir: Optional[str],
+    log_dir: str | None,
     cancel_requested: bool = False,
 ) -> PipelineStatus:
     """Aggregate the status of a submitted pipeline.

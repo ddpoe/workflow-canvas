@@ -131,9 +131,10 @@ def test_corruption_detected_and_replaced(tmp_project):
     # Tamper the restored copy. The restore inherits the cache entry's
     # read-only mode (copy2 preserves bits; entries are protected), so the
     # tamperer must chmod first — owner can always do that (footgun guard,
-    # not a security boundary).
+    # not a security boundary). Add the write bit to the mode it has, so the
+    # file stays readable on POSIX.
     import os, stat
-    os.chmod(dest, stat.S_IWRITE)
+    os.chmod(dest, stat.S_IMODE(dest.stat().st_mode) | stat.S_IWRITE)
     dest.write_bytes(b"TAMPERED\n")
     assert hash_path(dest) != content_hash
     # restore_from_cache is hash-verified: it detects the mismatch and replaces.

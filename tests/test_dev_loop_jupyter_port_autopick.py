@@ -27,6 +27,16 @@ CONTAINER_REF_BARE = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _fresh_resolver():
+    """Each test resolves its own tree: the canonical resolver caches per process."""
+    from wfc.persistence import reset_engine
+
+    reset_engine()
+    yield
+    reset_engine()
+
+
 def _setup_project(tmp_path: Path) -> Path:
     (tmp_path / ".wfc").mkdir()
     (tmp_path / ".wfc" / "wf-canvas.toml").write_text(

@@ -9,13 +9,13 @@ The value is a container path; nothing translates it.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .manifest import EnvRecord
 
 
-def default_python_for_backend(backend: Optional[str], env_name: str) -> str:
+def default_python_for_backend(backend: str | None, env_name: str) -> str:
     """Return the per-backend default container interpreter path.
 
     The defaults mirror what each backend's image recipe actually
@@ -46,7 +46,7 @@ def default_python_for_backend(backend: Optional[str], env_name: str) -> str:
     return "python"
 
 
-def resolve_env_python(env_name: str, record: Optional["EnvRecord"]) -> str:
+def resolve_env_python(env_name: str, record: EnvRecord | None) -> str:
     """Resolve the interpreter a container should run a method script with.
 
     Pure three-step fallback:

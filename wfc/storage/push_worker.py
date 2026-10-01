@@ -16,11 +16,11 @@ finished rows stuck in flight or failed to the retry budget.
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from axiom_annotations import AutoStep, Step, task, workflow
-from sqlmodel import select
+from sqlmodel import col, select
 
 from ..persistence import PushStatus, RunOutput, Sample, get_session
 
@@ -62,21 +62,21 @@ def _reset_orphan_pushes(project_root: Path, *, age_days: int = 7) -> int:
     Returns:
         Number of rows reset.
     """
-    from ..persistence import PushStatus, RunOutput, Sample, Run
+    from ..persistence import PushStatus, Run, RunOutput, Sample
 
-    cutoff = datetime.now(timezone.utc).timestamp() - age_days * 86400
+    cutoff = datetime.now(UTC).timestamp() - age_days * 86400
     n = 0
     with get_session() as session:
         # RunOutput: join Run to get finished_at.
         ro_rows = session.exec(
             select(RunOutput)
-            .join(Run, RunOutput.run_id == Run.id)  # type: ignore[arg-type]
-            .where(RunOutput.push_status.in_([  # type: ignore[union-attr]
+            .join(Run, col(RunOutput.run_id) == col(Run.id))
+            .where(col(RunOutput.push_status).in_([
                 PushStatus.pending.value,
                 PushStatus.in_flight.value,
                 PushStatus.failed.value,
             ]))
-            .where(Run.finished_at.isnot(None))  # type: ignore[union-attr]
+            .where(col(Run.finished_at).isnot(None))
         ).all()
         for r in ro_rows:
             run = session.get(Run, r.run_id)
@@ -91,12 +91,12 @@ def _reset_orphan_pushes(project_root: Path, *, age_days: int = 7) -> int:
         # every pipeline startup.
         sample_rows = session.exec(
             select(Sample)
-            .where(Sample.push_status.in_([  # type: ignore[union-attr]
+            .where(col(Sample.push_status).in_([
                 PushStatus.pending.value,
                 PushStatus.in_flight.value,
                 PushStatus.failed.value,
             ]))
-            .where(Sample.registered_at.isnot(None))  # type: ignore[union-attr]
+            .where(col(Sample.registered_at).isnot(None))
         ).all()
         for s in sample_rows:
             if s.registered_at and s.registered_at.timestamp() > cutoff:
@@ -128,29 +128,29 @@ def _snapshot_push_rows() -> tuple[dict[str, list[int]], dict[str, list[int]]]:
     with get_session() as session:
         ro_rows = list(session.exec(
             select(RunOutput)
-            .where(RunOutput.push_status.in_([  # type: ignore[union-attr]
+            .where(col(RunOutput.push_status).in_([
                 PushStatus.pending.value, PushStatus.failed.value
             ]))
             .where(RunOutput.push_attempts < PUSH_MAX_ATTEMPTS)
-            .where(RunOutput.content_hash.isnot(None))  # type: ignore[union-attr]
+            .where(col(RunOutput.content_hash).isnot(None))
         ).all())
         sample_rows = list(session.exec(
             select(Sample)
-            .where(Sample.push_status.in_([  # type: ignore[union-attr]
+            .where(col(Sample.push_status).in_([
                 PushStatus.pending.value, PushStatus.failed.value
             ]))
             .where(Sample.push_attempts < PUSH_MAX_ATTEMPTS)
-            .where(Sample.content_hash.isnot(None))  # type: ignore[union-attr]
+            .where(col(Sample.content_hash).isnot(None))
         ).all())
 
         # Detach IDs and hashes for the actual push (avoid holding the
         # session open across a network call).
         ro_ids_by_hash: dict[str, list[int]] = {}
         for r in ro_rows:
-            ro_ids_by_hash.setdefault(r.content_hash, []).append(r.id)  # type: ignore[arg-type]
+            ro_ids_by_hash.setdefault(r.content_hash, []).append(r.id)
         sample_ids_by_hash: dict[str, list[int]] = {}
         for s in sample_rows:
-            sample_ids_by_hash.setdefault(s.content_hash, []).append(s.id)  # type: ignore[arg-type]
+            sample_ids_by_hash.setdefault(s.content_hash, []).append(s.id)
     return ro_ids_by_hash, sample_ids_by_hash
 
 
@@ -170,14 +170,14 @@ def _mark_in_flight(
     """
     with get_session() as session:
         for r in session.exec(
-            select(RunOutput).where(RunOutput.id.in_([  # type: ignore[union-attr]
+            select(RunOutput).where(col(RunOutput.id).in_([
                 rid for ids in ro_ids_by_hash.values() for rid in ids
             ]))
         ).all():
             r.push_status = PushStatus.in_flight.value
             session.add(r)
         for s in session.exec(
-            select(Sample).where(Sample.id.in_([  # type: ignore[union-attr]
+            select(Sample).where(col(Sample.id).in_([
                 sid for ids in sample_ids_by_hash.values() for sid in ids
             ]))
         ).all():
@@ -258,7 +258,7 @@ def _record_push_outcomes(
     Returns:
         Number of rows marked pushed.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     pushed_count = 0
     with get_session() as session:
         for model, ids_by_hash in ((RunOutput, ro_ids_by_hash), (Sample, sample_ids_by_hash)):
@@ -335,7 +335,6 @@ def _push_worker_loop(project_root: Path, stop_event) -> None:
         project_root: wfc project root.
         stop_event: threading.Event; loop exits when set.
     """
-    import time
     口 = Step(step_num=1, name="Tick until stopped",
              purpose="Run a tick every poll interval; after a tick that pushed "
                      "nothing and left failures, wait the next backoff instead")

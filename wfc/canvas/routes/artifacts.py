@@ -6,7 +6,6 @@ import io
 import os
 import zipfile
 from datetime import datetime
-from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
@@ -20,13 +19,16 @@ router = APIRouter()
 
 
 class ExportArtifactsRequest(BaseModel):
-    run_ids: Optional[List[str]] = None
-    file_types: Optional[List[str]] = None
+    run_ids: list[str] | None = None
+    file_types: list[str] | None = None
 
 
 def _unreadable_outputs(exc: ResolveOutputError) -> HTTPException:
-    """A run whose outputs cannot be read (a malformed record, or names that
-    cannot be told apart) is a 409 carrying Storage's message."""
+    """Map a run whose outputs cannot be read to a 409 carrying Storage's message.
+
+    Outputs cannot be read when a record is malformed or when their names
+    cannot be told apart.
+    """
     return HTTPException(status_code=409, detail=str(exc))
 
 

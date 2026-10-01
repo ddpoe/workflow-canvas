@@ -9,10 +9,8 @@ generate a Dockerfile in this path — there is nothing to build.
 
 from __future__ import annotations
 
-from typing import Optional
 
-
-def generate(*args, **kwargs) -> Optional[str]:
+def generate(*args, **kwargs) -> str | None:
     """Return ``None`` — BYO has no Dockerfile to generate.
 
     ``wfc register-env --dry-run`` treats a ``None`` return as a signal

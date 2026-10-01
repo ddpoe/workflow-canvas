@@ -22,17 +22,15 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
+from axiom_annotations import Step, task
 from sqlmodel import select
 
-from axiom_annotations import task, Step
-
-from ..persistence import Run, RunOutput
-
 from ..contracts import COLLAPSED_SAMPLE
-from ..persistence import get_session, project_root as get_project_root
+from ..persistence import Run, RunOutput, get_session
+from ..persistence import project_root as get_project_root
 
 #: Endings that write a failed run row + outcome sidecar.
 FAILURE_ENDINGS = ("materialize-failed", "no-container", "script-missing",
@@ -255,7 +253,6 @@ def complete_run(
         error_message: Error message for failed runs.
         error_traceback: Error traceback for failed runs.
     """
-
     with get_session() as session:
         run = session.get(Run, run_id)
         if run is None:
@@ -266,7 +263,7 @@ def complete_run(
                  purpose="Set status, finished_at, metrics, and (on failure) "
                          "error_message/error_traceback on the Run row")
         run.status = status
-        run.finished_at = datetime.now(timezone.utc)
+        run.finished_at = datetime.now(UTC)
         if metrics:
             run.metrics = metrics
         # Persist error information on failed runs

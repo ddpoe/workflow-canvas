@@ -25,7 +25,8 @@ place each reused step in the pipeline twice.
 from __future__ import annotations
 
 import secrets
-from typing import Any, Dict, List, Mapping, Protocol, Sequence, Tuple
+from collections.abc import Mapping, Sequence
+from typing import Any, Protocol
 
 from axiom_annotations import AutoStep, task, workflow
 
@@ -90,7 +91,7 @@ def _new_node_id() -> str:
       outputs="the collected records, the clicked run first, then its ancestors")
 def _collect_ancestor_runs(
     records: Mapping[str, SynthesisRecord], start_run_id: str
-) -> List[SynthesisRecord]:
+) -> list[SynthesisRecord]:
     """Walk input edges up from ``start_run_id``, breadth-first.
 
     Cycle defense: a visited set and a hard 1000-hop cap. The cap fires for
@@ -110,9 +111,9 @@ def _collect_ancestor_runs(
     """
     if start_run_id not in records:
         raise LineageSynthesisError(f"Run not found: {start_run_id}")
-    visited: Dict[str, Any] = {}
-    order: List[str] = []
-    queue: List[str] = [start_run_id]
+    visited: dict[str, Any] = {}
+    order: list[str] = []
+    queue: list[str] = [start_run_id]
     hops = 0
     while queue:
         if hops > _HOP_CAP:
@@ -144,7 +145,7 @@ def _collect_ancestor_runs(
               "collection order")
 def _mint_nodes(
     collected: Sequence[SynthesisRecord],
-) -> Tuple[Dict[str, str], List[Dict[str, Any]]]:
+) -> tuple[dict[str, str], list[dict[str, Any]]]:
     """Mint one method node per collected run.
 
     Position is left to the canvas: ``loadPipeline`` places a node that has no
@@ -157,10 +158,10 @@ def _mint_nodes(
         The synthetic node id of each run, by run id, and the method nodes in
         collection order.
     """
-    node_id_for_run: Dict[str, str] = {r.id: _new_node_id() for r in collected}
-    nodes: List[Dict[str, Any]] = []
+    node_id_for_run: dict[str, str] = {r.id: _new_node_id() for r in collected}
+    nodes: list[dict[str, Any]] = []
     for run in collected:
-        method_node: Dict[str, Any] = {
+        method_node: dict[str, Any] = {
             "id": node_id_for_run[run.id],
             "type": "method",
             "method": run.method,
@@ -185,7 +186,7 @@ def _wire_links(
     records: Mapping[str, SynthesisRecord],
     collected: Sequence[SynthesisRecord],
     node_id_for_run: Mapping[str, str],
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Wire the collected runs into links, adding the selector nodes they need.
 
     Each input-edge row gives a slot, a source run and the source run's
@@ -221,8 +222,8 @@ def _wire_links(
     Returns:
         The selector nodes, in the order they were minted, and the links.
     """
-    selectors: List[Dict[str, Any]] = []
-    links: List[Dict[str, Any]] = []
+    selectors: list[dict[str, Any]] = []
+    links: list[dict[str, Any]] = []
 
     for run in collected:
         in_set_parents = [
@@ -302,7 +303,7 @@ def _wire_links(
     in_set = set(node_id_for_run.keys())
     # One head per sample, shared by every run that reads it in any role:
     # one input per sample on the canvas, as the pipeline was authored.
-    selector_for_sample: Dict[str, str] = {}
+    selector_for_sample: dict[str, str] = {}
 
     def sample_head(sample: str) -> str:
         """Return the sample's shared head, minting it on first use."""
@@ -337,7 +338,7 @@ def _wire_links(
             # Wired only from what the run recorded reading, one link per
             # distinct slot. A bundle's rows share one slot, so they make
             # one link, from the run's fan-in head.
-            sample_on_slot: Dict[Any, str] = {}
+            sample_on_slot: dict[Any, str] = {}
             for row in recorded:
                 sample_on_slot.setdefault(row.get("slot"), row.get("sample") or "")
             bundle_head = fan_in_head(run) if is_aggregator else None
@@ -383,9 +384,9 @@ def _wire_links(
 def _emit_document(
     clicked: SynthesisRecord,
     run_id: str,
-    nodes: List[Dict[str, Any]],
-    links: List[Dict[str, Any]],
-) -> Dict[str, Any]:
+    nodes: list[dict[str, Any]],
+    links: list[dict[str, Any]],
+) -> dict[str, Any]:
     """Assemble the pipeline document.
 
     The document's samples are the clicked run's bundled samples when it is an
@@ -424,7 +425,7 @@ def _emit_document(
 )
 def synthesize_lineage_pipeline(
     records: Mapping[str, SynthesisRecord], run_id: str
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Synthesize the lineage pipeline that ends at ``run_id``.
 
     Args:

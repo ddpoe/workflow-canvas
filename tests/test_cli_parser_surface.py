@@ -43,7 +43,8 @@ def parser_surface(parser: argparse.ArgumentParser, path: str = "wfc") -> dict:
     Returns:
         A mapping of command path (e.g. ``"wfc cache archive"``) to the
         list of its option records, each carrying option strings,
-        destination, default, choices, ``nargs`` and required-ness.
+        destination, default, choices, ``nargs`` and, for a flagged option,
+        required-ness (a positional's follows from its ``nargs``).
         Positionals come first in **declaration order** (argparse consumes
         them in that order, so a swap is a real surface change), followed
         by the flagged options sorted by ``(dest, option strings)`` — those
@@ -68,9 +69,15 @@ def parser_surface(parser: argparse.ArgumentParser, path: str = "wfc") -> dict:
                 else [_literal(choice) for choice in action.choices]
             ),
             "nargs": _literal(action.nargs),
-            "required": bool(action.required),
         }
-        (flagged if action.option_strings else positionals).append(record)
+        if action.option_strings:
+            # A positional's required-ness is argparse's own derivation from
+            # its nargs, and it differs between 3.12 patch releases (a
+            # REMAINDER positional), so only a flag's is recorded.
+            record["required"] = bool(action.required)
+            flagged.append(record)
+        else:
+            positionals.append(record)
 
     entries[path] = positionals + sorted(
         flagged, key=lambda o: (o["dest"], ",".join(o["option_strings"]))

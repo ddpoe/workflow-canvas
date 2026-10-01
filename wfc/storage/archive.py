@@ -8,6 +8,7 @@ keeps its progress, and ends by marking every cache entry read-only.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -31,10 +32,10 @@ if TYPE_CHECKING:
     outputs="(RunOutput, Run) pairs, bound to the session",
 )
 def unarchived_outputs(
-    session: "Session",
+    session: Session,
     *,
-    run_id: "int | None" = None,
-) -> "list[tuple[RunOutput, Run]]":
+    run_id: int | None = None,
+) -> list[tuple[RunOutput, Run]]:
     """Select the un-archived outputs: rows with no content hash on completed runs.
 
     The one definition of "un-archived" read by the archive pass and by the
@@ -48,14 +49,14 @@ def unarchived_outputs(
     Returns:
         One ``(RunOutput, Run)`` pair per un-archived output.
     """
-    from sqlmodel import select
+    from sqlmodel import col, select
 
     from ..persistence import Run, RunOutput
 
     query = (
         select(RunOutput, Run)
-        .join(Run, RunOutput.run_id == Run.id)  # type: ignore[arg-type]
-        .where(RunOutput.content_hash.is_(None))  # type: ignore[union-attr]
+        .join(Run, col(RunOutput.run_id) == col(Run.id))
+        .where(col(RunOutput.content_hash).is_(None))
         .where(Run.status == "completed")
     )
     if run_id is not None:
@@ -70,10 +71,10 @@ def unarchived_outputs(
     outputs="one dict per row considered: run_id, output_name, content_hash, status",
 )
 def archive_outputs(
-    project_dir: "Path | str",
+    project_dir: Path | str,
     *,
-    run_id: "int | None" = None,
-    progress_fn: "object | None" = None,
+    run_id: int | None = None,
+    progress_fn: Callable[[int, str, str], object] | None = None,
 ) -> list[dict]:
     """Hash and cache all un-archived RunOutput rows.
 

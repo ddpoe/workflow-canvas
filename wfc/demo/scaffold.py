@@ -18,8 +18,8 @@ import subprocess
 import threading
 import webbrowser
 from pathlib import Path
-from .. import layout
 
+from .. import layout
 from ..execution.readiness import check_docker
 from ..storage import DvcNotConfiguredError, ensure_dvc_ready
 
@@ -144,11 +144,10 @@ def _existing_demo_entities(target: Path) -> list[str]:
     Returns:
         Labels like ``"module __demo__"`` for everything found.
     """
-    from sqlmodel import select
+    from sqlmodel import col, select
 
-    from ..persistence import get_session
     from ..environments import load_manifest
-    from ..persistence import Module, Sample
+    from ..persistence import Module, Sample, get_session
 
     found: list[str] = []
     with get_session() as session:
@@ -161,7 +160,7 @@ def _existing_demo_entities(target: Path) -> list[str]:
         # LIKE '__demo__%' would also match user samples like 'mydemo__x'.
         samples = session.exec(
             select(Sample).where(
-                Sample.name.startswith(DEMO_MODULE, autoescape=True)  # type: ignore[attr-defined]
+                col(Sample.name).startswith(DEMO_MODULE, autoescape=True)
             )
         ).all()
         found.extend(f"sample {s.name}" for s in samples)
@@ -199,16 +198,16 @@ def _method_name_collisions(target: Path) -> list[str]:
     Returns:
         Human-readable collision descriptions (empty when safe to proceed).
     """
-    from sqlmodel import select
+    from sqlmodel import col, select
 
-    from ..persistence import get_session, Method, Module
+    from ..persistence import Method, Module, get_session
 
     collisions: list[str] = []
     with get_session() as session:
         rows = session.exec(
             select(Method, Module)
-            .join(Module, Method.module_id == Module.id)  # type: ignore[arg-type]
-            .where(Method.name.in_(DEMO_METHODS))  # type: ignore[attr-defined]
+            .join(Module, col(Method.module_id) == col(Module.id))
+            .where(col(Method.name).in_(DEMO_METHODS))
             .where(Module.name != DEMO_MODULE)
         ).all()
         for method, module in rows:
@@ -311,11 +310,11 @@ def run_demo(
             ["git", "rev-parse", "--git-dir"],
             cwd=target, capture_output=True, text=True, timeout=10,
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         raise DemoError(
             f"git did not respond within 10s while probing {target} — "
             f"check your git installation and retry."
-        )
+        ) from exc
     if probe.returncode != 0:
         raise DemoError(
             f"{target} is not a git repository — method registration commits "
@@ -327,7 +326,7 @@ def run_demo(
     try:
         ensure_dvc_ready(target)
     except DvcNotConfiguredError as exc:
-        raise DemoError(f"DVC is not configured for this project: {exc}")
+        raise DemoError(f"DVC is not configured for this project: {exc}") from exc
 
     # ---- Preflight: Docker ----
     docker = check_docker()
@@ -464,11 +463,11 @@ def _serve(target: Path, port: int, no_open: bool) -> int:
     """
     try:
         import uvicorn
-    except ImportError:
+    except ImportError as exc:
         raise DemoError(
             "uvicorn is required to serve the canvas — install it with: "
             "pip install 'uvicorn[standard]'"
-        )
+        ) from exc
 
     os.environ[layout.ROOT_ENV_VAR] = str(target)
     url = f"http://127.0.0.1:{port}/?pipeline=demo"

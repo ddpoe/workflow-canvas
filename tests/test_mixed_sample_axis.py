@@ -27,16 +27,11 @@ from __future__ import annotations
 import json
 
 import pytest
+from axiom_annotations import Step, workflow
 from sqlmodel import select
 
-from axiom_annotations import Step, workflow
-
-from wfc import layout
-from wfc.contracts import COLLAPSED_SAMPLE
-from wfc.persistence import get_session, Run
-
 from tests.fixtures.conftest import mocked_snakemake
-
+from tests.fixtures.fakes import stub_docker_image_inspect
 from tests.harness import (
     Scenario,
     build_project,
@@ -47,6 +42,9 @@ from tests.harness import (
     selector,
     wire,
 )
+from wfc import layout
+from wfc.contracts import COLLAPSED_SAMPLE
+from wfc.persistence import Run, get_session
 
 SAMPLES = ["s1", "s2"]
 VARIANTS = {"loose": {"threshold": 0.5}, "strict": {"threshold": 0.9}}
@@ -162,6 +160,9 @@ def test_mixed_pipeline_walk_cancels_the_per_sample_descendants_only(
               purpose="Keep-going returncode 0 -- the success path runs the "
                       "always-on cancelled-rows walk")
     gen_patch, popen_patch = mocked_snakemake(0)
+    # The scenario env's image is in the Docker daemon (run_pipeline's env
+    # pre-flight probes it); the engine is stubbed, so no container runs.
+    stub_docker_image_inspect(monkeypatch, lambda ref: ref)
     with gen_patch, popen_patch:
         run_pipeline(
             pipeline_path=str(project.pipeline_json),
@@ -310,6 +311,9 @@ def test_pack_sees_the_cancelled_walk_after_run_pipeline(git_project, monkeypatc
         "the bundle read at _finish predates the walk")
 
     gen_patch, popen_patch = mocked_snakemake(0)
+    # The scenario env's image is in the Docker daemon (run_pipeline's env
+    # pre-flight probes it); the engine is stubbed, so no container runs.
+    stub_docker_image_inspect(monkeypatch, lambda ref: ref)
     with gen_patch, popen_patch:
         run_pipeline(
             pipeline_path=str(obs.project.pipeline_json),
