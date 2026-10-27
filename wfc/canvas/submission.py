@@ -82,13 +82,17 @@ class SubmittedPipeline:
 
 
 def _enrich_pipeline(pipeline: PipelineInput) -> dict[str, Any]:
-    """Enrich a PipelineJSON payload with script paths and slot_outputs from the DB.
+    """Enrich a PipelineJSON payload with each node's slots and env from the DB.
 
     The canvas sends minimal node data (id, method, module, params).
     Registration reads the contract map for every registered method and the
-    Contracts unit's pure ``enrich_pipeline`` derives each node's script
-    path, slot filenames and slot types from it, so ``load_pipeline()`` has
-    everything it needs.
+    Contracts unit's pure ``enrich_pipeline`` attaches each method node's
+    slot filenames (``slot_outputs``), slot types (``slot_types``) and
+    registered env from it, so ``load_pipeline()`` has everything it needs.
+    No script path is attached, and a ``script`` or ``env`` the document
+    already names is kept but never read by execution: a step runs the
+    entry script recorded in its method's registered copy, in its method's
+    registered env, both looked up from the node's module and method.
 
     Args:
         pipeline: The PipelineInput model from the canvas frontend.
@@ -106,8 +110,8 @@ def _classify_pipeline_error(exc: Exception) -> dict[str, Any]:
     """Map a pre-run exception to a structured payload for the canvas UI.
 
     The UI shows the raw message by default (it's already human-readable —
-    ``DirtyRepositoryError`` / ``resolve_env_fingerprint`` (not registered) /
-    ``capture_env_content`` (unsupported spec) build full sentences).
+    ``DirtyRepositoryError`` and ``resolve_env_fingerprint`` (not
+    registered) build full sentences).
     ``kind`` lets the frontend pick an icon/color or inline action (e.g. a
     "Commit changes" button for dirty_repo).  ``hint`` is an optional
     follow-up sentence separated from the main message.
@@ -177,8 +181,18 @@ def run_in_background(
         except Exception:
             pass  # Race with cancel-after-completion; ignore.
 
+    # Set once a cancel is seen: the in-memory flag (the cancel route), or
+    # the record's flag (a `wfc cancel` from a terminal). Kept, because the
+    # record is gone by the time a failed run reaches the flip below.
+    _cancel_seen = [False]
+
     def _is_cancelled():
-        return bool(_active_jobs.get(pipeline_id, {}).get("cancel_requested"))
+        from ..execution import cancel_requested
+
+        if (_active_jobs.get(pipeline_id, {}).get("cancel_requested")
+                or cancel_requested(project_root, pipeline_id)):
+            _cancel_seen[0] = True
+        return _cancel_seen[0]
 
     口 = Step(step_num=1, name="Run the pipeline",
              purpose="Call Execution's run_pipeline through the seam with output "
@@ -195,15 +209,17 @@ def run_in_background(
             process_registry=_on_process_started,
             is_cancelled=_is_cancelled,
             archive_progress_fn=_make_archive_progress_writer(),
+            entry_point="canvas",
         )
     except Exception as exc:
         口 = Step(step_num=2, name="Close a failed run unless a cancel was requested",
                  purpose="Flip the pipeline's rows to failed through the seam, "
-                         "best-effort; when the cancel route already asked for a "
-                         "cancel, leave the rows to cancel_pipeline")
-        # If the cancel endpoint already requested cancellation, suppress
-        # the orphan-failure flip — cancel_pipeline owns the row state.
-        if not _active_jobs.get(pipeline_id, {}).get("cancel_requested"):
+                         "best-effort; when a cancel was asked for (the cancel "
+                         "route's flag, or the record's flag a terminal `wfc "
+                         "cancel` set), leave the rows to the cancel")
+        # If a cancel was requested, suppress the orphan-failure flip: the
+        # cancel owns the row state.
+        if not _is_cancelled():
             try:
                 _fp = fail_pipeline_fn()
                 _fp(pipeline_id)
@@ -246,6 +262,9 @@ def submitted_document(pipeline: PipelineInput) -> dict[str, Any]:
         document["explicit_combos"] = pipeline.explicit_combos
     if pipeline.variables:
         document["variables"] = pipeline.variables
+    # Undeclared top-level fields reach preparation, whose validator refuses
+    # them by name.
+    document.update(pipeline.model_extra or {})
     return document
 
 

@@ -157,7 +157,7 @@ class TestCLIRoutesThroughProjectRoot:
             session.add(Sample(
                 name="sample_x",
                 source_path="/orig/data.csv",
-                registered_path="data/samples/sample_x/data.csv",
+                registered_path="data.csv",
                 file_type="csv",
                 registration_mode="copy",
                 content_hash="abc123",
@@ -166,7 +166,7 @@ class TestCLIRoutesThroughProjectRoot:
 
         seen_roots: list[Path] = []
 
-        def fake_restore(hash_val, dest, project_root):
+        def fake_restore(hash_val, dest, project_root, **_check):
             seen_roots.append(project_root)
             return True
 
@@ -181,9 +181,9 @@ class TestCLIRoutesThroughProjectRoot:
         self, tmp_path, monkeypatch
     ):
         """After a successful restore, wfc.storage.restore_sample must touch
-        ``<project_root>/data/samples/<name>/.sample_ready`` so the Snakemake
+        ``<project_root>/.wfc/workspace/samples/<name>/.sample_ready`` so the Snakemake
         rule's declared output appears. The parent directory must be created
-        if missing (init doesn't materialize data/samples/<name>/ eagerly).
+        if missing (init doesn't materialize .wfc/workspace/samples/<name>/ eagerly).
 
         Writing the sentinel here, from the resolved project root, keeps it
         independent of the shell rule's cwd, which Windows UNC cmd.exe
@@ -197,15 +197,16 @@ class TestCLIRoutesThroughProjectRoot:
             session.add(Sample(
                 name="sample_sentinel",
                 source_path="/orig/data.csv",
-                registered_path="data/samples/sample_sentinel/data.csv",
+                registered_path="data.csv",
                 file_type="csv",
                 registration_mode="copy",
                 content_hash="abc123",
             ))
             session.commit()
 
-        expected_sentinel = proj / "data" / "samples" / "sample_sentinel" / ".sample_ready"
-        foreign_sentinel = foreign / "data" / "samples" / "sample_sentinel" / ".sample_ready"
+        from wfc import layout
+        expected_sentinel = layout.sample_ready_sentinel(proj, "sample_sentinel")
+        foreign_sentinel = layout.sample_ready_sentinel(foreign, "sample_sentinel")
         assert not expected_sentinel.exists()
         assert not expected_sentinel.parent.exists(), (
             "parent dir must not pre-exist — restore_sample is required to mkparents"
@@ -312,7 +313,7 @@ def test_use_project_binds_database_and_root_together_then_restores(
         with get_session() as session:
             session.add(Sample(
                 name="s1", source_path="s1.csv",
-                registered_path="data/samples/s1/s1.csv", file_type="csv",
+                registered_path="s1.csv", file_type="csv",
             ))
             session.commit()
 
@@ -360,7 +361,7 @@ def test_check_samples_reads_the_rows_of_the_project_it_was_given(
     with get_session() as session:
         session.add(Sample(
             name="home_s", source_path="home_s.csv",
-            registered_path="data/samples/home_s/home_s.csv",
+            registered_path="home_s.csv",
             file_type="csv", content_hash="a" * 32,
         ))
         session.commit()

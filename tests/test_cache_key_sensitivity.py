@@ -46,6 +46,7 @@ No Docker. Uses the in-process ``tmp_project`` fixture (git repo + DB).
 from pathlib import Path
 
 import pytest
+from sqlmodel import select
 
 from axiom_annotations import workflow, Step
 
@@ -54,7 +55,11 @@ from axiom_annotations import workflow, Step
 # IS the independent variable. Nothing restores or runs, so the row needs no
 # cached bytes behind it.
 from tests.conftest import seed_sample_row
-from tests.fixtures.routes import completed_run
+from tests.fixtures.routes import (
+    completed_run,
+    register_test_method,
+    sample_source_dir,
+)
 from tests.harness import Scenario, build_project, node, reference, selector, wire
 from tests.harness.scenario import SELECTOR_ID
 from wfc.persistence import get_session, Method, Module, Run, RunOutput
@@ -63,7 +68,7 @@ from wfc.persistence import get_session, Method, Module, Run, RunOutput
 # claim by hand has to build the same path pre_run checks. Re-spelling the
 # ``{id:08d}`` layout here would let the two drift apart silently.
 from wfc.persistence import project_root as get_project_root
-from wfc.layout import run_archive_dir
+from wfc.layout import artifact_store_relpath, run_archive_dir, run_archive_name
 from wfc.execution.claim import pre_run, input_fingerprint_from_rows
 from wfc.execution.parents import ParentEntry
 from wfc.contracts import parse_method_yaml, render_contract_projection
@@ -110,29 +115,42 @@ def _make_method_source(project_dir: Path, name: str = "m_sens") -> Path:
     return method_dir
 
 
-def _seed_upstream_run(cache_key: str) -> int:
-    """Insert a Module/Method/Run chain with a given Run.cache_key; return run id.
+def _upstream_method_id(project_dir: Path) -> int:
+    """Register the upstream method through production; return its id.
+
+    Re-registering identical code reuses the method and its version, so
+    every upstream run in a test hangs off the one registered method.
+    """
+    project_dir = Path(project_dir)
+    src = sample_source_dir(project_dir) / "_methods" / "up_mod" / "up_method"
+    src.mkdir(parents=True, exist_ok=True)
+    (src / "up_method.py").write_text("def main():\n    return 1\n")
+    (src / "method.yaml").write_text(
+        "env: fixture-env\n"
+        "inputs:\n  data:\n    required: false\n"
+        "outputs:\n  result:\n    type: .csv\n"
+    )
+    register_test_method(project_dir=project_dir, module_name="up_mod",
+                         method_dir=src, method_name="up_method")
+    with get_session() as session:
+        return session.exec(
+            select(Method.id).join(Module).where(
+                Module.name == "up_mod", Method.name == "up_method")
+        ).one()
+
+
+def _seed_upstream_run(project_dir: Path, cache_key: str) -> int:
+    """Type a completed Run with a given Run.cache_key; return run id.
 
     The input fingerprint chains on ``Run.cache_key``, so a unique cache_key per
     upstream run is what makes the input axis observable. The run records one
     output slot, which is what lets a parent entry naming no source slot
-    (``ref:<id>``) resolve.
+    (``ref:<id>``) resolve. The method is registered; the run row is typed
+    because its literal cache_key is the independent variable.
     """
+    method_id = _upstream_method_id(project_dir)
     with get_session() as session:
-        module = Module(name=f"mod_{cache_key[:6]}", description="x")
-        session.add(module)
-        session.commit()
-        session.refresh(module)
-        method = Method(
-            name=f"meth_{cache_key[:6]}",
-            module_id=module.id,
-            script_path="methods/x/x.py",
-            env="container:demo",
-        )
-        session.add(method)
-        session.commit()
-        session.refresh(method)
-        run = Run(method_id=method.id, status="completed", cache_key=cache_key)
+        run = Run(method_id=method_id, status="completed", cache_key=cache_key)
         session.add(run)
         session.commit()
         session.refresh(run)
@@ -140,7 +158,8 @@ def _seed_upstream_run(cache_key: str) -> int:
             run_id=run.id,
             slot="result",
             output_name="result.csv",
-            artifact_path=f".runs/{run.id:08d}/result.csv",
+            artifact_path=(f"{artifact_store_relpath()}/"
+                           f"{run_archive_name(run.id)}/result.csv"),
             artifact_type="method_file",
         ))
         session.commit()
@@ -194,8 +213,8 @@ def test_cache_key_reacts_to_load_bearing_axis(tmp_project, axis):
         # irrelevant here. Changing the upstream cache_key MUST bust the key.
         # Stays on typed rows: the literal cache_key is this axis's independent
         # variable, and a route-produced run's key is composed, not chosen.
-        up_a = _seed_upstream_run("0" * 64)
-        up_b = _seed_upstream_run("1" * 64)
+        up_a = _seed_upstream_run(tmp_project, "0" * 64)
+        up_b = _seed_upstream_run(tmp_project, "1" * 64)
         fp_before = input_fingerprint_from_rows(
             [ParentEntry("data", "result", up_a)], step="m_sens")
         fp_after = input_fingerprint_from_rows(
@@ -506,17 +525,20 @@ def test_selector_slot_root_with_a_run_reference_keys_on_its_sample(tmp_project,
 # =============================================================================
 # The declared contract as a cache-key axis
 #
-# An output slot's name and `type` decide the filename a run writes
-# (``contracts.slots.output_slot_filename``), so a result cached under the
-# previous contract is an artifact named for a promise the method no longer
-# makes. The contract therefore enters the CODE fingerprint -- not
-# ``build_cache_key`` directly -- so ``MethodVersion.code_fingerprint`` sees
-# the change too and two contract-different registrations are two versions.
+# A version's contract is part of what the version is: an output slot's name
+# and `type` decide the filename a run writes
+# (``contracts.slots.output_slot_filename``), and the rest of the declaration
+# is what the canvas, the validator and the claim read for that version. The
+# contract therefore enters the CODE fingerprint -- not ``build_cache_key``
+# directly -- so ``MethodVersion.code_fingerprint`` sees the change too and two
+# contract-different registrations are two versions.
 #
-# What enters is a projection of the computation-bearing fields, not a hash of
-# the file: a description edit, a key reorder or a comment must leave every
-# key exactly where it was, which is the whole reason a projection is worth
-# having over hashing method.yaml.
+# What enters is the parsed contract minus descriptions, formatting, `env` and
+# `helpers` (``contracts.render_contract_projection``), not a hash of the
+# file: a description edit, a key reorder or a comment must leave every key
+# exactly where it was, which is the whole reason a projection is worth having
+# over hashing method.yaml. tests/test_contracts_projection.py tables every
+# field; this test drives four edits through registration to the key.
 # =============================================================================
 
 _CONTRACT_METHOD = "m_contract"
@@ -543,8 +565,6 @@ _CONTRACT_EDITS = {
         _CONTRACT_BEFORE.replace("    type: .csv\n", "    type: .parquet\n"), True),
     "output_slot_name": (
         _CONTRACT_BEFORE.replace("  result:\n", "  summary:\n"), True),
-    "script_selector": (
-        _CONTRACT_BEFORE.replace("script: m_contract.py\n", "script: alt.py\n"), True),
     "description": (
         _CONTRACT_BEFORE
         .replace("description: what this method is for", "description: rewritten prose")
@@ -579,44 +599,51 @@ def _contract_method_key() -> str:
 
 @pytest.mark.parametrize("edit", sorted(_CONTRACT_EDITS))
 @workflow(
-    purpose="Editing what a method declares it produces moves its cache key, so "
-            "the next run recomputes instead of returning an artifact named for "
-            "the replaced contract; editing what the contract only describes, or "
-            "reordering the YAML, leaves every key exactly where it was"
+    purpose="Editing a method's declared contract (an output slot's name or "
+            "type) moves its cache key, so the next run "
+            "recomputes instead of returning an artifact made under the replaced "
+            "contract; editing what the contract only describes, or reordering "
+            "the YAML, leaves every key exactly where it was"
 )
-def test_contract_edit_moves_the_key_only_when_it_changes_what_a_run_produces(
+def test_contract_edit_moves_the_key_unless_it_only_describes_or_reorders(
     tmp_project, edit
 ):
-    """The contract axis of the cache key is a projection, not a file hash."""
+    """The contract axis of the cache key is a projection, not a file hash.
+
+    Any declaration edit moves the key (two cases here); a description
+    edit or a reorder with a moved comment does not (two cases).
+    """
     replacement, should_move = _CONTRACT_EDITS[edit]
 
-    口 = Step(step_num=1, name="Write the method's snapshot and register a sample",
+    口 = Step(step_num=1, name="Register the method and a sample",
              purpose="The contract that enters the key is the snapshot's "
-                     "method.yaml beside the scripts, not the MethodContract row "
-                     "-- a refused registration can leave the row out of step "
-                     "with the snapshot, and code identity follows the snapshot")
-    method_dir = Path(tmp_project) / "methods" / _CONTRACT_METHOD
+                     "method.yaml beside the scripts, not the MethodContract row; "
+                     "registration copies the source into that snapshot")
+    method_dir = (sample_source_dir(Path(tmp_project)) / "_methods"
+                  / "contract_mod" / _CONTRACT_METHOD)
     method_dir.mkdir(parents=True, exist_ok=True)
     (method_dir / f"{_CONTRACT_METHOD}.py").write_text("def main():\n    return 1\n")
-    # Both scripts exist from the start, so flipping `script:` between them
-    # moves nothing in the snapshot's script digest -- only the selector.
-    (method_dir / "alt.py").write_text("def main():\n    return 2\n")
     (method_dir / "method.yaml").write_text(_CONTRACT_BEFORE)
+    register_test_method(project_dir=Path(tmp_project), module_name="contract_mod",
+                         method_dir=method_dir, method_name=_CONTRACT_METHOD)
     seed_sample_row(_CONTRACT_SAMPLE, content_hash="c" * 32)
 
-    口 = Step(step_num=2, name="Key the step, edit the contract, key it again",
+    口 = Step(step_num=2, name="Key the step, re-register the edited contract, "
+                              "key it again",
              purpose="Only method.yaml changes between the two keys; the scripts, "
                      "the sample, the params and the env are all held fixed")
     key_before = _contract_method_key()
     (method_dir / "method.yaml").write_text(replacement)
+    register_test_method(project_dir=Path(tmp_project), module_name="contract_mod",
+                         method_dir=method_dir, method_name=_CONTRACT_METHOD)
     key_after = _contract_method_key()
 
     口 = Step(step_num=3, name="Compare",
-             purpose="A computation-bearing edit recomputes; a describing edit or "
+             purpose="A declaration edit recomputes; a describing edit or "
                      "a reorder hits the same cache entry it did before")
     if should_move:
         assert key_before != key_after, (
-            f"'{edit}' changes what the method produces but left the key unmoved: "
+            f"'{edit}' changes the declared contract but left the key unmoved: "
             f"a cached result would be served under the replaced contract"
         )
     else:
@@ -624,3 +651,64 @@ def test_contract_edit_moves_the_key_only_when_it_changes_what_a_run_produces(
             f"'{edit}' only describes the method, but moved the key: every user "
             f"of this method would recompute for a prose edit"
         )
+
+
+# =============================================================================
+# What runs and the key are the snapshot's, not the source's
+# =============================================================================
+
+@workflow(purpose="After registration the author's source and the staging "
+                  "snapshot are edited: the next run executes the version's "
+                  "extracted copy and keys on it, so neither edit runs nor moves "
+                  "the cache key")
+def test_an_edit_to_the_authors_source_after_registration_neither_runs_nor_keys(
+        tmp_project, monkeypatch):
+    from tests.harness.drivers import drive_target
+    from tests.harness.project import method_source_dir
+    from wfc.layout import code_copy_dir
+    from wfc.registration import version_entry
+    from wfc.version import commit_paths
+
+    scenario = Scenario(nodes=[selector(), node("a", inputs=[wire(SELECTOR_ID)])],
+                        samples=["s1", "s2"], pipeline_id="ck-src", name="ck_src")
+    project = build_project(scenario, root=tmp_project, monkeypatch=monkeypatch)
+    spec = scenario.method_nodes()[0]
+    snapshot_script = project.method_scripts[spec.method_name]
+
+    口 = Step(step_num=1, name="Run once from the registered code",
+             purpose="The key every later claim of this target must reproduce")
+    first = drive_target(project, ("a", "s1", "default"), monkeypatch=monkeypatch)
+    first_id = first.run_id_sidecars[("a", "s1", "default")]
+    with get_session() as session:
+        key_before = session.get(Run, first_id).cache_key
+
+    口 = Step(step_num=2, name="Edit the author's source and the staging snapshot",
+             purpose="Either edit fails any run that executes it; the snapshot "
+                     "edit is committed, so the clean-tree rule does not refuse it")
+    source = method_source_dir(tmp_project, spec) / snapshot_script.name
+    assert source != snapshot_script
+    for edited in (source, snapshot_script):
+        edited.write_text("raise SystemExit('an edited copy ran, not the version')\n"
+                          + edited.read_text(encoding="utf-8"), encoding="utf-8")
+    commit_paths(project.root, [snapshot_script], "edit the staging snapshot")
+
+    口 = Step(step_num=3, name="Run the same target again",
+             purpose="The claim keys on the version: same key, a cache hit")
+    again = drive_target(project, ("a", "s1", "default"), monkeypatch=monkeypatch)
+    with get_session() as session:
+        rerun = session.get(Run, again.run_id_sidecars[("a", "s1", "default")])
+        assert rerun.cache_key == key_before
+        assert rerun.cache_source_run_id == first_id
+
+    口 = Step(step_num=4, name="Run a new target",
+             purpose="It executes, and what executes is the version's extracted "
+                     "copy of the script")
+    fresh = drive_target(project, ("a", "s2", "default"), monkeypatch=monkeypatch)
+    assert fresh.runs[("a", "s2", "default")].rc == 0
+    # The argv names the script as the container sees it, over the mount.
+    scripts = [arg for arg in fresh.dispatch_cmd(("a", "s2", "default"))
+               if arg.endswith(".py")]
+    entry = version_entry(spec.module, spec.method_name, root=project.root)
+    in_copy = (code_copy_dir(project.root, entry.tree_hash)
+               / snapshot_script.name).relative_to(project.root).as_posix()
+    assert len(scripts) == 1 and scripts[0].endswith("/" + in_copy), scripts

@@ -175,6 +175,11 @@ export function compilePipelineToJSON(state: AuthoringState): PipelineJSON {
       // A reference node is the run it names. Each outgoing edge names the
       // output it draws via sourceHandle, and the engine resolves per link
       // from the run's recorded outputs.
+    } else if (n.data.version) {
+      // A pin is written only for an older version: a node set to the
+      // newest follows the newest, so a later registration moves it.
+      const newest = n.data.versions?.find(v => v.newest);
+      if (!newest || newest.identity !== n.data.version) base.version = n.data.version;
     }
     return base;
   });

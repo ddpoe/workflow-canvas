@@ -19,7 +19,20 @@ from fastapi.staticfiles import StaticFiles
 
 from .. import layout
 from . import state
-from .routes import archive, artifacts, builder, cache_status, envs, history, logs, project, registry, runs
+from .recovery import PipelineRecovery, start_recovery
+from .routes import (
+    archive,
+    artifacts,
+    builder,
+    bundles,
+    cache_status,
+    envs,
+    history,
+    logs,
+    project,
+    registry,
+    runs,
+)
 from .state import _server_project_root
 from .wfc_provider import WfcProvider
 
@@ -43,7 +56,12 @@ _STATIC_DIR = Path(__file__).parent / "static" / "dist"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Load the provider for the resolved project root at server startup."""
+    """Load the provider for the resolved project root, and start the recovery.
+
+    With the project's database present, the recovery of the pipelines this
+    server does not own starts on its daemon thread (startup does not wait
+    for it) and is stopped when the server shuts down.
+    """
     # The project this server serves is the canonical resolver's answer.
     # No resolvable project means no server: the resolver's error propagates
     # and startup fails, rather than a server that silently serves whatever
@@ -51,6 +69,7 @@ async def lifespan(app: FastAPI):
     # C:\Windows on Snakemake subprocess spawns).
     project_root = _server_project_root()
     db_path = layout.db_path(project_root)
+    recovery: PipelineRecovery | None = None
     if db_path.exists():
         try:
             state._wfc_provider = WfcProvider(str(project_root))
@@ -58,12 +77,20 @@ async def lifespan(app: FastAPI):
             print(f"[canvas] Auto-loaded wfc project from {project_root}")
         except Exception as exc:  # pragma: no cover
             print(f"[canvas] Warning: auto-load failed: {exc}")
+        # Pipelines a restart (or a closed terminal) left running are judged
+        # in the background; the job table is read at every look, so this
+        # server's own pipelines are never touched.
+        recovery = start_recovery(project_root, owned=lambda: list(state._active_jobs))
     else:
         print(
             f"[canvas] No .wfc/wfc.db found in {project_root} "
             "-- use POST /api/wfc/load to configure"
         )
-    yield
+    try:
+        yield
+    finally:
+        if recovery is not None:
+            recovery.stop()
 
 
 app = FastAPI(title="Workflow Canvas", lifespan=lifespan)
@@ -86,6 +113,7 @@ app.include_router(project.router)
 app.include_router(history.router)
 app.include_router(artifacts.router)
 app.include_router(archive.router)
+app.include_router(bundles.router)
 app.include_router(logs.router)
 
 

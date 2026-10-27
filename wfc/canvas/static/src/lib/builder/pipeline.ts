@@ -156,7 +156,12 @@ function findMethodDef(moduleName: string, methodName: string): MethodDef | unde
   return mod?.methods.find(m => m.name === methodName);
 }
 
-export function loadPipeline(pipeline: PipelineJSON): void {
+/**
+ * Replace the canvas with `pipeline`'s nodes and edges and clear the run
+ * state. The returned promise settles once the pipeline machine has been
+ * reset, so a caller may send it the next event (Watch in canvas).
+ */
+export function loadPipeline(pipeline: PipelineJSON): Promise<void> {
   if (pipeline.name) pipelineName.set(pipeline.name);
   let maxId = 0;
   const {
@@ -203,7 +208,7 @@ export function loadPipeline(pipeline: PipelineJSON): void {
     } else {
       // Method node — look up real slot definitions from the modules store,
       // falling back to one generic input and output when the method is not
-      // in the registry.
+      // in the registry. A pinned node draws its pinned version's contract.
       const methodDef = findMethodDef(pn.module ?? '', pn.method) ?? {
         name: pn.method,
         module: pn.module ?? '',
@@ -218,6 +223,7 @@ export function loadPipeline(pipeline: PipelineJSON): void {
         variants: nodeVariants[pn.id],
         sampleOverrides: nodeSampleOverrides[pn.id],
         sampleVariants: nodeSampleVariants[pn.id],
+        version: pn.version,
       });
     }
   });
@@ -232,7 +238,7 @@ export function loadPipeline(pipeline: PipelineJSON): void {
   resetNodeCounter(maxId);
   nodes.set(newNodes);
   edges.set(newEdges);
-  clearRunState();
+  return clearRunState();
 }
 
 // ---------- Load-in-Canvas gates (Actions 1, 2, 3) ----------

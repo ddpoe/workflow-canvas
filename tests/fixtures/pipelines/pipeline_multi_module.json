@@ -1,10 +1,9 @@
 {
   "nodes": [
     {
-      "id": 1,
+      "id": "preprocess",
       "module": "data_preprocessing",
       "method": "preprocess",
-      "script": "methods/preprocess/preprocess.py",
       "params": {
         "normalize": true,
         "scale_factor": 1.0
@@ -15,10 +14,9 @@
       ]
     },
     {
-      "id": 2,
+      "id": "label",
       "module": "data_labeling",
       "method": "label",
-      "script": "methods/label/label.py",
       "params": {
         "threshold": 0.5,
         "label_column": "label"
@@ -31,8 +29,8 @@
   ],
   "links": [
     {
-      "source": 1,
-      "target": 2
+      "source": "preprocess",
+      "target": "label"
     }
   ],
   "samples": [

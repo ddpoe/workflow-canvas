@@ -5,6 +5,7 @@
   import DescendantsView from './DescendantsView.svelte';
   import RunDetailPanel from './RunDetailPanel.svelte';
   import ExportPreview from './ExportPreview.svelte';
+  import ExportRunsDialog from './ExportRunsDialog.svelte';
   import {
     loading,
     error,
@@ -18,6 +19,8 @@
 
   let { visible = false }: { visible?: boolean } = $props();
   let showExportPreview = $state(false);
+  // The runs Export runs was pressed for; the dialog is open while set.
+  let exportRunIds = $state<string[] | null>(null);
 
   $effect(() => {
     if (visible) {
@@ -100,14 +103,27 @@
   {#if $filters.selectMode && $selectedRunIds.size > 0}
     <div class="export-bar">
       <span>{$selectedRunIds.size} run{$selectedRunIds.size > 1 ? 's' : ''} selected</span>
-      <button class="export-btn" onclick={() => { showExportPreview = true; }}>
-        Export Artifacts
-      </button>
+      <div class="export-actions">
+        <button
+          class="export-btn"
+          onclick={() => { exportRunIds = [...$selectedRunIds]; }}
+          title="Export the selected runs and every run above them as a bundle anyone can rerun"
+        >
+          Export runs
+        </button>
+        <button class="export-btn" onclick={() => { showExportPreview = true; }}>
+          Export Artifacts
+        </button>
+      </div>
     </div>
   {/if}
 
   {#if showExportPreview}
     <ExportPreview onClose={() => { showExportPreview = false; }} />
+  {/if}
+
+  {#if exportRunIds}
+    <ExportRunsDialog runIds={exportRunIds} onClose={() => { exportRunIds = null; }} />
   {/if}
 </div>
 
@@ -181,6 +197,10 @@
     font-size: 12px;
     color: var(--text-primary, #ccc);
     flex-shrink: 0;
+  }
+  .export-actions {
+    display: flex;
+    gap: 6px;
   }
   .export-btn {
     background: var(--accent, #4A90D9);

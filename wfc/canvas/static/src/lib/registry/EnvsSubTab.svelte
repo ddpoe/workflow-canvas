@@ -1,6 +1,6 @@
 <script lang="ts">
   import { fetchEnvs, fetchEnvPackages } from './api.js';
-  import type { EnvRow, PackagesResponse } from './api.js';
+  import type { EnvRegistry, EnvRow, PackagesResponse, RegistryState } from './api.js';
 
   let { visible = true, filter = '' }: { visible?: boolean; filter?: string } = $props();
 
@@ -64,7 +64,9 @@
       packagesBySpec = { ...packagesBySpec, [spec]: body };
       pkgError = { ...pkgError, [spec]: '' };
     } catch (err) {
-      pkgError = { ...pkgError, [spec]: String(err) };
+      // The server's refusal (e.g. a package list that no longer matches
+      // the record) names its fix; show the message without "Error: ".
+      pkgError = { ...pkgError, [spec]: err instanceof Error ? err.message : String(err) };
     } finally {
       pkgLoading = { ...pkgLoading, [spec]: false };
     }
@@ -96,6 +98,42 @@
       : 'Not captured — re-register this env to record its packages';
   }
 
+  const REGISTRY_LABEL: Record<RegistryState, string> = {
+    pushed: 'pushed',
+    not_pushed: 'not pushed',
+    none: 'no registry',
+    cannot_push: 'cannot push',
+    missing: 'missing',
+    unknown: 'unknown',
+  };
+
+  // The bare env name the CLI takes (a legacy spec carries `container:`).
+  function envName(spec: string): string {
+    return spec.startsWith('container:') ? spec.slice('container:'.length) : spec;
+  }
+
+  // The Registry chip's tooltip: where the image is and the command that
+  // fixes it, then the older images and versions the counts stand for.
+  function registryTooltip(spec: string, reg: EnvRegistry): string {
+    const push = `wfc push-env ${envName(spec)}`;
+    const recreate = `recreate it with \`${reg.recreate}\`, then \`wfc register-method\``;
+    const lines: string[] = [];
+    if (reg.state === 'pushed' && reg.own_registry) lines.push(`Image is in its own registry: ${reg.own_registry}`);
+    else if (reg.state === 'pushed') lines.push(`Image is in ${reg.base ?? 'the registry'}`);
+    else if (reg.state === 'not_pushed') lines.push(`Not pushed to ${reg.base}: run \`${push}\``);
+    else if (reg.state === 'none') lines.push(`No registry: this image stays on this machine; \`${push}\` sets one and pushes it`);
+    else if (reg.state === 'cannot_push') lines.push(`Cannot be pushed: ${reg.reason ?? 'the env name is not a registry repository name'}`);
+    else if (reg.state === 'missing') lines.push(`Not on this machine or in the registry: ${recreate}`);
+    else lines.push('Docker is not running: cannot tell whether the image is on this machine');
+    if (reg.older_not_pushed > 0) {
+      lines.push(`${pluralize(reg.older_not_pushed, 'older image')} not pushed: run \`${push}\``);
+    }
+    if (reg.older_missing > 0) {
+      lines.push(`${pluralize(reg.older_missing, 'older version')} with no image: ${recreate}`);
+    }
+    return lines.join('\n');
+  }
+
   function toggleMethodsTooltip(spec: string) {
     methodsTooltipOpen = methodsTooltipOpen === spec ? null : spec;
   }
@@ -121,6 +159,7 @@
             <th class="spec-header">Env Spec</th>
             <th>Methods</th>
             <th>Backend</th>
+            <th>Registry</th>
             <th>Last Run</th>
             <th>Runs</th>
           </tr>
@@ -156,13 +195,29 @@
                   <span class="dim">—</span>
                 {/if}
               </td>
+              <td>
+                {#if env.registry}
+                  {@const reg = env.registry}
+                  <span class="registry-cell" data-testid="registry-cell" title={registryTooltip(env.spec, reg)}>
+                    <span class="chip chip-registry registry-{reg.state}" data-testid="registry-chip">{REGISTRY_LABEL[reg.state]}</span>
+                    {#if reg.older_not_pushed > 0}
+                      <span class="registry-count" data-testid="older-not-pushed">{reg.older_not_pushed} older not pushed</span>
+                    {/if}
+                    {#if reg.older_missing > 0}
+                      <span class="registry-count registry-count-missing" data-testid="older-missing">{reg.older_missing} older missing</span>
+                    {/if}
+                  </span>
+                {:else}
+                  <span class="dim">—</span>
+                {/if}
+              </td>
               <td class="mono dim">{fmtRelative(env.last_run_at)}</td>
               <td class="mono dim">{env.run_count}</td>
             </tr>
 
             {#if isExpanded}
               <tr class="detail-row">
-                <td colspan="5">
+                <td colspan="6">
                   <div class="label">Packages</div>
                   {#if !env.has_packages}
                     <div class="dim empty-pkgs" data-testid="packages-empty">{emptyStateMessage(env.backend)}</div>
@@ -240,6 +295,15 @@
   .backend-pixi { color: var(--accent); background: rgba(74, 144, 217, 0.14); border-color: rgba(74, 144, 217, 0.35); }
   .backend-conda { color: #50C878; background: rgba(80, 200, 120, 0.14); border-color: rgba(80, 200, 120, 0.35); }
   .backend-byo { color: #E9A847; background: rgba(233, 168, 71, 0.14); border-color: rgba(233, 168, 71, 0.35); }
+  .backend-uv { color: #C77DDB; background: rgba(199, 125, 219, 0.14); border-color: rgba(199, 125, 219, 0.35); }
+
+  .registry-cell { display: inline-flex; align-items: center; gap: 6px; cursor: help; }
+  .registry-pushed { color: #50C878; background: rgba(80, 200, 120, 0.14); border-color: rgba(80, 200, 120, 0.35); }
+  .registry-not_pushed, .registry-cannot_push { color: #E9A847; background: rgba(233, 168, 71, 0.14); border-color: rgba(233, 168, 71, 0.35); }
+  .registry-none, .registry-unknown { color: #888; background: rgba(136, 136, 136, 0.12); border-color: rgba(136, 136, 136, 0.35); }
+  .registry-missing { color: #E74C3C; background: rgba(231, 76, 60, 0.14); border-color: rgba(231, 76, 60, 0.45); }
+  .registry-count { color: #888; font-size: 10.5px; }
+  .registry-count-missing { color: #E74C3C; }
 
   .methods-count { color: var(--accent); border-bottom: 1px dotted var(--accent); cursor: help; padding-bottom: 1px; font-size: 11.5px; font-family: "JetBrains Mono", Consolas, monospace; }
 
@@ -312,5 +376,6 @@
   .src-conda { color: #50C878; background: rgba(80, 200, 120, 0.10); border-color: rgba(80, 200, 120, 0.30); }
   .src-pixi  { color: var(--accent); background: rgba(74, 144, 217, 0.10); border-color: rgba(74, 144, 217, 0.30); }
   .src-pip   { color: #E9A847; background: rgba(233, 168, 71, 0.10); border-color: rgba(233, 168, 71, 0.30); }
+  .src-uv    { color: #C77DDB; background: rgba(199, 125, 219, 0.10); border-color: rgba(199, 125, 219, 0.30); }
   .pkg-name { color: #ccc; font-size: 11.5px; }
 </style>

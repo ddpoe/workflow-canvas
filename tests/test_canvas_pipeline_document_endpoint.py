@@ -1,7 +1,7 @@
 """Tests for the GET /api/pipelines/{pipeline_id}/document endpoint.
 
 Read the literal pipeline.json that
-was written to ``.runs/pipelines/<pipeline_id>/pipeline.json`` at submission
+was written to ``.wfc/runs/pipelines/<pipeline_id>/pipeline.json`` at submission
 time and return it as JSON. 404 when the file does not exist (pipeline
 never reached the run-generation stage).
 """
@@ -35,7 +35,8 @@ def client(tmp_path, monkeypatch):
     """
     build_project(
         Scenario(nodes=[node("preprocess", module="data_preprocessing",
-                             outputs={"data": ".csv"})],
+                             outputs={"data": ".csv"},
+                             params={"normalize": True})],
                  samples=["s1"]),
         root=tmp_path, monkeypatch=monkeypatch,
     )

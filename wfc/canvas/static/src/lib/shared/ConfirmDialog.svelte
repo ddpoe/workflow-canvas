@@ -4,9 +4,11 @@
    * actions. Variant prop selects between:
    *   - 'dirty-confirm': Cancel + Discard-and-load (replace flow)
    *   - 'running-block': Cancel-only (running pipeline blocks reload)
+   *   - 'switch-watch': Cancel + Watch (stop watching one running
+   *     pipeline and watch another; the first keeps running)
    */
 
-  type Variant = 'dirty-confirm' | 'running-block';
+  type Variant = 'dirty-confirm' | 'running-block' | 'switch-watch';
 
   interface Props {
     variant: Variant;
@@ -39,6 +41,19 @@
       <div class="confirm-actions">
         <button class="footer-btn" onclick={onCancel}>Cancel</button>
         <button class="footer-btn primary" onclick={onConfirm}>Discard and load</button>
+      </div>
+    {:else if variant === 'switch-watch'}
+      <div class="confirm-title" data-testid="switch-watch-title">
+        Stop watching <span class="confirm-id">{currentName}</span> and watch
+        <span class="confirm-id">{targetName}</span>?
+      </div>
+      <div class="confirm-body">
+        <span class="confirm-id">{currentName}</span> keeps running. You can watch
+        it again from History.
+      </div>
+      <div class="confirm-actions">
+        <button class="footer-btn" onclick={onCancel}>Cancel</button>
+        <button class="footer-btn primary" onclick={onConfirm}>Watch {targetName}</button>
       </div>
     {:else}
       <div class="confirm-title">Wait for running pipeline to finish</div>

@@ -2,7 +2,7 @@
 
 The Snakemake-visible `output:` declaration collapses to a single zero-byte
 sentinel per (pipeline, node, sample, variant). The real data outputs stay
-in `.runs/<run_id>/<slot>/` (staging) — Snakemake never sees them.
+in `.wfc/runs/<run_id>/<slot>/` (staging) — Snakemake never sees them.
 
 These tests pin that generator contract.
 """
@@ -16,19 +16,18 @@ def _step_map(pipeline: PipelineDef) -> dict[str, StepDef]:
 
 
 def test_output_path_emits_sentinel_path():
-    """_output_path returns a `.runs/sentinels/.../.complete` path."""
+    """_output_path returns a `.wfc/runs/sentinels/.../.complete` path."""
     pipeline = PipelineDef(
         steps=[StepDef(
             method_name="preprocess",
             module_name="demo",
-            script_path="methods/preprocess/preprocess.py",
             params={},
         )],
         samples=["S1"],
     )
     sm = _step_map(pipeline)
     out = _output_path("preprocess", sm, pipeline_id="pid42")
-    assert out == ".runs/sentinels/pid42/preprocess/{sample}/{variant}/.complete"
+    assert out == ".wfc/runs/sentinels/pid42/preprocess/{sample}/{variant}/.complete"
 
 
 def test_output_path_collapsed_uses_all_segment():
@@ -36,7 +35,6 @@ def test_output_path_collapsed_uses_all_segment():
     step = StepDef(
         method_name="merge",
         module_name="demo",
-        script_path="methods/merge.py",
         params={},
         sample_collapsed=True,
         collapsed_samples=["S1", "S2"],
@@ -44,7 +42,7 @@ def test_output_path_collapsed_uses_all_segment():
     pipeline = PipelineDef(steps=[step], samples=["S1", "S2"])
     sm = _step_map(pipeline)
     out = _output_path("merge", sm, pipeline_id="pid42")
-    assert out == ".runs/sentinels/pid42/merge/__all__/{variant}/.complete"
+    assert out == ".wfc/runs/sentinels/pid42/merge/__all__/{variant}/.complete"
 
 
 def test_generate_rule_emits_single_sentinel_output(wfc_root):
@@ -53,7 +51,6 @@ def test_generate_rule_emits_single_sentinel_output(wfc_root):
         steps=[StepDef(
             method_name="multi_out",
             module_name="demo",
-            script_path="methods/multi/multi.py",
             params={},
             slot_outputs={"primary": "out.csv", "report": "report.html"},
         )],
@@ -66,7 +63,7 @@ def test_generate_rule_emits_single_sentinel_output(wfc_root):
     output_section = rule_block.split("output:")[1].split("params:")[0]
     output_lines = [ln.strip() for ln in output_section.splitlines() if ln.strip()]
     assert len(output_lines) == 1, output_lines
-    assert ".runs/sentinels/" in output_lines[0] and ".complete" in output_lines[0], output_lines
+    assert ".wfc/runs/sentinels/" in output_lines[0] and ".complete" in output_lines[0], output_lines
 
 
 def test_generate_rule_single_output_uses_sentinel(wfc_root):
@@ -75,31 +72,30 @@ def test_generate_rule_single_output_uses_sentinel(wfc_root):
         steps=[StepDef(
             method_name="step",
             module_name="demo",
-            script_path="methods/step.py",
             params={},
         )],
         samples=["S1"],
     )
     snakefile = generate_snakefile(pipeline, wfc_root)
     rule_block = snakefile.split("rule step:")[1].split("\nrule ")[0]
-    assert ".runs/sentinels/" in rule_block
+    assert ".wfc/runs/sentinels/" in rule_block
     assert ".complete" in rule_block
-    # No .runs/workspace/ output
-    assert ".runs/workspace/" not in rule_block.split("input:")[0]
+    # No .wfc/runs/workspace/ output
+    assert ".wfc/runs/workspace/" not in rule_block.split("input:")[0]
 
 
 def test_downstream_input_references_upstream_sentinel(wfc_root):
     """A downstream rule's input is the upstream rule's sentinel path."""
     pipeline = PipelineDef(
         steps=[
-            StepDef("preprocess", "demo", "methods/preprocess.py", {}, depends_on=[]),
-            StepDef("filter", "demo", "methods/filter.py", {}, depends_on=["preprocess"]),
+            StepDef("preprocess", "demo", {}, depends_on=[]),
+            StepDef("filter", "demo", {}, depends_on=["preprocess"]),
         ],
         samples=["S1"],
     )
     snakefile = generate_snakefile(pipeline, wfc_root)
     filter_block = snakefile.split("rule filter:")[1].split("\nrule ")[0]
     # The input points at the preprocess sentinel, not a workspace data file
-    assert ".runs/sentinels/" in filter_block
+    assert ".wfc/runs/sentinels/" in filter_block
     assert "/preprocess/" in filter_block
     assert ".complete" in filter_block

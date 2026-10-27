@@ -14,6 +14,7 @@ deletion logic.
 """
 from __future__ import annotations
 
+from wfc import layout
 import shutil
 import sqlite3
 import subprocess
@@ -52,6 +53,18 @@ def _scaffold_demo(proj: Path, monkeypatch) -> None:
     monkeypatch.setenv("WFC_DEMO_IMAGE", CLIENT_REF)
     rc = run_demo(target_dir=proj, no_open=True, serve=False)
     assert rc == 0
+
+
+def _git(proj: Path, *args: str) -> str:
+    """Run git in *proj* and return its stripped stdout (raises on failure)."""
+    return subprocess.run(
+        ["git", *args], cwd=proj, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def _demo_snapshot_rel(proj: Path) -> str:
+    """Return the demo module's snapshot directory, relative to *proj* (posix)."""
+    return layout.module_methods_dir(proj, "__demo__").relative_to(proj).as_posix()
 
 
 def _q(proj: Path, sql: str) -> list[tuple]:
@@ -95,21 +108,25 @@ def test_demo_scaffold_shape(tmp_path, monkeypatch, client_image):
     }
 
     口 = Step(step_num=3, name="Env and files",
-             purpose="Digest-pinned __demo__env manifest entry plus method dirs, "
+             purpose="Digest-pinned wfc-demo-env manifest entry plus method dirs, "
                      "sample files, and demo-pipeline.json on disk")
     import json
     manifest = json.loads((proj / ".wfc" / "envs.json").read_text())
-    env = manifest["envs"]["__demo__env"]
+    env = manifest["envs"]["wfc-demo-env"]
     assert env["backend"] == "byo"
     assert "@sha256:" in env["container"]
-    # The staged directory is methods/<registered name>/ — the prefix is what
-    # keeps the demo out of the flat snapshot namespace a user shares.
+    # Each method's snapshot sits under the demo module's own snapshot
+    # directory, committed by its registration.
     for m in ("preprocess", "filter_cells", "label", "summarize", "plot"):
-        assert (proj / "methods" / f"__demo__{m}" / "method.yaml").exists()
-        assert (proj / "methods" / f"__demo__{m}" / f"{m}.py").exists()
-        assert not (proj / "methods" / m).exists()
+        snapshot = layout.method_dir(proj, "__demo__", f"__demo__{m}")
+        assert (snapshot / "method.yaml").exists()
+        assert (snapshot / f"{m}.py").exists()
+    demo_rel = _demo_snapshot_rel(proj)
+    assert _git(proj, "ls-files", "--", demo_rel) != ""
+    assert _git(proj, "status", "--porcelain", "--", ".wfc") == ""
     assert (proj / "demo-pipeline.json").exists()
-    assert (proj / "data" / "samples" / "__demo__ctrl_01" / "ctrl_01.csv").exists()
+    # Registered from the bundled assets: nothing is staged in the workspace.
+    assert not layout.sample_dir(proj, "__demo__ctrl_01").exists()
 
 
 @workflow(purpose="The demo takes no name a user wants: with the demo "
@@ -127,10 +144,12 @@ def test_demo_teardown_precision_with_user_overlap(tmp_path, monkeypatch, client
 
     from wfc.environments import register as register_env
 
-    register_env(
-        name="user-env", backend="byo",
-        source={"image": CLIENT_REF}, project_dir=proj,
-    )
+    with _project_env(proj):
+        # Registration enters the env's blob row in the project's database.
+        register_env(
+            name="user-env", backend="byo",
+            source={"image": CLIENT_REF}, project_dir=proj,
+        )
 
     staging = proj / "user_src" / "preprocess"
     staging.mkdir(parents=True)
@@ -150,13 +169,12 @@ def test_demo_teardown_precision_with_user_overlap(tmp_path, monkeypatch, client
         from wfc.registration import register_method, register_module
 
         register_module(name="my-analysis", contracts=[])
-        # The load-bearing call: before the demo's methods were prefixed this
-        # raised, because __demo__ already held `preprocess` and
-        # register_method refuses a name another module holds (they would
-        # share the methods/preprocess/ snapshot).
+        # The demo holds __demo__preprocess; the user's preprocess is a
+        # name of its own, in its own module.
         register_method(
             method_dir=staging, module_name="my-analysis",
             method_name="preprocess",
+            assume_yes=True,
         )
         register_sample(name="my_sample", source_path=user_csv, project_root=proj)
 
@@ -220,10 +238,11 @@ def test_demo_teardown_precision_with_user_overlap(tmp_path, monkeypatch, client
             session.commit()
             user_run_id = u1.id
 
-    # Separate snapshot directories, the thing the prefix actually buys: the
-    # user owns methods/preprocess/, the demo owns methods/__demo__preprocess/.
-    assert (proj / "methods" / "preprocess" / "preprocess.py").exists()
-    assert (proj / "methods" / "__demo__preprocess" / "preprocess.py").exists()
+    # Separate snapshot directories, one per module.
+    user_snapshot = layout.method_dir(proj, "my-analysis", "preprocess")
+    assert (user_snapshot / "preprocess.py").exists()
+    assert (layout.method_dir(proj, "__demo__", "__demo__preprocess")
+            / "preprocess.py").exists()
 
     口 = Step(step_num=3, name="Remove the demo",
              purpose="Tag/module-cascade teardown with --yes")
@@ -254,16 +273,21 @@ def test_demo_teardown_precision_with_user_overlap(tmp_path, monkeypatch, client
     # Env manifest: demo env gone, user env intact.
     import json
     manifest = json.loads((proj / ".wfc" / "envs.json").read_text())
-    assert "__demo__env" not in manifest["envs"]
+    assert "wfc-demo-env" not in manifest["envs"]
     assert "user-env" in manifest["envs"]
 
-    # Files: the user's methods/preprocess/ snapshot is untouched — teardown
-    # deletes by the __demo__ tag, and the user's directory never carried it.
-    assert (proj / "methods" / "preprocess" / "preprocess.py").exists()
-    for m in ("preprocess", "filter_cells", "label", "summarize", "plot"):
-        assert not (proj / "methods" / f"__demo__{m}").exists()
+    # Files: the demo module's snapshot directory is gone and its deletion is
+    # committed; the user's snapshot, in its own module, is untouched and
+    # still committed. Nothing wfc owns is left dirty.
+    demo_rel = _demo_snapshot_rel(proj)
+    assert not (proj / demo_rel).exists()
+    assert _git(proj, "ls-files", "--", demo_rel) == ""
+    assert (user_snapshot / "preprocess.py").exists()
+    user_rel = user_snapshot.relative_to(proj).as_posix()
+    assert _git(proj, "ls-files", "--", user_rel) != ""
+    assert _git(proj, "status", "--porcelain", "--", ".wfc") == ""
     assert not (proj / "demo-pipeline.json").exists()
-    assert not list((proj / "data" / "samples").glob("__demo__*"))
+    assert not list(layout.samples_dir(proj).glob("__demo__*"))
 
     口 = Step(step_num=5, name="Idempotency",
              purpose="A second --remove is a no-op success")

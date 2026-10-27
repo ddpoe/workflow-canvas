@@ -23,20 +23,32 @@ const PIPELINE = {
   ],
   samples: SAMPLES,
 };
+/** A method as `/api/modules` sends it: its newest (and only) version's contract plus `versions`. */
+function registered(contract: Record<string, unknown>, identity: string) {
+  const full = { ...contract, executor: 'python' };
+  return {
+    ...full,
+    env: 'demo',
+    versions: [{
+      label: 1, identity: identity.repeat(40), registered_at: '2026-10-01T09:00:00Z',
+      env: 'demo', newest: true, ...full,
+    }],
+  };
+}
 const MODULES = {
   demo: {
     description: 'Demo module',
     methods: {
-      preprocess: {
+      preprocess: registered({
         inputs: { data: { type: 'csv', required: true } },
         outputs: { clean: { type: 'csv' }, report: { type: 'csv' } },
         params_schema: { value_column: { type: 'str', default: 'intensity' }, drop_na: { type: 'bool', default: true } },
-      },
-      plot: {
+      }, 'a'),
+      plot: registered({
         inputs: { data: { type: 'csv', required: true } },
         outputs: { figure: { type: 'png' } },
         params_schema: { bins: { type: 'int', default: 20 } },
-      },
+      }, 'b'),
     },
   },
 };

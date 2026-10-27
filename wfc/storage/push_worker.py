@@ -23,6 +23,12 @@ from axiom_annotations import AutoStep, Step, task, workflow
 from sqlmodel import col, select
 
 from ..persistence import PushStatus, RunOutput, Sample, get_session
+from .blobs import (
+    claim_blobs_in_flight,
+    record_blob_outcomes,
+    reset_orphan_blobs,
+    snapshot_pending_blobs,
+)
 
 # Exponential backoff (seconds) per attempt index.  Index 0 = first retry.
 PUSH_BACKOFFS = (1, 4, 16, 60)
@@ -53,11 +59,13 @@ def _reset_orphan_pushes(project_root: Path, *, age_days: int = 7) -> int:
     """Reset push_attempts on stale pending/in_flight/failed rows.
 
     Called on ``run_pipeline`` startup before spawning the worker.  Re-enters
-    rows that finished in the last ``age_days`` into the retry budget.
+    rows that finished in the last ``age_days`` into the retry budget: run
+    outputs by their run's ``finished_at``, samples by ``registered_at`` and
+    blob rows by ``stored_at`` (each blob reset a compare-and-set).
 
     Args:
         project_root: wfc project root (for logging only).
-        age_days: How recent ``finished_at`` must be to qualify.
+        age_days: How recent the row's time must be to qualify.
 
     Returns:
         Number of rows reset.
@@ -105,25 +113,30 @@ def _reset_orphan_pushes(project_root: Path, *, age_days: int = 7) -> int:
                 session.add(s)
                 n += 1
         session.commit()
+    n += reset_orphan_blobs(datetime.fromtimestamp(cutoff, UTC))
     if n:
         print(f"[push_worker] reset {n} orphan push row(s) for retry")
     return n
 
 
 @task(
-    purpose="Snapshot the rows awaiting a push: pending or failed, under the "
-            "attempt limit, with a content hash; group their ids by hash",
+    purpose="Snapshot the rows awaiting a push: run outputs, samples and blobs "
+            "pending or failed, under the attempt limit, with a content hash; "
+            "group the output and sample ids by hash and keep each blob's kind",
     inputs="the database",
-    outputs="(RunOutput ids by hash, Sample ids by hash)",
+    outputs="(RunOutput ids by hash, Sample ids by hash, blob kinds by hash)",
 )
-def _snapshot_push_rows() -> tuple[dict[str, list[int]], dict[str, list[int]]]:
+def _snapshot_push_rows() -> tuple[
+    dict[str, list[int]], dict[str, list[int]], dict[str, str]
+]:
     """Snapshot the rows needing a push, grouped by content hash.
 
-    Only ids and hashes leave the session, so no session stays open across
-    the network call.
+    Only ids, hashes and kinds leave the session, so no session stays open
+    across the network call.
 
     Returns:
-        Tuple of (RunOutput ids by hash, Sample ids by hash).
+        Tuple of (RunOutput ids by hash, Sample ids by hash, blob kinds by
+        hash).
     """
     with get_session() as session:
         ro_rows = list(session.exec(
@@ -151,22 +164,32 @@ def _snapshot_push_rows() -> tuple[dict[str, list[int]], dict[str, list[int]]]:
         sample_ids_by_hash: dict[str, list[int]] = {}
         for s in sample_rows:
             sample_ids_by_hash.setdefault(s.content_hash, []).append(s.id)
-    return ro_ids_by_hash, sample_ids_by_hash
+    blob_kinds = snapshot_pending_blobs(PUSH_MAX_ATTEMPTS)
+    return ro_ids_by_hash, sample_ids_by_hash, blob_kinds
 
 
 @task(
-    purpose="Mark the snapshot's rows in flight (best-effort, in a session of its own)",
-    inputs="RunOutput and Sample ids by hash",
-    outputs="the rows' push_status set to in_flight",
+    purpose="Mark the snapshot's rows in flight (outputs and samples best-effort, "
+            "in a session of its own; each blob a compare-and-set that skips a "
+            "blob another worker claimed)",
+    inputs="RunOutput and Sample ids by hash; blob kinds by hash",
+    outputs="the rows' push_status set to in_flight; the blobs this call claimed",
 )
 def _mark_in_flight(
-    ro_ids_by_hash: dict[str, list[int]], sample_ids_by_hash: dict[str, list[int]]
-) -> None:
+    ro_ids_by_hash: dict[str, list[int]],
+    sample_ids_by_hash: dict[str, list[int]],
+    blob_kinds: dict[str, str] | None = None,
+) -> dict[str, str]:
     """Mark every snapshot row in flight.
 
     Args:
         ro_ids_by_hash: RunOutput ids by content hash.
         sample_ids_by_hash: Sample ids by content hash.
+        blob_kinds: The snapshot's blobs, kind by hash.
+
+    Returns:
+        The blobs this call claimed, kind by hash: only these are pushed and
+        recorded by this worker.
     """
     with get_session() as session:
         for r in session.exec(
@@ -184,6 +207,7 @@ def _mark_in_flight(
             s.push_status = PushStatus.in_flight.value
             session.add(s)
         session.commit()
+    return claim_blobs_in_flight(blob_kinds or {})
 
 
 def _failed_hash(obj) -> str | None:
@@ -199,54 +223,68 @@ def _failed_hash(obj) -> str | None:
     purpose="Push each snapshot entry in its own transfer and keep each entry's "
             "own error; a failed entry fails alone, and only an error opening "
             "the transport fails every entry",
-    inputs="the snapshot's content hashes; the sample hashes; project root",
+    inputs="the snapshot's content hashes; the sample hashes; project root; "
+           "the claimed blobs' kinds",
     outputs="each hash's error, or None when it reached the remote",
 )
 def _push_entries(
-    all_hashes: set[str], sample_hashes: set[str], project_root: Path
+    all_hashes: set[str],
+    sample_hashes: set[str],
+    project_root: Path,
+    blob_kinds: dict[str, str] | None = None,
 ) -> dict[str, str | None]:
     """Push every entry through the DVC transport, one transfer per entry.
 
     A malformed entry is refused with the repair its kind names: a sample
-    is re-registered, a run output is re-run.
+    is re-registered, a blob is recreated by what its kind says stored it
+    (a pipeline launched again, an environment registered again), a run
+    output is re-run.
 
     Args:
         all_hashes: Content hashes to push.
         sample_hashes: The hashes that belong to sample rows.
         project_root: wfc project root.
+        blob_kinds: The hashes that belong to blob rows, kind by hash.
 
     Returns:
         Each hash's error message, or None for a hash the remote accepted.
     """
     from . import transport
-    from .cache import output_repair, sample_repair
+    from .cache import blob_repair, output_repair, sample_repair
 
-    repairs = {
-        h: sample_repair() if h in sample_hashes else output_repair()
-        for h in all_hashes
-    }
+    blob_kinds = blob_kinds or {}
+    repairs = {}
+    for h in all_hashes:
+        if h in sample_hashes:
+            repairs[h] = sample_repair()
+        elif h in blob_kinds:
+            repairs[h] = blob_repair(blob_kinds[h])
+        else:
+            repairs[h] = output_repair()
     try:
         result = transport.push(sorted(all_hashes), project_root, repairs=repairs)
     except Exception as exc:  # noqa: BLE001 -- the transport itself failed
         return {h: str(exc) or type(exc).__name__ for h in all_hashes}
     errors = dict(getattr(result, "errors", None) or {})
     for obj in getattr(result, "failed", None) or ():
-        h = _failed_hash(obj)
-        if h:
-            errors.setdefault(h, "DVC reported the entry failed.")
+        failed = _failed_hash(obj)
+        if failed:
+            errors.setdefault(failed, "DVC reported the entry failed.")
     return {h: errors.get(h) for h in all_hashes}
 
 
 @task(
     purpose="Record each row's own outcome: pushed with its time, or failed with "
-            "its attempt count raised and its entry's own error kept",
-    inputs="ids by hash; each hash's error or None",
+            "its attempt count raised and its entry's own error kept; a blob "
+            "only while it is still in flight (compare-and-set)",
+    inputs="ids by hash; each hash's error or None; the claimed blobs",
     outputs="the number of rows marked pushed",
 )
 def _record_push_outcomes(
     ro_ids_by_hash: dict[str, list[int]],
     sample_ids_by_hash: dict[str, list[int]],
     errors: dict[str, str | None],
+    blob_kinds: dict[str, str] | None = None,
 ) -> int:
     """Write each snapshot row's push outcome.
 
@@ -254,6 +292,7 @@ def _record_push_outcomes(
         ro_ids_by_hash: RunOutput ids by content hash.
         sample_ids_by_hash: Sample ids by content hash.
         errors: Each hash's error, or None when the remote accepted it.
+        blob_kinds: The blobs this worker claimed in flight, kind by hash.
 
     Returns:
         Number of rows marked pushed.
@@ -279,38 +318,50 @@ def _record_push_outcomes(
                         row.push_status = PushStatus.failed.value
                     session.add(row)
         session.commit()
+    pushed_count += record_blob_outcomes(blob_kinds or {}, errors)
     return pushed_count
 
 
 @workflow(
-    purpose="One push-worker tick: snapshot the rows awaiting a push, mark them in "
-            "flight, push each entry in its own transfer, record each row's own "
-            "outcome",
+    purpose="One push-worker tick: snapshot the rows awaiting a push (run outputs, "
+            "samples and blobs), mark them in flight, push each entry in its own "
+            "transfer, record each row's own outcome",
     inputs="project root",
     outputs="(rows pushed, hashes still pending or failed)",
 )
 def _push_worker_tick(project_root: Path) -> tuple[int, int]:
     """Single push-worker tick: scan rows, push each entry, update DB.
 
+    Blob rows are pushed and recorded only when this tick claimed them in
+    flight, so two workers on one database never push or record one blob
+    twice.
+
     Returns:
         Tuple of (pushed_count, remaining_count).  ``remaining_count`` is
         the hashes that failed this tick.
     """
     口 = AutoStep(step_num=1, name="Snapshot rows needing push")
-    ro_ids_by_hash, sample_ids_by_hash = _snapshot_push_rows()
+    ro_ids_by_hash, sample_ids_by_hash, blob_kinds = _snapshot_push_rows()
 
-    all_hashes = set(ro_ids_by_hash) | set(sample_ids_by_hash)
-    if not all_hashes:
+    if not (ro_ids_by_hash or sample_ids_by_hash or blob_kinds):
         return 0, 0
 
     口 = AutoStep(step_num=2, name="Mark rows in flight")
-    _mark_in_flight(ro_ids_by_hash, sample_ids_by_hash)
+    claimed_blobs = _mark_in_flight(ro_ids_by_hash, sample_ids_by_hash, blob_kinds)
+
+    all_hashes = set(ro_ids_by_hash) | set(sample_ids_by_hash) | set(claimed_blobs)
+    if not all_hashes:
+        return 0, 0
 
     口 = AutoStep(step_num=3, name="Push each entry")
-    errors = _push_entries(all_hashes, set(sample_ids_by_hash), project_root)
+    errors = _push_entries(
+        all_hashes, set(sample_ids_by_hash), project_root, claimed_blobs,
+    )
 
     口 = AutoStep(step_num=4, name="Record each row's outcome")
-    pushed_count = _record_push_outcomes(ro_ids_by_hash, sample_ids_by_hash, errors)
+    pushed_count = _record_push_outcomes(
+        ro_ids_by_hash, sample_ids_by_hash, errors, claimed_blobs,
+    )
 
     remaining = sum(1 for e in errors.values() if e is not None)
     return pushed_count, remaining

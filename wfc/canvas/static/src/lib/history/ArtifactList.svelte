@@ -4,20 +4,24 @@
    * expandable directory rows, inline image previews and the lightbox.
    *
    * The panel owns fetching; this component owns the grouping, the
-   * expanded-directory set and the lightbox.
+   * expanded-directory set and the lightbox. Outputs wfc found changed after
+   * the run wrote them are listed first as unavailable, with no link: they
+   * are never served.
    */
   import { artifactDownloadUrl, deriveArtifactType } from './historyApi.js';
   import type { Artifact } from './historyApi.js';
   import { formatBytes } from './historyUtils.js';
-  import { categoryOf, type CatKey } from './runDetailFormat.js';
+  import { categoryOf, CHANGED_OUTPUT_TEXT, type CatKey } from './runDetailFormat.js';
 
   interface Props {
     runId: string;
     artifacts: Artifact[];
     artifactState: 'idle' | 'loading' | 'done';
+    /** Names of the run's outputs that changed after the run wrote them. */
+    changedOutputs?: string[];
   }
 
-  let { runId, artifacts, artifactState }: Props = $props();
+  let { runId, artifacts, artifactState, changedOutputs = [] }: Props = $props();
 
   let expandedDirs = $state<Set<string>>(new Set());
 
@@ -80,13 +84,31 @@
 
 {#if artifactState !== 'done'}
   <div class="empty">Loading artifacts…</div>
-{:else if artifacts.length === 0}
+{:else if artifacts.length === 0 && changedOutputs.length === 0}
   <div class="empty">No artifacts found.</div>
 {:else}
   <div class="artifacts">
+    {#if changedOutputs.length > 0}
+      <div class="card cat-card" data-testid="unavailable-outputs">
+        <div class="cat-header">
+          <span class="cat-icon unavailable-icon">!</span>
+          <span class="cat-name">Unavailable</span>
+          <span class="cat-count">{changedOutputs.length}</span>
+        </div>
+        {#each changedOutputs as name (name)}
+          <div class="file-row unavailable-row" data-testid="unavailable-output">
+            <span class="file-bullet">▪</span>
+            <span class="file-name">{name}</span>
+            <span class="unavailable-reason">{CHANGED_OUTPUT_TEXT}</span>
+          </div>
+        {/each}
+      </div>
+    {/if}
+    {#if artifacts.length > 0}
     <div class="artifacts-summary">
       {artifacts.length} artifacts · {totalFiles} files · {formatBytes(totalSize)}
     </div>
+    {/if}
     {#each CAT_ORDER as cat}
       {#if grouped[cat].length > 0}
         {@const items = grouped[cat]}
@@ -289,6 +311,24 @@
     cursor: pointer;
   }
   .file-row:last-child, .dir-row:last-child .dir-head { border-bottom: none; }
+  .unavailable-row { cursor: default; }
+  .unavailable-row:hover { background: none; }
+  .unavailable-row .file-name {
+    flex: 0 1 auto;
+    color: var(--text-secondary, #888);
+    text-decoration: line-through;
+  }
+  .unavailable-reason {
+    flex: 1;
+    font-size: 10px;
+    color: var(--color-failed, #E74C3C);
+    text-align: right;
+  }
+  .unavailable-icon {
+    color: var(--color-failed, #E74C3C);
+    background: color-mix(in oklab, var(--color-failed, #E74C3C) 18%, transparent);
+    font-weight: 700;
+  }
   .file-row:hover, .dir-head:hover { background: var(--bg-input, #1e1e1e); }
   .file-bullet { color: var(--text-muted, #666); font-size: 10px; width: 10px; }
   .file-name {

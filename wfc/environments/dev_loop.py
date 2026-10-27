@@ -94,15 +94,15 @@ def _resolve_env_and_runtime(env_name: str) -> tuple[str, Path, Path]:
 
     Returns:
         ``(image_ref, project_root, dvc_cache_dir)`` -- image_ref is the
-        daemon ref :func:`~wfc.environments.runnable.ensure_runnable`
-        returns, the form ``build_docker_command`` hands Docker; a missing
-        local image has been rebuilt first.
+        ref :func:`~wfc.environments.runnable.ensure_runnable` returns, the
+        form ``build_docker_command`` hands Docker; a missing image has been
+        pulled by its recorded digest and checked first. Nothing is built.
 
     Raises:
         _DevLoopError: When the project root is missing, the executor is
             ``slurm``, the env is not registered, the env is not a
             container env (empty ``container`` field), or its missing
-            image is refused or fails to rebuild.
+            image cannot be pulled and checked.
     """
     # The canonical resolver (imported here so dev-loop stays light at
     # import time): WFC_PROJECT_ROOT validated against the marker, else the
@@ -142,13 +142,13 @@ def _resolve_env_and_runtime(env_name: str) -> tuple[str, Path, Path]:
             f"Dev-loop commands require a container env."
         )
 
-    # What Docker is handed: the record's daemon ref, once the daemon is
-    # known to hold the image (a missing local env is rebuilt from its
-    # staged build context, or refused naming the command that recreates it).
+    # What Docker is handed: the record's image on this machine, else the
+    # registry ref it was pulled by once its content checked; otherwise
+    # refused naming the commands that recreate it. Nothing is built.
     from .runnable import ensure_runnable
     try:
         container_ref = ensure_runnable(env_name, record, project_root)
-    except RuntimeError as exc:  # a refusal, or a failed rebuild
+    except RuntimeError as exc:  # a refusal
         raise _DevLoopError(f"ERROR: {exc}") from exc
 
     dvc_cache_dir = layout.dvc_cache_dir(project_root)

@@ -6,6 +6,7 @@ remote — exercises the actual dvc.repo.Repo + dvc_data.hashfile.hash_info
 import surface so we catch upstream API drift early.
 """
 
+from wfc.storage import sample_data_path
 import configparser
 import subprocess
 import textwrap
@@ -195,6 +196,9 @@ def test_restore_sample_pulls_a_local_miss(tmp_project, monkeypatch):
     from wfc.storage.cache import _cache_path
 
     def _force_unlink(p: Path) -> None:
+        from wfc.storage.cache import open_dirs
+
+        open_dirs(p.parent)  # POSIX refuses an unlink in a read-only folder
         os.chmod(p, stat.S_IREAD | stat.S_IWRITE)
         p.unlink()
 
@@ -217,7 +221,7 @@ def test_restore_sample_pulls_a_local_miss(tmp_project, monkeypatch):
     with get_session() as session:
         row = session.exec(select(Sample).where(Sample.name == "pull_sample")).one()
         content_hash = row.content_hash
-        registered_path = Path(row.registered_path)
+        registered_path = sample_data_path(tmp_project, row)
         push_status = row.push_status
     assert push_status == PushStatus.pushed.value
     entry = _cache_path(tmp_project, content_hash)

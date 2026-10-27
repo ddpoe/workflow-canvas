@@ -18,20 +18,22 @@ from .execution import CheckResult
 _STATUS_LABEL = {"ok": "OK", "warn": "WARN", "fail": "FAIL"}
 
 
-def render_health_table(results: list[CheckResult]) -> str:
+def render_health_table(results: list[CheckResult],
+                        heading: str = "Run-readiness:") -> str:
     """Render a list of check results as a compact text health table.
 
-    Used by both ``wfc init`` (closing summary) and ``wfc doctor`` so the
-    rendering lives in one place.  Each row shows ``[STATUS] name — message``
-    and, for non-ok rows, a fix-hint line.
+    Used by ``wfc init`` (closing summary), ``wfc doctor`` and ``wfc share``
+    so the rendering lives in one place.  Each row shows
+    ``[STATUS] name — message`` and, for non-ok rows, a fix-hint line.
 
     Args:
         results: The check results to render, in display order.
+        heading: The table's first line.
 
     Returns:
         A multi-line string (no trailing newline) ready to print.
     """
-    lines = ["Run-readiness:"]
+    lines = [heading]
     width = max((len(r.name) for r in results), default=0)
     for r in results:
         label = _STATUS_LABEL.get(r.status, r.status.upper())

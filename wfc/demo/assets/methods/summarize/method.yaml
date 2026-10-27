@@ -22,4 +22,4 @@ params:
     description: "Column to group by (defaults to __demo__label's output column)"
 
 executor: local
-env: __demo__env
+env: wfc-demo-env

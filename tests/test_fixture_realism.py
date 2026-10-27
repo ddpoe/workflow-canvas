@@ -19,10 +19,11 @@ Three claims, asserted about every construction path that reaches a
     content-addressed row is well-formed and its bytes are nowhere: the
     composer sees a hash, emits a ``restore_sample`` rule, and the restore
     fails on a cache entry nothing ever wrote.
-(c) **``registered_path != source_path``.** Registration materializes
-    nothing under ``data/samples/``; ``registered_path`` records where
-    ``restore_sample`` *will* put the bytes. A source staged at its own
-    registered path makes every restore ``restore_from_cache``'s
+(c) **The source is not its own restore destination.** Registration
+    materializes nothing under ``.wfc/workspace/samples/``; the row records
+    only the source's file name, and ``restore_sample`` *will* put the bytes
+    at Layout's sample workspace path for the sample and that name. A source
+    staged at that destination makes every restore ``restore_from_cache``'s
     dest-already-valid skip, so the real-copy path is never exercised.
 
 Two paths reach a row and each gets its own witness:
@@ -60,7 +61,7 @@ def assert_row_is_one_a_user_could_have(
     Raises:
         AssertionError: If the sample has no row, its ``content_hash``
             addresses no cache entry, or it was registered from its own
-            ``registered_path``.
+            restore destination.
     """
     from wfc.persistence import Sample, get_session
 
@@ -96,13 +97,16 @@ def assert_row_is_one_a_user_could_have(
     )
 
     # (c) the restore is a real copy, not the dest-already-valid skip.
-    assert Path(row.registered_path) != Path(row.source_path), (
-        f"{built_by} registered '{sample_name}' from its own "
-        f"registered_path ({row.registered_path}). Registration copies "
-        f"nothing into data/samples/, so a source staged there makes every "
+    from wfc.storage import sample_data_path
+
+    restored = sample_data_path(project_dir, row)
+    assert restored != Path(row.source_path).resolve(), (
+        f"{built_by} registered '{sample_name}' from its own restore "
+        f"destination ({restored}). Registration copies nothing into "
+        f".wfc/workspace/samples/, so a source staged there makes every "
         f"restore restore_from_cache's dest-already-valid skip and the "
         f"real-copy path is never exercised. Stage the source outside the "
-        f"project's data/ tree."
+        f"project's sample workspace."
     )
 
 

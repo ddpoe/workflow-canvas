@@ -1,0 +1,83 @@
+{
+  "id": "param-sets-by-node-id",
+  "case": "expansion-variant-axis",
+  "note": "A node's variant table is its param_sets entry by node id only: an entry keyed by the node's method name ('filter') is not the node's table, so m1 runs its box params once under default.",
+  "document": {
+    "name": "param-sets-by-node-id",
+    "nodes": [
+      {
+        "id": "s",
+        "type": "input_selector",
+        "method": "",
+        "module": "",
+        "params": {},
+        "samples": [
+          "s1"
+        ],
+        "source": "registered",
+        "fan_mode": "out"
+      },
+      {
+        "id": "m1",
+        "type": "method",
+        "method": "filter",
+        "module": "mod",
+        "params": {
+          "q": 0.7
+        }
+      }
+    ],
+    "links": [
+      {
+        "source": "s",
+        "target": "m1",
+        "targetHandle": "data"
+      }
+    ],
+    "samples": [
+      "s1"
+    ],
+    "param_sets": {
+      "filter": {
+        "strict": {
+          "q": 0.9
+        },
+        "relaxed": {
+          "q": 0.5
+        }
+      }
+    }
+  },
+  "contract_map": {
+    "mod.filter": {
+      "output_slots": {
+        "out": {
+          "type": "csv"
+        }
+      },
+      "input_slots": {
+        "data": {
+          "required": true
+        }
+      },
+      "script_path": "methods/filter/filter.py",
+      "env": "container:base"
+    }
+  },
+  "reference_outputs": {},
+  "expect": {
+    "collapsed": [],
+    "bundle": [],
+    "rows": [
+      {
+        "node": "m1",
+        "sample": "s1",
+        "variant": "default",
+        "reused": false
+      }
+    ]
+  },
+  "client": {
+    "answers": true
+  }
+}

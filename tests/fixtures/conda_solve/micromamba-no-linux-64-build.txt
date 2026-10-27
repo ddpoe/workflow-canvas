@@ -1,0 +1,41 @@
+docker build failed (exit 1):
+#8 DONE 0.9s
+
+#9 [stage-0 3/5] RUN --mount=type=cache,target=/opt/conda/pkgs micromamba install -y -n base -f /opt/solve-spec.yml
+#9 1.434 Fetch Shard Index for conda-forge/linux-64                                                      ⧖ Starting
+#9 1.562 Fetch Shard Index for conda-forge/linux-64                                                ✔ Done (0.1 sec)
+#9 1.562 Fetch Shard Index for conda-forge/noarch                                                        ⧖ Starting
+#9 1.740 Fetch Shard Index for conda-forge/noarch                                                  ✔ Done (0.2 sec)
+#9 1.740 Fetching and Parsing Packages' Shards                                                           ⧖ Starting
+#9 3.790 Fetching and Parsing Packages' Shards                                                     ✔ Done (2.1 sec)
+#9 3.964 
+#9 3.964 Resolving Environment                                                                           ⧖ Starting
+#9 4.092 Resolving Environment                                                                     ✔ Done (0.1 sec)
+#9 4.097 Using Cached Shard Index for conda-forge/linux-64                                                   ✔ Done
+#9 4.106 Using Cached Shard Index for conda-forge/noarch                                                     ✔ Done
+#9 4.106 Fetching and Parsing Packages' Shards                                                           ⧖ Starting
+#9 4.234 Fetching and Parsing Packages' Shards                                                     ✔ Done (0.1 sec)
+#9 4.349 
+#9 4.349 Resolving Environment                                                                           ⧖ Starting
+#9 4.470 Resolving Environment                                                                     ✔ Done (0.1 sec)
+#9 4.471 error    libmamba Could not solve for environment specs
+#9 4.471     The following package could not be installed
+#9 4.471     └─ vc14_runtime =14.44.35208 * does not exist (perhaps a typo or a missing channel).
+#9 4.473 critical libmamba Could not solve for environment specs
+#9 ERROR: process "/usr/local/bin/_dockerfile_shell.sh micromamba install -y -n base -f /opt/solve-spec.yml" did not complete successfully: exit code: 1
+------
+ > [stage-0 3/5] RUN --mount=type=cache,target=/opt/conda/pkgs micromamba install -y -n base -f /opt/solve-spec.yml:
+4.106 Using Cached Shard Index for conda-forge/noarch                                                     ✔ Done
+4.106 Fetching and Parsing Packages' Shards                                                           ⧖ Starting
+4.234 Fetching and Parsing Packages' Shards                                                     ✔ Done (0.1 sec)
+4.349 
+4.349 Resolving Environment                                                                           ⧖ Starting
+4.470 Resolving Environment                                                                     ✔ Done (0.1 sec)
+4.471 error    libmamba Could not solve for environment specs
+4.471     The following package could not be installed
+4.471     └─ vc14_runtime =14.44.35208 * does not exist (perhaps a typo or a missing channel).
+4.473 critical libmamba Could not solve for environment specs
+------
+ERROR: failed to build: failed to solve: process "/usr/local/bin/_dockerfile_shell.sh micromamba install -y -n base -f /opt/solve-spec.yml" did not complete successfully: exit code: 1
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/wqz8rzr3kt6nl8ipmhbso562q

@@ -147,11 +147,11 @@ def _make_sample_unreachable(project_root: Path, name: str) -> None:
 
 
 # =============================================================================
-# Case 15 (+ A1, A3, D-11): the preview's key is the claim's key
+# The preview's key is the claim's key
 # =============================================================================
 
 def _chain(samples=("s1", "s2")) -> Scenario:
-    # A3: b's link names no output of a, a single-output upstream.
+    # b's link names no output of a, a single-output upstream.
     return Scenario(
         nodes=[selector(),
                node("a", inputs=[wire(SELECTOR_ID)], outputs={"table": ".csv"},
@@ -240,7 +240,7 @@ def test_preview_key_equals_the_claimed_key_cold_and_warm(tmp_project, monkeypat
         assert cold[target].cache_key == key, target
 
     口 = Step(step_num=4, name="Preview warm, then run again",
-             purpose="A1: the downstream's recorded parent is now the "
+             purpose="The downstream's recorded parent is now the "
                      "upstream's cache-hit row; its key must still be the one "
                      "predicted, and every row is a local hit")
     warm = _preview(project)
@@ -295,7 +295,7 @@ def test_upstream_outputs_missing_keeps_the_downstream_cached(tmp_project,
 
 
 # =============================================================================
-# Case 17a: the reason a row is new
+# The reason a row is new
 # =============================================================================
 
 @pytest.mark.parametrize(
@@ -333,7 +333,7 @@ def test_reason_a_row_is_new(tmp_project, monkeypatch, a_params, b_params,
 
 
 # =============================================================================
-# Case 21: two nodes of one method are two rows
+# Two nodes of one method are two rows
 # =============================================================================
 
 @workflow(purpose="Two nodes running the same method with different params each "
@@ -362,7 +362,7 @@ def test_two_nodes_of_one_method_keep_their_own_status(tmp_project, monkeypatch)
 
 
 # =============================================================================
-# Case 17 (+ A4): the route's statuses, refusals as data, read-only
+# The route's statuses, refusals as data, read-only
 # =============================================================================
 
 def _table_counts() -> dict:
@@ -387,7 +387,7 @@ def test_route_reports_each_status_and_writes_nothing(tmp_project, monkeypatch):
         nodes=[selector(),
                node("a", inputs=[wire(SELECTOR_ID)]),
                node("b", inputs=[wire("a")]),
-               node("c", inputs=[wire(SELECTOR_ID)])],
+               node("c", inputs=[wire(SELECTOR_ID)], params={"changed": 0})],
         samples=["s1", "s2", "s3"], pipeline_id="cs-route", name="cs_route",
     )
 
@@ -452,6 +452,50 @@ def test_route_reports_each_status_and_writes_nothing(tmp_project, monkeypatch):
                      "the env manifest is byte-identical")
     assert _table_counts() == counts_before
     assert (envs.read_bytes() if envs.exists() else None) == envs_before
+
+
+# =============================================================================
+# An unverifiable snapshot is predicted BLOCKED
+# =============================================================================
+
+@workflow(purpose="A step whose method's record names no version that can run "
+                  "(its version list is gone) blocks the preview with the "
+                  "claim's own refusal text, not as a step that will run: "
+                  "preparation cannot resolve the node's version")
+def test_unverifiable_snapshot_is_blocked_with_the_claims_refusal(tmp_project,
+                                                                   monkeypatch):
+    from tests.harness.project import commit_everything
+    from wfc import layout
+    from wfc.execution.cache_status import BLOCKED, cache_status
+    from wfc.execution.claim import pre_run
+    from wfc.registration import MalformedMethodRecordError
+
+    scenario = Scenario(nodes=[selector(), node("a", inputs=[wire(SELECTOR_ID)])],
+                        samples=["s1"], pipeline_id="cs-edit", name="cs_edit")
+    project = build_project(scenario, root=tmp_project, monkeypatch=monkeypatch)
+    spec = scenario.method_nodes()[0]
+
+    口 = Step(step_num=1, name="Remove the method's version list and commit",
+             purpose="The record no longer names any version a run could "
+                     "resolve")
+    layout.method_versions_path(tmp_project, spec.module,
+                                spec.method_name).unlink()
+    commit_everything(tmp_project)
+
+    口 = Step(step_num=2, name="The claim refuses the step",
+             purpose="The text the run would print after 'pre_run failed: '")
+    with pytest.raises(MalformedMethodRecordError) as refused:
+        pre_run(method_name=spec.method_name, module_name=spec.module,
+                sample="s1", params={}, git_commit="e" * 40)
+
+    口 = Step(step_num=3, name="The preview predicts that refusal",
+             purpose="Previewing the frozen document the run would read "
+                     "(it already names the node's env): blocked with the "
+                     "claim's own message, no row and no key")
+    frozen = json.loads(Path(project.pipeline_json).read_text(encoding="utf-8"))
+    report = cache_status(frozen)
+    assert report.blocked_reason == str(refused.value)
+    assert report.rows == []
 
 
 def test_unreachable_database_is_a_blocked_reason_not_a_500(tmp_project, monkeypatch):

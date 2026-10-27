@@ -23,6 +23,25 @@ params:
     required: false
     default: ""
     description: "Comma-separated sample names that crash regardless of failure_mode (a per-sample failure with no variant override)"
+  pre_crash_duration_s:
+    type: float
+    required: false
+    default: 4.5
+    description: "stream_fail mode: seconds of streamed output before the crash"
+  pre_crash_stdout_lines:
+    type: int
+    required: false
+    default: 3
+    description: "stream_fail mode: number of stdout ticks before the crash"
+  crash_at_tick:
+    type: int
+    required: false
+    description: "stream_fail mode: the tick the crash lands on (defaults to the last tick)"
+  exit_code:
+    type: int
+    required: false
+    default: 3
+    description: "nonzero_exit mode: the status the method exits with"
 
 executor: python
 env: fixture-env

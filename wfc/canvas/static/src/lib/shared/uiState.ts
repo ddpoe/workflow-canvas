@@ -9,7 +9,9 @@
  */
 import { writable } from 'svelte/store';
 
-export type ConfirmDialogVariant = 'dirty-confirm' | 'running-block';
+// 'switch-watch': the canvas is watching one running pipeline and the user
+// asked to watch another; `currentName` keeps running, `targetName` is shown.
+export type ConfirmDialogVariant = 'dirty-confirm' | 'running-block' | 'switch-watch';
 
 export interface ConfirmDialogRequest {
   variant: ConfirmDialogVariant;

@@ -61,9 +61,15 @@ def test_init_yes_lands_runnable_project(tmp_path, monkeypatch):
     assert (project / ".dvc" / "config").exists()
     assert created["dvc"] is True
 
-    口 = Step(step_num=3, name="Database created",
-             purpose="The SQLite DB is scaffolded")
+    口 = Step(step_num=3, name="Database created, only wfc's own directories",
+             purpose="The SQLite DB is scaffolded; the project holds .wfc/, "
+                     ".gitignore, .gitattributes and the DVC files, and no "
+                     "modules/, methods/, data/ or .runs/")
     assert (project / ".wfc" / "wfc.db").exists()
+    top = {p.name for p in project.iterdir()} - {".git"}
+    assert {".wfc", ".gitignore", ".gitattributes", ".dvc"} <= top
+    assert top <= {".wfc", ".gitignore", ".gitattributes", ".dvc",
+                   ".dvcignore"}, top
 
     口 = Step(step_num=4, name="Clean committed HEAD from fallback identity",
              purpose="git repo has a HEAD commit even with no global identity")
@@ -84,8 +90,23 @@ def test_init_yes_lands_runnable_project(tmp_path, monkeypatch):
     ]
     assert tracked_dirty == [], f"HEAD not clean: {tracked_dirty}"
 
-    口 = Step(step_num=5, name="DB never tracked",
-             purpose="The initial commit stages only .gitignore + wf-canvas.toml")
+    口 = Step(step_num=5, name="What init commits",
+             purpose="Init's one commit holds exactly .gitignore, the config "
+                     ".wfc/wf-canvas.toml and DVC's .dvc/config and "
+                     ".dvc/.gitignore; the database is never tracked")
+    commits = subprocess.run(
+        ["git", "rev-list", "HEAD"], cwd=str(project),
+        capture_output=True, text=True, check=True,
+    ).stdout.split()
+    assert len(commits) == 1, commits
+    committed = subprocess.run(
+        ["git", "ls-tree", "-r", "--name-only", commits[0]], cwd=str(project),
+        capture_output=True, text=True, check=True,
+    ).stdout.splitlines()
+    assert set(committed) == {
+        ".gitignore", ".gitattributes", ".wfc/wf-canvas.toml", ".dvc/config",
+        ".dvc/.gitignore",
+    }, committed
     tracked = subprocess.run(
         ["git", "ls-files"], cwd=str(project),
         capture_output=True, text=True,
@@ -139,7 +160,8 @@ def test_init_yes_is_idempotent(tmp_path, monkeypatch):
 
 @workflow(
     purpose="git absent → scaffold completes (exit 0), git surfaced as not-ready, "
-            "no repo; re-run with git present fills the gap"
+            "no repo; re-run with git present lists the repository it will "
+            "create and fills the gap"
 )
 def test_init_completes_when_git_absent(tmp_path, monkeypatch, capsys):
     home = tmp_path / "home"
@@ -176,13 +198,17 @@ def test_init_completes_when_git_absent(tmp_path, monkeypatch, capsys):
     assert "git" in out.lower()
 
     口 = Step(step_num=4, name="Re-run with git present fills only the gap",
-             purpose="With git restored, the repo is created; config/DVC untouched")
+             purpose="With git restored, the listing names the repository init "
+                     "will create and the repo is created; config/DVC untouched")
     monkeypatch.undo()
     redirect_home(monkeypatch, home)
     config_before = (project / ".wfc" / "wf-canvas.toml").read_bytes()
     dvc_before = (project / ".dvc" / "config").read_bytes()
 
     created2 = init_project(project, assume_yes=True)
+    out = capsys.readouterr().out
+    assert "  git: initialize a repository here" in out
+    assert "already current" not in out
     assert (project / ".git").is_dir()
     assert created2[".git/"] is True
     assert (project / ".wfc" / "wf-canvas.toml").read_bytes() == config_before

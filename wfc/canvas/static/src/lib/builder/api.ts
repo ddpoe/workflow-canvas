@@ -13,7 +13,10 @@
  * a failure degrades.
  */
 import type { ArchiveStatus } from './archiveStatus.js';
-import type { PipelineJSON, SampleInfo } from '../shared/types.js';
+import { PARAM_TYPES } from '../shared/types.js';
+import type {
+  ContractType, MethodDef, MethodVersionDef, ModuleDef, ParamDef, PipelineJSON, SampleInfo, SlotDef,
+} from '../shared/types.js';
 import type { CacheStatusResponse } from './runsPreviewStatus.js';
 
 /**
@@ -52,6 +55,87 @@ export async function fetchModuleRegistry(): Promise<Record<string, unknown> | n
   const resp = await fetch('/api/modules');
   if (!resp.ok) return null;
   return resp.json();
+}
+
+/** Module accent colours, by the module's position in the registry. */
+const MODULE_COLORS = ['#1ABC9C', '#2ecc71', '#9b59b6', '#E9A847', '#4A90D9', '#E74C3C', '#3498db', '#e67e22'];
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Raw = any;
+
+function slotsFrom(raw: Raw, withMulti: boolean): SlotDef[] {
+  return Object.entries(raw || {}).map(([slotName, slotData]: [string, Raw]) => {
+    const slot: SlotDef = {
+      name: slotName,
+      type: slotData?.type || 'csv',
+      description: slotData?.description ?? undefined,
+    };
+    if (withMulti) slot.multi = slotData?.multiple || false;
+    return slot;
+  });
+}
+
+function paramsFrom(raw: Raw): ParamDef[] {
+  return Object.entries(raw || {}).map(([pName, pData]: [string, Raw]) => {
+    const rawType = (pData.type ?? 'str') as string;
+    const contractType: ContractType = (PARAM_TYPES as readonly string[]).includes(rawType)
+      ? (rawType as ContractType)
+      : 'unknown';
+    return {
+      name: pName,
+      type: rawType,
+      contractType,
+      // Preserve native dict/list defaults; only coerce primitives to string.
+      // Without this, `{}.toString()` becomes the literal
+      // string "[object Object]" and every dict-defaulted param gets corrupted.
+      default: pData.default !== undefined && pData.default !== null
+        ? (typeof pData.default === 'object' ? pData.default : pData.default.toString())
+        : undefined,
+      description: pData.description ?? undefined,
+      required: pData.required || false,
+      constraints: pData.constraints || undefined,
+    };
+  });
+}
+
+/**
+ * Turn the `/api/modules` payload into the palette's `ModuleDef[]`.
+ *
+ * Each method carries its versions in label order (newest last), each with
+ * its own contract; the method's own slots and params are its newest
+ * version's, which is what a node that follows the newest draws.
+ *
+ * Args:
+ *     raw: ``{module_name: {description, methods: {method_name: {...}}}}``.
+ *
+ * Returns:
+ *     One ``ModuleDef`` per module, in the payload's order.
+ */
+export function moduleDefsFromRegistry(raw: Record<string, unknown>): ModuleDef[] {
+  return Object.entries(raw).map(([modName, modData]: [string, Raw], i: number) => ({
+    name: modName,
+    description: modData.description,
+    color: MODULE_COLORS[i % MODULE_COLORS.length],
+    methods: Object.entries(modData.methods || {}).map(([methName, methData]: [string, Raw]): MethodDef => ({
+      name: methName,
+      module: modName,
+      description: methData.description,
+      versions: (methData.versions || []).map((v: Raw): MethodVersionDef => ({
+        label: v.label,
+        identity: v.identity,
+        newest: !!v.newest,
+        registeredAt: v.registered_at ?? undefined,
+        env: v.env ?? undefined,
+        inputs: slotsFrom(v.inputs, true),
+        outputs: slotsFrom(v.outputs, false),
+        params: paramsFrom(v.params_schema),
+      })),
+      inputs: slotsFrom(methData.inputs, true),
+      outputs: slotsFrom(methData.outputs, false),
+      params: paramsFrom(methData.params_schema),
+      color: MODULE_COLORS[i % MODULE_COLORS.length],
+    })),
+  }));
 }
 
 /**

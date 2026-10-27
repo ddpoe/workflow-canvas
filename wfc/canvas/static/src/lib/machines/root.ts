@@ -364,6 +364,18 @@ export function dispatchRun(pipeline: PipelinePayload): void {
 }
 
 /**
+ * Attach the canvas to a pipeline that is already running (History's
+ * "Watch in canvas"): the pipeline machine goes straight to polling under
+ * `pipelineId`, with one node actor per method node of `pipeline` (the
+ * document just loaded onto the canvas). From a run already being watched
+ * this switches: that run's node actors and poller stop; it is not
+ * cancelled. The caller asks the user first.
+ */
+export function dispatchAttach(pipelineId: string, pipeline: PipelinePayload): void {
+  pipelineRunActor.send({ type: 'ATTACH', jobId: pipelineId, pipeline });
+}
+
+/**
  * Reset the actor tree (tear down all spawned children, clear context).
  * Called by `clearRunState()` so the canvas Clear button still wipes
  * lifecycle state along with nodes/edges.

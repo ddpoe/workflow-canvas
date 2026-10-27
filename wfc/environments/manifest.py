@@ -5,21 +5,27 @@ project: :class:`EnvRecord` and the record API (:func:`load_manifest`,
 :func:`save_manifest`, :func:`list_envs`, :func:`get`, :func:`delete`).
 :func:`wfc.environments.register` writes a record when it builds an env.
 
-Schema (``schema_version == 1``)::
+Schema (``schema_version == 3``)::
 
     {
-      "schema_version": 1,
+      "schema_version": 3,
       "envs": {
         "<env_name>": {
           "backend": "pixi" | "conda" | "byo",
           "source": "pixi.toml" | "environment.yml" | null,
           "container": "docker://<host>/<path>@sha256:<hex>",
-          "env_fingerprint": "<sha256 of source-file content / image fingerprint>",
+          "env_fingerprint": "<md5 of the image-content blob>",
           "built_from_lock": "pixi.lock" | "conda-lock.yml" | null,
-          "built_at": "<ISO-8601 timestamp>"
+          "built_at": "<ISO-8601 timestamp>",
+          "source_fingerprint": "<md5 of the captures folder's packages.lock>" | null,
+          "python": "<container-side interpreter>"
         }
       }
     }
+
+Every record's ``env_fingerprint`` has a captures folder
+(:mod:`wfc.environments.captures`), and its ``source_fingerprint`` is the
+md5 of that folder's ``packages.lock``.
 
 The env name is the KEY of the ``envs`` dict; it is NOT stored inside the
 record. Callers that need
@@ -28,6 +34,14 @@ to pair a name with its record receive a ``(name, EnvRecord)`` tuple from
 
 A missing manifest file is treated as an empty manifest (zero envs) — every
 project starts that way until its first ``wfc register-env`` call.
+
+An older manifest is refused by :func:`load_manifest`, naming each env's
+re-register command: version 1 took its fingerprints from the image's name,
+and version 2 recorded no captures folders. Only the register path opens
+it, through :func:`load_manifest_for_register`; the register writes it
+back as version 3, with the registered env fingerprinted and captured and
+every other env's ``env_fingerprint`` cleared until that env is
+re-registered too.
 """
 
 from __future__ import annotations
@@ -35,13 +49,39 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .. import layout
+from ..reserved import DEMO_ENV_NAME
 
-MANIFEST_SCHEMA_VERSION = 1
+MANIFEST_SCHEMA_VERSION = 3
 MANIFEST_FILENAME = layout.ENV_MANIFEST_FILENAME
+
+#: The older manifest versions the register path converts from, each with
+#: the reason every other reader refuses it.
+_CONVERTIBLE_SCHEMA_VERSIONS: dict[int, str] = {
+    1: "which fingerprinted each env by its image's name. Re-register each "
+       "env to record a fingerprint of its image's contents",
+    2: "which recorded no captures folder of what each env's image "
+       "installed. Re-register each env to record one",
+}
+
+
+def recreate_command(name: str) -> str:
+    """Return the command that recreates *name*'s env from scratch.
+
+    Args:
+        name: The env name.
+
+    Returns:
+        ``wfc demo --force`` for the demo env, otherwise
+        ``wfc register-env <name> --force``.
+    """
+    if name == DEMO_ENV_NAME:
+        return "wfc demo --force"
+    return f"wfc register-env {name} --force"
 
 
 
@@ -64,19 +104,19 @@ class EnvRecord:
     env_fingerprint: str
     built_at: str
     built_from_lock: str | None = None
-    # md5 of the captured package-list blob (lock/explicit-list + an explicit
-    # delimiter + pip-freeze), recorded for EVERY pixi/conda registration that
-    # stages source content — both live-spec capture and ``--from`` file mode.
-    # ``None`` for byo and for legacy/no-source registrations. Retrievable via
-    # ``GET /api/registry/envs/blob/<md5>`` and parsed by
+    # md5 of the image's captures-folder packages.lock (lock/explicit-list +
+    # an explicit delimiter + pip-freeze), recorded for EVERY pixi/conda
+    # registration that stages source content — both live-spec capture and
+    # ``--from`` file mode. ``None`` for byo. Read back, verified, by
+    # :func:`wfc.environments.captures.verified_package_list` and parsed by
     # :func:`wfc.environments.packages.parse_packages`.
     source_fingerprint: str | None = None
     # Container-side path of the env's Python interpreter, recorded at
     # registration: computed for pixi/conda from the generator recipe;
     # ``"python"`` for byo (overridable via ``wfc register-env --python``).
-    # ``None`` for records written before this field existed — dispatch
-    # falls back to the per-backend default via :func:`resolve_env_python`
-    # (identical values by construction, so no re-registration is needed).
+    # Dispatch does not read it: a method version runs
+    # the interpreter its own image's ``image.json`` records
+    # (:func:`wfc.environments.interpreter.version_interpreter`).
     python: str | None = None
 
     def to_dict(self) -> dict:
@@ -108,22 +148,23 @@ def _manifest_path(project_dir: Path) -> Path:
     return layout.env_manifest_path(Path(project_dir).resolve())
 
 
-def load_manifest(project_dir: Path) -> dict:
-    """Read ``.wfc/envs.json`` and return the parsed manifest dict.
+def _read_manifest(path: Path, accepted: tuple[int, ...]) -> dict:
+    """Parse the manifest at *path*, refusing a version not in *accepted*.
 
     Args:
-        project_dir: Root directory of the wfc project.
+        path: Absolute path of ``.wfc/envs.json``.
+        accepted: The ``schema_version`` values the caller can read.
 
     Returns:
-        A dict shaped ``{"schema_version": 1, "envs": {<name>: <record-dict>}}``.
-        When the file does not exist, an empty manifest is returned — this is
-        the normal state for a project before any ``wfc register-env`` call.
+        The parsed manifest, its ``schema_version`` as stored. An empty
+        current-version manifest when the file does not exist.
 
     Raises:
-        ValueError: If ``schema_version`` is not :data:`MANIFEST_SCHEMA_VERSION`
-            or the file is not valid JSON.
+        ValueError: If the file is not valid JSON, its ``envs`` object is
+            missing or malformed, or its ``schema_version`` is not in
+            *accepted*. An older (version 1 or 2) file is refused naming
+            each env's re-register command.
     """
-    path = _manifest_path(project_dir)
     if not path.exists():
         return {"schema_version": MANIFEST_SCHEMA_VERSION, "envs": {}}
 
@@ -132,17 +173,123 @@ def load_manifest(project_dir: Path) -> dict:
     except json.JSONDecodeError as exc:
         raise ValueError(f"{path}: not valid JSON ({exc})") from exc
 
-    schema = raw.get("schema_version")
-    if schema != MANIFEST_SCHEMA_VERSION:
-        raise ValueError(
-            f"{path}: unknown schema_version {schema!r} "
-            f"(this wfc version supports {MANIFEST_SCHEMA_VERSION})"
-        )
-
-    if "envs" not in raw or not isinstance(raw["envs"], dict):
+    envs = raw.get("envs")
+    if not isinstance(envs, dict):
         raise ValueError(f"{path}: missing or malformed 'envs' object")
 
-    return raw
+    schema = raw.get("schema_version")
+    if schema in accepted:
+        return raw
+    if schema in _CONVERTIBLE_SCHEMA_VERSIONS:
+        commands = list(dict.fromkeys(recreate_command(n) for n in sorted(envs)))
+        steps = ("\n".join(f"  {c}" for c in commands) if commands
+                 else "  wfc register-env <name>")
+        raise ValueError(
+            f"{path}: this env manifest was written by an older wfc "
+            f"(schema_version {schema}), "
+            f"{_CONVERTIBLE_SCHEMA_VERSIONS[schema]}:\n{steps}"
+        )
+    raise ValueError(
+        f"{path}: unknown schema_version {schema!r} "
+        f"(this wfc version supports {MANIFEST_SCHEMA_VERSION})"
+    )
+
+
+def load_manifest(project_dir: Path) -> dict:
+    """Read ``.wfc/envs.json`` and return the parsed manifest dict.
+
+    Args:
+        project_dir: Root directory of the wfc project.
+
+    Returns:
+        A dict shaped ``{"schema_version": 3, "envs": {<name>: <record-dict>}}``.
+        When the file does not exist, an empty manifest is returned — this is
+        the normal state for a project before any ``wfc register-env`` call.
+
+    Raises:
+        ValueError: If ``schema_version`` is not :data:`MANIFEST_SCHEMA_VERSION`
+            (a version-1 or version-2 file is refused naming each env's
+            re-register command) or the file is not valid JSON.
+    """
+    return _read_manifest(_manifest_path(project_dir), (MANIFEST_SCHEMA_VERSION,))
+
+
+def load_manifest_for_register(project_dir: Path) -> dict:
+    """Read ``.wfc/envs.json`` for a register, which may convert an older file.
+
+    The register path is the one reader that opens a version-1 or version-2
+    manifest: it writes the file back as the current version (see
+    :func:`wfc.environments.build._write_record`). Every other reader uses
+    :func:`load_manifest`, which refuses it.
+
+    Args:
+        project_dir: Root directory of the wfc project.
+
+    Returns:
+        The parsed manifest with its ``schema_version`` as stored (1, 2 or
+        :data:`MANIFEST_SCHEMA_VERSION`); an empty current-version manifest
+        when the file does not exist.
+
+    Raises:
+        ValueError: If the file is not valid JSON, its ``envs`` object is
+            malformed, or its ``schema_version`` is neither an older
+            convertible one nor current.
+    """
+    return _read_manifest(
+        _manifest_path(project_dir),
+        (MANIFEST_SCHEMA_VERSION, *_CONVERTIBLE_SCHEMA_VERSIONS),
+    )
+
+
+def put_record(manifest: dict, name: str, record: dict) -> None:
+    """Put *record* under *name* in *manifest*, as the current version.
+
+    A manifest read by :func:`load_manifest_for_register` at an older
+    version is converted here: no other env's ``env_fingerprint`` has a
+    captures folder (and a version-1 one was taken from its image's name),
+    so it is cleared, and that env is refused at run time until it is
+    re-registered.
+
+    Args:
+        manifest: The manifest as read; updated in place.
+        name: The env name (the key in ``envs``).
+        record: The record dict to store.
+    """
+    envs = manifest.setdefault("envs", {})
+    if manifest.get("schema_version") != MANIFEST_SCHEMA_VERSION:
+        for other in envs.values():
+            other["env_fingerprint"] = ""
+    envs[name] = record
+    manifest["schema_version"] = MANIFEST_SCHEMA_VERSION
+
+
+#: Seconds :func:`save_manifest` waits before each retry of a replace another
+#: handle refused: five tries in all, the waits doubling from 50 ms.
+_REPLACE_RETRY_WAITS = (0.05, 0.1, 0.2, 0.4)
+
+
+def _replace_with_retry(source: str, target: Path) -> None:
+    """``os.replace`` *source* onto *target*, retrying a refused replace.
+
+    On Windows a replace fails with ``PermissionError`` while another
+    handle (a reader, an editor, a virus scanner) holds *target* open;
+    such a hold is usually brief. The replace is tried five times, waiting
+    :data:`_REPLACE_RETRY_WAITS` between tries, on every platform.
+
+    Args:
+        source: The file to move.
+        target: Where it goes.
+
+    Raises:
+        PermissionError: The fifth try was refused too.
+    """
+    for wait in _REPLACE_RETRY_WAITS:
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            time.sleep(wait)
+    os.replace(source, target)
 
 
 def save_manifest(project_dir: Path, manifest: dict) -> None:
@@ -150,7 +297,9 @@ def save_manifest(project_dir: Path, manifest: dict) -> None:
 
     Uses ``tempfile + os.replace`` so a partial write cannot leave the
     manifest in a corrupted state — readers see either the old content
-    or the new content, never a half-flushed file.
+    or the new content, never a half-flushed file. A replace refused
+    because another handle holds the file open is retried five times
+    over about 750 ms before it fails.
 
     Args:
         project_dir: Root directory of the wfc project (must contain ``.wfc/``).
@@ -160,6 +309,8 @@ def save_manifest(project_dir: Path, manifest: dict) -> None:
 
     Raises:
         FileNotFoundError: If the ``.wfc/`` directory does not exist.
+        PermissionError: The replace was refused on every try; the old
+            manifest is kept and the temp file removed.
     """
     path = _manifest_path(project_dir)
     wfc_state_dir = path.parent
@@ -177,7 +328,7 @@ def save_manifest(project_dir: Path, manifest: dict) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(manifest, fh, indent=2, sort_keys=True)
             fh.write("\n")
-        os.replace(tmp_path_str, path)
+        _replace_with_retry(tmp_path_str, path)
     except Exception:
         # Best-effort cleanup of the temp file on failure.
         try:
@@ -262,9 +413,9 @@ def delete(name: str, project_dir: Path) -> None:
     """Remove *name* from the manifest. Errors if the env is unknown.
 
     The registry image tag is **not** removed — deleting images is out of
-    scope. Method rows that reference this env are also left
-    untouched; the CLI surface is responsible for warning the user before
-    calling this.
+    scope — and neither is the env's captures folder. ``wfc delete-env``
+    calls this after refusing an env any method version records, removes
+    the folder, and commits both.
 
     Args:
         name: Env name to remove.

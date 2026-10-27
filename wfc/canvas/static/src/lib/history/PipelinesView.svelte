@@ -1,7 +1,9 @@
 <script lang="ts">
   /**
-   * Top-level Pipelines view: row-per-pipeline_id, expandable.
-   * Hosts the [Open pipeline in Canvas ↗] button per pipeline (Action 1).
+   * Top-level Pipelines view: a header row naming the columns, then one
+   * expandable row per pipeline_id. The header and the rows share the
+   * column tracks of `.pipeline-grid` (app.css), so every column lines up.
+   * Hosts the [Open in Canvas ↗] button per pipeline (Action 1).
    */
   import { pipelineRuns, loadRuns } from './historyStore.js';
   import { canvasPipelineId } from '../builder/pipeline.js';
@@ -23,6 +25,14 @@
   {#if $pipelineRuns.length === 0}
     <div class="empty">No pipelines yet — submit one from the Builder to see it here.</div>
   {:else}
+    <div class="pipeline-grid col-header" data-testid="pipelines-header">
+      <span>Status</span>
+      <span>Pipeline</span>
+      <span>Runs</span>
+      <span>Samples</span>
+      <span>Started</span>
+      <span class="right">Actions</span>
+    </div>
     {#each $pipelineRuns as row (row.pipelineId)}
       <PipelineRow {row} {currentCanvasPipelineId} />
     {/each}
@@ -43,5 +53,16 @@
     font-family: inherit;
   }
   .refresh:hover { border-color: var(--accent, #4A90D9); }
+  /* The rows' 1px border plus their 12px padding, so the header's tracks
+     start where the rows' do. */
+  .col-header {
+    padding: 4px 13px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--text-muted, #666);
+    border-bottom: 1px solid var(--border, #3e3e42);
+  }
+  .right { text-align: right; }
   .empty { padding: 40px; text-align: center; color: var(--text-muted, #666); font-size: 13px; }
 </style>

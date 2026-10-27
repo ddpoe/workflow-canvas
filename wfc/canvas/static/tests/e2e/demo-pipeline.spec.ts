@@ -47,36 +47,53 @@ const DEMO_PIPELINE = {
 // The method KEYS carry the `__demo__` prefix — they are the registered
 // names `loadPipeline` looks a node's `method` up by. The slot names inside
 // each method do NOT: slots are the method's contract, untouched by the
-// demo's namespacing.
+// demo's namespacing. Each method is its newest version's contract plus
+// `versions`, the one registered version carrying that same contract.
+function registered(contract: Record<string, unknown>, identity: string) {
+  const full = { ...contract, executor: 'python' };
+  return {
+    ...full,
+    env: '__demo__',
+    versions: [{
+      label: 1,
+      identity: identity.repeat(40),
+      registered_at: '2026-10-01T09:00:00Z',
+      env: '__demo__',
+      newest: true,
+      ...full,
+    }],
+  };
+}
+
 const MODULES = {
   __demo__: {
     description: 'Demo module',
     methods: {
-      __demo__preprocess: {
+      __demo__preprocess: registered({
         inputs: { data: { type: 'csv', required: true } },
         outputs: { clean: { type: 'csv' } },
         params_schema: { drop_na: { type: 'bool', default: true }, value_column: { type: 'str', default: 'intensity' } },
-      },
-      __demo__filter_cells: {
+      }, '1'),
+      __demo__filter_cells: registered({
         inputs: { data: { type: 'csv', required: true } },
         outputs: { filtered: { type: 'csv' } },
         params_schema: { min_quality: { type: 'float', required: true }, max_area: { type: 'float' } },
-      },
-      __demo__label: {
+      }, '2'),
+      __demo__label: registered({
         inputs: { data: { type: 'csv', required: true } },
         outputs: { labeled: { type: 'csv' } },
         params_schema: { threshold: { type: 'float', required: true }, label_column: { type: 'str', default: 'label' } },
-      },
-      __demo__summarize: {
+      }, '3'),
+      __demo__summarize: registered({
         inputs: { data: { type: 'csv', required: true } },
         outputs: { summary: { type: 'csv' } },
         params_schema: { group_by: { type: 'str', default: 'label' } },
-      },
-      __demo__plot: {
+      }, '4'),
+      __demo__plot: registered({
         inputs: { data: { type: 'csv', required: true } },
         outputs: { figure: { type: 'png' } },
         params_schema: { value_column: { type: 'str', default: 'intensity' }, bins: { type: 'int', default: 20 } },
-      },
+      }, '5'),
     },
   },
 };

@@ -7,10 +7,10 @@ writes the rows, sentinel, and sidecars every other phase's exits funnel
 into.
 
 A standalone step (no pipeline id, as an argument or in the environment)
-first asks Environments to make its env runnable, which rebuilds a locally
-built image the Docker daemon lost, so the claim reads the rebuilt env's
-fingerprint. A step the engine invokes inside a pipeline never does:
-``run_pipeline`` made every env runnable before the run's commit.
+first asks Environments to make its version's image runnable: present,
+else pulled by its recorded registry digest and checked, else refused
+before the claim. A step the engine invokes inside a pipeline never does:
+``run_pipeline`` made every image runnable before the run's commit.
 
 Exit routing:
 
@@ -34,7 +34,7 @@ from axiom_annotations import AutoStep, workflow
 
 from .. import layout
 from ..persistence import project_root as get_project_root
-from .claim import run_claim
+from .claim import run_claim, stop_heartbeat
 from .collect import run_collect
 from .dispatch import run_dispatch
 from .materialize import run_materialize
@@ -50,7 +50,6 @@ def run_step(
     variant: str = "default",
     method_name: str | None = None,
     module_name: str | None = None,
-    script_path: str | None = None,
     params: dict | None = None,
     parent_run_ids: list | None = None,
     pipeline_id: str | None = None,
@@ -62,11 +61,12 @@ def run_step(
     """Execute a single pipeline step end-to-end.
 
     A standalone invocation (no pipeline id, as an argument or in
-    ``WFC_PIPELINE_ID``) first asks Environments' ``ensure_runnable`` for
-    its env, rebuilding a locally built image the Docker daemon lost, so the
-    claim reads the rebuilt env's fingerprint; a refusal returns 1 before
-    anything is registered. An engine-invoked step skips this: the pipeline
-    made its envs runnable before the run's commit. It then runs the
+    ``WFC_PIPELINE_ID``) first asks Environments' run-time rule for its
+    method version's image: present, else pulled by its recorded digest and
+    its content checked; a refusal returns 1 before anything is
+    registered. Nothing is built. An engine-invoked step skips this: the
+    pipeline made its images runnable before the run's commit. It then
+    runs the
     five-phase execution protocol:
 
     1. Claim — resolve step config and parent runs from sentinel sidecars,
@@ -85,13 +85,18 @@ def run_step(
        (non-fatal); on a cache hit only the sentinel and sidecars are
        written.
 
+    The claim is held from the claim phase to the record phase: its
+    heartbeat advances while the step materializes, dispatches and
+    collects, and stops before the record phase, on every ending (a
+    failure, an exception, the cache hit, which holds no claim). Nothing
+    writes it after.
+
     Args:
         node_id: Unique node identity within the pipeline.
         sample: Sample identifier.
         variant: Parameter variant name (default: "default").
         method_name: Method name (inline fallback).
         module_name: Module name (inline fallback).
-        script_path: Path to method script (inline fallback).
         params: Parameter dict (inline fallback).
         parent_run_ids: Parent run IDs as slot:id or plain id strings.
         pipeline_id: Pipeline execution ID.
@@ -102,7 +107,7 @@ def run_step(
         collapsed_samples: For collapsed-fan-in roots (sample is
             ``COLLAPSED_SAMPLE``),
             the bundled sample identities. The runtime resolver walks
-            ``data/samples/<s>/`` per name and accumulates the per-sample
+            ``.wfc/workspace/samples/<s>/`` per name and accumulates the per-sample
             data files into the fan-in slot. Order is preserved.
             Both phases receive it, for different reasons: claim folds the
             bundle into the run's cache key (it is what the root's result was
@@ -113,7 +118,7 @@ def run_step(
     """
     # Standalone means no pipeline id at all, by the claim's own rule (the
     # argument, else WFC_PIPELINE_ID). The engine sets the id for every node
-    # it runs, and run_pipeline already made those envs runnable.
+    # it runs, and run_pipeline already made those images runnable.
     in_pipeline = (pipeline_id if pipeline_id is not None
                    else os.environ.get("WFC_PIPELINE_ID")) is not None
     if not in_pipeline:
@@ -121,7 +126,7 @@ def run_step(
                      else os.environ.get("WFC_PIPELINE_JSON"))
         口 = AutoStep(step_num=1, name="Make a standalone step's env runnable")
         try:
-            preflight_step_env(node_id, _document, script_path,
+            preflight_step_env(node_id, _document, module_name, method_name,
                                get_project_root())
         except RuntimeError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
@@ -134,7 +139,6 @@ def run_step(
         variant=variant,
         method_name=method_name,
         module_name=module_name,
-        script_path=script_path,
         params=params,
         parent_run_ids=parent_run_ids,
         pipeline_id=pipeline_id,
@@ -152,66 +156,74 @@ def run_step(
     # claim — including a materialize failure, whose failed outcome the
     # record tail writes, and the SLURM carve-out, which writes no outcome
     # but leaves the directory in place.
-    outcomes_dir = layout.pipeline_outcomes_dir(get_project_root(), pipeline_id)
-    outcomes_dir.mkdir(parents=True, exist_ok=True)
-
     ending: dict = {"ending": "completed"}
     output_files: list[str] | None = None
     metrics: dict | None = None
 
-    if claim["flag"] == "CACHED":
-        # Outputs already live in the DVC cache (the authoritative
-        # store). Downstream nodes use ``resolve_input`` to read directly
-        # from the cache; the record tail only signals Snakemake via the
-        # sentinel and writes the audit-row sidecar for lineage.
-        ending = {"ending": "cached"}
-    else:
-        口 = AutoStep(step_num=3, name="Materialize")
-        mat = run_materialize(
-            node_id=node_id,
-            sample=sample,
-            pipeline_data=claim["pipeline_data"],
-            parent_run_ids=claim["parent_run_ids"],
-            ref_inputs=ref_inputs,
-            collapsed_samples=collapsed_samples,
-        )
-        # A materialize failure skips dispatch and collect; the record tail
-        # marks the row failed with its message.
-        if not mat["ok"]:
-            ending = mat
+    # The heartbeat stops before the record phase however the phases end;
+    # an exception propagates with it stopped.
+    try:
+        outcomes_dir = layout.pipeline_outcomes_dir(get_project_root(), pipeline_id)
+        outcomes_dir.mkdir(parents=True, exist_ok=True)
 
-    if ending["ending"] == "completed" and claim["flag"] != "CACHED":
-        口 = AutoStep(step_num=4, name="Dispatch")
-        dsp = run_dispatch(
-            node_id=node_id,
-            sample=sample,
-            variant=variant,
-            method_name=claim["method_name"],
-            script_path=claim["script_path"],
-            module_name=claim["module_name"],
-            params=claim["params"],
-            pipeline_id=pipeline_id,
-            pipeline_json=claim["pipeline_json"],
-            run_id=run_id,
-            slot_paths=mat["slot_paths"],
-            slot_outputs=claim["slot_outputs"],
-            slot_types=claim["slot_types"],
-        )
-        if dsp["ok"]:
-            口 = AutoStep(step_num=5, name="Collect")
-            col = run_collect(
-                method_name=claim["method_name"],
-                run_id=run_id,
-                node_cfg=claim["node_cfg"],
-                slot_outputs=claim["slot_outputs"],
-            )
-            if col["ok"]:
-                output_files = col["output_files"]
-                metrics = col["metrics"]
-            else:
-                ending = col
+        if claim["flag"] == "CACHED":
+            # Outputs already live in the DVC cache (the authoritative
+            # store). Downstream nodes use ``resolve_input`` to read directly
+            # from the cache; the record tail only signals Snakemake via the
+            # sentinel and writes the audit-row sidecar for lineage.
+            ending = {"ending": "cached"}
         else:
-            ending = dsp
+            口 = AutoStep(step_num=3, name="Materialize")
+            mat = run_materialize(
+                node_id=node_id,
+                sample=sample,
+                pipeline_data=claim["pipeline_data"],
+                parent_run_ids=claim["parent_run_ids"],
+                ref_inputs=ref_inputs,
+                collapsed_samples=collapsed_samples,
+            )
+            # A materialize failure skips dispatch and collect; the record tail
+            # marks the row failed with its message.
+            if not mat["ok"]:
+                ending = mat
+
+        if ending["ending"] == "completed" and claim["flag"] != "CACHED":
+            口 = AutoStep(step_num=4, name="Dispatch")
+            dsp = run_dispatch(
+                node_id=node_id,
+                sample=sample,
+                variant=variant,
+                method_name=claim["method_name"],
+                script_path=claim["script_path"],
+                code_dir=claim["code_dir"],
+                version=claim["version"],
+                module_name=claim["module_name"],
+                params=claim["params"],
+                pipeline_id=pipeline_id,
+                pipeline_json=claim["pipeline_json"],
+                run_id=run_id,
+                slot_paths=mat["slot_paths"],
+                slot_outputs=claim["slot_outputs"],
+                slot_types=claim["slot_types"],
+                notes=mat["notes"],
+            )
+            if dsp["ok"]:
+                口 = AutoStep(step_num=5, name="Collect")
+                col = run_collect(
+                    method_name=claim["method_name"],
+                    run_id=run_id,
+                    node_cfg=claim["node_cfg"],
+                    slot_outputs=claim["slot_outputs"],
+                )
+                if col["ok"]:
+                    output_files = col["output_files"]
+                    metrics = col["metrics"]
+                else:
+                    ending = col
+            else:
+                ending = dsp
+    finally:
+        stop_heartbeat(run_id)
 
     口 = AutoStep(step_num=6, name="Record")
     rc = run_record(
@@ -226,5 +238,6 @@ def run_step(
         error_traceback=ending.get("error_traceback"),
         output_files=output_files,
         metrics=metrics,
+        launch_attempted=ending.get("launch_attempted", True),
     )
     return rc

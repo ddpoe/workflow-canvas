@@ -112,17 +112,18 @@ my_project/
     wf-canvas.toml        # Project config (DB path, env root, DVC archive URL)
     wfc.db                # SQLite database — single source of truth (not in git)
     envs.json             # Registered container environments (tracked in git)
-  modules/                # Nested module/method hierarchies (module.yaml + methods)
-  methods/                # Flat standalone methods
-  data/samples/           # Ephemeral workspace; samples restored lazily at run time
-  .runs/
-    sentinels/            # Zero-byte Snakemake DAG-wiring sentinels
-    {run_id}/             # Transient staging; bytes are moved to the DVC archive
+    registry/methods/     # wfc's registered copy of each method, <module>/<method>/ (tracked in git)
+    workspace/samples/    # Ephemeral workspace; samples restored lazily at run time
+    runs/
+      sentinels/          # Zero-byte Snakemake DAG-wiring sentinels
+      {run_id}/           # Transient staging; bytes are moved to the DVC archive
   .dvc/cache/             # Local content-addressed cache
   .gitignore
 ```
 
-Output bytes are not kept in `.runs/`; they live in the content-addressed DVC
+Your own module and method source lives wherever you keep it (for example `src/`).
+
+Output bytes are not kept in `.wfc/runs/`; they live in the content-addressed DVC
 archive (default `~/.wfc/archives/<project>`, outside the repo), indexed by
 `.wfc/wfc.db`. Back up both `.wfc/` and the archive folder to keep results recoverable.
 

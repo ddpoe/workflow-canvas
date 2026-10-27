@@ -128,9 +128,23 @@ def parse_byo_ref(ref: str) -> tuple[str, str | None, str | None]:
 # The env-spec grammar
 # =============================================================================
 
+def name_rule(what: str) -> str:
+    """Return the one name rule as a refusal states it, for one kind of name.
+
+    Args:
+        what: The kind of name: ``"env"``, ``"module"`` or ``"method"``.
+
+    Returns:
+        The rule's sentence, e.g. "a module name uses letters, digits, `_`
+        and `-` only".
+    """
+    article = "an" if what[:1].lower() in "aeiou" else "a"
+    return f"{article} {what} name uses letters, digits, `_` and `-` only"
+
+
 #: The one rule, as the refusals state it. Registration appends the options
 #: only it can see (the registered names).
-ENV_NAME_RULE = "an env name uses letters, digits, `_` and `-` only"
+ENV_NAME_RULE = name_rule("env")
 #: The one authoring form.
 ENV_SPEC_FORM = "a method.yaml declares `env: <name>` where <name> is a registered env"
 _ENV_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -138,7 +152,11 @@ _LEGACY_PREFIX = "container:"
 
 
 def is_env_name(value: object) -> bool:
-    """Return whether *value* is an env name under the one rule.
+    """Return whether *value* is a name under the one rule.
+
+    The rule is the same for env, module and method names: none of them
+    can hold a path separator, a dot or a space, so a name never points
+    outside the directory it names.
 
     Args:
         value: The candidate.
@@ -149,23 +167,28 @@ def is_env_name(value: object) -> bool:
     return isinstance(value, str) and bool(_ENV_NAME.match(value))
 
 
-def validate_env_name(value: object) -> str:
+def validate_env_name(value: object, what: str = "env") -> str:
     """The write-side entry point: the name rule alone.
 
-    Method registration and ``register-env`` call this; neither accepts a
-    prefix, a scheme, a digest or any other decoration.
+    The one name rule for env, module and method names. Method registration
+    and ``register-env`` call it for an env, ``register_module`` and the
+    method registration plan for a module and a method name, and Layout's
+    ``method_dir`` before it builds a path from them. None accepts a prefix,
+    a scheme, a digest, a path or any other decoration.
 
     Args:
         value: The value as given.
+        what: The kind of name, named in the refusal (``"env"``,
+            ``"module"`` or ``"method"``).
 
     Returns:
-        The value, unchanged, when it is an env name.
+        The value, unchanged, when it meets the rule.
 
     Raises:
-        ValueError: Naming the value given and stating the rule.
+        ValueError: Naming what was named, the value given, and the rule.
     """
     if not is_env_name(value):
-        raise ValueError(f"env name {value!r} is not valid: {ENV_NAME_RULE}.")
+        raise ValueError(f"{what} name {value!r} is not valid: {name_rule(what)}.")
     return value  # type: ignore[return-value]
 
 

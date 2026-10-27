@@ -6,6 +6,7 @@ Tier 2: Subsystem tests covering the CACHE / REMOTE-PULL / FAIL contract.
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from tests.fixtures.fakes import stub_transport
 from tests.fixtures.fakes.shortcuts import flip_push_status
 from tests.fixtures.routes import completed_run
 from tests.harness.scenario import Behavior
+from wfc.layout import run_archive_dir
 from wfc.persistence import get_session, Method, Module, Run, RunOutput
 from wfc.storage.cache import _cache_path
 
@@ -48,14 +50,26 @@ def _archive_one(project_dir, run_id: int) -> Path:
 
 
 def _prune_local_cache(project_dir) -> None:
-    """Drop every blob from the local cache, as ``wfc cache prune --force`` does.
+    """Drop the pushed entries from the local cache, as ``wfc cache prune`` does.
 
     The rows keep their hashes; the bytes are only elsewhere -- the state a
     remote pull is asked about.
     """
     from wfc.storage import prune_dvc_cache
 
-    prune_dvc_cache(project_dir, all_entries=True, dry_run=False, force=True)
+    prune_dvc_cache(project_dir, dry_run=False)
+
+
+def _lose_cache_entry(path: Path) -> None:
+    """Declared deviation: lose a never-pushed entry's local bytes by hand.
+
+    No verb removes an unpushed entry; a disk failure or a deleted cache
+    directory does.
+    """
+    from wfc.storage.cache import _make_writable
+
+    _make_writable(path)
+    path.unlink()
 
 
 def _ensure_method(session, module_name="mod", method_name="meth"):
@@ -121,8 +135,7 @@ class TestResolveInputThreeState:
         from wfc.storage import transport as _transport
 
         run_id = _one_output_run(tmp_project, monkeypatch, b"never-cached").run_id
-        _archive_one(tmp_project, run_id)
-        _prune_local_cache(tmp_project)
+        _lose_cache_entry(_archive_one(tmp_project, run_id))
 
         pulled: list = []
         stub_transport(monkeypatch,
@@ -133,6 +146,56 @@ class TestResolveInputThreeState:
         assert f"run {run_id}" in reason and "never pushed" in reason
         assert f"Re-run run {run_id}" in reason
         assert not pulled
+
+    @pytest.mark.parametrize("pushed", [True, False], ids=["pushed", "unpushed"])
+    @workflow(
+        purpose="an archived output whose cache object was edited is never "
+                "served: recorded pushed, it is pulled again and the consumer "
+                "gets the genuine bytes; never pushed, the read is refused "
+                "naming the run and the change",
+        inputs="an archived file output, pushed to the real local remote or "
+               "not, whose cache object is rewritten in place",
+        outputs="the genuine bytes at the cache path, or InputUnavailableError "
+                "(resolve_input) and NotInCacheError (resolve_output)",
+    )
+    def test_an_edited_cache_object_is_pulled_again_or_refused(
+            self, tmp_project, monkeypatch, pushed):
+        """Flips adversarial B3c."""
+        from wfc.persistence import PushStatus
+        from wfc.storage import InputUnavailableError, NotInCacheError, resolve_input
+        from wfc.storage import resolve_output
+        from wfc.storage.push_worker import _push_worker_tick
+
+        _ = Step(step_num=1, name="Archive one output, and push it for the pushed leg",
+                 purpose="The real archive pass and the real push worker tick")
+        genuine = b"genuine run output\n"
+        run_id = _one_output_run(tmp_project, monkeypatch, genuine).run_id
+        obj = _archive_one(tmp_project, run_id)
+        if pushed:
+            flip_push_status(run_id, PushStatus.pending.value)
+            _push_worker_tick(tmp_project)
+            with get_session() as session:
+                from sqlmodel import select
+                row = session.exec(select(RunOutput).where(RunOutput.run_id == run_id)).one()
+            assert row.push_status == PushStatus.pushed.value
+
+        _ = Step(step_num=2, name="Edit the cache object in place",
+                 purpose="Same address, other bytes")
+        os.chmod(obj, 0o644)
+        obj.write_bytes(b"TAMPERED run output\n")
+
+        _ = Step(step_num=3, name="Read it",
+                 purpose="Pulled again when pushed, refused otherwise")
+        if pushed:
+            assert resolve_input(run_id) == str(obj)
+            assert obj.read_bytes() == genuine
+            return
+        with pytest.raises(InputUnavailableError) as refusal:
+            resolve_input(run_id)
+        reason = str(refusal.value)
+        assert f"run {run_id}" in reason and "changed in the local cache" in reason
+        with pytest.raises(NotInCacheError, match="changed in the local cache"):
+            resolve_output(run_id, "out", project_dir=tmp_project)
 
     def test_audit_row_resolves_via_source_run(self, tmp_project, monkeypatch):
         """A cache-hit audit row (no RunOutput rows of its own) resolves to
@@ -203,6 +266,86 @@ def test_resolvers_agree_across_the_archive_pass(tmp_project, monkeypatch):
     )
     assert Path(input_path).resolve() == output_path.resolve() == expected.resolve()
     assert output_path.read_bytes() == payload
+
+
+# =============================================================================
+# A pre-archive record outside its run's archive is malformed
+# =============================================================================
+
+@workflow(
+    purpose="A producer's pre-archive output record pointed under the old "
+            ".runs/ tree, holding other bytes, is a malformed record: the "
+            "consumer that runs next never reads those bytes, the hit rule "
+            "places the output missing, and the input resolver refuses it "
+            "naming the producer's re-run",
+    inputs="a two-node chain whose producer ran; its one record's path "
+           "rewritten to <root>/.runs/<run id>/data.csv",
+    outputs="the consumer's failed run, the output's location, and the "
+            "resolver's refusal",
+)
+def test_a_pre_archive_record_under_the_old_runs_tree_is_never_read(
+    tmp_path, monkeypatch, capfd,
+):
+    """A recorded path is read only inside its run's archive (request decision 2)."""
+    from sqlmodel import select
+
+    from tests.harness import Scenario, build_project, drive_target, node, selector, wire
+    from tests.harness.scenario import SELECTOR_ID
+    from wfc.storage import resolve_input
+    from wfc.storage.resolve import OUTPUT_MISSING, output_location
+
+    口 = Step(step_num=1, name="Run the producer",
+             purpose="The head of a two-node chain runs; collect records its one "
+                     "output inside its run archive, unhashed")
+    project = build_project(
+        Scenario(nodes=[
+            selector(),
+            node("head", inputs=[wire(SELECTOR_ID)], behavior=Behavior(echo_input="data")),
+            node("tail", inputs=[wire("head")], behavior=Behavior(echo_input="data")),
+        ], samples=["S1"]),
+        root=tmp_path / "proj", monkeypatch=monkeypatch,
+    )
+    head, tail = ("head", "S1", "default"), ("tail", "S1", "default")
+    produced = drive_target(project, head, monkeypatch=monkeypatch)
+    head_id = produced.runs[head].run_id
+    (record,) = produced.output_rows_for(head)
+    from wfc.storage.cache import _make_writable
+    _make_writable(record["artifact_path"])  # collect left it read-only
+    Path(record["artifact_path"]).unlink()
+
+    口 = Step(step_num=2, name="Point the record under the old tree",
+             purpose="The one field no production writer sets this way: the "
+                     "record's path names a file under <root>/.runs/, which "
+                     "holds bytes of its own")
+    legacy = project.root / ".runs" / f"{head_id:08d}" / "data.csv"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"id,value\n1,LEGACY\n")
+    with get_session() as session:
+        row = session.exec(select(RunOutput).where(RunOutput.run_id == head_id)).one()
+        row.artifact_path = str(legacy)
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        assert output_location(row, project.root) == OUTPUT_MISSING
+
+    refusal = f"Run {head_id} (head) has a malformed record; re-run it."
+
+    口 = Step(step_num=3, name="Run the consumer",
+             purpose="The tail's materialize phase refuses the input, naming the "
+                     "producer's re-run in its step log; the method is never "
+                     "launched, so the old tree's bytes are never read")
+    capfd.readouterr()
+    consumed = drive_target(project, tail, monkeypatch=monkeypatch)
+    assert consumed.exit_code(tail) != 0
+    assert consumed.runs[tail].dispatch_env is None
+    assert consumed.output_rows_for(tail) == []
+    assert refusal in capfd.readouterr().err
+
+    口 = Step(step_num=4, name="Ask the input resolver",
+             purpose="The resolver refuses the malformed record and names the "
+                     "producer's re-run")
+    assert resolve_input(head_id, "data") is None
+    assert refusal in capfd.readouterr().err
 
 
 # =============================================================================
@@ -310,7 +453,7 @@ def test_exportable_outputs_refuses_before_resolving(tmp_project):
         session.add(RunOutput(
             run_id=unnamed_id,
             output_name="",
-            artifact_path=str(tmp_project / ".runs" / str(unnamed_id) / "x.bin"),
+            artifact_path=str(run_archive_dir(tmp_project, unnamed_id) / "x.bin"),
             artifact_type="method_file",
         ))
         session.commit()

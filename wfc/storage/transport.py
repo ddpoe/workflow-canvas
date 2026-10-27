@@ -67,34 +67,56 @@ class PushOutcome(NamedTuple):
     errors: dict[str, str]
 
 
-def _local_entry_problem(project_dir: Path, md5: str, repair: str | None) -> str | None:
+def _local_entry_problem(project_dir: Path, md5: str, repair: str | None,
+                         setting: str | None = None) -> str | None:
     """Why an entry cannot be pushed from the local cache, or None.
 
     DVC skips an object missing from the local cache without reporting it as
     failed, so an incomplete entry is refused here instead of counted as
-    pushed.
+    pushed.  An entry whose local bytes no longer match its address (any
+    object Storage's one integrity check finds changed) is refused too: it
+    would reach the remote under its genuine hash, and every machine would
+    then pull the bad bytes.
 
     Args:
         project_dir: Root directory of the wfc project.
         md5: The entry's content hash.
-        repair: The sentence naming the repair for a malformed record.
+        repair: The sentence naming the repair for a malformed or changed
+            record.
+        setting: ``[integrity] inputs``, read once by the caller; the
+            project's when None.
 
     Returns:
-        The error message, or None when the entry is whole and well-formed.
+        The error message, or None when the entry is whole, well-formed and
+        unchanged.
     """
-    from .cache import MalformedEntryError, check_entry_shape, entry_is_complete
+    from .cache import (
+        MalformedEntryError,
+        changed_objects,
+        changed_phrase,
+        check_entry_shape,
+        entry_is_complete,
+    )
 
     try:
         check_entry_shape(project_dir, md5, repair)
-        if entry_is_complete(project_dir, md5):
-            return None
+        complete = entry_is_complete(project_dir, md5)
     except MalformedEntryError as exc:
         return str(exc)
-    return (
-        f"Cache entry {md5} is not complete in the local cache (its object, "
-        f"or a member of its directory manifest, is missing), so it cannot "
-        f"be pushed."
-    )
+    if not complete:
+        return (
+            f"Cache entry {md5} is not complete in the local cache (its object, "
+            f"or a member of its directory manifest, is missing), so it cannot "
+            f"be pushed."
+        )
+    changed = changed_objects(project_dir, md5, setting)
+    if changed:
+        return (
+            f"Cache entry {md5} changed in the local cache "
+            f"({changed_phrase(changed)}), so it is not pushed."
+            + (f" {repair}" if repair else "")
+        )
+    return None
 
 
 def _entry_objects(project_dir: Path, md5: str, HashInfo) -> list:
@@ -156,9 +178,11 @@ def push(
     root = Path(project_dir)
     repairs = repairs or {}
     errors: dict[str, str] = {}
+    from .integrity import inputs_setting
+    setting = inputs_setting(root)  # once per push, not per entry
     with Repo(str(root)) as repo:
         for h in hash_list:
-            problem = _local_entry_problem(root, h, repairs.get(h))
+            problem = _local_entry_problem(root, h, repairs.get(h), setting)
             if problem is not None:
                 errors[h] = problem
                 continue

@@ -65,6 +65,17 @@ _BACKEND_CASES = [
         "/opt/conda",
         id="conda",
     ),
+    pytest.param(
+        "uv",
+        {
+            "env_name": "demo",
+            "pip_freeze_content": "",
+            "python_minor": "3.12",
+        },
+        # The venv the recipe creates from the python base's interpreter.
+        "/opt/venv",
+        id="uv",
+    ),
 ]
 
 
@@ -116,6 +127,33 @@ def test_user_env_dockerfile_is_wfc_free_single_upstream(
         f"{backend}: expected `RUN chmod -R a+rX {expected_env_dir}` "
         f"(non-root-readable env dir, pairs with --user); got:\n{dockerfile}"
     )
+
+
+def test_every_image_building_backend_has_a_contract_case():
+    """Each backend the table builds an image for is held to this module's
+    contract: adding a backend row without a contract case fails here."""
+    from wfc.environments.backends import BACKENDS
+
+    building = {name for name, row in BACKENDS.items() if row.builds_image}
+    assert {case.id for case in _BACKEND_CASES} == building
+
+
+@pytest.mark.parametrize("backend, kwargs, expected_env_dir", _BACKEND_CASES)
+def test_every_generator_ends_with_the_shared_tail(
+    backend, kwargs, expected_env_dir
+):
+    """Every generated Dockerfile ends with the shared recipe tail, so an
+    instruction added there lands last in every backend's image: the file
+    is its recipe lines rendered by finish_recipe, the tail's lines last."""
+    from wfc.environments.dockerfiles.tail import finish_recipe, recipe_tail
+
+    dockerfile = generate_for_backend(backend, **kwargs)
+    lines = dockerfile.split("\n")
+    tail_lines = recipe_tail()
+    body = lines[:len(lines) - len(tail_lines)]
+    assert lines[len(body):] == tail_lines, dockerfile
+    assert finish_recipe(body) == dockerfile
+    assert dockerfile.endswith("\n"), dockerfile
 
 
 def test_byo_backend_has_no_dockerfile():

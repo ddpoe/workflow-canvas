@@ -64,7 +64,9 @@ def register_module(
         ValueError: If ``name`` uses the reserved ``__demo__`` prefix and
             ``allow_reserved`` is False.
     """
+    from ..contracts import validate_env_name
     from ..reserved import check_reserved_name
+    validate_env_name(name, "module")
     check_reserved_name(name, "module", allow_reserved)
 
     # Resolve contracts from module.yaml if not explicitly provided

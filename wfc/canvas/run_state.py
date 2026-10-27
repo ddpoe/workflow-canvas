@@ -18,6 +18,14 @@ from typing import Any
 from axiom_annotations import AutoStep, task, workflow
 from sqlmodel import col, select
 
+from ..execution import (
+    PIPELINE_CANCELLED,
+    PIPELINE_FAILED,
+    PIPELINE_MIXED,
+    PIPELINE_RUNNING,
+    PIPELINE_SUCCEEDED,
+    pipeline_status,
+)
 from ..persistence import Run, RunOutput, get_session
 
 # The newest failure's message is capped so the Inspector panel stays compact.
@@ -41,6 +49,9 @@ class RunRecord:
             the failed run that caused it.
         cause_node_id: The node the failed run behind a cancellation ran
             for, when that run is one of the pipeline's rows.
+        cancel_reason: Why a cancelled row was cancelled (``user``,
+            ``upstream_failed``, ``not_run``, ``interrupted``,
+            ``engine_failed``).
     """
 
     run_id: int | None
@@ -52,6 +63,7 @@ class RunRecord:
     cache_key: str | None
     cancelled_due_to_run_id: int | None = None
     cause_node_id: str | None = None
+    cancel_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -101,6 +113,12 @@ class NodeTallies:
             have outputs.
         cancel_causes: The failed run behind the newest cancelled row that
             names one.
+        cancel_reasons: The reason of the newest cancelled row that records
+            one.
+        cancel_reason_counts: Cancelled-row count per recorded reason, for
+            nodes with a cancelled row that records one; every row counts,
+            not only the newest, so the pipeline status rule sees each
+            row's reason.
     """
 
     counts: dict[str, dict[str, int]]
@@ -110,6 +128,8 @@ class NodeTallies:
     cache_hits: dict[str, dict[str, Any]]
     push_counts: dict[str, dict[str, int]]
     cancel_causes: dict[str, CancelCause] = field(default_factory=dict)
+    cancel_reasons: dict[str, str] = field(default_factory=dict)
+    cancel_reason_counts: dict[str, dict[str, int]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -216,6 +236,7 @@ def read_pipeline_rows(pipeline_id: str) -> tuple[list[RunRecord], list[OutputRe
                 cache_key=r.cache_key,
                 cancelled_due_to_run_id=cause,
                 cause_node_id=run_id_to_node.get(cause) if cause is not None else None,
+                cancel_reason=r.cancel_reason,
             ))
         if run_id_to_node:
             outputs = session.exec(
@@ -233,9 +254,9 @@ def read_pipeline_rows(pipeline_id: str) -> tuple[list[RunRecord], list[OutputRe
 @task(
     purpose="Tally each node's rows: status counts and the collapsed display "
             "state, run ids newest first, the newest failure, the newest cache "
-            "hit, the failed run behind the newest cancellation, and the "
-            "push-status counts of its outputs; a row that recorded no node is "
-            "not tallied",
+            "hit, the failed run behind the newest cancellation, its "
+            "cancelled rows per reason, and the push-status counts of its "
+            "outputs; a row that recorded no node is not tallied",
     inputs="Run records (newest first) and output records",
     outputs="NodeTallies keyed by node id",
 )
@@ -276,6 +297,13 @@ def tally_nodes(
     # canvas can tell a node cancelled by an upstream failure from one the
     # user stopped.
     cancel_causes: dict[str, CancelCause] = {}
+    # The reason of the newest cancelled row per node, which is what tells
+    # the user's stop, an upstream failure and a target never started apart.
+    cancel_reasons: dict[str, str] = {}
+    # Every cancelled row's reason per node, counted: the pipeline status
+    # rule reads each row's reason, and a node's newest one need not stand
+    # for its older rows.
+    cancel_reason_counts: dict[str, dict[str, int]] = {}
 
     for ro in outputs:
         bucket = push_counts.setdefault(
@@ -314,6 +342,12 @@ def tally_nodes(
                 run_id=str(run.cancelled_due_to_run_id),
                 node_id=run.cause_node_id,
             )
+        if (key not in cancel_reasons and status == "cancelled"
+                and run.cancel_reason is not None):
+            cancel_reasons[key] = run.cancel_reason
+        if status == "cancelled" and run.cancel_reason is not None:
+            by_reason = cancel_reason_counts.setdefault(key, {})
+            by_reason[run.cancel_reason] = by_reason.get(run.cancel_reason, 0) + 1
         if key not in errors and status in ("failed", "cancelled"):
             raw_msg = (run.error_message or "").strip()
             if raw_msg:
@@ -335,6 +369,8 @@ def tally_nodes(
         cache_hits=cache_hits,
         push_counts=push_counts,
         cancel_causes=cancel_causes,
+        cancel_reasons=cancel_reasons,
+        cancel_reason_counts=cancel_reason_counts,
     )
 
 
@@ -342,7 +378,8 @@ def tally_nodes(
     purpose="Project each canvas method node that has rows onto its state, "
             "looked up by its own node id: status, tally and run ids; the "
             "newest error when failed or mixed; the failed run and its node "
-            "behind a cancellation; the cache hit; the push state and counts",
+            "behind a cancellation; the cancelled rows per reason; the cache "
+            "hit; the push state and counts",
     inputs="The step map (node id -> method name) and the node tallies",
     outputs="Node states for the method nodes that have rows, in step-map order",
 )
@@ -397,6 +434,15 @@ def project_node_states(
                 entry["upstream_run_id"] = cause.run_id
                 if cause.node_id is not None:
                     entry["upstream_node_id"] = cause.node_id
+            reason = tallies.cancel_reasons.get(node_id)
+            if reason is not None and status == "cancelled":
+                entry["cancel_reason"] = reason
+            # Every cancelled row's reason, counted, for the pipeline status
+            # rule (an engine-side reason reads as a failure when nothing
+            # completed). The status route's response model does not carry it.
+            reason_counts = tallies.cancel_reason_counts.get(node_id)
+            if reason_counts:
+                entry["cancel_reason_tally"] = dict(reason_counts)
             # Cache-hit surface.  Attached from the node's newest Run row
             # that carries ``cache_source_run_id``, regardless of the
             # aggregated ``status`` above — typically ``completed`` for a
@@ -475,12 +521,56 @@ def settle_unstarted_nodes(
     return settled
 
 
+#: How the status route words each pipeline status ``pipeline_status`` gives.
+CANVAS_OVERALL_STATUS = {
+    PIPELINE_RUNNING: "running",
+    PIPELINE_SUCCEEDED: "completed",
+    PIPELINE_FAILED: "failed",
+    PIPELINE_CANCELLED: "cancelled",
+    PIPELINE_MIXED: "completed_with_failures",
+}
+
+
+def _node_runs(node_state: dict[str, Any]) -> list[tuple[str, str | None]]:
+    """The runs a node state stands for, as ``(status, cancel_reason)``.
+
+    A node with rows stands for its tally, one status per row; its
+    cancelled rows carry the reasons its ``cancel_reason_tally`` counts, and
+    any cancelled row beyond those recorded none. A node without a tally
+    stands for its display state: ``mixed`` is a completed and a failed run,
+    a settled ``completed`` one completed run, a state that has not ended
+    (``running``, ``unknown``) one running run, and ``pending`` none (it is
+    counted as pending instead).
+    """
+    tally = node_state.get("tally")
+    if tally:
+        reasons = [reason
+                   for reason, n in node_state.get("cancel_reason_tally", {}).items()
+                   for _ in range(n)]
+        runs: list[tuple[str, str | None]] = []
+        for status, n in tally.items():
+            for _ in range(n):
+                reason = reasons.pop() if status == "cancelled" and reasons else None
+                runs.append((status, reason))
+        return runs
+    status = node_state["status"]
+    if status == "pending":
+        return []
+    if status == "mixed":
+        return [("completed", None), ("failed", None)]
+    if status in ("completed", "failed", "cancelled"):
+        return [(status, None)]
+    return [("running", None)]
+
+
 @task(
-    purpose="Derive the pipeline's overall status from its node states: running "
-            "dominates, then failed, cancelled, completed_with_failures and "
-            "completed; an ended thread with an error and a node still pending "
-            "is failed, or cancelled when the user asked for a cancel and no "
-            "node failed",
+    purpose="Derive the pipeline's overall status from its node states: the "
+            "pipeline status rule over the nodes' run statuses with each "
+            "cancelled row's reason (an engine-side reason fails a pipeline "
+            "in which nothing completed) and the pending nodes, in the "
+            "route's words; an ended thread with an error and a "
+            "node still pending is failed, or cancelled when the user asked "
+            "for a cancel and no node failed",
     inputs="The settled node states, the thread's liveness, the job's recorded "
            "error, whether the user asked for a cancel",
     outputs="The overall status",
@@ -490,6 +580,13 @@ def derive_overall_status(
     cancel_requested: bool = False,
 ) -> str:
     """Derive the overall status of a pipeline.
+
+    The terminal word comes from Execution's ``pipeline_status``, the one
+    rule History's pipeline summary uses too, over the runs the node states
+    stand for (each status, and each cancelled row's reason) and the number
+    of nodes still pending; its
+    ``succeeded`` reads ``completed`` here and its ``mixed``
+    ``completed_with_failures``.
 
     Args:
         node_states: The settled node states.
@@ -502,34 +599,13 @@ def derive_overall_status(
         ``pending``, ``running``, ``failed``, ``cancelled``,
         ``completed_with_failures`` or ``completed``.
     """
-    # "mixed" is a terminal state for a node — its per-sample runs finished
-    # but with partial failure. At the pipeline level that maps to
-    # `completed_with_failures` when nothing is still running; during
-    # execution it stays `running`.
     statuses = [ns["status"] for ns in node_states.values()] if node_states else []
     if not statuses:
         overall = "pending"
-    elif any(s == "running" for s in statuses):
-        overall = "running"
-    elif any(s == "failed" for s in statuses):
-        # Any fully-failed node fails the pipeline.
-        # Failure dominates cancellation — if anything genuinely errored
-        # before the cancel landed, surface that.
-        overall = "failed"
-    elif any(s == "cancelled" for s in statuses):
-        # Nothing running, nothing failed, at least one cancelled node.
-        # The polling actor reads this as a terminal status and stops
-        # the loop; without this branch the chain falls through to the
-        # "running" fallback below.
-        overall = "cancelled"
-    elif any(s == "mixed" for s in statuses):
-        # Nothing running, nothing fully failed, but some node saw partial
-        # failures across its fan-out samples. Keep-going enabled this.
-        overall = "completed_with_failures"
-    elif all(s == "completed" for s in statuses):
-        overall = "completed"
     else:
-        overall = "running"
+        runs = [run for ns in node_states.values() for run in _node_runs(ns)]
+        pending = sum(1 for s in statuses if s == "pending")
+        overall = CANVAS_OVERALL_STATUS[pipeline_status(runs, pending)]
 
     # A dead thread with an error is terminal. Any node still pending will
     # never start, so the pipeline failed -- whether nothing ran at all or

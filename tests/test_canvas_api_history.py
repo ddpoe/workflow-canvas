@@ -101,7 +101,7 @@ def test_pickers_list_samples_and_completed_runs(canvas_client, canvas_db, provi
         session.add(meth)
         session.flush()
         session.add(Sample(name="s1", source_path="/raw/s1.tif",
-                           registered_path="data/samples/s1/s1.tif", file_type="tif",
+                           registered_path="s1.tif", file_type="tif",
                            file_size=10, registered_at=datetime(2026, 1, 2, 3, 4, 5)))
         completed = Run(method_id=meth.id, sample="s1", status="completed",
                         params={"channels": ["dapi"]}, pipeline_id="pipe-1")
@@ -122,7 +122,7 @@ def test_pickers_list_samples_and_completed_runs(canvas_client, canvas_db, provi
 
     assert samples.status_code == 200, samples.text
     assert samples.json() == [{
-        "name": "s1", "file_type": "tif", "registered_path": "data/samples/s1/s1.tif",
+        "name": "s1", "file_type": "tif", "registered_path": "s1.tif",
         "file_size": 10, "registered_at": "2026-01-02 03:04:05.000000",
         "description": None, "file_count": None,
     }]
@@ -205,3 +205,35 @@ def test_run_edits_refuse_a_malformed_or_unknown_id(
     resp = canvas_client.patch(f"/api/wfc/run/{path_id}", json={"favorite": True})
 
     assert resp.status_code == expected_status, resp.text
+
+
+@workflow(
+    purpose="A run carries the label of the method version it ran: the run "
+            "detail of a run made at v1 says 1, and still says 1 after a "
+            "newer version is registered",
+)
+def test_run_detail_carries_the_label_of_the_version_it_ran(
+    tmp_project, monkeypatch
+):
+    from tests.fixtures.routes import canvas_client, completed_run
+    from tests.harness.project import method_source_dir
+    from wfc.registration import register_method
+    from wfc.registration.method_version import read_version_list
+
+    driven = completed_run(tmp_project, monkeypatch=monkeypatch, method="labelled")
+    spec = next(s for s in driven.project.scenario.method_nodes()
+                if s.method_name == "labelled")
+    method_dir = method_source_dir(tmp_project, spec)
+    script = method_dir / "labelled.py"
+    script.write_text(script.read_text(encoding="utf-8") + "\n# v2\n",
+                      encoding="utf-8")
+    register_method(method_dir=method_dir, module_name=spec.module, assume_yes=True)
+    assert [e.label for e in read_version_list(tmp_project, spec.module,
+                                               "labelled")] == [1, 2]
+    client = canvas_client(tmp_project, monkeypatch)
+    bind_provider(monkeypatch, WfcProvider(str(tmp_project)))
+
+    resp = client.get(f"/api/wfc/run/{driven.run_id}")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["version"] == 1

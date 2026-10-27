@@ -11,7 +11,7 @@ state):
 - an entry whose cache object is missing (``_drop_cache_object``), the
   real-means failure for the per-entry witness;
 - a directory tree laid at an unsuffixed address (``_lay_tree_at``), the
-  pre-cycle directory shape a malformed cache entry has.
+  legacy directory shape a malformed cache entry has.
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ from sqlmodel import select
 from wfc import layout
 from wfc.persistence import PushStatus, RunOutput, Sample, get_session
 from wfc.registration import register_sample
+from tests.fixtures.conftest import fixture_env_blob
 from tests.fixtures.routes import completed_run, project_archive_dir, sample_source_dir
 
 
@@ -65,7 +66,7 @@ def _drop_cache_object(project: Path, md5: str) -> None:
 
 
 def _lay_tree_at(project: Path, md5: str) -> Path:
-    """Declared deviation: the pre-cycle directory shape at an unsuffixed address."""
+    """Declared deviation: the legacy directory shape at an unsuffixed address."""
     address = layout.dvc_cache_entry(project, md5)
     _force_remove(address)
     _write(address, {"a.csv": b"old shape\n"})
@@ -90,7 +91,7 @@ def _sample_rows() -> dict[str, Sample]:
                   "rows are pushed and reach the remote; only the failing row is "
                   "failed, with its own entry's error")
 def test_a_failed_entry_fails_alone(tmp_project, monkeypatch):
-    """P3-3. The failure is produced by real means: the entry's object is gone."""
+    """The failure is produced by real means: the entry's object is gone."""
     _ = Step(step_num=1, name="Register three samples inside a pipeline",
              purpose="WFC_PIPELINE_ID leaves each row pending for the worker")
     monkeypatch.setenv("WFC_PIPELINE_ID", "per-entry")
@@ -111,7 +112,9 @@ def test_a_failed_entry_fails_alone(tmp_project, monkeypatch):
     _ = Step(step_num=4, name="Only the broken row failed",
              purpose="Good rows pushed with no error; the broken row names its own entry")
     after = _sample_rows()
-    assert (pushed, remaining) == (2, 1)
+    # The good rows, and the project's fixture env's blob row beside them.
+    assert (pushed, remaining) == (3, 1)
+    assert _remote_has(tmp_project, fixture_env_blob(tmp_project))
     for name in ("good_a", "good_b"):
         assert after[name].push_status == PushStatus.pushed.value, name
         assert after[name].push_error is None
@@ -122,6 +125,35 @@ def test_a_failed_entry_fails_alone(tmp_project, monkeypatch):
     assert rows["broken"].content_hash in broken.push_error
     assert "not complete in the local cache" in broken.push_error
     assert not _remote_has(tmp_project, broken.content_hash)
+
+
+@workflow(purpose="A cache entry whose local bytes no longer match its address is "
+                  "never pushed: its row fails naming the change, and the remote "
+                  "never holds the edited bytes")
+def test_a_changed_entry_is_not_pushed(tmp_project, monkeypatch):
+    """The pre-push check asks Storage's one integrity check."""
+    _ = Step(step_num=1, name="Register a sample inside a pipeline",
+             purpose="Its row stays pending for the worker")
+    monkeypatch.setenv("WFC_PIPELINE_ID", "changed")
+    src = sample_source_dir(tmp_project)
+    row = _register(tmp_project, "edited", _write(src, {"edited.csv": b"e\n1\n"}) / "edited.csv")
+
+    _ = Step(step_num=2, name="Edit its cache object in place",
+             purpose="The address now holds other bytes")
+    obj = layout.dvc_cache_entry(tmp_project, row.content_hash)
+    os.chmod(obj, stat.S_IWRITE | stat.S_IREAD)
+    obj.write_bytes(b"e\n2\n")
+
+    _ = Step(step_num=3, name="Tick the worker once", purpose="The real transport")
+    _tick(tmp_project)
+
+    _ = Step(step_num=4, name="The row failed naming the change",
+             purpose="Nothing reached the remote under the genuine hash")
+    after = _sample_rows()["edited"]
+    assert after.push_status == PushStatus.failed.value
+    assert row.content_hash in after.push_error
+    assert "changed in the local cache" in after.push_error
+    assert not _remote_has(tmp_project, row.content_hash)
 
 
 @workflow(purpose="A file entry and a directory entry pushed in one tick both reach "
@@ -145,7 +177,9 @@ def test_a_file_and_a_directory_entry_both_reach_the_remote(tmp_project, monkeyp
 
     _ = Step(step_num=3, name="Both entries are on the remote",
              purpose="The directory went up as DVC's shape: manifest plus members")
-    assert (pushed, remaining) == (2, 0)
+    # Both samples, and the project's fixture env's blob row beside them.
+    assert (pushed, remaining) == (3, 0)
+    assert _remote_has(tmp_project, fixture_env_blob(tmp_project))
     after = _sample_rows()
     assert {after["plain"].push_status, after["tree"].push_status} == {PushStatus.pushed.value}
     assert _remote_has(tmp_project, file_row.content_hash)
@@ -160,7 +194,7 @@ def test_a_file_and_a_directory_entry_both_reach_the_remote(tmp_project, monkeyp
                   "re-registration, a run output's names re-running; nothing is "
                   "converted")
 def test_a_malformed_entry_is_refused_on_push_and_pull(tmp_project, monkeypatch):
-    """P3-4, push and pull legs (the restore leg is in test_directory_cache_entry)."""
+    """Push and pull legs (the restore leg is in test_directory_cache_entry)."""
     from wfc.storage import archive_outputs
     from wfc.storage.cache import MalformedEntryError
     from wfc.storage.transport import pull_cache
@@ -180,7 +214,7 @@ def test_a_malformed_entry_is_refused_on_push_and_pull(tmp_project, monkeypatch)
         session.commit()
         output_hash = ro.content_hash
 
-    _ = Step(step_num=2, name="Both entries take the pre-cycle directory shape",
+    _ = Step(step_num=2, name="Both entries take the legacy directory shape",
              purpose="A tree at each unsuffixed address")
     sample_tree = _lay_tree_at(tmp_project, sample.content_hash)
     output_tree = _lay_tree_at(tmp_project, output_hash)

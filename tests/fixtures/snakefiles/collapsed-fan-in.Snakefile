@@ -29,7 +29,7 @@ PARAMS = {
 # Pipeline logger — writes to pipeline.log + stderr
 PIPELINE_LOG_DIR = os.environ.get(
     "WFC_PIPELINE_LOG_DIR",
-    os.path.join(".runs", "pipelines", PIPELINE_ID),
+    os.path.join(".wfc/runs/pipelines", PIPELINE_ID),
 )
 os.makedirs(PIPELINE_LOG_DIR, exist_ok=True)
 os.makedirs(os.path.join(PIPELINE_LOG_DIR, "runs"), exist_ok=True)
@@ -62,12 +62,12 @@ os.environ["WFC_PIPELINE_ID"] = PIPELINE_ID
 
 rule all:
     input:
-        expand(".runs/sentinels/pin-collapsed-fan-in/filter/__all__/{variant}/.complete", variant=VARIANT_NAMES)
+        expand(".wfc/runs/sentinels/pin-collapsed-fan-in/filter/__all__/{variant}/.complete", variant=VARIANT_NAMES)
 
 SAMPLE_HASHES = {'s1': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 's2': 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'}
 
 rule restore_sample:
-    output: "data/samples/{sample}/.sample_ready"
+    output: ".wfc/workspace/samples/{sample}/.sample_ready"
     params:
         hash_arg=lambda wildcards: ("--hash " + SAMPLE_HASHES[wildcards.sample]) if SAMPLE_HASHES.get(wildcards.sample) else ""
     shell:
@@ -75,10 +75,10 @@ rule restore_sample:
 
 rule merge:
     input:
-        sources_0="data/samples/s1/.sample_ready",
-        sources_1="data/samples/s2/.sample_ready",
-        sources_2="data/samples/s3/.sample_ready"
-    output: ".runs/sentinels/pin-collapsed-fan-in/merge/__all__/{variant}/.complete"
+        sources_0=".wfc/workspace/samples/s1/.sample_ready",
+        sources_1=".wfc/workspace/samples/s2/.sample_ready",
+        sources_2=".wfc/workspace/samples/s3/.sample_ready"
+    output: ".wfc/runs/sentinels/pin-collapsed-fan-in/merge/__all__/{variant}/.complete"
     params:
         variant="{variant}",
         node_id="merge"
@@ -86,8 +86,8 @@ rule merge:
         "{sys.executable} -m wfc run-step --node-id {params.node_id} --sample __all__ --variant {params.variant} --collapsed-sample s1 --collapsed-sample s2 --collapsed-sample s3"
 
 rule filter:
-    input: ".runs/sentinels/pin-collapsed-fan-in/merge/__all__/{variant}/.complete"
-    output: ".runs/sentinels/pin-collapsed-fan-in/filter/__all__/{variant}/.complete"
+    input: ".wfc/runs/sentinels/pin-collapsed-fan-in/merge/__all__/{variant}/.complete"
+    output: ".wfc/runs/sentinels/pin-collapsed-fan-in/filter/__all__/{variant}/.complete"
     params:
         variant="{variant}",
         node_id="filter"

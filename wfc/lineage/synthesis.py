@@ -5,19 +5,24 @@ back to the roots, across pipeline boundaries, and returns a flat pipeline
 document that the canvas's ``loadPipeline()`` consumes without transformation.
 It reads only the records it is handed: no database, and no ``pipeline.json``.
 
-:func:`synthesize_lineage_pipeline` runs four phases:
+:func:`synthesize_lineage_pipeline` runs five phases:
 
 1. **Collect** the clicked run and every run reachable over input edges,
    breadth-first, refusing past 1000 hops.
-2. **Mint** one method node per collected run, carrying its literal method,
-   module, params and NID label.
-3. **Wire** one link per input edge inside the collected set. A per-sample to
+2. **Refuse** a lineage whose clicked run never ran (cancelled, or refused
+   at its claim), saying so; otherwise refuse one holding a run whose record
+   carries no version identity (a run made before versions carried an
+   environment fingerprint), naming every such run: its node could not be
+   pinned to the version it ran.
+3. **Mint** one method node per collected run, carrying its literal method,
+   module, params, NID label and a pin to the version the run ran.
+4. **Wire** one link per input edge inside the collected set. A per-sample to
    ``__all__`` boundary collapses into one fan-in selector carrying the bundled
    samples. Each run that recorded sample reads is fed from an input-selector
    head into each slot it recorded, one shared head per sample (a collapsed
    run's own fan-in head for its bundle). A run that recorded no reads is fed
    only if it is a root, into its first input slot.
-4. **Emit** the document, with the clicked run's samples.
+5. **Emit** the document, with the clicked run's samples.
 
 Synthesis follows input edges only. It does not wire a reuse edge, which would
 place each reused step in the pipeline twice.
@@ -59,6 +64,13 @@ class SynthesisRecord(RunRecord, Protocol):
         bundledSamples: The samples a collapsed run bundled.
         sampleInputs: One ``{"slot": ..., "sample": ...}`` mapping per sample
             the run recorded reading, or empty for a run that recorded none.
+        versionIdentity: The content identity of the method version the run
+            ran (what a pin holds). None when the run records no version, or
+            when its version row has no environment fingerprint (a row made
+            before versions carried one); synthesis refuses such a run.
+        status: The run's status as the provider reports it.
+        timestamp: The run's start time in Unix ms, ``0`` for a run with no
+            start time.
     """
 
     parents: Sequence[Mapping[str, Any]]
@@ -69,6 +81,9 @@ class SynthesisRecord(RunRecord, Protocol):
     dataSource: str
     bundledSamples: Sequence[str]
     sampleInputs: Sequence[Mapping[str, str]]
+    versionIdentity: str | None
+    status: str
+    timestamp: float
 
 
 class LineageSynthesisError(Exception):
@@ -77,6 +92,12 @@ class LineageSynthesisError(Exception):
     Cases:
       - Unknown ``run_id`` (the caller should already have answered 404).
       - The 1000-hop cap exceeded, typically a malformed cycle.
+      - The clicked run never ran (cancelled, or refused at its claim): it
+        has no version to pin. The message names it by id with its
+        ``module.method`` and says why it never ran.
+      - A collected run whose record carries no version identity: its node
+        cannot be pinned to the version it ran. The message names every such
+        run by id with its ``module.method`` and points to the palette.
     """
 
 
@@ -138,8 +159,74 @@ def _collect_ancestor_runs(
     return [visited[rid] for rid in order]
 
 
+@task(purpose="Refuse a lineage whose clicked run never ran, saying so; "
+              "otherwise refuse one holding a run whose record carries no "
+              "version identity, naming every such run with its "
+              "module.method, before any node is minted",
+      inputs="the collected records, the clicked run first",
+      outputs="nothing when the clicked run ran and every run carries a "
+              "version identity",
+      critical="Nothing is opened unpinned: no identity is derived from the "
+               "code fingerprint alone and no record is rewritten")
+def _refuse_unpinnable_runs(collected: Sequence[SynthesisRecord]) -> None:
+    """Refuse the lineage when a collected run has no version identity.
+
+    A run *never ran* when its record has no start time and its status is
+    ``cancelled`` (cancelled before it started) or ``failed`` (refused at its
+    claim). Such a run records no version, so a clicked run that never ran is
+    refused saying why it has none. Only the clicked run is checked this way:
+    a run that never ran has no outputs, so no run's input edge names it.
+
+    Otherwise a run records no identity when it records no version, or when
+    its version row has no environment fingerprint, as a run made before
+    versions carried one. Its node could not be pinned to the version it
+    ran, so the lineage is refused rather than opened following the newest
+    version.
+
+    Args:
+        collected: The collected records, the clicked run first.
+
+    Raises:
+        LineageSynthesisError: The clicked run never ran; or one or more
+            collected runs carry no version identity, and the message names
+            each by run id and ``module.method`` in collection order, and
+            says how to run a registered version.
+    """
+    clicked = collected[0] if collected else None
+    if (clicked is not None and not clicked.versionIdentity
+            and not clicked.timestamp
+            and clicked.status in ("cancelled", "failed")):
+        name = f"{clicked.module}.{clicked.method}"
+        why = ("was cancelled before it ran" if clicked.status == "cancelled"
+               else "was refused before it ran (its error says why)")
+        raise LineageSynthesisError(
+            f"Cannot open this lineage: run {clicked.id} ({name}) {why}, so "
+            "it has no version to pin. Open its pipeline in Canvas from "
+            "History to run it again."
+        )
+    unpinnable = [r for r in collected if not r.versionIdentity]
+    if not unpinnable:
+        return
+    if len(unpinnable) == 1:
+        run = unpinnable[0]
+        name = f"{run.module}.{run.method}"
+        raise LineageSynthesisError(
+            f"Cannot open this lineage: run {run.id} ({name}) ran a version "
+            "that no version list records, so its node cannot be pinned to "
+            f"it. Add {name} from the palette to run one of its registered "
+            "versions."
+        )
+    named = ", ".join(f"{r.id} ({r.module}.{r.method})" for r in unpinnable)
+    raise LineageSynthesisError(
+        f"Cannot open this lineage: runs {named} ran versions that no version "
+        "list records, so their nodes cannot be pinned to them. Add these "
+        "methods from the palette to run their registered versions."
+    )
+
+
 @task(purpose="Mint one method node per collected run, carrying its literal "
-              "method, module, params and NID label",
+              "method, module, params, NID label and a pin to the version "
+              "the run ran",
       inputs="the collected records",
       outputs="each run's synthetic node id, and the method nodes in "
               "collection order")
@@ -150,6 +237,11 @@ def _mint_nodes(
 
     Position is left to the canvas: ``loadPipeline`` places a node that has no
     ``position``, as it does for an authored canvas.
+
+    Each node is pinned to the version its run ran, so the opened lineage
+    runs the same versions after a newer one is registered. Every collected
+    run carries a version identity: the refusal step before this one
+    refuses a lineage holding a run that does not.
 
     Args:
         collected: The collected records.
@@ -167,6 +259,7 @@ def _mint_nodes(
             "method": run.method,
             "module": run.module,
             "params": dict(run.inputs or {}),
+            "version": run.versionIdentity,
         }
         if run.nid:
             method_node["label"] = run.nid
@@ -438,18 +531,22 @@ def synthesize_lineage_pipeline(
         it without transformation.
 
     Raises:
-        LineageSynthesisError: An unknown ``run_id``, or the hop cap exceeded.
+        LineageSynthesisError: An unknown ``run_id``, the hop cap exceeded,
+            or a collected run with no recorded version identity.
     """
     口 = AutoStep(step_num=1, name="Collect ancestors")
     collected = _collect_ancestor_runs(records, run_id)
 
-    口 = AutoStep(step_num=2, name="Mint nodes")
+    口 = AutoStep(step_num=2, name="Refuse runs with no recorded version")
+    _refuse_unpinnable_runs(collected)
+
+    口 = AutoStep(step_num=3, name="Mint nodes")
     node_id_for_run, method_nodes = _mint_nodes(collected)
 
-    口 = AutoStep(step_num=3, name="Wire links")
+    口 = AutoStep(step_num=4, name="Wire links")
     selector_nodes, links = _wire_links(records, collected, node_id_for_run)
 
-    口 = AutoStep(step_num=4, name="Emit the document")
+    口 = AutoStep(step_num=5, name="Emit the document")
     document = _emit_document(
         records[run_id], run_id, method_nodes + selector_nodes, links
     )

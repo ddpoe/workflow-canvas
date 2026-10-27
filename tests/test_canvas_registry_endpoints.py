@@ -2,14 +2,15 @@
 
 Covers:
   - GET  /api/registry/modules     (response shape)
-  - GET  /api/registry/methods     (validated: null default)
-  - POST /api/registry/methods/validate (cache hit, fingerprint invalidation,
-    the ``__main__`` block not executed)
+  - GET  /api/registry/methods     (the method rows and their versions)
   - POST /api/registry/samples     (DvcNotConfiguredError -> 409)
   - POST /api/registry/modules     (?dryRun=true does not persist)
-  - method detail (files and contract; path traversal refused)
+  - POST /api/registry/methods     (?dryRun=true states the plan, writes
+    nothing; the Register POST applies it)
+  - method detail (files, the script first, and contract; path traversal
+    refused) and the version export zip
   - filesystem browse (project-root listing; traversal refused)
-  - environments list, packages and blob endpoints
+  - environments list and packages endpoints
 """
 
 from __future__ import annotations
@@ -17,11 +18,19 @@ from __future__ import annotations
 from tests.conftest import pin_project_root
 from tests.fixtures.fakes import stub_registry_seam
 
+from pathlib import Path
+
 import pytest
+from axiom_annotations import workflow
+
+from wfc import layout
 from sqlmodel import Session, create_engine, select
 
-from wfc.canvas.routes import registry as registry_routes
 from wfc.persistence import Method, Module
+from wfc.registration import (
+    MalformedMethodRecordError,
+    resolve_method_code,
+)
 from tests.fixtures.routes import (
     build_project_snapshot,
     canvas_client,
@@ -130,14 +139,11 @@ def test_get_registry_modules_shape(client):
 
 
 # =============================================================================
-# T2: GET /api/registry/methods — validated: null on uncached methods
+# T2: GET /api/registry/methods — one row per method
 # =============================================================================
 
-def test_get_registry_methods_includes_validated_null(client, registry_project):
-    """Freshly-registered methods (no dryRun run yet) report validated: null.
-
-    `validated: bool | null` is sourced from the dryRun cache.
-    """
+def test_get_registry_methods_lists_each_method(client, registry_project):
+    """Each registered method is a row: its module, env, runs and registered copy."""
     resp = client.get("/api/registry/methods")
     assert resp.status_code == 200
 
@@ -153,84 +159,9 @@ def test_get_registry_methods_includes_validated_null(client, registry_project):
     # bare env name the scenario declared, which is the only form the
     # contract parser accepts.
     assert tile["env"] == registry_project.project.env_name
-    assert tile["validated"] is None
     assert tile["runCount"] == 0
-    assert tile["source"] == "methods/tile_export/method.yaml"
-
-
-# =============================================================================
-# T3: Method validate — cache hit when fingerprint unchanged
-# =============================================================================
-
-def test_method_validate_cache_hit_on_unchanged_fingerprint(
-    client, tmp_path, monkeypatch
-):
-    """Second validate call with identical script contents skips subprocess."""
-    script = tmp_path / "methods" / "tile_export" / "tile_export.py"
-    script.parent.mkdir(parents=True, exist_ok=True)
-    script.write_text("# tile_export\n")
-
-    # Point the server at this tmp project so fingerprint lookup resolves.
-    pin_project_root(monkeypatch, tmp_path)
-
-    call_count = {"n": 0}
-
-    def fake_import_check(python_bin, module_name):
-        call_count["n"] += 1
-        return (0, "", "")
-
-    stub_registry_seam(monkeypatch, "_run_import_check_fn", fake_import_check)
-    registry_routes._method_validate_cache.clear()
-
-    first = client.post("/api/registry/methods/validate",
-                        json={"module": "preprocessing", "method": "tile_export"})
-    assert first.status_code == 200
-    assert first.json()["validated"] is True
-    assert call_count["n"] == 1
-
-    second = client.post("/api/registry/methods/validate",
-                         json={"module": "preprocessing", "method": "tile_export"})
-    assert second.status_code == 200
-    assert second.json()["validated"] is True
-    # Fingerprint unchanged -> cache hit -> subprocess NOT called a second time.
-    assert call_count["n"] == 1
-
-
-# =============================================================================
-# T4: Method validate — cache invalidated when script fingerprint changes
-# =============================================================================
-
-def test_method_validate_invalidates_on_fingerprint_change(
-    client, tmp_path, monkeypatch
-):
-    """Editing the script file changes its sha256; the next validate re-runs."""
-    script = tmp_path / "methods" / "tile_export" / "tile_export.py"
-    script.parent.mkdir(parents=True, exist_ok=True)
-    script.write_text("# v1\n")
-
-    pin_project_root(monkeypatch, tmp_path)
-
-    call_count = {"n": 0}
-
-    def fake_import_check(python_bin, script_path):
-        call_count["n"] += 1
-        return (0, "", "")
-
-    stub_registry_seam(monkeypatch, "_run_import_check_fn", fake_import_check)
-    registry_routes._method_validate_cache.clear()
-
-    r1 = client.post("/api/registry/methods/validate",
-                     json={"module": "preprocessing", "method": "tile_export"})
-    assert r1.status_code == 200
-    assert call_count["n"] == 1
-
-    # Edit the script -> fingerprint changes -> cache key misses.
-    script.write_text("# v2 — different contents\n")
-
-    r2 = client.post("/api/registry/methods/validate",
-                     json={"module": "preprocessing", "method": "tile_export"})
-    assert r2.status_code == 200
-    assert call_count["n"] == 2
+    assert tile["source"] == (
+        f".wfc/registry/methods/{REGISTRY_MODULE}/tile_export/method.yaml")
 
 
 # =============================================================================
@@ -297,71 +228,361 @@ def test_post_registry_modules_dryrun_does_not_persist(
 
 
 # =============================================================================
-# validate must NOT execute the `if __name__ == "__main__":` block
-# =============================================================================
-
-def test_method_validate_does_not_run_main_block(client, tmp_path, monkeypatch):
-    """Scripts gated by `if __name__ == "__main__":` must import cleanly.
-
-    Fixture method scripts wrap their work in `main()` called from a
-    `__main__` guard. Running the validator with run_name='__main__' would
-    invoke main() and crash with a KeyError on missing env vars. The import
-    check must load the script as a non-__main__ module so the guard protects
-    the validator.
-    """
-    script = tmp_path / "methods" / "tile_export" / "tile_export.py"
-    script.parent.mkdir(parents=True, exist_ok=True)
-    script.write_text(
-        "def main():\n"
-        "    raise RuntimeError('must not run during validate')\n"
-        "\n"
-        "if __name__ == '__main__':\n"
-        "    main()\n"
-    )
-
-    pin_project_root(monkeypatch, tmp_path)
-    registry_routes._method_validate_cache.clear()
-
-    resp = client.post(
-        "/api/registry/methods/validate",
-        json={"module": "preprocessing", "method": "tile_export"},
-    )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["validated"] is True, f"Unexpected: {body}"
-
-
-# =============================================================================
 # T7: GET /api/registry/methods/{module}/{method}/detail — files + contract
 # =============================================================================
 
-def test_method_detail_returns_files_and_contract(client, tmp_path, monkeypatch):
-    """Detail endpoint returns every file in method dir + parsed contract."""
-    method_dir = tmp_path / "methods" / "tile_export"
-    method_dir.mkdir(parents=True, exist_ok=True)
-    (method_dir / "tile_export.py").write_text("def main():\n    pass\n")
-    (method_dir / "method.yaml").write_text("name: tile_export\n")
-
-    pin_project_root(monkeypatch, tmp_path)
+def test_method_detail_returns_files_and_contract(client, registry_project):
+    """Detail lists the registered copy's files and the parsed contract."""
+    code = resolve_method_code(REGISTRY_MODULE, "tile_export",
+                               registry_project.project.root)
 
     resp = client.get("/api/registry/methods/preprocessing/tile_export/detail")
     assert resp.status_code == 200
 
     body = resp.json()
-    assert "files" in body
-    assert "contract" in body
-
     by_name = {f["name"]: f for f in body["files"]}
-    assert "tile_export.py" in by_name
-    assert "method.yaml" in by_name
-    assert by_name["tile_export.py"]["language"] == "python"
+    assert set(by_name) == {p.name for p in code.code_dir.iterdir()
+                            if p.is_file()}
+    # The main script opens first, though method.yaml sorts before it.
+    assert body["files"][0]["name"] == code.script.name
+    assert sorted(by_name) == ["method.yaml", code.script.name]
     assert by_name["method.yaml"]["language"] == "yaml"
-    assert "def main()" in by_name["tile_export.py"]["content"]
+    assert by_name[code.script.name]["language"] == "python"
+    assert by_name[code.script.name]["content"] == code.script.read_text(
+        encoding="utf-8")
 
     contract = body["contract"]
+    assert set(contract["output_slots"]) == {"expression_matrix"}
     assert "input_slots" in contract
-    assert "output_slots" in contract
     assert "params_schema" in contract
+
+
+# =============================================================================
+# Versions: the listing, the detail and the export name a version
+# =============================================================================
+
+VERSIONED = "versioned"
+
+
+def _row_commits() -> dict[int, str | None]:
+    """The registration commit each ``MethodVersion`` row records, by label."""
+    from wfc.persistence import MethodVersion, get_session
+    with get_session() as s:
+        return {v.label: v.git_commit for v in s.exec(select(MethodVersion)).all()}
+
+
+def _register_second_version(root, monkeypatch):
+    """A method that ran once at v1, then registered again as v2.
+
+    v2 changes the script, declares a param v1 lacks and runs in another
+    env, all through production: the run by the harness's driven route,
+    the second registration by ``register_method``.
+
+    Returns:
+        ``(module, v1 entry, v2 entry, v1 script text, v1 env name)``.
+    """
+    import yaml
+
+    from tests.fixtures.routes import completed_run, write_env_record
+    from tests.harness.project import method_source_dir
+    from wfc.registration import register_method
+    from wfc.registration.method_version import read_version_list
+
+    driven = completed_run(root, monkeypatch=monkeypatch, method=VERSIONED)
+    spec = next(s for s in driven.project.scenario.method_nodes()
+                if s.method_name == VERSIONED)
+    write_env_record(root, "other", digest="b" * 64)
+    method_dir = method_source_dir(root, spec)
+    script = method_dir / f"{VERSIONED}.py"
+    v1_script = script.read_text(encoding="utf-8")
+    script.write_text(v1_script + "\n# the second version\n", encoding="utf-8")
+    contract = yaml.safe_load((method_dir / "method.yaml").read_text(encoding="utf-8"))
+    v1_env = contract["env"]
+    contract["params"] = {"threshold": {"type": "float"}}
+    contract["env"] = "other"
+    (method_dir / "method.yaml").write_text(
+        yaml.safe_dump(contract, sort_keys=False), encoding="utf-8")
+    register_method(method_dir=method_dir, module_name=spec.module, assume_yes=True)
+    v1, v2 = read_version_list(root, spec.module, VERSIONED)
+    return spec.module, v1, v2, v1_script, v1_env
+
+
+@workflow(purpose="The Registry looks back at any version of a method: the "
+                  "listing names every version (label, identity, date, env, "
+                  "its own run count, its commit, env fingerprint, image and "
+                  "code tree) with the newest marked, and the detail given a "
+                  "version's identity returns that version's files, contract, "
+                  "env and run count; no identity is the newest and an "
+                  "unknown one is a 404 naming it")
+def test_registry_detail_shows_any_version_and_the_listing_marks_the_newest(
+        tmp_project, monkeypatch):
+    module, v1, v2, v1_script, v1_env = _register_second_version(tmp_project, monkeypatch)
+    client = canvas_client(tmp_project, monkeypatch)
+
+    listing = client.get("/api/registry/methods")
+    older = client.get(f"/api/registry/methods/{module}/{VERSIONED}/detail",
+                       params={"version": v1.identity})
+    newest = client.get(f"/api/registry/methods/{module}/{VERSIONED}/detail")
+    unknown = client.get(f"/api/registry/methods/{module}/{VERSIONED}/detail",
+                         params={"version": "f" * 64})
+
+    commits = _row_commits()
+    assert commits[1] and commits[2] and commits[1] != commits[2]
+    row = next(m for m in listing.json()["methods"] if m["name"] == VERSIONED)
+    assert row["env"] == "other"
+    assert row["versions"] == [
+        {"label": 1, "identity": v1.identity, "registered_at": v1.registered_at,
+         "env": v1_env, "runCount": 1, "newest": False, "commit": commits[1],
+         "envFingerprint": v1.env_fingerprint, "image": v1.image_ref,
+         "codeTree": v1.tree_hash},
+        {"label": 2, "identity": v2.identity, "registered_at": v2.registered_at,
+         "env": "other", "runCount": 0, "newest": True, "commit": commits[2],
+         "envFingerprint": v2.env_fingerprint, "image": v2.image_ref,
+         "codeTree": v2.tree_hash},
+    ]
+
+    assert older.status_code == 200, older.text
+    body = older.json()
+    assert {f["name"]: f["content"] for f in body["files"]}[f"{VERSIONED}.py"] == v1_script
+    assert "threshold" not in body["contract"]["params_schema"]
+    assert body["env"] == v1_env
+    assert body["version"] == row["versions"][0]
+
+    assert newest.status_code == 200, newest.text
+    body = newest.json()
+    assert "# the second version" in {
+        f["name"]: f["content"] for f in body["files"]}[f"{VERSIONED}.py"]
+    assert set(body["contract"]["params_schema"]) == {"threshold"}
+    assert body["env"] == "other"
+    assert body["version"]["identity"] == v2.identity
+    assert body["version"]["newest"] is True
+
+    assert unknown.status_code == 404, unknown.text
+    assert "f" * 64 in unknown.json()["detail"]
+
+
+@workflow(purpose="A version this database did not see registered (a fresh "
+                  "clone's database, its rows rebuilt from the version list) "
+                  "names no commit: the listing and the detail say null for "
+                  "it, while a version registered afterwards records its own")
+def test_registry_version_commit_is_null_when_not_recorded(
+        tmp_project, tmp_path_factory, monkeypatch):
+    import shutil
+
+    from wfc.persistence import reset_engine
+    from wfc.registration import register_method, register_module
+
+    module, method = "mod", "transform"
+    source = tmp_path_factory.mktemp("elsewhere") / method
+    shutil.copytree(Path(__file__).resolve().parent / "fixtures" / "methods" / method,
+                    source)
+    register_module(name=module, contracts=[])
+    register_method(method_dir=source, module_name=module, assume_yes=True)
+    # A fresh clone: no database; registering the same content rebuilds the rows.
+    reset_engine()
+    (tmp_project / ".wfc" / "wfc.db").unlink()
+    reset_engine()
+    register_module(name=module, contracts=[])
+    register_method(method_dir=source, module_name=module, assume_yes=True)
+    script = source / f"{method}.py"
+    script.write_text(script.read_text(encoding="utf-8") + "\n# v2\n", encoding="utf-8")
+    register_method(method_dir=source, module_name=module, assume_yes=True)
+    client = canvas_client(tmp_project, monkeypatch)
+
+    row = next(m for m in client.get("/api/registry/methods").json()["methods"]
+               if m["name"] == method)
+    v1, v2 = row["versions"]
+    detail = client.get(f"/api/registry/methods/{module}/{method}/detail",
+                        params={"version": v1["identity"]}).json()
+
+    assert v1["commit"] is None
+    assert detail["version"]["commit"] is None
+    assert v2["commit"] == _row_commits()[2] and v2["commit"]
+
+
+@workflow(purpose="Export script and contract: the zip <method>_v<N>.zip holds "
+                  "every file of that version's registered copy, subfolders "
+                  "included, and not the copy's stamp; an older version exports "
+                  "its own files; an unknown identity is a 404 naming it")
+def test_registry_export_zips_a_versions_copy(tmp_project, tmp_path_factory, monkeypatch):
+    import io
+    import shutil
+    import zipfile
+
+    from wfc.registration import register_method, register_module
+    from wfc.registration.method_version import read_version_list
+
+    module, method = "mod", "transform"
+    source = tmp_path_factory.mktemp("elsewhere") / method
+    shutil.copytree(Path(__file__).resolve().parent / "fixtures" / "methods" / method,
+                    source)
+    yaml_path = source / "method.yaml"
+    yaml_path.write_text(yaml_path.read_text(encoding="utf-8") + f"script: {method}.py\n",
+                         encoding="utf-8")
+    (source / "lib").mkdir()
+    (source / "lib" / "util.py").write_bytes(b"X = 1\n")
+    register_module(name=module, contracts=[])
+    register_method(method_dir=source, module_name=module, assume_yes=True)
+    (source / "lib" / "util.py").write_bytes(b"X = 2\n")
+    register_method(method_dir=source, module_name=module, assume_yes=True)
+    v1, v2 = read_version_list(tmp_project, module, method)
+    client = canvas_client(tmp_project, monkeypatch)
+
+    def export(version=None):
+        params = {"version": version} if version else {}
+        return client.get(f"/api/registry/methods/{module}/{method}/export", params=params)
+
+    def files(resp) -> dict[str, bytes]:
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+            return {name: zf.read(name) for name in zf.namelist()}
+
+    def copy_files(entry) -> dict[str, bytes]:
+        copy = layout.code_copy_dir(tmp_project, entry.tree_hash)
+        return {p.relative_to(copy).as_posix(): p.read_bytes()
+                for p in copy.rglob("*") if p.is_file()}
+
+    older, newest, unknown = export(v1.identity), export(), export("f" * 64)
+
+    assert older.status_code == 200, older.text
+    assert older.headers["content-disposition"] == f'attachment; filename="{method}_v1.zip"'
+    assert files(older) == copy_files(v1)
+    assert set(files(older)) == {"method.yaml", f"{method}.py", "lib/util.py"}
+    assert files(older)["lib/util.py"] == b"X = 1\n"
+    assert not any(name.endswith(".verified") for name in files(older))
+    assert layout.code_copy_stamp(tmp_project, v1.tree_hash).is_file()
+
+    assert newest.headers["content-disposition"] == f'attachment; filename="{method}_v2.zip"'
+    assert files(newest) == copy_files(v2)
+
+    assert unknown.status_code == 404, unknown.text
+    assert "f" * 64 in unknown.json()["detail"]
+
+
+# =============================================================================
+# The dry run states the plan; the Register POST applies it
+# =============================================================================
+
+def _registration_state(root: Path, module: str, method: str) -> tuple:
+    """Everything a method registration writes: HEAD, the list, the snapshot, the rows."""
+    import subprocess
+
+    from wfc.identity import fingerprinted_file_digests
+    from wfc.persistence import MethodVersion, get_session
+
+    list_path = layout.method_versions_path(root, module, method)
+    snapshot = layout.method_dir(root, module, method)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, check=True,
+                          capture_output=True, text=True).stdout.strip()
+    with get_session() as s:
+        rows = sorted(m.name for m in s.exec(select(Method)).all())
+        versions = sorted(v.label for v in s.exec(select(MethodVersion)).all())
+    return (head, list_path.read_bytes() if list_path.is_file() else None,
+            fingerprinted_file_digests(snapshot), rows, versions)
+
+
+@workflow(purpose="For a method whose script changed, the canvas dry run "
+                  "returns the same outcome message wfc register-method prints "
+                  "('already registered (newest v1); this adds v2') and writes "
+                  "nothing; the Register POST then adds v2 and returns the "
+                  "message of the outcome it applied")
+def test_method_dry_run_states_the_plan_and_register_applies_it(
+        tmp_project, tmp_path_factory, monkeypatch, capsys):
+    import shutil
+
+    from wfc.cli import cli_main
+    from wfc.registration import register_module, register_method
+
+    module, method = "mod", "transform"
+    source = tmp_path_factory.mktemp("elsewhere") / method
+    shutil.copytree(Path(__file__).resolve().parent / "fixtures" / "methods" / method,
+                    source)
+    register_module(name=module, contracts=[])
+    register_method(method_dir=source, module_name=module, assume_yes=True)
+    script = source / f"{method}.py"
+    script.write_text(script.read_text(encoding="utf-8") + "\n# v2\n", encoding="utf-8")
+    client = canvas_client(tmp_project, monkeypatch)
+    before = _registration_state(tmp_project, module, method)
+
+    # What the CLI prints for this change: with no terminal and no --yes it
+    # states the plan and refuses, having written nothing.
+    capsys.readouterr()
+    assert cli_main(["register-method", str(source), "--module", module]) == 1
+    cli_out = capsys.readouterr().out
+    assert _registration_state(tmp_project, module, method) == before
+
+    body = {"directory": str(source), "module": module, "method_name": None}
+    dry = client.post("/api/registry/methods?dryRun=true", json=body)
+    assert dry.status_code == 200, dry.text
+    plan = dry.json()["plan"]
+    assert plan["outcome"] == "changed"
+    assert plan["message"].startswith(
+        f"{module}/{method} is already registered (newest v1); this adds v2.")
+    assert f"Code files changed since v1: {method}.py" in plan["message"]
+    assert plan["message"] in cli_out
+    # The changes the message names, as data, and what v2 holds.
+    assert (plan["label"], plan["newestLabel"]) == (2, 1)
+    assert plan["changes"]["code"] == {"changed": [f"{method}.py"], "added": [],
+                                       "removed": []}
+    assert plan["changes"]["slots"] == [] and plan["changes"]["params"] == []
+    assert plan["holds"] == {"script": f"{method}.py", "helpers": [], "ignored": []}
+    assert _registration_state(tmp_project, module, method) == before
+
+    applied = client.post("/api/registry/methods",
+                          json={**body, "plan_token": plan["token"]})
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["message"] == plan["message"]
+    assert _registration_state(tmp_project, module, method)[4] == [1, 2]
+
+
+@workflow(purpose="The Register POST applies only the plan its dry run "
+                  "stated -- a script edited between the dry run and the click "
+                  "is refused with 409 listing what may have changed (the "
+                  "source, the env or the version list) and leaves HEAD, "
+                  "the version list, the snapshot and the rows as they were; "
+                  "after a fresh dry run the POST registers the new version")
+def test_method_register_refuses_a_plan_that_changed_since_its_dry_run(
+        tmp_project, tmp_path_factory, monkeypatch):
+    import shutil
+
+    from wfc.registration import register_module, register_method
+
+    module, method = "mod", "transform"
+    source = tmp_path_factory.mktemp("elsewhere") / method
+    shutil.copytree(Path(__file__).resolve().parent / "fixtures" / "methods" / method,
+                    source)
+    register_module(name=module, contracts=[])
+    register_method(method_dir=source, module_name=module, assume_yes=True)
+    script = source / f"{method}.py"
+    script.write_text(script.read_text(encoding="utf-8") + "\n# v2\n", encoding="utf-8")
+    client = canvas_client(tmp_project, monkeypatch)
+    body = {"directory": str(source), "module": module, "method_name": None}
+
+    dry = client.post("/api/registry/methods?dryRun=true", json=body)
+    assert dry.status_code == 200, dry.text
+    stale_token = dry.json()["plan"]["token"]
+    # The script changes again after the user read the plan.
+    script.write_text(script.read_text(encoding="utf-8") + "\n# v3\n", encoding="utf-8")
+    before = _registration_state(tmp_project, module, method)
+
+    refused = client.post("/api/registry/methods",
+                          json={**body, "plan_token": stale_token})
+    assert refused.status_code == 409, refused.text
+    assert "changed after registration said what it would do" in refused.json()["detail"]
+    assert "Nothing was registered" in refused.json()["detail"]
+    assert _registration_state(tmp_project, module, method) == before
+    assert before[4] == [1]
+
+    untokened = client.post("/api/registry/methods", json=body)
+    assert untokened.status_code == 400, untokened.text
+    assert _registration_state(tmp_project, module, method) == before
+
+    fresh = client.post("/api/registry/methods?dryRun=true", json=body).json()["plan"]
+    assert fresh["token"] != stale_token
+    applied = client.post("/api/registry/methods",
+                          json={**body, "plan_token": fresh["token"]})
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["message"] == fresh["message"]
+    assert _registration_state(tmp_project, module, method)[4] == [1, 2]
 
 
 # =============================================================================
@@ -402,22 +623,24 @@ def test_fs_browse_rejects_traversal(client, tmp_path, monkeypatch):
     assert "outside" in resp.json()["detail"].lower() or "traversal" in resp.json()["detail"].lower()
 
 
-def test_method_detail_rejects_path_traversal(client, db_engine, tmp_path, monkeypatch):
-    """A DB-poisoned script_path with ../ must not expose files outside project root."""
-    # Poison the DB: overwrite tile_export.script_path to an escape sequence.
-    with Session(db_engine) as session:
-        meth = session.exec(
-            select(Method).where(Method.name == "tile_export")
-        ).first()
-        meth.script_path = "../../../etc/tile_export.py"
-        session.add(meth)
-        session.commit()
-
-    pin_project_root(monkeypatch, tmp_path)
-
-    resp = client.get("/api/registry/methods/preprocessing/tile_export/detail")
+def test_method_detail_refuses_a_record_that_leaves_its_registered_copy(
+    client, db_engine, registry_project
+):
+    """A method whose record names no version that can run (its version list
+    is gone) is refused with the resolver's reason, naming the repair."""
+    root = registry_project.project.root
+    version_list = layout.method_versions_path(root, REGISTRY_MODULE, "tile_export")
+    original = version_list.read_bytes()
+    try:
+        version_list.unlink()
+        resp = client.get("/api/registry/methods/preprocessing/tile_export/detail")
+        with pytest.raises(MalformedMethodRecordError) as refusal:
+            resolve_method_code(REGISTRY_MODULE, "tile_export", root)
+    finally:
+        version_list.write_bytes(original)
     assert resp.status_code == 400
-    assert "outside" in resp.json()["detail"].lower() or "traversal" in resp.json()["detail"].lower()
+    assert resp.json()["detail"] == str(refusal.value)
+    assert "wfc register-method" in resp.json()["detail"]
 
 
 # ============================================================================
@@ -439,9 +662,9 @@ packages:
 def _seed_env_manifest_and_blob(tmp_path):
     """Write a .wfc/envs.json with a captured pixi env ('demo') + an
     uncaptured byo env ('byo_box') through the production serialization
-    helper. The demo env's pixi source blob lands in the DVC cache via the
-    production source_fingerprint path, so the /packages and /envs
-    endpoints read back exactly what registration would have staged.
+    helper. The demo env's package list lands in its captures folder
+    through the production writer, so the /packages and /envs endpoints
+    read back exactly what registration would have committed.
 
     Returns the demo env's source_fingerprint md5.
     """
@@ -519,20 +742,141 @@ def test_env_packages_endpoint_captured_vs_byo_and_agrees_with_list(
     assert row["has_packages"] == captured["captured"]
 
 
-def test_env_blob_serves_content_and_guards_md5(client, tmp_path, monkeypatch):
-    """Blob endpoint reads the DVC cache; a malformed md5 is a 400 and an
-    absent blob a 404, each with its detail string."""
-    pin_project_root(monkeypatch, tmp_path)
-    md5 = "d" * 32
-    cache_dir = tmp_path / ".dvc" / "cache" / "files" / "md5" / md5[:2]
-    cache_dir.mkdir(parents=True)
-    (cache_dir / md5[2:]).write_text("env blob contents\npackage==1.0\n", encoding="utf-8")
+_TWO_ENV_PIXI_LOCK = """\
+version: 6
+environments:
+  default:
+    packages:
+      linux-64:
+      - pypi: https://files.pythonhosted.org/packages/napari-0.6.6-py3-none-any.whl
+  demo:
+    packages:
+      linux-64:
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/python-3.9.23-hc30ae73_0_cpython.conda
+      - pypi: https://files.pythonhosted.org/packages/cellpose-2.3.2-py3-none-any.whl
+packages:
+- conda: https://conda.anaconda.org/conda-forge/linux-64/python-3.9.23-hc30ae73_0_cpython.conda
+  sha256: aaaa
+- pypi: https://files.pythonhosted.org/packages/cellpose-2.3.2-py3-none-any.whl
+  name: cellpose
+  version: 2.3.2
+- pypi: https://files.pythonhosted.org/packages/napari-0.6.6-py3-none-any.whl
+  name: napari
+  version: 0.6.6
+"""
 
-    assert "env blob contents" in client.get(f"/api/registry/envs/blob/{md5}").text
-    malformed = client.get("/api/registry/envs/blob/not-a-valid-md5")
-    assert malformed.status_code == 400
-    assert malformed.json()["detail"] == "malformed md5 (expect 32 lowercase hex)"
-    absent = "e" * 32
-    missing = client.get(f"/api/registry/envs/blob/{absent}")
-    assert missing.status_code == 404
-    assert missing.json()["detail"] == f"blob not found: {absent}"
+
+def test_env_packages_endpoint_lists_the_envs_own_pixi_environment(
+    client, tmp_path, monkeypatch
+):
+    """A pixi env built from a lock with several environments lists the
+    packages of the environment its image installed (the env's name), conda
+    ones included, and none of the other environments'."""
+    from tests.fixtures.conftest import write_env_record
+
+    write_env_record(tmp_path, "demo", backend="pixi", digest="a" * 64,
+                     lock_content=_TWO_ENV_PIXI_LOCK)
+    pin_project_root(monkeypatch, tmp_path)
+
+    captured = client.get("/api/registry/envs/container:demo/packages").json()
+    assert captured["packages"] == [
+        {"name": "cellpose", "version": "2.3.2", "source": "pixi"},
+        {"name": "python", "version": "3.9.23", "source": "pixi"},
+    ]
+
+
+def _demo_package_list(project_dir):
+    """The demo env's committed ``packages.lock``, located through its record."""
+    from wfc.environments import get
+
+    record = get(REGISTRY_ENV, project_dir)
+    return (layout.env_capture_dir(project_dir, REGISTRY_ENV, record.env_fingerprint)
+            / layout.CAPTURE_PACKAGES_FILENAME)
+
+
+@workflow(purpose="The Registry's package view reads the env's committed "
+                  "captures folder, so it works with an empty DVC cache, and a "
+                  "package list whose bytes no longer match the record is refused "
+                  "naming the plain remedy: register under a new env name.")
+def test_env_packages_read_the_capture_without_dvc_and_refuse_a_changed_byte(
+    client, db_engine, tmp_path, monkeypatch
+):
+    import os
+    import shutil
+    import stat
+
+    _seed_env_manifest_and_blob(tmp_path)
+    pin_project_root(monkeypatch, tmp_path)
+
+    def _writable_retry(func, path, _exc):
+        # Cache entries are stored read-only; Windows refuses to unlink them.
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+
+    # A fresh clone: the DVC cache holds nothing.
+    shutil.rmtree(layout.dvc_cache_files_dir(tmp_path), onexc=_writable_retry)
+    assert not layout.dvc_cache_files_dir(tmp_path).exists()
+
+    captured = client.get(f"/api/registry/envs/{REGISTRY_ENV}/packages")
+    assert captured.status_code == 200
+    assert {p["name"] for p in captured.json()["packages"]} == {"numpy", "python"}
+
+    # One byte of the committed package list changes.
+    lock = _demo_package_list(tmp_path)
+    data = bytearray(lock.read_bytes())
+    data[-2] = ord("X") if data[-2] != ord("X") else ord("Y")
+    lock.write_bytes(bytes(data))
+
+    refused = client.get(f"/api/registry/envs/{REGISTRY_ENV}/packages")
+    assert refused.status_code == 409
+    assert "wfc register-env <new-name>" in refused.json()["detail"]
+
+
+@pytest.mark.parametrize("damage", [
+    "image-missing", "image-unreadable", "lock-missing", "lock-edited"])
+def test_env_packages_refuse_a_changed_capture_with_the_plain_remedy(
+    client, db_engine, tmp_path, monkeypatch, damage
+):
+    """With ``image.json`` or ``packages.lock`` changed outside wfc, the
+    package view is a 409 naming the changed file once and the one remedy
+    register-env's refusal names (register under a new env name): no git
+    command, and no ``register-env <env> --force``, which register refuses."""
+    from wfc.environments import capture_remedy, get
+
+    _seed_env_manifest_and_blob(tmp_path)
+    pin_project_root(monkeypatch, tmp_path)
+    lock = _demo_package_list(tmp_path)
+    image_json = lock.parent / layout.CAPTURE_IMAGE_FILENAME
+    target = image_json if damage.startswith("image") else lock
+    if damage.endswith("missing"):
+        target.unlink()
+    elif damage == "image-unreadable":
+        target.write_text("{not json", encoding="utf-8")
+    else:
+        target.write_bytes(target.read_bytes() + b"numpy==9.9.9\n")
+
+    refused = client.get(f"/api/registry/envs/{REGISTRY_ENV}/packages")
+
+    assert refused.status_code == 409, refused.text
+    detail = refused.json()["detail"]
+    assert detail.count(str(target)) == 1
+    fingerprint = get(REGISTRY_ENV, tmp_path).env_fingerprint
+    assert detail.endswith(capture_remedy(REGISTRY_ENV, fingerprint))
+    assert "changed outside wfc" in detail
+    assert "git" not in detail.replace(str(tmp_path), "<project>")
+    assert "--force" not in detail
+
+
+def test_list_envs_has_packages_follows_the_captures_package_list(
+    client, db_engine, tmp_path, monkeypatch
+):
+    """has_packages is whether the env's captures folder holds a package list:
+    with ``packages.lock`` removed the row says there is none to show."""
+    _seed_env_manifest_and_blob(tmp_path)
+    pin_project_root(monkeypatch, tmp_path)
+
+    assert client.get("/api/registry/envs").json()["envs"][0]["has_packages"] is True
+
+    _demo_package_list(tmp_path).unlink()
+
+    assert client.get("/api/registry/envs").json()["envs"][0]["has_packages"] is False

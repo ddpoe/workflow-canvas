@@ -160,7 +160,144 @@ export type CoerceResult =
   | { ok: true; value: unknown }
   | { ok: false; error: string };
 
+// ── The one value rule ────────────────────────────────────────────────
+//
+// `checkParamValue` is the canvas copy of the server's
+// `wfc/contracts/param_check.py::check_param_value`; both run the shared
+// table `shared/paramValueOracle.json` and must give each row's verdict.
+
+export interface ValueConstraints {
+  min?: number;
+  max?: number;
+  enum?: unknown[];
+}
+
+function shown(value: unknown): string {
+  let text: string;
+  try {
+    text = JSON.stringify(value) ?? String(value);
+  } catch {
+    text = String(value);
+  }
+  return text.length <= 60 ? text : `${text.slice(0, 57)}...`;
+}
+
+function kindOf(value: unknown): string {
+  if (value === null) return 'null';
+  if (typeof value === 'boolean') return 'bool';
+  if (typeof value === 'number') return Number.isInteger(value) ? 'int' : 'float';
+  if (typeof value === 'string') return 'str';
+  if (Array.isArray(value)) return 'list';
+  return typeof value === 'object' ? 'dict' : typeof value;
+}
+
+function typeMatches(ptype: string, value: unknown): boolean {
+  switch (ptype) {
+    // A safe integer: magnitude at most 2^53-1, the server's bound too.
+    case 'int': return typeof value === 'number' && Number.isSafeInteger(value);
+    case 'float': return typeof value === 'number';
+    case 'bool': return typeof value === 'boolean';
+    case 'str': return typeof value === 'string';
+    case 'list': return Array.isArray(value);
+    case 'dict': return typeof value === 'object' && value !== null && !Array.isArray(value);
+    default: return true;
+  }
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Whether two values are equal as JSON values (enum membership).
+ *
+ * Both must be the same JSON kind: a boolean never equals a number. Numbers
+ * compare by value, strings exactly, `null` only `null`; arrays element by
+ * element in order, objects by equal key sets and equal values per key (key
+ * order ignored), with this same rule. The server's `_json_equal` is the
+ * same rule.
+ *
+ * Args:
+ *     a: One value.
+ *     b: The other.
+ *
+ * Returns:
+ *     `true` when the two are the same JSON value.
+ */
+function jsonEqual(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length
+      && a.every((x, i) => jsonEqual(x, b[i]));
+  }
+  if (isPlainObject(a) || isPlainObject(b)) {
+    if (!isPlainObject(a) || !isPlainObject(b)) return false;
+    const keys = Object.keys(a);
+    return keys.length === Object.keys(b).length
+      && keys.every((k) => Object.prototype.hasOwnProperty.call(b, k) && jsonEqual(a[k], b[k]));
+  }
+  return a === b;
+}
+
+/**
+ * Check one typed parameter value against its declared type and constraints.
+ *
+ * `any`, and a type outside the vocabulary, is unchecked; `int` takes a whole
+ * number, `float` any number, neither a boolean; `null` is "no value",
+ * accepted for an optional parameter and refused for a required one, as is
+ * an empty string; `min` / `max` bound a number and `enum` lists the values
+ * allowed.
+ *
+ * Args:
+ *     ptype: The declared type (one of `PARAM_TYPES`).
+ *     constraints: The declared `min`, `max` and `enum`, or none.
+ *     value: The value as the document carries it.
+ *     required: Whether the parameter is declared required.
+ *
+ * Returns:
+ *     `null` when the value is accepted, else the reason it is refused.
+ */
+export function checkParamValue(
+  ptype: string | undefined,
+  constraints: ValueConstraints | undefined,
+  value: unknown,
+  required = false,
+): string | null {
+  if (value === null || value === undefined || value === '') {
+    if (required) return `is required and cannot be empty (got ${shown(value ?? null)})`;
+    if (value !== '') return null;
+  }
+  const t = ptype ?? 'any';
+  if (!typeMatches(t, value)) return `expects ${t}, got ${shown(value)} (${kindOf(value)})`;
+  const limits = constraints ?? {};
+  if (limits.enum && limits.enum.length > 0 && !limits.enum.some((o) => jsonEqual(value, o))) {
+    return `must be one of ${limits.enum.map(shown).join(', ')}, got ${shown(value)}`;
+  }
+  if (typeof value === 'number') {
+    if (limits.min != null && value < limits.min) return `must be >= ${limits.min}, got ${shown(value)}`;
+    if (limits.max != null && value > limits.max) return `must be <= ${limits.max}, got ${shown(value)}`;
+  }
+  return null;
+}
+
+/** The declared type an editor type checks against (`enum` checks membership only). */
+const CHECKED_TYPE: Record<ParamEditorType, string> = {
+  string: 'str', enum: 'any', int: 'int', float: 'float', bool: 'bool', list: 'list', dict: 'dict',
+};
+
 export function coerceParamValue(input: CoerceInput): CoerceResult {
+  const coerced = coerceRaw(input);
+  if (!coerced.ok) return coerced;
+  const { paramType, required, enumOptions, min, max } = input;
+  // Blank optional values coerce to "no value" ('' / null / an empty
+  // container) before the rule sees them, and are kept as they are.
+  if (!required && (String(input.raw).trim() === '') && paramType !== 'bool') return coerced;
+  const reason = checkParamValue(
+    CHECKED_TYPE[paramType], { min, max, enum: enumOptions }, coerced.value, required,
+  );
+  return reason === null ? coerced : { ok: false, error: `Value ${reason}.` };
+}
+
+function coerceRaw(input: CoerceInput): CoerceResult {
   const { raw, paramType, required, enumOptions, min, max } = input;
   // Bool: short-circuit, raw is already boolean from a toggle widget.
   if (paramType === 'bool') {

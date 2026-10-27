@@ -15,10 +15,11 @@ import { get } from 'svelte/store';
 import { createActor } from 'xstate';
 import RunsPreview from '../RunsPreview.svelte';
 import { loadPipeline } from '../pipeline';
-import { pipelineName, nodes } from '../stores';
+import { pipelineName, nodes, modules, updateNodeData } from '../stores';
+import { versionSwitch, withoutParam } from '../nodeData';
 import {
   lockNow, clearLock, lockState, lockSummary, openLockSummary, confirmLockSummary,
-  requestRun, defaultsInUse,
+  requestRun, defaultsInUse, blockedReasons,
 } from '../lockFlow';
 import {
   registerEditorChild, unregisterEditorChild, editorsDirty, pipelineRunActor, dispatchReset,
@@ -84,6 +85,7 @@ afterEach(() => {
   for (const [id, a] of registered) { unregisterEditorChild(id, a); a.stop(); }
   registered = [];
   lockSummary.set(null);
+  modules.set([]);
   clearLock();
   cleanup();
   vi.restoreAllMocks();
@@ -163,6 +165,39 @@ describe('lock flow', () => {
     await confirmLockSummary();
     expect(get(lockState).status).toBe('locked');
     expect(cacheStatusCalls()).toBe(1);
+  });
+
+  it('a version change clears the lock, and a parameter the new version lacks blocks Run until removed', async () => {
+    const v1 = {
+      label: 1, identity: 'id-v1', newest: false,
+      inputs: [{ name: 'data', type: 'csv' }], outputs: [{ name: 'output', type: 'csv' }],
+      params: [{ name: 'bins', type: 'int', contractType: 'int' as const }],
+    };
+    const v2 = { ...v1, label: 2, identity: 'id-v2', newest: true, params: [] };
+    modules.set([{
+      name: 'mod', color: '#2ecc71',
+      methods: [{ name: 'filter', module: 'mod', versions: [v1, v2], ...v2 }],
+    }]);
+    loadPipeline({
+      ...DOC,
+      nodes: DOC.nodes.map(n => n.id === 'm1' ? { ...n, version: 'id-v1', params: { bins: 4 } } : n),
+    });
+    expect(get(blockedReasons)).toEqual([]);
+    await lockNow();
+    expect(get(lockState).status).toBe('locked');
+
+    // Switching to the newest is a document change: the lock clears, and
+    // the value v2 does not declare blocks Run.
+    const m1 = () => get(nodes).find(n => n.id === 'm1')!;
+    updateNodeData('m1', versionSwitch(m1().data, 'id-v2'));
+    expect(get(lockState).status).toBe('unlocked');
+    expect(get(blockedReasons)).toEqual(['filter.bins is not in v2, remove it']);
+    requestRun();
+    expect(pipelineRunActor.getSnapshot().value).toBe('idle');
+
+    // Removed, Run is free again.
+    updateNodeData('m1', withoutParam(m1().data, 'bins'));
+    expect(get(blockedReasons)).toEqual([]);
   });
 
   it('lists every parameter that runs its declared default, by node and parameter, with its value', () => {

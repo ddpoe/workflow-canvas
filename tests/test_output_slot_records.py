@@ -151,7 +151,8 @@ def test_export_all_puts_clashing_file_names_under_slot_folders(
     from wfc.persistence import Method, Module, Run, RunOutput, get_session
     from wfc.storage import archive_outputs
 
-    staging = tmp_project / "staging"
+    from wfc.layout import run_archive_dir
+
     contents = {
         "qc": ("qc/report.csv", b"qc\n1\n"),
         "final": ("final/report.csv", b"final\n2\n"),
@@ -169,7 +170,8 @@ def test_export_all_puts_clashing_file_names_under_slot_folders(
         session.flush()
         run_id = run.id
         for slot, (rel, content) in contents.items():
-            path = staging / rel
+            # Where collect writes a run's outputs: its run archive.
+            path = run_archive_dir(tmp_project, run_id) / rel
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(content)
             session.add(RunOutput(run_id=run_id, slot=slot, output_name=path.name,
@@ -179,7 +181,7 @@ def test_export_all_puts_clashing_file_names_under_slot_folders(
     archive_outputs(tmp_project, run_id=run_id)
 
     dest = tmp_path / "out"
-    assert cli_main(["export", str(run_id), "--all", str(dest)]) == 0
+    assert cli_main(["export", "--run", str(run_id), "--all", "--dest", str(dest)]) == 0
     assert (dest / "qc" / "report.csv").read_bytes() == contents["qc"][1]
     assert (dest / "final" / "report.csv").read_bytes() == contents["final"][1]
     assert (dest / "summary.csv").read_bytes() == contents["summary"][1]
@@ -257,7 +259,7 @@ def test_clashing_outputs_list_under_slot_folders_and_export_singly_by_bare_name
              purpose="The single-output export keeps the bare file name")
     dest = tmp_path / "one"
     dest.mkdir()
-    assert cli_main(["export", str(run_id), "qc", str(dest)]) == 0
+    assert cli_main(["export", "--run", str(run_id), "--slot", "qc", "--dest", str(dest)]) == 0
     assert (dest / "report.csv").read_bytes() == by_slot["qc"]
     assert not (dest / "qc").exists()
 
@@ -273,7 +275,7 @@ def test_clashing_outputs_list_under_slot_folders_and_export_singly_by_bare_name
 def test_input_record_and_lineage_carry_the_source_slot(git_project, monkeypatch):
     from wfc.canvas.wfc_provider import WfcProvider
     from wfc.lineage.synthesis import synthesize_lineage_pipeline
-    from wfc.persistence import RunInput, get_session
+    from wfc.persistence import Run, RunInput, get_session
 
     口 = Step(step_num=1, name="Run a consumer wired to the upstream's second output",
              purpose="The plotter's data slot is fed by the classifier's 'model' "
@@ -295,6 +297,7 @@ def test_input_record_and_lineage_carry_the_source_slot(git_project, monkeypatch
             select(RunInput).where(RunInput.run_id == plotter_id)
         ).all()
         recorded = [(r.input_name, r.source_run_id, r.source_slot) for r in inputs]
+        classifier_key = session.get(Run, classifier_id).cache_key
     assert recorded == [("data", classifier_id, "model")]
 
     口 = Step(step_num=3, name="The canvas run record surfaces it",
@@ -302,7 +305,8 @@ def test_input_record_and_lineage_carry_the_source_slot(git_project, monkeypatch
                      "recorded source slot")
     records = WfcProvider(str(git_project)).run_records()
     assert records[str(plotter_id)].parents == [
-        {"slot": "data", "sourceRunId": str(classifier_id), "sourceSlot": "model"},
+        {"slot": "data", "sourceRunId": str(classifier_id), "sourceSlot": "model",
+         "cacheKey": classifier_key},
     ]
 
     口 = Step(step_num=4, name="Lineage wires the edge from 'model'",

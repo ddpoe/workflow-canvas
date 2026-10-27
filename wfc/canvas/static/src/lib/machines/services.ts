@@ -256,10 +256,12 @@ export function runStatusToNodeState(
         error_message: state.error ?? 'failed',
       };
     case 'cancelled':
-      // A cancelled row that names the node or run it was cancelled
-      // behind is an upstream failure; one that names neither was
-      // stopped by the user.
-      if (state.upstream_node_id || state.cancelled_due_to_run_id) {
+      // The row's reason says why: the user's stop, an upstream failure,
+      // or a target the pipeline ended before it started. The node
+      // machine has no outcome for the last, so that node is left as it
+      // is rather than read as stopped by the user.
+      if (state.cancel_reason === 'user') return { type: 'USER_STOP' };
+      if (state.cancel_reason === 'upstream_failed') {
         return {
           type: 'UPSTREAM_FAILED',
           upstreamNodeId: state.upstream_node_id ?? '?',
@@ -267,7 +269,7 @@ export function runStatusToNodeState(
             state.upstream_run_id ?? state.cancelled_due_to_run_id ?? '?',
         };
       }
-      return { type: 'USER_STOP' };
+      return null;
     default:
       return null;
   }
@@ -335,7 +337,16 @@ export function stateValueToRunStatus(value: NodeRunValue): RunStatus {
 // Fetches the job status every second and translates node_states into
 // typed events sent into the parent (`pipelineRunActor`), which fans
 // them out to children. POSTs `/api/wfc/refresh` on terminal status and
-// stops the timer on terminal status or fetch failure.
+// stops the timer on terminal status or a 404 (the server knows no such
+// pipeline). A failed request (no connection, a restarting server) keeps
+// the nodes as they are and is retried: once the server answers again,
+// from the pipeline's record after a restart, polling carries on. Only
+// failures lasting POLL_RETRY_BOUND_MS end it.
+
+/** How long failed status requests are retried before polling ends (ms):
+ * about two of the server's stall windows (60 s each), long enough for a
+ * restarted server to find the pipeline's record and answer for it. */
+export const POLL_RETRY_BOUND_MS = 120_000;
 
 // Terminal overall_status values that should fire PIPELINE_DONE and
 // stop the polling actor. `cancelled` belongs here: after the cancel
@@ -369,12 +380,40 @@ export const pollNodeStatus = fromCallback<{ type: string }, PollInput>(
     // we don't keep flipping them through `running` on every tick.
     const heartbeatSent = new Set<string>();
 
+    // When the status requests started failing (a lost connection, a
+    // restarting server), or null while they succeed.
+    let failingSince: number | null = null;
+
+    const end = () => {
+      stopped = true;
+      sendBack({ type: 'PIPELINE_DONE' } as never);
+    };
+
     const tick = async () => {
       if (stopped) return;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let result: any;
       try {
         const resp = await fetch(`/api/workflow/status/${jobId}`);
-        const result = await resp.json();
-
+        if (resp.status === 404) {
+          // The server knows no such pipeline: nothing more will come.
+          end();
+          return;
+        }
+        if (!resp.ok) throw new Error(`status ${resp.status}`);
+        result = await resp.json();
+      } catch {
+        // A lost connection is never a terminal status: the nodes stay
+        // as they are and the next tick asks again, until the failures
+        // have lasted POLL_RETRY_BOUND_MS.
+        const now = Date.now();
+        if (failingSince === null) failingSince = now;
+        if (now - failingSince >= POLL_RETRY_BOUND_MS) end();
+        return;
+      }
+      failingSince = null;
+      if (stopped) return;
+      try {
         if (result.node_states) {
           for (const [nodeId, raw] of Object.entries(result.node_states)) {
             const s = raw as BackendNodeState;
@@ -522,8 +561,7 @@ export const pollNodeStatus = fromCallback<{ type: string }, PollInput>(
           }, 250);
         }
       } catch {
-        stopped = true;
-        sendBack({ type: 'PIPELINE_DONE' } as never);
+        end();
       }
     };
 
@@ -549,13 +587,14 @@ export interface SSEInput {
   fullMode?: boolean;
 }
 
-// Grace window for transient EventSource errors. The browser's built-in
-// auto-reconnect (~3s default) handles momentary blips on its own; we
-// only escalate to the machine if the failure persists past this window
-// without a successful message. Keeps "user shouldn't see flicker on
-// transient wifi hiccup" honest without a reconnecting state in the
-// machine.
-const SSE_ERROR_GRACE_MS = 5000;
+// Grace window for EventSource errors. The browser's built-in
+// auto-reconnect (~3s default) keeps retrying on its own, sending the
+// last event id so the server resumes where the stream stopped; we only
+// escalate to the machine if the failure persists past this window
+// without a successful reconnect or message. The window is the status poller's retry
+// bound, so a running node's log stream survives a server restart as
+// long as the poller does.
+const SSE_ERROR_GRACE_MS = POLL_RETRY_BOUND_MS;
 
 export const subscribeSSE = fromCallback<{ type: string }, SSEInput>(
   ({ input, sendBack }) => {
@@ -575,6 +614,11 @@ export const subscribeSSE = fromCallback<{ type: string }, SSEInput>(
       }
     };
 
+    // A reconnect the server answered clears the grace window, so a quiet
+    // running step's resumed stream is not later declared lost.
+    es.onopen = () => {
+      clearGrace();
+    };
     es.onmessage = ev => {
       // Any message clears the grace window — connection is alive.
       clearGrace();

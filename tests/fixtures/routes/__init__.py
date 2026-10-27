@@ -20,8 +20,9 @@ The package is split by concern; every builder is re-exported here so
   - ``roots``: init_test_project (a project ``wfc init`` would have
     produced), project_archive_dir / sample_source_dir (the two out-of-tree
     locations the routes stage into -- inputs, not state).
-  - ``registration``: register_test_method, register_sample_row /
-    create_sample_csv, write_env_record.
+  - ``registration``: register_test_method, register_again_with_params (a
+    harness method's next version, minted by editing its declared params),
+    register_sample_row / create_sample_csv, write_env_record.
   - ``runs``: completed_run / claimed_run (a run produced by production's
     own phases on the harness's stub rung) and the DrivenRun handle.
   - ``clients``: run_cli (one in-process ``wfc`` invocation) and
@@ -42,6 +43,7 @@ from __future__ import annotations
 from .clients import CliResult, canvas_client, run_cli
 from .registration import (
     create_sample_csv,
+    register_again_with_params,
     register_sample_row,
     register_test_method,
     write_env_record,
@@ -78,6 +80,7 @@ __all__ = [
     "create_sample_csv",
     "init_test_project",
     "project_archive_dir",
+    "register_again_with_params",
     "register_sample_row",
     "register_test_method",
     "restore_project_snapshot",

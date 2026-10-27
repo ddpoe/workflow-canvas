@@ -4,7 +4,6 @@
       "id": "filter_a",
       "method": "csv_filter",
       "module": "csv_tools",
-      "script": "modules/_builtin/csv_filter/csv_filter.py",
       "params": {
         "column": "condition",
         "values": [
@@ -18,7 +17,6 @@
       "id": "filter_b",
       "method": "csv_filter",
       "module": "csv_tools",
-      "script": "modules/_builtin/csv_filter/csv_filter.py",
       "params": {
         "column": "condition",
         "values": [
@@ -32,7 +30,6 @@
       "id": "merge_ab",
       "method": "csv_merge",
       "module": "csv_tools",
-      "script": "modules/_builtin/csv_merge/csv_merge.py",
       "params": {},
       "output_ext": ".csv",
       "env": "container:demo"

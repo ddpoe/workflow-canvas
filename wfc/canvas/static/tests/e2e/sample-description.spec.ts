@@ -7,13 +7,13 @@ import { expect, test } from '@playwright/test';
 const SAMPLES = [
   {
     name: 'reads', file_type: 'directory',
-    registered_path: 'data/samples/reads/reads_dir', file_size: 3072,
+    registered_path: 'reads_dir', file_size: 3072,
     registered_at: new Date().toISOString(),
     description: 'Paired-end reads, lane 1', file_count: 3,
   },
   {
     name: 'table', file_type: 'csv',
-    registered_path: 'data/samples/table/table.csv', file_size: 2048,
+    registered_path: 'table.csv', file_size: 2048,
     registered_at: new Date().toISOString(),
     description: null, file_count: null,
   },

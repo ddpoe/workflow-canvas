@@ -2,7 +2,7 @@
 Subsystem Test: Method Registration
 
 Validates that wfc registers method scripts via the production
-register_module() + register_method() code path.  Covers:
+register_module() + register_method(assume_yes=True) code path.  Covers:
 
   - Flat method dirs (methods/transform/, methods/merge/)
   - AST scanner extraction of @wfc_method-decorated functions
@@ -123,52 +123,72 @@ def test_register_l2_modules(tmp_project):
 
 @workflow(
     purpose="The contract map carries one entry per registered method, keyed "
-            "<module>.<method>, with its input and output slots, script path "
-            "and env; a method with no contract row maps to empty slot tables")
+            "<module>.<method>, holding one contract per version keyed by "
+            "its content identity; the newest version is named and its "
+            "slots and env are what an unpinned node reads")
 def test_load_contract_map_covers_every_registered_method(tmp_project):
-    """The one read Contracts' enrichment and Graph's load take as a value."""
-    from wfc.registration import load_contract_map
+    """The one read Contracts' enrichment and Graph's load take as a value.
+
+    A second registration that changes the outputs makes v2; the map names
+    v2 as newest and still holds v1's contract under v1's identity.
+    """
+    from wfc.registration import load_contract_map, read_version_list
 
     init_project(tmp_project)
     src_dir = tmp_project / "workspace" / "cm_method"
     src_dir.mkdir(parents=True)
     (src_dir / "cm_method.py").write_text("def main():\n    return 1\n")
-    (src_dir / "method.yaml").write_text(
-        "inputs:\n  table:\n    type: .csv\n"
-        "outputs:\n  summary:\n    type: .csv\n"
-        "params: {}\nexecutor: python\n"
-        "env: fixture-env\n"
-    )
+    spec = ("inputs:\n  table:\n    type: .csv\n"
+            "outputs:\n  summary:\n    type: .csv\n"
+            "params: {}\nexecutor: python\n"
+            "env: fixture-env\n")
+    (src_dir / "method.yaml").write_text(spec)
     register_module(name="cm_contracted", contracts=[], description="contracted")
-    register_method(method_dir=src_dir, module_name="cm_contracted")
-
-    # A second module whose method has no contract row.
-    with get_session() as session:
-        bare_module = Module(name="cm_bare")
-        session.add(bare_module)
-        session.commit()
-        session.refresh(bare_module)
-        session.add(Method(module_id=bare_module.id, name="bare_method",
-                           env="container:demo"))
-        session.commit()
+    register_method(method_dir=src_dir, module_name="cm_contracted", assume_yes=True)
+    (src_dir / "method.yaml").write_text(spec.replace("summary:", "report:"))
+    register_method(method_dir=src_dir, module_name="cm_contracted", assume_yes=True)
 
     with get_session() as session:
         contract_map = load_contract_map(session)
         registered = session.exec(
             select(Method).where(Method.name == "cm_method")
         ).one()
-        script_path, env = registered.script_path, registered.env
+        env = registered.env
 
-    assert set(contract_map) == {"cm_contracted.cm_method", "cm_bare.bare_method"}
+    assert set(contract_map) == {"cm_contracted.cm_method"}
     entry = contract_map["cm_contracted.cm_method"]
     assert set(entry["input_slots"]) == {"table"}
-    assert set(entry["output_slots"]) == {"summary"}
-    assert entry["script_path"] == script_path
-    assert Path(script_path).name == "cm_method.py"
-    assert entry["env"] == env
-    bare = contract_map["cm_bare.bare_method"]
-    assert bare["input_slots"] == {} and bare["output_slots"] == {}
-    assert bare["env"] == "container:demo"
+    assert set(entry["output_slots"]) == {"report"}
+    assert entry["env"] == env == "fixture-env"
+    v1, v2 = read_version_list(tmp_project, "cm_contracted", "cm_method")
+    assert (entry["version"], entry["label"]) == (v2.identity, 2)
+    assert set(entry["versions"]) == {v1.identity, v2.identity}
+    assert set(entry["versions"][v1.identity]["output_slots"]) == {"summary"}
+    assert entry["versions"][v1.identity]["label"] == 1
+    assert set(entry["versions"][v2.identity]["output_slots"]) == {"report"}
+
+
+def test_an_env_is_used_by_the_methods_whose_newest_version_records_it(tmp_project):
+    """The answer comes from each method's newest list entry; a method
+    with no list is skipped rather than guessed from its row."""
+    from wfc import layout
+    from wfc.registration import methods_whose_newest_version_uses_env
+
+    init_project(tmp_project)
+    register_module(name="env_mod", contracts=[])
+    for name in ("first", "second"):
+        src = tmp_project / "workspace" / name
+        src.mkdir(parents=True)
+        (src / f"{name}.py").write_text("def main():\n    return 1\n")
+        (src / "method.yaml").write_text(
+            "inputs:\n  table:\n    type: .csv\nenv: fixture-env\n")
+        register_method(method_dir=src, module_name="env_mod", assume_yes=True)
+
+    assert methods_whose_newest_version_uses_env("fixture-env") == [
+        "env_mod/first", "env_mod/second"]
+    assert methods_whose_newest_version_uses_env("other-env") == []
+    layout.method_versions_path(tmp_project, "env_mod", "second").unlink()
+    assert methods_whose_newest_version_uses_env("fixture-env") == ["env_mod/first"]
 
 
 # ============================================================================
@@ -201,7 +221,7 @@ def test_register_l2_methods(tmp_project):
 
         method_id = register_method(
             method_dir=method_dir,
-            module_name=module_name)
+            module_name=module_name, assume_yes=True).method_id
         registered[method_dir.name] = (method_id, expected_func)
         assert method_id is not None
 
@@ -283,11 +303,11 @@ def test_ast_scanner_extracts_params(tmp_project):
     # filter_data(inputs, params) — both stripped by @wfc_method rule
     register_method(
         method_dir=filter_dir,
-        module_name="test_tools")
+        module_name="test_tools", assume_yes=True)
     # merge_data(inputs, params) — both stripped by @wfc_method rule
     register_method(
         method_dir=merge_dir,
-        module_name="test_tools")
+        module_name="test_tools", assume_yes=True)
 
     with get_session() as session:
         # filter_data: (df, params) both stripped → 0 ParamDefs
@@ -344,10 +364,10 @@ def test_reregistration_idempotent(tmp_project):
     method_dir = tmp_project / "methods" / "transform"
 
     # First registration
-    id1 = register_method(method_dir=method_dir, module_name="data_transform")
+    id1 = register_method(method_dir=method_dir, module_name="data_transform", assume_yes=True).method_id
 
     # Second registration (idempotent upsert)
-    id2 = register_method(method_dir=method_dir, module_name="data_transform")
+    id2 = register_method(method_dir=method_dir, module_name="data_transform", assume_yes=True).method_id
 
     assert id1 == id2
 
@@ -370,74 +390,147 @@ def test_reregistration_idempotent(tmp_project):
 
 
 # ============================================================================
-# Test: A method name another module holds is refused
+# Snapshot, commit and version: registration is the ingest boundary
 # ============================================================================
 
-@workflow(
-    purpose="Registering a method name a different module already holds is "
-            "refused, because both would share the one methods/<name>/ "
-            "snapshot cache keys are computed from")
-def test_method_name_held_by_another_module_is_refused(tmp_project):
-    """The second module's registration is refused, naming both modules.
+def _outside_source(tmp_project: Path, method: str, tag: str) -> Path:
+    """Copy a fixture method's source to a directory outside the project."""
+    source = tmp_project.parent / f"{tmp_project.name}-{tag}" / method
+    shutil.copytree(tmp_project / "methods" / method, source)
+    return source
 
-    The registered snapshot lives at ``methods/<method_name>/`` with no
-    module segment, so a second module registering the same name would
-    overwrite the first's scripts and its ``method.yaml`` — both of which
-    the cache key is computed from.
-    """
-    init_project(tmp_project)
+
+def _git(tmp_project: Path, *args: str) -> str:
+    import subprocess
+    return subprocess.run(["git", *args], cwd=tmp_project, check=True,
+                          capture_output=True, text=True).stdout.strip()
+
+
+@workflow(
+    purpose="Two modules register a same-named method from different sources "
+            "into two snapshots with two fingerprints, and neither "
+            "registration overwrites the other's snapshot")
+def test_same_method_name_in_two_modules_registers_two_snapshots(tmp_project):
+    """Module-qualified snapshots: a method is named within its module."""
+    from wfc import layout
+    from wfc.persistence import MethodVersion
 
     register_module(name="first_mod", contracts=[], description="Test")
     register_module(name="second_mod", contracts=[], description="Test")
-    method_dir = tmp_project / "methods" / "transform"
+    first_source = _outside_source(tmp_project, "transform", "first")
+    second_source = _outside_source(tmp_project, "transform", "second")
+    second_script = second_source / "transform.py"
+    second_script.write_text(second_script.read_text() + "\n# second module's variant\n")
 
-    first_id = register_method(method_dir=method_dir, module_name="first_mod")
+    first_id = register_method(method_dir=first_source, module_name="first_mod", assume_yes=True).method_id
+    second_id = register_method(method_dir=second_source, module_name="second_mod", assume_yes=True).method_id
+    assert first_id != second_id
 
-    # The refusal exists because methods/transform/ is SHARED: the second
-    # registration would overwrite the scripts and the method.yaml the first
-    # module's cache keys are computed from. So the bytes are the artifact —
-    # a refusal that had already written over them would be worse than none.
-    def _snapshot_bytes() -> dict[str, bytes]:
-        return {p.relative_to(method_dir).as_posix(): p.read_bytes()
-                for p in sorted(method_dir.rglob("*")) if p.is_file()}
+    first_snapshot = layout.method_dir(tmp_project, "first_mod", "transform")
+    second_snapshot = layout.method_dir(tmp_project, "second_mod", "transform")
+    assert ((first_snapshot / "transform.py").read_bytes()
+            == (first_source / "transform.py").read_bytes())
+    assert (second_snapshot / "transform.py").read_bytes() == second_script.read_bytes()
 
-    before_snapshot = _snapshot_bytes()
-    assert before_snapshot, f"nothing under {method_dir} to protect"
-
-    with pytest.raises(ValueError) as exc:
-        register_method(method_dir=method_dir, module_name="second_mod")
-
-    message = str(exc.value)
-    assert "first_mod" in message and "second_mod" in message
-    assert "methods/transform" in message
-
-    assert _snapshot_bytes() == before_snapshot, (
-        "the refused registration changed the first module's snapshot under "
-        f"{method_dir}; the point of refusing is that those bytes — which "
-        "first_mod's cache keys are computed from — stay exactly as they were"
-    )
-
-    # The refusal lands before any row is written: one method row, still
-    # the first module's.
     with get_session() as session:
-        rows = session.exec(
-            select(Method).where(Method.name == "transform")
-        ).all()
-        assert [r.id for r in rows] == [first_id]
-        second = session.exec(
-            select(Module).where(Module.name == "second_mod")
-        ).one()
-        assert rows[0].module_id != second.id
+        versions = session.exec(select(MethodVersion)).all()
+    fingerprints = {v.method_id: v.code_fingerprint for v in versions}
+    assert set(fingerprints) == {first_id, second_id}
+    assert fingerprints[first_id] != fingerprints[second_id]
 
-    # The refusal is about the OTHER module, not about the name: the owning
-    # module re-registering its own method still passes. Without this the
-    # gate could be a blanket "methods/transform/ is taken" and read the same.
-    again_id = register_method(method_dir=method_dir, module_name="first_mod")
+    # Re-registering the first module's method leaves the second's alone.
+    before = {p.relative_to(second_snapshot).as_posix(): p.read_bytes()
+              for p in second_snapshot.rglob("*") if p.is_file()}
+    register_method(method_dir=first_source, module_name="first_mod", assume_yes=True)
+    after = {p.relative_to(second_snapshot).as_posix(): p.read_bytes()
+             for p in second_snapshot.rglob("*") if p.is_file()}
+    assert after == before
+
+
+@workflow(
+    purpose="Registration mints the version carrying its own commit, which "
+            "names only the snapshot and the method's version list; "
+            "re-registering identical code makes no version and no commit")
+def test_registration_mints_the_version_with_its_commit(tmp_project):
+    from wfc import layout
+    from wfc.persistence import MethodVersion
+
+    register_module(name="data_transform", contracts=[], description="Test")
+    source = _outside_source(tmp_project, "transform", "src")
+
+    method_id = register_method(method_dir=source, module_name="data_transform", assume_yes=True).method_id
+    registration_commit = _git(tmp_project, "rev-parse", "HEAD")
+    committed = _git(tmp_project, "show", "--name-only", "--format=", "HEAD").splitlines()
+    snapshot_rel = layout.method_dir(Path("."), "data_transform", "transform").as_posix()
+    list_rel = layout.method_versions_path(
+        Path("."), "data_transform", "transform").as_posix()
+    assert list_rel in committed
+    assert all(name.startswith(snapshot_rel + "/") or name == list_rel
+               for name in committed)
+
     with get_session() as session:
-        rows = session.exec(
-            select(Method).where(Method.name == "transform")
+        versions = session.exec(
+            select(MethodVersion).where(MethodVersion.method_id == method_id)
         ).all()
-        assert [r.id for r in rows] == [again_id]
+    assert [v.git_commit for v in versions] == [registration_commit]
+
+    register_method(method_dir=source, module_name="data_transform", assume_yes=True)
+    assert _git(tmp_project, "rev-parse", "HEAD") == registration_commit
+    with get_session() as session:
+        again = session.exec(
+            select(MethodVersion).where(MethodVersion.method_id == method_id)
+        ).all()
+    assert [(v.id, v.git_commit) for v in again] == [(versions[0].id, registration_commit)]
+
+
+def test_registration_names_the_files_it_did_not_copy(tmp_project, capsys):
+    """Only scripts, method.yaml and declared helpers enter the snapshot."""
+    from wfc import layout
+
+    register_module(name="data_transform", contracts=[], description="Test")
+    source = _outside_source(tmp_project, "transform", "src")
+    (source / "genes.csv").write_text("gene\nA\n")
+    (source / "notes.md").write_text("notes\n")
+    (source / "__pycache__").mkdir(exist_ok=True)
+    (source / "__pycache__" / "stale.cpython-312.pyc").write_bytes(b"0")
+
+    capsys.readouterr()
+    registration = register_method(method_dir=source, module_name="data_transform", assume_yes=True)
+    out = capsys.readouterr().out
+
+    assert registration.not_copied == ("genes.csv", "notes.md")
+    advice = next(line for line in out.splitlines() if "Not registered" in line)
+    assert advice.strip() == registration.advice
+    assert ("Not registered (only scripts, `method.yaml` and declared helpers "
+            "are copied):") in advice
+    assert "`genes.csv`" in advice and "`notes.md`" in advice
+    assert "stale.cpython-312.pyc" not in advice and "__pycache__" not in advice
+    assert "register it as a sample and wire it as an input" in advice
+    assert "please open an issue: https://" in advice
+
+    snapshot = layout.method_dir(tmp_project, "data_transform", "transform")
+    assert not (snapshot / "genes.csv").exists()
+    assert not (snapshot / "notes.md").exists()
+
+
+def test_a_snapshot_path_git_ignores_is_refused(tmp_project):
+    """No version row for a snapshot the registration commit cannot hold."""
+    from wfc import layout
+    from wfc.persistence import MethodVersion
+
+    gitignore = tmp_project / ".gitignore"
+    gitignore.write_text(gitignore.read_text() + "\n.wfc/registry/\n")
+    register_module(name="data_transform", contracts=[], description="Test")
+    source = _outside_source(tmp_project, "transform", "src")
+
+    with pytest.raises(ValueError, match="git would not commit") as exc:
+        register_method(method_dir=source, module_name="data_transform", assume_yes=True)
+    assert "transform" in str(exc.value)
+
+    with get_session() as session:
+        assert session.exec(select(MethodVersion)).all() == []
+        assert session.exec(select(Method)).all() == []
+    assert not layout.method_dir(tmp_project, "data_transform", "transform").exists()
 
 
 # ============================================================================
@@ -449,6 +542,7 @@ def test_method_name_held_by_another_module_is_refused(tmp_project):
 def test_nested_method_script_path(tmp_project):
     """Methods under modules/<module>/<method>/ should store a
     script_path that points to the actual {method_name}.py."""
+    from wfc import layout
     init_project(tmp_project)
 
     register_module(
@@ -478,7 +572,7 @@ def test_nested_method_script_path(tmp_project):
 
     mid = register_method(
         method_dir=nested_dir,
-        module_name="nested_module")
+        module_name="nested_module", assume_yes=True).method_id
 
     with get_session() as session:
         method = session.exec(
@@ -486,17 +580,12 @@ def test_nested_method_script_path(tmp_project):
         ).first()
         assert method is not None
 
-        # script_path should be a relative path to {method_name}.py
-        # (relative to cwd, which is tmp_project)
+        # script_path is relative to the method's snapshot and names the
+        # copied {method_name}.py there.
         script_rel = method.script_path
-        assert "nested_method" in script_rel
-        assert script_rel.endswith("nested_method.py")
-
-        # The path should actually resolve to a file
-        full_path = tmp_project / script_rel
-        assert full_path.exists(), (
-            f"script_path '{script_rel}' does not resolve from project root"
-        )
+        assert script_rel == "nested_method.py"
+        snapshot = layout.method_dir(tmp_project, "nested_module", "nested_method")
+        assert (snapshot / script_rel).is_file()
 
 
 # ============================================================================
@@ -587,7 +676,7 @@ def test_individual_method_registration(
     method_dir = tmp_project / method_dir_rel
     method_id = register_method(
         method_dir=method_dir,
-        module_name=module_name)
+        module_name=module_name, assume_yes=True).method_id
     assert method_id is not None
 
     with get_session() as session:
@@ -620,7 +709,7 @@ def test_register_method_stores_inherit_for_plain_dir(tmp_project):
     register_module(name="data_transform", contracts=[], description="Test")
     register_method(
         method_dir=tmp_project / "methods" / "transform",
-        module_name="data_transform")
+        module_name="data_transform", assume_yes=True)
 
     _ = Step(step_num=2, name="Verify stored environment",
              purpose="Confirm the container env is recorded in the method's database entry")
@@ -687,7 +776,7 @@ def test_register_method_stores_named_env(tmp_project):
     register_module(name="env_module", contracts=[], description="Test env")
     register_method(
         method_dir=method_dir,
-        module_name="env_module")
+        module_name="env_module", assume_yes=True)
 
     _ = Step(step_num=4, name="Verify stored environment",
              purpose="Confirm the named env is recorded in the method's database entry")
@@ -760,7 +849,8 @@ def test_register_method_resolves_container_env(tmp_project):
     method_id = register_method(
         method_dir=method_dir,
         module_name="container_module",
-    )
+        assume_yes=True,
+    ).method_id
     assert method_id is not None
 
     with get_session() as session:
@@ -791,6 +881,7 @@ def test_register_method_container_env_missing_from_manifest(tmp_project):
         register_method(
             method_dir=method_dir,
             module_name="container_module",
+            assume_yes=True,
         )
 
 
@@ -810,7 +901,7 @@ def test_register_method_container_env_floating_tag_rejected(tmp_project):
     # dict stages the corrupt state this test exists to reject downstream.
     import json
     (tmp_project / ".wfc" / "envs.json").write_text(json.dumps({
-        "schema_version": 1,
+        "schema_version": 3,
         "envs": {
             "image-io": {
                 "backend": "pixi",
@@ -834,6 +925,7 @@ def test_register_method_container_env_floating_tag_rejected(tmp_project):
         register_method(
             method_dir=method_dir,
             module_name="container_module",
+            assume_yes=True,
         )
 
 
@@ -878,7 +970,7 @@ def test_register_method_missing_env_raises(tmp_project):
     with pytest.raises(ValueError, match="not found in .wfc/envs.json|wfc register-env"):
         register_method(
             method_dir=method_dir,
-            module_name="missing_env_module")
+            module_name="missing_env_module", assume_yes=True)
 
 
 @workflow(
@@ -909,7 +1001,7 @@ def test_register_method_no_inputs_raises(tmp_project):
     with pytest.raises(ValueError, match="no input slots"):
         register_method(
             method_dir=method_dir,
-            module_name="no_inputs_module")
+            module_name="no_inputs_module", assume_yes=True)
 
 
 # =============================================================================
@@ -933,7 +1025,7 @@ def test_register_method_auto_commits(tmp_project):
         purpose="register_method must stage the method dir and commit to the project repo")
     method_dir = tmp_project / "methods" / "transform"
     register_module(name="data_transform", contracts=[], description="test")
-    register_method(method_dir=method_dir, module_name="data_transform")
+    register_method(method_dir=method_dir, module_name="data_transform", assume_yes=True)
 
     口 = Step(
         step_num=3,
@@ -981,7 +1073,7 @@ def test_register_method_raises_if_no_git_repo(tmp_project):
     method_dir = tmp_project / "methods" / "transform"
     register_module(name="data_transform", contracts=[], description="test")
     with pytest.raises(RuntimeError, match="not a git repository"):
-        register_method(method_dir=method_dir, module_name="data_transform")
+        register_method(method_dir=method_dir, module_name="data_transform", assume_yes=True)
 
 
 # =============================================================================
@@ -1129,4 +1221,4 @@ def test_register_method_validates_module_contract(tmp_project):
     _ = Step(step_num=3, name="Attempt registration",
              purpose="Verify registration fails with missing output error")
     with pytest.raises(ValueError, match="missing required module output"):
-        register_method(method_dir=method_dir, module_name="strict_mod")
+        register_method(method_dir=method_dir, module_name="strict_mod", assume_yes=True)

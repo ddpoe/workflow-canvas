@@ -3,15 +3,16 @@
 A thin caller of ``wfc.execution.cache_status``. It accepts the document
 the run route accepts and returns one row per target with its status, the
 reason on a blocked row, the source run on a cached or outputs-missing row,
-and each output's location. A refused document is data in the response
-(``blocked_reason``), never an error status.
+and each output's location. A document the load refuses is data in the
+response (``blocked_reason``); one the validator refuses is an HTTP 400
+naming every refusal, as the run route answers it.
 """
 
 from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ..models import PipelineInput
@@ -63,9 +64,13 @@ def post_cache_status(pipeline: PipelineInput) -> CacheStatusResponse:
     or pulled.
     """
     from ...execution.cache_status import cache_status
+    from ...execution.validation import PipelineRefusedError
     from ..submission import submitted_document
 
-    report = cache_status(submitted_document(pipeline))
+    try:
+        report = cache_status(submitted_document(pipeline))
+    except PipelineRefusedError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return CacheStatusResponse(
         rows=[
             CacheStatusRowModel(

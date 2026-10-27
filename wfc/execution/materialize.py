@@ -138,7 +138,9 @@ def run_materialize(
         collapsed_samples: Bundled sample identities for collapsed fan-in.
 
     Returns:
-        ``{"ok": True, "slot_paths": {...}}`` on success, or
+        ``{"ok": True, "slot_paths": {...}, "notes": [...]}`` on success
+        (``notes``: warnings for the step log, such as a repaired sample
+        copy's), or
         ``{"ok": False, "rc": 1, "ending": "materialize-failed",
         "error_message": ...}``; ``run_step`` hands the failure to the
         record tail, which marks the run row failed with the message and
@@ -151,6 +153,7 @@ def run_materialize(
         sample_data_path,
     )
     from ..storage.resolve import resolve_input  # from its defining module, so the AutoStep edge resolves
+    from ..storage.restore import check_sample  # likewise
 
     口 = Step(step_num=1, name="Classify input sources",
              purpose="Derive each input slot's source kind (parent-slot / "
@@ -166,6 +169,9 @@ def run_materialize(
     # For fan-in nodes with multiple parents we build a slot→paths dict so
     # method.py can dispatch via WFC_INPUT_PATHS.
     slot_paths: dict[str, list[str]] = {}  # slot → [resolved_path, ...]
+    # Warnings the step log carries (a repaired sample copy); dispatch
+    # writes them at the head of the run's stderr.log.
+    notes: list[str] = []
 
     口 = Step(step_num=2, name="Resolve parent slots",
              purpose="Resolve each parent entry through resolve_input by the source "
@@ -208,17 +214,38 @@ def run_materialize(
              purpose="Fill a sample-via-selector slot with the sample's data by "
                      "the name its registration recorded, for the target's own "
                      "sample or each bundled sample of a collapsed fan-in, at "
-                     "the location Storage's sample_data_path owns; a sample "
-                     "whose recorded data is not there, or whose row is "
-                     "malformed, is a failure naming it")
+                     "the location Storage's sample_data_path owns, after "
+                     "Storage's check_sample has checked each copy (and "
+                     "repaired a changed one, warning); a sample whose "
+                     "recorded data is not there, whose row is malformed, or "
+                     "whose changed copy cannot be repaired is a failure "
+                     "naming it")
     if input_sources["selector_slot"] is not None:
         # Sample-via-selector: a node an input_selector feeds, whatever else
         # feeds it (or a legacy drive with no pipeline document). The data is
         # the file or directory registration recorded, under
-        # data/samples/{sample}/ once restore_sample has run; a sibling that
+        # .wfc/workspace/samples/{sample}/ once restore_sample has run; a sibling that
         # sorts first is never read instead.
         slot = input_sources["selector_slot"]
         project_root_for_samples = get_project_root()
+        # Storage checks each restored copy before it is read (the sentinel
+        # keeps the restore rule from running again): a changed copy is
+        # restored from a checked cache entry with a warning naming it, and
+        # one that cannot be is a failure naming the sample.
+        if sample == COLLAPSED_SAMPLE and collapsed_samples:
+            to_check = list(collapsed_samples)
+        else:
+            to_check = [sample]
+        for s in to_check:
+            口 = AutoStep(step_num=3.1, name="Check the sample's restored copy")
+            checked = check_sample(s, project_root_for_samples)
+            if checked.refused:
+                return _failed(
+                    f"node '{node_id}' cannot read sample '{s}' into input "
+                    f"slot '{slot}': {checked.message}"
+                )
+            if checked.warning is not None:
+                notes.append(checked.warning)
         # Collapsed-fan-in root branch: sample is COLLAPSED_SAMPLE and one
         # --collapsed-sample flag was emitted per bundled sample by
         # _generate_rule; restore_sample has populated each one by now (the
@@ -280,13 +307,24 @@ def run_materialize(
 
     口 = Step(step_num=4, name="Merge references and enforce root input",
              purpose="Merge orchestrator-resolved --ref-input artifacts into their "
-                     "declared slots; fail a root node that resolved no input at all")
+                     "declared slots, a run's output read through Storage's input "
+                     "resolver; fail a root node that resolved no input at all")
     # Boundary rule: run_reference paths are resolved by the
     # orchestrator and passed via --ref-input.  Merge them into
     # slot_paths so the method receives them as normal
     # inputs without run_step needing to understand system node types.
+    # A path naming a run's output record is read through Storage's input
+    # resolver: an archived output has left the run archive for the cache.
+    from ..storage.resolve import reference_read_path
     for label, ref_path in input_sources["references"]:
-        slot_paths.setdefault(label, []).append(ref_path)
+        try:
+            ref_read = reference_read_path(ref_path)
+        except (InputUnavailableError, MalformedEntryError) as exc:
+            return _failed(
+                f"node '{node_id}' could not read reference input '{label}' "
+                f"({ref_path}): {exc}"
+            )
+        slot_paths.setdefault(label, []).append(ref_read)
 
     # Enforce --ref-input for root nodes.  If we reach this point with
     # no parent-slot sources AND no ref_inputs resolved, the node is a root
@@ -297,4 +335,4 @@ def run_materialize(
             f"Provide --ref-input <slot>=<path> to supply input for root nodes."
         )
 
-    return {"ok": True, "slot_paths": slot_paths}
+    return {"ok": True, "slot_paths": slot_paths, "notes": notes}

@@ -29,7 +29,7 @@ PARAMS = {
 # Pipeline logger — writes to pipeline.log + stderr
 PIPELINE_LOG_DIR = os.environ.get(
     "WFC_PIPELINE_LOG_DIR",
-    os.path.join(".runs", "pipelines", PIPELINE_ID),
+    os.path.join(".wfc/runs/pipelines", PIPELINE_ID),
 )
 os.makedirs(PIPELINE_LOG_DIR, exist_ok=True)
 os.makedirs(os.path.join(PIPELINE_LOG_DIR, "runs"), exist_ok=True)
@@ -62,20 +62,20 @@ os.environ["WFC_PIPELINE_ID"] = PIPELINE_ID
 
 rule all:
     input:
-        expand(".runs/sentinels/pin-selector-beside-method-and-reference/quantify/{sample}/{variant}/.complete", sample=SAMPLES, variant=VARIANT_NAMES)
+        expand(".wfc/runs/sentinels/pin-selector-beside-method-and-reference/quantify/{sample}/{variant}/.complete", sample=SAMPLES, variant=VARIANT_NAMES)
 
 SAMPLE_HASHES = {'s1': 'cccccccccccccccccccccccccccccccc', 's2': 'dddddddddddddddddddddddddddddddd'}
 
 rule restore_sample:
-    output: "data/samples/{sample}/.sample_ready"
+    output: ".wfc/workspace/samples/{sample}/.sample_ready"
     params:
         hash_arg=lambda wildcards: ("--hash " + SAMPLE_HASHES[wildcards.sample]) if SAMPLE_HASHES.get(wildcards.sample) else ""
     shell:
         "{sys.executable} -m wfc restore-sample --name {wildcards.sample} {params.hash_arg}"
 
 rule segment:
-    input: "data/samples/{sample}/.sample_ready"
-    output: ".runs/sentinels/pin-selector-beside-method-and-reference/segment/{sample}/{variant}/.complete"
+    input: ".wfc/workspace/samples/{sample}/.sample_ready"
+    output: ".wfc/runs/sentinels/pin-selector-beside-method-and-reference/segment/{sample}/{variant}/.complete"
     params:
         variant="{variant}",
         node_id="segment"
@@ -84,15 +84,15 @@ rule segment:
 
 rule quantify:
     input:
-        data_0=".runs/sentinels/pin-selector-beside-method-and-reference/segment/{sample}/{variant}/.complete",
-        sample_ready="data/samples/{sample}/.sample_ready",
-        ref0_model=".runs/run-m/model/model.pkl"
-    output: ".runs/sentinels/pin-selector-beside-method-and-reference/quantify/{sample}/{variant}/.complete"
+        data_0=".wfc/runs/sentinels/pin-selector-beside-method-and-reference/segment/{sample}/{variant}/.complete",
+        sample_ready=".wfc/workspace/samples/{sample}/.sample_ready",
+        ref0_model=".wfc/runs/run-m/model/model.pkl"
+    output: ".wfc/runs/sentinels/pin-selector-beside-method-and-reference/quantify/{sample}/{variant}/.complete"
     params:
         variant="{variant}",
         node_id="quantify"
     shell:
-        "{sys.executable} -m wfc run-step --node-id {params.node_id} --sample {wildcards.sample} --variant {params.variant} --ref-input model=.runs/run-m/model/model.pkl"
+        "{sys.executable} -m wfc run-step --node-id {params.node_id} --sample {wildcards.sample} --variant {params.variant} --ref-input model=.wfc/runs/run-m/model/model.pkl"
 
 onsuccess:
     _pipeline_logger.info("Pipeline %s completed successfully", PIPELINE_ID)

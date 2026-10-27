@@ -17,7 +17,7 @@ import pytest
 from axiom_annotations import workflow
 
 from tests.conftest import requires_conda_lock
-from tests.fixtures.fakes import stub_docker_build, stub_docker_image_inspect
+from tests.fixtures.fakes import stub_docker_build, stub_docker_image_content, stub_docker_image_inspect
 
 _WIN_LIST = (
     "# platform: win-64\n@EXPLICIT\n"
@@ -44,6 +44,7 @@ def test_register_env_refuses_windows_conda_list_before_docker(tmp_path, monkeyp
     (tmp_path / ".wfc").mkdir()
     build_calls = []
     stub_docker_build(monkeypatch, lambda dockerfile_dir, tag: build_calls.append(tag))
+    stub_docker_image_content(monkeypatch)
     stub_docker_image_inspect(monkeypatch, "sha256:" + "c" * 64)
 
     captured = tmp_path / "explicit-win.txt"
@@ -56,7 +57,8 @@ def test_register_env_refuses_windows_conda_list_before_docker(tmp_path, monkeyp
     msg = str(exc.value)
     assert "win-64" in msg
     commands = _printed_commands(msg)
-    assert commands[-1] == "wfc register-env cl-env --backend conda --from conda-linux-64.lock"
+    assert "wfc register-env cl-env --backend conda --from conda-linux-64.lock" in commands
+    assert commands[-1] == "wfc register-env cl-env conda:<env>"
 
     assert build_calls == []
     assert not (tmp_path / ".wfc" / "build" / "cl-env").exists()
@@ -99,6 +101,7 @@ def test_printed_conda_lock_command_produces_a_registrable_linux_list(tmp_path, 
     (tmp_path / ".wfc").mkdir()
     build_calls = []
     stub_docker_build(monkeypatch, lambda dockerfile_dir, tag: build_calls.append(tag))
+    stub_docker_image_content(monkeypatch)
     stub_docker_image_inspect(monkeypatch, "sha256:" + "d" * 64)
 
     envs_mod.register(

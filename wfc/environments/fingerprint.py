@@ -1,78 +1,106 @@
 """The env fingerprint: a container env's content blob, and the md5 a run records.
 
-:func:`capture_env_content` renders the blob, canonical JSON naming the
-image and its ``sha256:`` digest. ``register`` stores it through
-:func:`wfc.storage.store_env_content` and records the returned md5 as the
-env's ``env_fingerprint``. At run time :func:`resolve_env_fingerprint` reads
-that recorded value back; it captures and stores nothing.
+:func:`capture_env_content` renders the blob, canonical JSON of what the
+image runs with: its layers, its ``Env``, its ``User`` and its
+``WorkingDir``, as :func:`wfc.environments.docker.image_content` inspected
+them. The image's name, tag, registry and labels are not in it, so the same
+image registered under two names records one fingerprint. ``register``
+stores the blob through :func:`wfc.storage.store_env_content` and records the
+returned md5 as the env's ``env_fingerprint``. At run time
+:func:`resolve_env_fingerprint` reads that recorded value back; it inspects,
+captures and stores nothing. :func:`content_fingerprint` computes the same
+md5 without storing, for checking an image pulled from a registry against
+its record.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
+from collections.abc import Mapping
 from pathlib import Path
 
 
-def capture_env_content(env_spec: str) -> str:
-    """Capture the deterministic content blob of a container env.
+def capture_env_content(content: Mapping) -> str:
+    """Render an image's inspected content into the env's content blob.
 
-    The spec is ``container:<image>@sha256:<hex>``; the blob is canonical
-    JSON naming the image and its ``sha256:``-prefixed digest. This is the
-    **precompute write path** used by :func:`wfc.environments.register` to
-    populate ``env_fingerprint`` at registration time. The runtime *read*
-    path (a method's registered env at run-step time) is
-    :func:`resolve_env_fingerprint`, which never calls this function.
+    A pure function: :func:`wfc.environments.register` (through its record
+    step) inspects the image with
+    :func:`wfc.environments.docker.image_content` and hands the result here,
+    then stores the blob with :func:`wfc.storage.store_env_content`, whose
+    md5 is the env's ``env_fingerprint``. The runtime *read* path
+    (:func:`resolve_env_fingerprint`) never calls this function.
 
-    The returned string is always real env content — never a precomputed
-    fingerprint — deterministic for a given image digest, and is the input
-    to :func:`wfc.storage.store_env_content`, which hashes it and stores
-    the blob in the DVC content-addressed cache.
+    The blob is ``{"type": "container-content", "layers": [...],
+    "env": [...], "user": ..., "workdir": ...}`` as canonical JSON (sorted
+    keys, no spaces). Layers and ``Env`` keep the daemon's order; ``Env`` is
+    not sorted, since its order is what the image runs with. A ``null``
+    ``Env`` renders as ``[]``, and a ``null`` or empty ``User`` or
+    ``WorkingDir`` as ``""``, so an image that sets none of them renders one
+    stable blob.
 
     Args:
-        env_spec: ``"container:<image>@sha256:<hex>"``.
+        content: ``{"layers": [...], "env": [...] | None,
+            "user": str | None, "workdir": str | None}``, the shape
+            :func:`wfc.environments.docker.image_content` returns.
 
     Returns:
-        Canonical JSON (sorted keys, no spaces), so two calls with the same
-        (image, digest) hash to the same ``env_fingerprint``.
+        The canonical JSON blob; equal content always renders equal bytes.
 
     Raises:
-        ValueError: If *env_spec* is not a ``container:`` spec, or its
-            image or digest is empty.
+        ValueError: If *content* has no layers, or a layer, an ``Env`` entry,
+            the user or the workdir is not a string.
     """
-    if env_spec.startswith("container:"):
-        # Container-backend precompute path. The spec is
-        # ``container:<image>@sha256:<hex>``. We split on the last
-        # ``@sha256:`` so an image ref like ``docker://reg/img@sha256:...``
-        # is correctly partitioned even though the image part contains
-        # extra punctuation. The output is canonical JSON (sorted keys,
-        # no spaces) so two calls with the same (image, digest) hash to
-        # the same env_fingerprint regardless of input formatting.
-        import json as _json
-        payload = env_spec[len("container:"):]
-        marker = "@sha256:"
-        idx = payload.rfind(marker)
-        if idx < 0:
-            raise ValueError(
-                f"Malformed container env spec {env_spec!r}: expected "
-                f"'container:<image>@sha256:<hex>'."
-            )
-        image = payload[:idx]
-        digest_hex = payload[idx + len(marker):]
-        if not image or not digest_hex:
-            raise ValueError(
-                f"Malformed container env spec {env_spec!r}: image and "
-                f"digest must both be non-empty."
-            )
-        blob = _json.dumps(
-            {"type": "container", "image": image, "digest": f"sha256:{digest_hex}"},
-            sort_keys=True,
-            separators=(",", ":"),
+    layers = content.get("layers")
+    if not layers or not isinstance(layers, list | tuple):
+        raise ValueError(
+            f"Image content has no layers ({layers!r}): an image's "
+            f"RootFS.Layers is never empty, so this is not an inspected image."
         )
-        return blob
-
-    raise ValueError(
-        f"Unsupported env spec {env_spec!r}: expected "
-        f"'container:<image>@sha256:<hex>'."
+    env = content.get("env") or []
+    user = content.get("user") or ""
+    workdir = content.get("workdir") or ""
+    if not isinstance(env, list | tuple):
+        raise ValueError(f"Image content's env is not a list: {env!r}")
+    for value in (*layers, *env, user, workdir):
+        if not isinstance(value, str):
+            raise ValueError(
+                f"Image content holds a non-string value {value!r}: layers, "
+                f"Env entries, User and WorkingDir are strings."
+            )
+    return json.dumps(
+        {
+            "type": "container-content",
+            "layers": list(layers),
+            "env": list(env),
+            "user": user,
+            "workdir": workdir,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
     )
+
+
+def content_fingerprint(content: Mapping) -> str:
+    """Return the ``env_fingerprint`` an image with *content* records.
+
+    The md5 of the blob :func:`capture_env_content` renders, the value
+    :func:`wfc.storage.store_env_content` returns for it at registration,
+    computed without storing anything. A pulled image is checked with it:
+    its content must render the fingerprint its record names.
+
+    Args:
+        content: The shape :func:`wfc.environments.docker.image_content`
+            returns.
+
+    Returns:
+        32-character hex MD5 of the rendered blob.
+
+    Raises:
+        ValueError: As :func:`capture_env_content` raises.
+    """
+    blob = capture_env_content(content)
+    return hashlib.md5(blob.encode("utf-8")).hexdigest()
 
 
 def resolve_env_fingerprint(env_spec: str, project_dir: Path | str) -> str:
@@ -88,10 +116,15 @@ def resolve_env_fingerprint(env_spec: str, project_dir: Path | str) -> str:
     hash the hash).
 
     Any other name is refused before anything is captured or stored: a name
-    with no record (an env deleted after its method registered, say) or
-    with a record that lacks a container. The error names the env as not
-    registered and points at ``wfc register-env``. A manifest that cannot
-    be read raises its own error, naming the file.
+    with no record (an env deleted after its method registered, say), a
+    record that lacks a container, or a record with a container but an
+    empty ``env_fingerprint``. The error names the env as not registered
+    and points at ``wfc register-env``; when a record exists, it names the
+    ``--force`` re-register (``wfc demo --force`` for the demo env), since
+    that incomplete record blocks a plain re-register. A record with a
+    container but no fingerprint (one a version-1 manifest's conversion
+    carried over) is refused as missing its fingerprint, not as absent. A
+    manifest that cannot be read raises its own error, naming the file.
 
     Args:
         env_spec: The env name, already taken through the env-spec
@@ -107,15 +140,26 @@ def resolve_env_fingerprint(env_spec: str, project_dir: Path | str) -> str:
             env manifest cannot be read.
     """
     from .manifest import get as _envs_get
+    from .manifest import recreate_command
 
     record = _envs_get(env_spec, Path(project_dir))
     if record is not None and record.container and record.env_fingerprint:
         return record.env_fingerprint
 
-    # A record that exists but is incomplete blocks a plain re-register.
-    replace_hint = " (add `--force` to replace its incomplete record)" if record is not None else ""
+    # A record that exists but is incomplete (a converted manifest clears the
+    # fingerprint of every env not yet re-registered) blocks a plain
+    # re-register, so the command that replaces it is named.
+    if record is not None and record.container:
+        raise ValueError(
+            f"Env {env_spec!r} has a record in .wfc/envs.json but its env "
+            f"fingerprint is missing, so it is not registered for runs. "
+            f"Re-register it with `{recreate_command(env_spec)}`."
+        )
+    if record is None:
+        command = f"`wfc register-env {env_spec}`"
+    else:
+        command = f"`{recreate_command(env_spec)}` to replace its incomplete record"
     raise ValueError(
         f"Env {env_spec!r} is not registered: .wfc/envs.json has no container "
-        f"env by that name. Build it with `wfc register-env {env_spec}`"
-        f"{replace_hint}."
+        f"env by that name. Build it with {command}."
     )

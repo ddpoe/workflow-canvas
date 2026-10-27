@@ -21,8 +21,8 @@ missing          not ``pushed``      ``unreachable`` refuse
 The principle behind it: **can the system recover this state by itself?**
 Recoverable states are not reported as problems, because reporting them
 trains a user to ignore the report.  A local miss on a pushed row is the cold
-start ADR-018 documents ("first run after a cache prune will repopulate from
-remote"); it must neither refuse nor warn.  A row that is cached but not
+start (the first run after a cache prune repopulates from the remote); it
+must neither refuse nor warn.  A row that is cached but not
 pushed still runs here and is simply not portable -- that is worth saying and
 is never worth refusing over.
 

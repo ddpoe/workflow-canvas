@@ -13,8 +13,8 @@ Covered invariants:
   - remote-pull: with the local entry pruned but present on a real local-FS DVC
     remote, resolve_input REMOTE-PULLs byte-identical content and repopulates
     the local cache.
-  - staging-vs-cache: archive (move=False) leaves the staging copy intact and
-    byte-identical to the cache copy.
+  - one copy: once archived, the output leaves the run archive and the cache
+    entry holds its bytes.
 """
 
 import configparser
@@ -65,9 +65,6 @@ def _seed_archived_output(tmp_project, payload: bytes):
     pipeline run would leave them.
     """
     from wfc.persistence import Module
-    staging = tmp_project / "staging" / "out.csv"
-    staging.parent.mkdir(parents=True, exist_ok=True)
-    staging.write_bytes(payload)
     with get_session() as session:
         module = Module(name="cmod", description="x")
         session.add(module)
@@ -81,6 +78,11 @@ def _seed_archived_output(tmp_project, payload: bytes):
         session.add(run)
         session.commit()
         session.refresh(run)
+        # Where collect writes a run's outputs: its run archive.
+        from wfc.layout import run_archive_dir
+        staging = run_archive_dir(tmp_project, run.id) / "out.csv"
+        staging.parent.mkdir(parents=True, exist_ok=True)
+        staging.write_bytes(payload)
         ro = RunOutput(
             run_id=run.id, slot="out", output_name="out.csv",
             artifact_path=str(staging), artifact_type="method_file",
@@ -115,31 +117,49 @@ def _setup_dvc(project_root):
 # Cache-integrity invariants
 # =============================================================================
 
-@workflow(purpose="A tampered cache file is detected and replaced from a clean source")
+@workflow(purpose="A changed restored view is detected and rebuilt as a read-only "
+                  "view of its intact cache entry at the same path")
 def test_corruption_detected_and_replaced(tmp_project):
+    import os
+
+    from wfc.storage import links
+    from wfc.storage.cache import open_dirs
+
     _setup_dvc(tmp_project)
     _ = Step(step_num=1, name="Archive a known output", purpose="Populate the cache with known bytes")
     run_id, content_hash, _ = _seed_archived_output(tmp_project, b"clean-bytes-v1\n")
     cache_path = _cache_path(tmp_project, content_hash)
     assert cache_path.exists() and hash_path(cache_path) == content_hash
+    hardlinks = links.probe_pair(cache_path.parent, tmp_project).tier == links.TIER_HARDLINK
 
-    _ = Step(step_num=2, name="Restore to a workspace path, then tamper it",
-             purpose="restore_from_cache must detect the hash mismatch and replace from cache")
+    _ = Step(step_num=2, name="Restore to a workspace path",
+             purpose="The restore is a read-only view of the cache object")
     dest = tmp_project / "checkout.csv"
     assert restore_from_cache(content_hash, dest, tmp_project) is True
     assert dest.read_bytes() == b"clean-bytes-v1\n"
-    # Tamper the restored copy. The restore inherits the cache entry's
-    # read-only mode (copy2 preserves bits; entries are protected), so the
-    # tamperer must chmod first — owner can always do that (footgun guard,
-    # not a security boundary). Add the write bit to the mode it has, so the
-    # file stays readable on POSIX.
-    import os, stat
-    os.chmod(dest, stat.S_IMODE(dest.stat().st_mode) | stat.S_IWRITE)
-    dest.write_bytes(b"TAMPERED\n")
+    assert not os.access(dest, os.W_OK), "a restored view is read-only"
+    if hardlinks:
+        assert os.path.samefile(dest, cache_path), "the view is the cache object's inode"
+
+    _ = Step(step_num=3, name="Change the view",
+             purpose="Other bytes saved at its path as a new file, as an editor "
+                     "that saves by rename does; the cache object is untouched")
+    open_dirs(dest.parent)
+    edited = dest.with_name(dest.name + ".edited")
+    edited.write_bytes(b"TAMPERED\n")
+    links.replace_over(edited, dest)
     assert hash_path(dest) != content_hash
-    # restore_from_cache is hash-verified: it detects the mismatch and replaces.
+    assert cache_path.read_bytes() == b"clean-bytes-v1\n"
+
+    _ = Step(step_num=4, name="Restore again",
+             purpose="restore_from_cache finds the hash mismatch and renames a "
+                     "new read-only view over the changed one")
     assert restore_from_cache(content_hash, dest, tmp_project) is True
-    assert dest.read_bytes() == b"clean-bytes-v1\n", "tampered file not restored from cache"
+    assert dest.read_bytes() == b"clean-bytes-v1\n", "the changed view was not rebuilt"
+    assert not os.access(dest, os.W_OK), "the rebuilt view is read-only"
+    assert not os.access(cache_path, os.W_OK), "the cache object stays read-only"
+    if hardlinks:
+        assert os.path.samefile(dest, cache_path), "rebuilt as a view, not a copy"
 
 
 @workflow(purpose="Deleting a cache entry makes resolve_input refuse the output "
@@ -200,19 +220,19 @@ def test_remote_pull_restores_identical_bytes(tmp_project):
     assert cache_path.exists(), "local cache not repopulated after pull"
 
 
-@workflow(purpose="archive (move=False) preserves the staging copy byte-identical to the cache copy")
-def test_staging_copy_preserved_equals_cache(tmp_project):
+@workflow(purpose="Once archived, the cache entry is the output's only local copy: "
+                  "the run-archive file is gone and the entry holds its bytes")
+def test_archived_output_leaves_the_cache_as_its_only_copy(tmp_project):
     _setup_dvc(tmp_project)
-    _ = Step(step_num=1, name="Archive an output (move=False path)",
-             purpose="archive_outputs caches with move=False, preserving the source")
+    _ = Step(step_num=1, name="Archive an output",
+             purpose="archive_outputs copies it into the cache, commits the hash, "
+                     "then removes it from the run archive")
     payload = b"staging-vs-cache\n"
     run_id, content_hash, staging = _seed_archived_output(tmp_project, payload)
 
-    _ = Step(step_num=2, name="Assert staging preserved == cache",
-             purpose="Both copies exist and are byte-identical")
-    assert staging.exists(), "staging copy was consumed — archive must preserve it (move=False)"
+    _ = Step(step_num=2, name="Assert the cache holds the one copy",
+             purpose="The run-archive file is gone; the entry holds the bytes")
+    assert not staging.exists(), "the run-archive copy outlived the archive pass"
     cache_path = _cache_path(tmp_project, content_hash)
-    assert cache_path.exists()
-    assert staging.read_bytes() == payload
     assert cache_path.read_bytes() == payload
-    assert hash_path(staging) == hash_path(cache_path) == content_hash
+    assert hash_path(cache_path) == content_hash

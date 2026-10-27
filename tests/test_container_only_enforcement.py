@@ -13,81 +13,49 @@ Both tests are unmarked (no Docker) and run under the default ``pytest`` suite.
 """
 from __future__ import annotations
 
-import json
-from pathlib import Path
+import subprocess
 
 import pytest
 
-from tests.fixtures.fakes import stub_runtime_phases
+from tests.harness import Scenario, build_project, chain, drive_target
+
+T1 = ("n1", "s1", "default")
 
 
 # =============================================================================
 # Non-resolving env errors loudly at runtime
 # =============================================================================
 
-def _setup_no_container_project(tmp_path: Path) -> tuple[Path, Path]:
-    """Build a minimal wfc project whose env has no container record.
-
-    Returns:
-        ``(project_dir, pipeline_json_path)``.
-    """
-    (tmp_path / ".wfc").mkdir()
-    (tmp_path / ".wfc" / "wf-canvas.toml").write_text(
-        "[project]\nname=\"t\"\n[database]\nurl=\"sqlite:///:memory:\"\n"
-    )
-    # No envs.json -> envs.get returns None for any name (non-resolving env).
-    method_dir = tmp_path / "methods" / "ml_plain"
-    method_dir.mkdir(parents=True)
-    (method_dir / "ml_plain.py").write_text("# stub\n")
-    # method.yaml names a container-style env so parse-time validation passes
-    # and we exercise the RUNTIME backstop (the env simply has no record).
-    (method_dir / "method.yaml").write_text("executor: local\nenv: image-io\n")
-
-    pj = tmp_path / "pipeline.json"
-    pj.write_text(json.dumps({
-        "nodes": [{
-            "id": "n1", "method": "ml_plain", "module": "test",
-            "env": "image-io", "script": str(method_dir / "ml_plain.py"),
-        }],
-        "links": [], "param_sets": {},
-    }))
-    return tmp_path, pj
-
-
-def test_run_step_no_container_env_errors_loudly(tmp_path, monkeypatch, capsys):
+def test_run_step_no_container_env_errors_loudly(git_project, monkeypatch, capsys):
     """run_step on an env with no container record exits non-zero,
     names the env, points at ``wfc register-env``, and writes the failure
-    outcome sidecar — no host fallback."""
-    proj, pj = _setup_no_container_project(tmp_path)
-    stub_runtime_phases(monkeypatch, proj)
+    outcome sidecar — no host fallback.
+    """
+    from wfc.environments import delete
 
-    from wfc.execution import run_step
-    rc = run_step(
-        node_id="n1",
-        sample="s1",
-        variant="default",
-        pipeline_json=str(pj),
-        pipeline_id="p1",
-        ref_inputs=["data=" + str(proj / "ref.txt")],
-    )
+    scn = Scenario(nodes=chain("n1"))
+    env = scn.env_name
+    # The method registers in the harness's built env; its record then
+    # leaves .wfc/envs.json through the manifest's own remover (as a merge
+    # or a hand edit would: `wfc delete-env` refuses an env a version records).
+    project = build_project(scn, root=git_project, monkeypatch=monkeypatch)
+    delete(env, project.root)
+    subprocess.run(["git", "commit", "-q", "-am", f"delete env {env}"],
+                   cwd=project.root, check=True, capture_output=True)
+    capsys.readouterr()
+    obs = drive_target(project, "n1", monkeypatch=monkeypatch)
 
     # Non-zero exit (no silent host fallback).
-    assert rc == 1
+    assert obs.exit_code(T1) == 1
 
     err = capsys.readouterr().err
     # Message names the offending env and points at the build command.
-    assert "image-io" in err
-    assert "wfc register-env" in err
+    assert f"wfc register-env {env}" in err
 
     # A failure outcome sidecar was written, so the pipeline-end walk can
     # record the refused target as a failed row.
-    outcome_path = (
-        proj / ".runs" / "pipelines" / "p1" / "outcomes"
-        / "n1__s1__default.json"
-    )
-    assert outcome_path.exists(), f"outcome sidecar not written at {outcome_path}"
-    outcome = json.loads(outcome_path.read_text())
-    assert outcome["status"] == "failed"
+    outcome = obs.outcomes.get(T1)
+    assert outcome is not None and outcome["status"] == "failed"
 
 
 # =============================================================================
@@ -96,7 +64,8 @@ def test_run_step_no_container_env_errors_loudly(tmp_path, monkeypatch, capsys):
 
 def test_parse_method_yaml_rejects_missing_env(tmp_path):
     """A method.yaml with no ``env`` is rejected with the
-    'must name a built container env' error; it does not run."""
+    'must name a built container env' error; it does not run.
+    """
     from wfc.contracts import parse_method_yaml
 
     method_dir = tmp_path / "no_env"
@@ -111,7 +80,8 @@ def test_parse_method_yaml_rejects_missing_env(tmp_path):
 
 def test_parse_method_yaml_rejects_inherit_env(tmp_path):
     """``env: inherit`` is not a keyword: it is rejected with the same
-    'must name a built container env' error, as a non-built env."""
+    'must name a built container env' error, as a non-built env.
+    """
     from wfc.contracts import parse_method_yaml
 
     method_dir = tmp_path / "inherit_env"

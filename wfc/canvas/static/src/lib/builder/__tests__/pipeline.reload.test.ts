@@ -38,6 +38,7 @@ function mkRun(partial: Partial<WfcRun>): WfcRun {
     status: 'success',
     inputs: {},
     outputs: {},
+    outputAvailability: {},
     metrics: {},
     dataSource: 'sample_a',
     parentRunIds: [],

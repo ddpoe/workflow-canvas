@@ -7,11 +7,10 @@
    *      new / blocked).  Click a method row to drill in.
    *   - "<method_id>"        — detail table for that method, cache-aware, with
    *                             where each row's outputs are, one column per
-   *                             param, pencil-to-rename with explicit Confirm,
-   *                             collision detection per (sample, method), and
-   *                             a grouping control. Rows with outputs expand
-   *                             to one line per output slot with its location
-   *                             and action. Grouped by variant name by
+   *                             param, the source run's name (a link to it in
+   *                             History), and a grouping control. Rows with
+   *                             outputs expand to one line per output slot
+   *                             with its location and action. Grouped by variant name by
    *                             default, so each group reads as one
    *                             whole-pipeline scenario.
    *
@@ -41,7 +40,7 @@
   import { projectRuns } from '../graph/projection.js';
   import {
     OUTPUT_ACTION, STATUS_ACTION, STATUS_LABEL,
-    blockedVerdict, hasSourceRun, isCached, tallyStatuses, verdictsFor, whereSummary, willRun,
+    blockedVerdict, hasSourceRun, tallyStatuses, verdictsFor, whereSummary, willRun,
     type RowVerdict,
   } from './runsPreviewStatus.js';
 
@@ -65,11 +64,6 @@
     verdict: RowVerdict | null;
     /** The per-output breakdown is shown. */
     expanded: boolean;
-    /** Committed custom name; empty = use auto-NID. */
-    pendingRename: string;
-    /** Edit session state. */
-    editing: boolean;
-    draft: string;
     /**
      * For collapsed fan-in rows (sample === COLLAPSED_SAMPLE), the actual sample
      * list bundled into this single projected run. Empty for normal
@@ -126,7 +120,7 @@
     const labelByNodeId: Record<string, string> = {};
     for (const n of methodNodes) labelByNodeId[n.id] = n.label;
 
-    const out: Omit<Row, 'verdict' | 'expanded' | 'pendingRename' | 'editing' | 'draft'>[] = [];
+    const out: Omit<Row, 'verdict' | 'expanded'>[] = [];
     for (const p of projectRuns(pipeline)) {
       out.push({
         key: p.key,
@@ -172,9 +166,6 @@
         ...p,
         verdict: untrack(() => verdictOf($lockState, p.key)),
         expanded: prev?.expanded ?? false,
-        pendingRename: prev?.pendingRename ?? '',
-        editing: prev?.editing ?? false,
-        draft: prev?.draft ?? '',
         bundledSamples: p.bundledSamples,
       };
     });
@@ -186,67 +177,12 @@
     }
   });
 
-  function autoNidFor(r: Row): string {
+  function sourceNidFor(r: Row): string {
     return r.verdict?.sourceNid || '—';
   }
 
   function toggleExpanded(key: string) {
     rows = rows.map(r => r.key === key ? { ...r, expanded: !r.expanded } : r);
-  }
-
-  /** What's shown/used for collision: draft when editing, else committed rename, else auto. */
-  function displayedNidFor(r: Row): string {
-    if (r.editing) return r.draft !== '' ? r.draft : autoNidFor(r);
-    if (r.pendingRename !== '') return r.pendingRename;
-    return autoNidFor(r);
-  }
-
-  function startEdit(key: string) {
-    rows = rows.map(r => r.key === key
-      ? { ...r, editing: true, draft: r.pendingRename !== '' ? r.pendingRename : autoNidFor(r) }
-      : r);
-  }
-  function updateDraft(key: string, value: string) {
-    rows = rows.map(r => r.key === key ? { ...r, draft: value } : r);
-  }
-  function confirmRename(key: string) {
-    rows = rows.map(r => {
-      if (r.key !== key) return r;
-      const auto = autoNidFor(r);
-      // If draft == auto, treat as clearing the rename.
-      const committed = (r.draft === '' || r.draft === auto) ? '' : r.draft;
-      return { ...r, pendingRename: committed, editing: false, draft: '' };
-    });
-  }
-  function cancelEdit(key: string) {
-    rows = rows.map(r => r.key === key ? { ...r, editing: false, draft: '' } : r);
-  }
-  function clearRename(key: string) {
-    rows = rows.map(r => r.key === key ? { ...r, pendingRename: '', editing: false, draft: '' } : r);
-  }
-
-  let collisionKeys = $derived((() => {
-    const perGroup: Record<string, Record<string, number>> = {};
-    for (const r of rows) {
-      const g = `${r.sample}::${r.method}`;
-      perGroup[g] = perGroup[g] ?? {};
-      const n = displayedNidFor(r);
-      if (n === '—') continue;
-      perGroup[g][n] = (perGroup[g][n] ?? 0) + 1;
-    }
-    const bad = new Set<string>();
-    for (const r of rows) {
-      const n = displayedNidFor(r);
-      if (n === '—') continue;
-      if ((perGroup[`${r.sample}::${r.method}`]?.[n] ?? 0) > 1) bad.add(r.key);
-    }
-    return bad;
-  })());
-
-  function collidesWith(r: Row): string | null {
-    if (!collisionKeys.has(r.key)) return null;
-    const location = r.sample === COLLAPSED_SAMPLE ? 'the collapsed bundle' : r.sample;
-    return `collides with ${displayedNidFor(r)} in ${location}`;
   }
 
   /** The rows of the selected view, reused rows included — the header count. */
@@ -336,28 +272,18 @@
   }))());
 
   let counts = $derived((() => {
-    let renames = 0, conflicts = 0, reused = 0, jobs = 0;
+    let reused = 0, jobs = 0;
     for (const r of rows) {
-      if (r.pendingRename !== '' && r.pendingRename !== autoNidFor(r)) renames++;
-      if (collisionKeys.has(r.key)) conflicts++;
       if (r.reused) reused++;
       if (r.verdict && willRun(r.verdict.status)) jobs++;
     }
-    return { tally: tallyRows(rows), jobs, renames, conflicts, reused };
+    return { tally: tallyRows(rows), jobs, reused };
   })());
 
-  /**
-   * The action cell for a row. A collision, then a committed rename on a
-   * cached or new row, take precedence over the status's own action.
-   */
-  function rowAction(r: Row, committed: boolean, collision: string | null): { text: string; cls: string } | null {
-    if (collision) return { text: 'blocks Run', cls: 'note-err' };
+  /** The action cell for a row: its status's own action. */
+  function rowAction(r: Row): { text: string; cls: string } | null {
     if (!r.verdict) return null;
     const s = r.verdict.status;
-    if (committed && isCached(s)) return { text: 'rename only', cls: 'note-rename' };
-    if (committed && (s === 'new_step_changed' || s === 'new_upstream_reruns')) {
-      return { text: 'custom name · will run', cls: 'note-rename' };
-    }
     return { text: STATUS_ACTION[s], cls: s === 'blocked' ? 'note-err' : 'note-muted' };
   }
 
@@ -367,24 +293,15 @@
 
   function runLabel(): string {
     const jobs = counts.jobs;
-    const renames = counts.renames;
-    if (renames === 0) return `Run ${jobs} job${jobs === 1 ? '' : 's'}`;
-    return `Run ${jobs} job${jobs === 1 ? '' : 's'} · +${renames} rename${renames === 1 ? '' : 's'}`;
+    return `Run ${jobs} job${jobs === 1 ? '' : 's'}`;
   }
   let runDisabled = $derived(
-    counts.conflicts > 0
-    || $blockedReasons.length > 0
-    || (locked && counts.jobs === 0 && counts.renames === 0),
+    $blockedReasons.length > 0
+    || (locked && counts.jobs === 0),
   );
   let runTitle = $derived(
-    $blockedReasons.length > 0 ? ['Blocked:', ...$blockedReasons].join('\n')
-      : counts.conflicts > 0 ? 'resolve conflicts first' : '',
+    $blockedReasons.length > 0 ? ['Blocked:', ...$blockedReasons].join('\n') : '',
   );
-
-  function onNidKeydown(e: KeyboardEvent, key: string) {
-    if (e.key === 'Enter') { e.preventDefault(); confirmRename(key); }
-    else if (e.key === 'Escape') { e.preventDefault(); cancelEdit(key); }
-  }
 </script>
 
 <div class="runs-preview-panel">
@@ -495,15 +412,10 @@
             {/if}
             {#if !collapsed}
               {#each g.runs as r}
-                {@const collision = collidesWith(r)}
-                {@const auto = autoNidFor(r)}
-                {@const committed = r.pendingRename !== '' && r.pendingRename !== auto}
-                {@const displayed = r.pendingRename !== '' ? r.pendingRename : auto}
                 {@const v = r.verdict}
                 {@const expandable = !!v && hasSourceRun(v.status) && v.outputs.length > 0}
-                {@const action = rowAction(r, committed, collision)}
-                <tr class="run-row" data-key={r.key}
-                    class:row-renamed={committed && !collision} class:row-conflict={!!collision} class:row-reused={r.reused}>
+                {@const action = rowAction(r)}
+                <tr class="run-row" data-key={r.key} class:row-reused={r.reused}>
                   <td class="col-nid">
                     {#if expandable}
                       <button class="btn-chevron" aria-expanded={r.expanded}
@@ -512,35 +424,11 @@
                     {:else}
                       <span class="chevron-spacer"></span>
                     {/if}
-                    {#if r.editing}
-                      <div class="nid-edit">
-                        <input class="nid-input" type="text"
-                          value={r.draft}
-                          placeholder={auto}
-                          autofocus
-                          onkeydown={(e: KeyboardEvent) => onNidKeydown(e, r.key)}
-                          oninput={(e: Event) => updateDraft(r.key, (e.target as HTMLInputElement).value)} />
-                        <button class="btn-ok" onclick={() => confirmRename(r.key)} title="Confirm (Enter)">✓</button>
-                        <button class="btn-cancel" onclick={() => cancelEdit(r.key)} title="Cancel (Esc)">×</button>
-                      </div>
-                      {#if collision}
-                        <div class="nid-hint hint-err">✗ {collision}</div>
-                      {/if}
+                    {#if v && hasSourceRun(v.status) && v.sourceRunId !== null && onOpenRun}
+                      <button class="nid-text nid-link" title="Open the source run in History"
+                        onclick={() => onOpenRun?.(String(v.sourceRunId))}>{sourceNidFor(r)}</button>
                     {:else}
-                      {#if !committed && v && hasSourceRun(v.status) && v.sourceRunId !== null && onOpenRun}
-                        <button class="nid-text nid-link" title="Open the source run in History"
-                          onclick={() => onOpenRun?.(String(v.sourceRunId))}>{displayed}</button>
-                      {:else}
-                        <span class="nid-text"
-                            class:is-renamed={committed}
-                            class:is-loading={!v}>
-                          {!v ? '…' : displayed}
-                        </span>
-                      {/if}
-                      <button class="btn-pencil" onclick={() => startEdit(r.key)} title="Rename">✎</button>
-                      {#if committed}
-                        <button class="btn-clear" onclick={() => clearRename(r.key)} title="Clear custom name">×</button>
-                      {/if}
+                      <span class="nid-text" class:is-loading={!v}>{!v ? '…' : sourceNidFor(r)}</span>
                     {/if}
                   </td>
                   <td class="col-status">
@@ -602,8 +490,6 @@
         <span class="tally-blocked">● {counts.tally.blocked} blocked</span>
         {/if}
         {#if counts.reused > 0}<span class="tally-reused">↺ {counts.reused} reused</span>{/if}
-        {#if counts.renames > 0}<span class="tally-rename">✎ {counts.renames} rename{counts.renames === 1 ? '' : 's'}</span>{/if}
-        {#if counts.conflicts > 0}<span class="tally-conflict">✗ {counts.conflicts} conflict{counts.conflicts === 1 ? '' : 's'}</span>{/if}
       </span>
       <span class="footer-actions">
         <button class="lock-btn" data-testid="preview-lock-all" onclick={() => openLockSummary('lock')}
@@ -686,39 +572,11 @@
   }
   .group-caret { display: inline-block; width: 14px; color: #555; }
   .group-summary { color: #666; }
-  .row-renamed { background: #1f1a24; }
-  .row-conflict { background: #2a1818; }
 
-  /* NID column: text mode + edit mode */
+  /* NID column */
   .col-nid { font-family: Consolas, monospace; min-width: 180px; }
   .nid-text { color: #ccc; }
   .nid-text.is-loading { color: #555; font-style: italic; }
-  .nid-text.is-renamed { color: #b085e8; font-weight: 600; }
-  .btn-pencil, .btn-clear {
-    background: none; border: none; cursor: pointer;
-    color: #555; font-size: 12px; padding: 0 4px; margin-left: 4px;
-    vertical-align: middle;
-  }
-  .btn-pencil:hover { color: #4fc3f7; }
-  .btn-clear:hover { color: #E74C3C; }
-  .nid-edit { display: inline-flex; align-items: center; gap: 4px; }
-  .nid-input {
-    background: #0f1a24; border: 1px solid #4fc3f7; color: #fff;
-    font-family: Consolas, monospace; font-size: 12px;
-    padding: 3px 6px; border-radius: 3px; width: 140px;
-  }
-  .row-conflict .nid-input { border-color: #E74C3C; background: #1a0e0e; }
-  .btn-ok, .btn-cancel {
-    background: none; border: 1px solid transparent; cursor: pointer;
-    font-size: 13px; padding: 0 6px; border-radius: 3px; line-height: 1;
-  }
-  .btn-ok { color: #7fd87f; }
-  .btn-ok:hover { background: #1e3a1e; border-color: #3a5a3a; }
-  .btn-cancel { color: #E74C3C; font-size: 16px; }
-  .btn-cancel:hover { background: #2a1818; border-color: #5a3a3a; }
-  .nid-hint { font-size: 10px; margin-top: 3px; color: #E74C3C; }
-  .hint-err { color: #E74C3C; }
-
   .col-status .pill {
     display: inline-block; padding: 2px 8px; border-radius: 10px;
     font-size: 10.5px; font-weight: 500;
@@ -764,7 +622,6 @@
   .col-variant.override { color: #F39C12; }
   .col-action { color: #666; font-size: 11px; }
   .note-err { color: #E74C3C; }
-  .note-rename { color: #b085e8; }
   .note-muted { color: #666; }
   .p-val { font-family: Consolas, monospace; }
   .p-val.p-number { color: #F39C12; }
@@ -783,9 +640,7 @@
   .tally-cached-remote { color: #7fb4e8; }
   .tally-outputs-missing { color: #e8b04f; }
   .tally-blocked { color: #E74C3C; }
-  .tally-rename { color: #b085e8; }
   .tally-reused { color: #9aa0a6; }
-  .tally-conflict { color: #E74C3C; }
   .footer-actions { display: flex; gap: 8px; }
   .tally-unlocked { color: #9aa0a6; font-style: italic; }
   .lock-btn {

@@ -4,7 +4,6 @@
       "id": "scr50",
       "method": "csv_filter",
       "module": "csv_tools",
-      "script": "modules/_builtin/csv_filter/csv_filter.py",
       "output_ext": ".csv",
       "slot_outputs": {
         "filtered": "filtered.csv"
@@ -20,7 +19,6 @@
       "id": "scr75",
       "method": "csv_filter",
       "module": "csv_tools",
-      "script": "modules/_builtin/csv_filter/csv_filter.py",
       "output_ext": ".csv",
       "slot_outputs": {
         "filtered": "filtered.csv"
@@ -36,7 +34,6 @@
       "id": "scr125",
       "method": "csv_filter",
       "module": "csv_tools",
-      "script": "modules/_builtin/csv_filter/csv_filter.py",
       "output_ext": ".csv",
       "slot_outputs": {
         "filtered": "filtered.csv"
@@ -52,7 +49,6 @@
       "id": "cycD1",
       "method": "csv_filter",
       "module": "csv_tools",
-      "script": "modules/_builtin/csv_filter/csv_filter.py",
       "output_ext": ".csv",
       "slot_outputs": {
         "filtered": "filtered.csv"
@@ -68,7 +64,6 @@
       "id": "p27",
       "method": "csv_filter",
       "module": "csv_tools",
-      "script": "modules/_builtin/csv_filter/csv_filter.py",
       "output_ext": ".csv",
       "slot_outputs": {
         "filtered": "filtered.csv"
@@ -84,7 +79,6 @@
       "id": "dbl",
       "method": "csv_filter",
       "module": "csv_tools",
-      "script": "modules/_builtin/csv_filter/csv_filter.py",
       "output_ext": ".csv",
       "slot_outputs": {
         "filtered": "filtered.csv"
@@ -100,7 +94,6 @@
       "id": "fqc_scr50",
       "method": "feature_qc",
       "module": "data_preprocessing",
-      "script": "methods/feature_qc/feature_qc.py",
       "output_ext": ".csv",
       "slot_outputs": {
         "preprocessed": "preprocessed.csv"
@@ -129,7 +122,6 @@
       "id": "fqc_scr75",
       "method": "feature_qc",
       "module": "data_preprocessing",
-      "script": "methods/feature_qc/feature_qc.py",
       "output_ext": ".csv",
       "slot_outputs": {
         "preprocessed": "preprocessed.csv"
@@ -158,7 +150,6 @@
       "id": "fqc_scr125",
       "method": "feature_qc",
       "module": "data_preprocessing",
-      "script": "methods/feature_qc/feature_qc.py",
       "output_ext": ".csv",
       "slot_outputs": {
         "preprocessed": "preprocessed.csv"
@@ -187,7 +178,6 @@
       "id": "fqc_cycD1",
       "method": "feature_qc",
       "module": "data_preprocessing",
-      "script": "methods/feature_qc/feature_qc.py",
       "output_ext": ".csv",
       "slot_outputs": {
         "preprocessed": "preprocessed.csv"
@@ -216,7 +206,6 @@
       "id": "fqc_p27",
       "method": "feature_qc",
       "module": "data_preprocessing",
-      "script": "methods/feature_qc/feature_qc.py",
       "output_ext": ".csv",
       "slot_outputs": {
         "preprocessed": "preprocessed.csv"
@@ -245,7 +234,6 @@
       "id": "fqc_dbl",
       "method": "feature_qc",
       "module": "data_preprocessing",
-      "script": "methods/feature_qc/feature_qc.py",
       "output_ext": ".csv",
       "slot_outputs": {
         "preprocessed": "preprocessed.csv"
@@ -274,7 +262,6 @@
       "id": "merge_cycD1",
       "method": "csv_merge",
       "module": "csv_tools",
-      "script": "modules/_builtin/csv_merge/csv_merge.py",
       "output_ext": ".csv",
       "slot_outputs": {
         "merged": "merged.csv"
@@ -285,7 +272,6 @@
       "id": "merge_p27",
       "method": "csv_merge",
       "module": "csv_tools",
-      "script": "modules/_builtin/csv_merge/csv_merge.py",
       "output_ext": ".csv",
       "slot_outputs": {
         "merged": "merged.csv"
@@ -296,7 +282,6 @@
       "id": "merge_dbl",
       "method": "csv_merge",
       "module": "csv_tools",
-      "script": "modules/_builtin/csv_merge/csv_merge.py",
       "output_ext": ".csv",
       "slot_outputs": {
         "merged": "merged.csv"
@@ -307,7 +292,6 @@
       "id": "label_cycD1",
       "method": "binary_labeling",
       "module": "data_labeling",
-      "script": "methods/binary_labeling/binary_labeling.py",
       "output_ext": ".csv",
       "slot_outputs": {
         "labeled": "labeled.csv"
@@ -324,7 +308,6 @@
       "id": "label_p27",
       "method": "binary_labeling",
       "module": "data_labeling",
-      "script": "methods/binary_labeling/binary_labeling.py",
       "output_ext": ".csv",
       "slot_outputs": {
         "labeled": "labeled.csv"
@@ -341,7 +324,6 @@
       "id": "label_dbl",
       "method": "binary_labeling",
       "module": "data_labeling",
-      "script": "methods/binary_labeling/binary_labeling.py",
       "output_ext": ".csv",
       "slot_outputs": {
         "labeled": "labeled.csv"
@@ -358,7 +340,6 @@
       "id": "cls_cycD1",
       "method": "train_classifier",
       "module": "binary_label_classification",
-      "script": "modules/binary_label_classification/train_classifier/train_classifier.py",
       "env_strategy": "pixi",
       "slot_outputs": {
         "predictions": "predictions.csv",
@@ -392,7 +373,6 @@
       "id": "cls_p27",
       "method": "train_classifier",
       "module": "binary_label_classification",
-      "script": "modules/binary_label_classification/train_classifier/train_classifier.py",
       "env_strategy": "pixi",
       "slot_outputs": {
         "predictions": "predictions.csv",
@@ -426,7 +406,6 @@
       "id": "cls_dbl",
       "method": "train_classifier",
       "module": "binary_label_classification",
-      "script": "modules/binary_label_classification/train_classifier/train_classifier.py",
       "env_strategy": "pixi",
       "slot_outputs": {
         "predictions": "predictions.csv",
@@ -460,7 +439,6 @@
       "id": "plot_cycD1",
       "method": "plot_decision_boundary",
       "module": "data_visualization",
-      "script": "modules/data_visualization/plot_decision_boundary/plot_decision_boundary.py",
       "env_strategy": "pixi",
       "output_ext": ".png",
       "slot_outputs": {
@@ -486,7 +464,6 @@
       "id": "plot_p27",
       "method": "plot_decision_boundary",
       "module": "data_visualization",
-      "script": "modules/data_visualization/plot_decision_boundary/plot_decision_boundary.py",
       "env_strategy": "pixi",
       "output_ext": ".png",
       "slot_outputs": {
@@ -512,7 +489,6 @@
       "id": "plot_dbl",
       "method": "plot_decision_boundary",
       "module": "data_visualization",
-      "script": "modules/data_visualization/plot_decision_boundary/plot_decision_boundary.py",
       "env_strategy": "pixi",
       "output_ext": ".png",
       "slot_outputs": {

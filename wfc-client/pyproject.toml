@@ -22,7 +22,7 @@ classifiers = [
 ]
 packages = [{ include = "wfc_client" }]
 
-# One small dependency by design (ADR-020): wfc-client is a metadata recorder
+# One small dependency by design: wfc-client is a metadata recorder
 # that imports the Python standard library plus axiom-annotations, whose
 # workflow markers narrate `wfc.run()`. Nothing else, and nothing scientific.
 [tool.poetry.dependencies]

@@ -15,6 +15,7 @@ Validates that a pipeline with a fan_mode="in" Input Selector:
 
 from __future__ import annotations
 
+from wfc import layout
 import csv
 import json
 import os
@@ -145,18 +146,16 @@ def test_fan_mode_roundtrip_through_pydantic_and_enrich(tmp_path, monkeypatch):
         nodes=[
             PipelineNode(id="sel-1", type="input_selector",
                          samples=["a", "b", "c"], fan_mode="in"),
-            PipelineNode(id="m-1", type="method",
-                         method="csv_merge", module="csv_tools"),
         ],
-        links=[PipelineLink(source="sel-1", target="m-1", targetHandle="sources")],
+        links=[],
     )
     # Pydantic preserves fan_mode on the node.
     selector_node = pipeline.nodes[0]
     assert selector_node.fan_mode == "in"
 
     # _enrich_pipeline copies fan_mode into the input_selector node_dict.
-    # Runs in-process so no DB is strictly required; _enrich_pipeline opens
-    # its own session and iterates over empty modules — that is fine.
+    # Runs in-process over an empty registry: the selector needs no
+    # contract (a method node naming an unregistered method is refused).
     enriched = _enrich_pipeline(pipeline)
     sel_dict = next(n for n in enriched["nodes"] if n["id"] == "sel-1")
     assert sel_dict["type"] == "input_selector"
@@ -226,7 +225,6 @@ def test_collapse_propagates_through_chain(tmp_path):
 def test_output_path_collapsed_uses_all_sentinel():
     step = StepDef(
         method_name="csv_merge", module_name="csv_tools",
-        script_path="modules/_builtin/csv_merge/csv_merge.py",
         params={}, depends_on=[], node_id="merge",
         output_ext=".csv",
         sample_collapsed=True, collapsed_samples=["a", "b"],
@@ -234,11 +232,10 @@ def test_output_path_collapsed_uses_all_sentinel():
     step_map = {"merge": step}
     out = _output_path("merge", step_map, pipeline_id="pid")
     # outputs are sentinels, not real workspace files.
-    assert out == ".runs/sentinels/pid/merge/__all__/{variant}/.complete"
+    assert out == ".wfc/runs/sentinels/pid/merge/__all__/{variant}/.complete"
     # Sanity: a non-collapsed step still uses the {sample} wildcard.
     step2 = StepDef(
         method_name="csv_merge", module_name="csv_tools",
-        script_path="modules/_builtin/csv_merge/csv_merge.py",
         params={}, depends_on=[], node_id="merge2",
         output_ext=".csv",
     )
@@ -267,9 +264,9 @@ def test_input_path_collapsed_root_emits_sentinels(tmp_path):
     assert isinstance(inp, dict)
     assert "sources" in inp
     assert inp["sources"] == [
-        "data/samples/s1/.sample_ready",
-        "data/samples/s2/.sample_ready",
-        "data/samples/s3/.sample_ready",
+        ".wfc/workspace/samples/s1/.sample_ready",
+        ".wfc/workspace/samples/s2/.sample_ready",
+        ".wfc/workspace/samples/s3/.sample_ready",
     ]
 
 
@@ -282,7 +279,6 @@ def test_input_path_collapsed_root_emits_sentinels(tmp_path):
 def test_expand_step_combos_collapsed_one_per_variant():
     collapsed = StepDef(
         method_name="csv_merge", module_name="csv_tools",
-        script_path="modules/_builtin/csv_merge/csv_merge.py",
         params={}, depends_on=[], node_id="merge",
         sample_collapsed=True, collapsed_samples=["a", "b", "c"],
     )
@@ -371,7 +367,7 @@ def test_end_to_end_fan_in_snakefile(tmp_path, wfc_root):
     }
     path = _write_pipeline(tmp_path, pipeline_json)
 
-    # NB: NO pre-staging of data/samples/<s>/ -- the generator must not
+    # NB: NO pre-staging of .wfc/workspace/samples/<s>/ -- the generator must not
     # inspect the filesystem. Per-sample data files are resolved at
     # execution time by wfc run-step's --collapsed-sample handler (after
     # restore_sample populates the directories).
@@ -384,8 +380,8 @@ def test_end_to_end_fan_in_snakefile(tmp_path, wfc_root):
     _ = Step(step_num=3, name="Assert __all__ baked into downstream paths",
              purpose="Both merge and filter should carry the collapsed sentinel in their output paths")
     # Snakemake-visible outputs are sentinels.
-    assert ".runs/sentinels/fan-pid/merge/__all__/{variant}/.complete" in snakefile
-    assert ".runs/sentinels/fan-pid/filter/__all__/{variant}/.complete" in snakefile
+    assert ".wfc/runs/sentinels/fan-pid/merge/__all__/{variant}/.complete" in snakefile
+    assert ".wfc/runs/sentinels/fan-pid/filter/__all__/{variant}/.complete" in snakefile
 
     # rule all for a collapsed leaf must not emit sample=SAMPLES (no sample wildcard).
     rule_all = snakefile.split("rule all:")[1].split("\nrule ")[0]
@@ -394,8 +390,8 @@ def test_end_to_end_fan_in_snakefile(tmp_path, wfc_root):
 
     # Merge rule has the fan-in sentinel input list from _input_path.
     merge_rule = snakefile.split("rule merge:")[1].split("\nrule ")[0]
-    assert "data/samples/s1/.sample_ready" in merge_rule
-    assert "data/samples/s3/.sample_ready" in merge_rule
+    assert ".wfc/workspace/samples/s1/.sample_ready" in merge_rule
+    assert ".wfc/workspace/samples/s3/.sample_ready" in merge_rule
 
     # Shell line on collapsed rules passes literal __all__, not {wildcards.sample}.
     assert "--sample __all__" in merge_rule
@@ -404,7 +400,7 @@ def test_end_to_end_fan_in_snakefile(tmp_path, wfc_root):
 
     # Shell line on the collapsed ROOT must declare each bundled sample
     # via --collapsed-sample <s>. The runtime resolver then walks
-    # data/samples/<s>/ per sample and merges the per-sample data files
+    # .wfc/workspace/samples/<s>/ per sample and merges the per-sample data files
     # into the fan-in slot. Without this, wfc run-step sees an empty
     # slot_paths dict and the root-node guard fires with "root node
     # has no input data". Each sample must be named.
@@ -431,10 +427,8 @@ def test_end_to_end_fan_in_snakefile(tmp_path, wfc_root):
 def test_legacy_no_input_selector_unchanged(tmp_path, wfc_root):
     pipeline = PipelineDef(
         steps=[
-            StepDef("preprocess", "demo", "methods/preprocess/preprocess.py",
-                    {}, depends_on=[], node_id="preprocess"),
-            StepDef("filter", "demo", "methods/filter/filter.py",
-                    {}, depends_on=["preprocess"], node_id="filter"),
+            StepDef("preprocess", "demo", {}, depends_on=[], node_id="preprocess"),
+            StepDef("filter", "demo", {}, depends_on=["preprocess"], node_id="filter"),
         ],
         samples=["Pa16c"],
     )
@@ -443,8 +437,8 @@ def test_legacy_no_input_selector_unchanged(tmp_path, wfc_root):
 
     snakefile = generate_snakefile(pipeline, wfc_root, pipeline_id="legacy")
     # Snakemake-visible outputs are sentinels.
-    assert ".runs/sentinels/legacy/preprocess/{sample}/{variant}/.complete" in snakefile
-    assert ".runs/sentinels/legacy/filter/{sample}/{variant}/.complete" in snakefile
+    assert ".wfc/runs/sentinels/legacy/preprocess/{sample}/{variant}/.complete" in snakefile
+    assert ".wfc/runs/sentinels/legacy/filter/{sample}/{variant}/.complete" in snakefile
     # rule all uses sample=SAMPLES for non-collapsed leaf.
     rule_all = snakefile.split("rule all:")[1].split("\nrule ")[0]
     assert "sample=SAMPLES" in rule_all
@@ -603,7 +597,6 @@ def test_expand_step_combos_rejects_explicit_combos_on_collapsed():
     """
     collapsed = StepDef(
         method_name="csv_merge", module_name="csv_tools",
-        script_path="modules/_builtin/csv_merge/csv_merge.py",
         params={}, depends_on=[], node_id="merge",
         sample_collapsed=True, collapsed_samples=["s1", "s2"],
     )
@@ -621,27 +614,27 @@ def test_expand_step_combos_rejects_explicit_combos_on_collapsed():
 # ---------------------------------------------------------------------------
 
 
-@workflow(purpose="generate_snakefile for a fan-in pipeline emits --collapsed-sample flags without inspecting data/samples/ on disk")
+@workflow(purpose="generate_snakefile for a fan-in pipeline emits --collapsed-sample flags without inspecting .wfc/workspace/samples/ on disk")
 def test_generate_snakefile_collapsed_fanin_no_filesystem_inspection(
     tmp_path, wfc_root, monkeypatch
 ):
     """The collapsed-fan-in root branch in _generate_rule must derive
     per-sample identities from step.collapsed_samples (the pipeline
-    contract) rather than from a Path.iterdir() walk over data/samples/.
+    contract) rather than from a Path.iterdir() walk over .wfc/workspace/samples/.
 
     Why this test exists: restore_sample is itself a Snakemake rule whose
     outputs don't exist yet at Snakefile-generation time, so a walk over
-    data/samples/ at that moment finds nothing, the Snakefile carries no
+    .wfc/workspace/samples/ at that moment finds nothing, the Snakefile carries no
     per-sample inputs, and wfc run-step errors at runtime with "root node
     has no input data".
 
     The guard installed here records every iterdir() call the generator
-    makes, and any walk over data/samples/ fails the test.
+    makes, and any walk over .wfc/workspace/samples/ fails the test.
     """
     pipeline_json = _minimal_fan_in_pipeline(["s1", "s2", "s3"])
     path = _write_pipeline(tmp_path, pipeline_json)
 
-    # Crucially: NO data/samples/<s>/ directories pre-staged. Generation
+    # Crucially: NO .wfc/workspace/samples/<s>/ directories pre-staged. Generation
     # must work for the realistic case where samples live only in the
     # DVC cache until restore_sample materializes them at runtime.
 
@@ -653,12 +646,12 @@ def test_generate_snakefile_collapsed_fanin_no_filesystem_inspection(
     pipeline = load_pipeline_from_path(path)
     snakefile = generate_snakefile(pipeline, wfc_root, pipeline_id="no-stage")
 
-    # Filter calls to those that touched data/samples/<s>/ (the forbidden walk).
+    # Filter calls to those that touched .wfc/workspace/samples/<s>/ (the forbidden walk).
     # Other iterdir() calls in the generator (e.g. walking modules/) are
     # legitimate and out of scope.
     sample_walks = [c for c in iterdir_calls if "data" in c and "samples" in c]
     assert sample_walks == [], (
-        "_generate_rule walked data/samples/ at generation time; the "
+        "_generate_rule walked .wfc/workspace/samples/ at generation time; the "
         f"collapsed-fan-in root must derive per-sample identities from "
         f"step.collapsed_samples, not from disk. Walks: {sample_walks}"
     )
@@ -681,7 +674,7 @@ def test_run_step_collapsed_sample_fallback_resolves_per_sample_dirs(
 ):
     """When wfc run-step is invoked with --sample __all__ and one
     --collapsed-sample <s> per bundled sample, it walks each sample's
-    data/samples/<s>/ directory at execution time and merges the
+    .wfc/workspace/samples/<s>/ directory at execution time and merges the
     per-sample data files into the fan-in slot.
 
     Driven on the harness's stub rung: every phase of run_step runs for
@@ -787,7 +780,7 @@ def _extract_wfc_run_step_argv(snakefile: str, rule_name: str) -> list[str]:
     purpose=(
         "Subprocess-level integration: the Snakefile's literal `wfc run-step` "
         "argv for a collapsed-fan-in root parses through argparse, walks "
-        "data/samples/<s>/ for each --collapsed-sample, and produces a "
+        ".wfc/workspace/samples/<s>/ for each --collapsed-sample, and produces a "
         "merged output containing all 3 bundled samples' rows. Catches "
         "generator-CLI handoff bugs (flag typos, missing action=append, "
         "slot-name mismatches) the in-process Tier 2 tests skip."
@@ -863,7 +856,7 @@ def test_run_step_subprocess_collapsed_fanin_end_to_end(
     env["DATABASE_URL"] = f"sqlite:///{project_dir / '.wfc' / 'wfc.db'}"
     # Snakemake would pass PIPELINE_LOG_DIR; supply one so run_dir is
     # predictable and inside the project.
-    pipeline_log_dir = project_dir / ".runs" / "logs" / pipeline_id
+    pipeline_log_dir = layout.artifact_store(project_dir) / "logs" / pipeline_id
     pipeline_log_dir.mkdir(parents=True, exist_ok=True)
     env["PIPELINE_LOG_DIR"] = str(pipeline_log_dir)
     # Make sure the checkout's wfc package wins on PYTHONPATH so `-m wfc`

@@ -6,9 +6,12 @@ stateDiagram-v2
   [*] --> idle: RESET
   [*] --> done: USER_STOP
   idle --> preflight: RUN_CLICKED
+  idle --> polling: ATTACH
   preflight --> submitting: onDone
   preflight --> submitting: onError
   submitting --> polling: onDone
   submitting --> idle: onError
   polling --> done: PIPELINE_DONE
+  polling --> polling: ATTACH
   done --> preflight: RUN_CLICKED
+  done --> polling: ATTACH

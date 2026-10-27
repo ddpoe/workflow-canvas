@@ -21,6 +21,7 @@ deselects the ``integration`` marker via ``addopts``; run explicitly with
 """
 from __future__ import annotations
 
+from wfc import layout
 import json
 import os
 import shutil
@@ -93,13 +94,14 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
 
     _write_envs_json(proj, image_digest, "client-env")
 
-    # Copy the Tier-1 qc fixture into the project's methods/ tree. method.yaml
+    # Copy the Tier-1 qc fixture to a source directory beside the project;
+    # registration copies it into the registry. method.yaml
     # already names `env: client-env`.
     src_method = (
         Path(__file__).resolve().parent.parent
         / "fixtures" / "methods_client" / "qc"
     )
-    method_dir = proj / "methods" / "qc"
+    method_dir = sample_source_dir(proj) / "_methods" / "qc"
     method_dir.mkdir(parents=True)
     shutil.copyfile(src_method / "qc.py", method_dir / "qc.py")
     shutil.copyfile(src_method / "method.yaml", method_dir / "method.yaml")
@@ -121,7 +123,7 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
     register_sample_row(proj, "s1", source_dir / "data.csv")
     # run-step drives this directly, so no Snakemake restore_sample rule
     # materializes the bytes: call the production restore, the only
-    # sanctioned writer under data/samples/.
+    # sanctioned writer under .wfc/workspace/samples/.
     restore_sample("s1", project_root=proj)
 
     pipeline = {
@@ -136,7 +138,6 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
                 "method": "qc",
                 "module": "qcmod",
                 "env": "client-env",
-                "script": "methods/qc/qc.py",
                 "slot_outputs": {
                     "report": "report.json",
                     "clean": "clean.csv",
@@ -202,9 +203,9 @@ def test_tier1_method_writes_manifest_and_archives(
     )
 
     # The client must have written the single results manifest.
-    manifests = list((proj / ".runs").rglob("_wfc_results.json"))
+    manifests = list((layout.artifact_store(proj)).rglob("_wfc_results.json"))
     assert manifests, (
-        f"_wfc_results.json not written under {proj / '.runs'}\n"
+        f"_wfc_results.json not written under {layout.artifact_store(proj)}\n"
         f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
     manifest = json.loads(manifests[0].read_text())

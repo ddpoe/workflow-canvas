@@ -22,7 +22,7 @@ from axiom_annotations import workflow
 def _write_manifest(project_dir: Path, name: str, container: str, fingerprint: str) -> None:
     (project_dir / ".wfc").mkdir(parents=True, exist_ok=True)
     payload = {
-        "schema_version": 1,
+        "schema_version": 3,
         "envs": {
             name: {
                 "backend": "pixi",
@@ -60,40 +60,58 @@ def test_container_lookup_returns_precomputed_fingerprint_no_subprocess(tmp_path
 
 
 def test_container_spec_string_branch_still_works(tmp_path):
-    """The ``container:<image>@sha256:<hex>`` spec-string branch (precompute
-    write path) captures a container blob, independent of the manifest
-    lookup branch."""
+    """The precompute write path renders inspected image content into a
+    ``container-content`` blob, independent of the manifest lookup
+    branch, and reads no manifest to do it."""
     from wfc.environments.fingerprint import capture_env_content
-    (tmp_path / ".wfc").mkdir()
-    spec = "container:image-io@sha256:" + ("a" * 64)
-    blob = capture_env_content(spec)
+    content = {"layers": ["sha256:" + "a" * 64], "env": ["A=1"],
+               "user": "", "workdir": "/"}
+    blob = capture_env_content(content)
     parsed = json.loads(blob)
-    assert parsed["type"] == "container"
+    assert parsed == {"type": "container-content", **content}
+    assert not (tmp_path / ".wfc").exists()
 
 
 @workflow(purpose="A name with no registered container env (deleted from the "
-                  "manifest after its method registered, or recorded without a "
-                  "container) is refused: the error names the env as not "
-                  "registered and points at `wfc register-env`, with no capture "
-                  "subprocess and no cache write")
+                  "manifest after its method registered, recorded without a "
+                  "container, or recorded with a container but no env "
+                  "fingerprint) is refused: the error names the env as not "
+                  "registered and points at `wfc register-env`, adds the "
+                  "`--force` hint exactly when a record exists, and runs no "
+                  "capture subprocess and no cache write")
 def test_fingerprint_refuses_a_name_with_no_registered_container_env(tmp_path, monkeypatch):
-    """Both kinds of unregistered name get the same refusal."""
-    import subprocess as _sp
-
+    """A name with no record and a record with no container share the
+    not-registered refusal; a cleared env fingerprint gets its own wording,
+    saying the fingerprint is missing."""
     from wfc.environments.fingerprint import resolve_env_fingerprint
-    _write_manifest(tmp_path, "broken-env", container="", fingerprint="x" * 64)
 
     fake_subprocess_run(monkeypatch, refusing_process(
         "an unregistered env must be refused without a capture subprocess"))
 
-    # "deleted-env" has no record at all; "broken-env" has one with no container.
-    for name in ("deleted-env", "broken-env"):
+    # One project per case, since a manifest written here holds one env.
+    # "deleted-env" has no record (its manifest names another env);
+    # "broken-env" has one with no container; "unfingerprinted-env" has a
+    # container but an empty env fingerprint.
+    records = {
+        "deleted-env": None,
+        "broken-env": ("", "x" * 64),
+        "unfingerprinted-env": ("wfc/unfingerprinted-env@sha256:" + "a" * 64, ""),
+    }
+    for name, record in records.items():
+        project = tmp_path / name
+        if record is None:
+            _write_manifest(project, "other-env",
+                            container="wfc/other-env@sha256:" + "b" * 64, fingerprint="c" * 32)
+        else:
+            _write_manifest(project, name, container=record[0], fingerprint=record[1])
+
         with pytest.raises(ValueError, match="not registered") as excinfo:
-            resolve_env_fingerprint(name, tmp_path)
+            resolve_env_fingerprint(name, project)
         message = str(excinfo.value)
         assert name in message
         assert "wfc register-env" in message
-    assert not (tmp_path / ".dvc").exists()
+        assert ("--force" in message) == (record is not None)
+        assert not (project / ".dvc").exists()
 
 
 def test_fingerprint_surfaces_an_unreadable_manifest(tmp_path):

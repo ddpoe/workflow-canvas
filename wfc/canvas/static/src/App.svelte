@@ -14,6 +14,7 @@
   import HistoryView from './lib/history/HistoryView.svelte';
   import { selectRun } from './lib/history/historyStore.js';
   import RegistryTab from './lib/registry/RegistryTab.svelte';
+  import { registryFocus } from './lib/registry/registryFocus.js';
   import FlowHelper from './lib/builder/FlowHelper.svelte';
   import DeletableEdge from './lib/builder/DeletableEdge.svelte';
   import ConfirmDialog from './lib/shared/ConfirmDialog.svelte';
@@ -37,6 +38,9 @@
 
   const _fixtureTab = seedFixtureFromQuery();
   let activeTab = $state<'builder' | 'registry' | 'history'>(_fixtureTab ?? 'builder');
+  // A link from another view into the Registry (the run detail's Cache-key
+  // inputs card) switches to its tab; RegistryTab takes the request itself.
+  $effect(() => registryFocus.subscribe(focus => { if (focus) activeTab = 'registry'; }));
   // Preview is on by default — it's the cheapest way for the user to see
   // what jobs the current canvas will compile to before committing a run.
   // A collapsed pull-tab on the right edge of the flow area reopens it

@@ -1,9 +1,8 @@
 <script lang="ts">
   /**
    * The Inspector's method-node body: the failure summary, the Config and
-   * Output tabs, the declared wiring, the naming affixes, the parameter rows
-   * (all-samples and per-sample), and the last run's log stream. The header
-   * above it is the Inspector's.
+   * Output tabs, the parameter rows (all-samples and per-sample), and the
+   * last run's log stream. The header above it is the Inspector's.
    *
    * The non-markup logic — the override and variant writes, the constraint
    * hint and the `column_of_input` lookup — lives in `./nodeEdits.ts`. The
@@ -12,9 +11,8 @@
    */
   import type { Node } from '@xyflow/svelte';
   import {
-    nodes, edges, modules, selectedNodeId, updateNodeData,
+    nodes, edges, updateNodeData,
   } from '../builder/stores.js';
-  import { displaySlotType } from '../shared/slotColor.js';
   import type { CanvasNodeData } from '../shared/types.js';
   import ValueList from './ValueList.svelte';
   import { pipelineRunActor, paramEditorAggregator,
@@ -82,92 +80,6 @@
   // parent-actor tick after the node entered a terminal state.
   let historicalLoadedForRunId = $state<string | null>(null);
   let logFullMode = $state(false);
-
-  // ── Inputs / Outputs wiring for the Inspector's Config tab ──
-  // These read from the registered method contract (modules store) plus
-  // live canvas edges so the Inspector always reflects what's actually
-  // declared by the method and what's actually wired in the graph.
-  // Read-only; clicking a chip selects the wired neighbour in the canvas.
-
-  type SlotWireSource = {
-    id: string;
-    label: string;
-    module: string | undefined;
-    handle: string;
-    nodeType: CanvasNodeData['nodeType'];
-  };
-  type InputWiring = {
-    slot: { name: string; type: string; description?: string; multi?: boolean };
-    source: SlotWireSource | null;
-  };
-  type OutputWiring = {
-    slot: { name: string; type: string; description?: string; multi?: boolean };
-    consumers: SlotWireSource[];
-  };
-
-  /**
-   * The declared method contract for the currently-selected method node.
-   * Null for method nodes whose module/method isn't in the registry — in
-   * which case the Inputs/Outputs sections fall back to canvas edge info
-   * only.
-   */
-  let methodDef = $derived.by(() => {
-    if (!data || data.nodeType !== 'method') return null;
-    const mod = $modules.find(m => m.name === data.module);
-    return mod?.methods.find(me => me.name === data.method) ?? null;
-  });
-
-  function describeNeighbour(nodeId: string, handle: string | undefined | null): SlotWireSource | null {
-    const n = $nodes.find(x => x.id === nodeId);
-    if (!n) return null;
-    const d = n.data as CanvasNodeData;
-    return {
-      id: n.id,
-      label: d.label || n.id,
-      module: d.module,
-      handle: handle ?? '',
-      nodeType: d.nodeType,
-    };
-  }
-
-  /**
-   * For each declared input slot on the current method, locate the canvas
-   * edge whose targetHandle matches and surface the source node + handle.
-   * Slots with no matching edge surface as `source: null` (rendered as
-   * "unwired" in the template).
-   */
-  let inputWiring = $derived.by<InputWiring[]>(() => {
-    if (!node || data?.nodeType !== 'method') return [];
-    const declared = methodDef?.inputs ?? [];
-    return declared.map(slot => {
-      const edge = $edges.find(e => e.target === node!.id && e.targetHandle === slot.name);
-      if (!edge) return { slot, source: null };
-      return { slot, source: describeNeighbour(edge.source, edge.sourceHandle) };
-    });
-  });
-
-  /**
-   * Symmetric for outputs: list every canvas edge leaving this node's
-   * output handle and surface each downstream node + its target handle.
-   * A slot with no outgoing edge surfaces as `consumers: []`.
-   */
-  let outputWiring = $derived.by<OutputWiring[]>(() => {
-    if (!node || data?.nodeType !== 'method') return [];
-    const declared = methodDef?.outputs ?? [];
-    return declared.map(slot => {
-      const outs = $edges.filter(e => e.source === node!.id && e.sourceHandle === slot.name);
-      const consumers: SlotWireSource[] = [];
-      for (const e of outs) {
-        const c = describeNeighbour(e.target, e.targetHandle);
-        if (c) consumers.push(c);
-      }
-      return { slot, consumers };
-    });
-  });
-
-  function jumpToNode(id: string): void {
-    selectedNodeId.set(id);
-  }
 
   // Snapshot of the spawned `nodeRunActor` for the currently-selected
   // node. Recomputes whenever the parent ticks (selection change OR
@@ -297,33 +209,6 @@
     if (!node) return false;
     return nodeHasDirtyEditors(node.id);
   });
-
-  // NID prefix/suffix: [A-Za-z0-9_-]* only, max 32 chars. Applied at display
-  // time to auto-generated v# NIDs.
-  const NID_AFFIX_RE = /^[A-Za-z0-9_-]*$/;
-  const NID_AFFIX_MAX = 32;
-
-  function nidAffixError(v: string): string | null {
-    if (v.length > NID_AFFIX_MAX) return `max ${NID_AFFIX_MAX} chars`;
-    if (!NID_AFFIX_RE.test(v)) return 'letters, digits, _ or - only';
-    return null;
-  }
-
-  function updateNidPrefix(value: string) {
-    if (!node) return;
-    updateNodeData(node.id, { nidPrefix: value });
-  }
-
-  function updateNidSuffix(value: string) {
-    if (!node) return;
-    updateNodeData(node.id, { nidSuffix: value });
-  }
-
-  // In-place mutations of node.data don't bubble through the `data` prop
-  // because the object reference doesn't change — so read deep fields
-  // through a `nodesTick`-dependent derivation.
-  let currentNidPrefix = $derived.by(() => { void nodesTick.count; return data?.nidPrefix ?? ''; });
-  let currentNidSuffix = $derived.by(() => { void nodesTick.count; return data?.nidSuffix ?? ''; });
 
   // ─── column_of_input combobox resolution ───
   //
@@ -575,68 +460,6 @@
 <!-- Tab content -->
 <div class="tab-content">
   {#if activeTab === 'config'}
-    <!-- Inputs / Outputs wiring (read-only, above Config form) -->
-    <div class="io-sections">
-      <div class="io-section">
-        <div class="section-label">Inputs</div>
-        {#if inputWiring.length === 0}
-          <div class="io-empty">No declared inputs.</div>
-        {:else}
-          {#each inputWiring as { slot, source } (slot.name)}
-            <div class="io-row">
-              <span class="io-name">{slot.name}</span>
-              <span class="io-type">{displaySlotType(slot.type)}</span>
-              {#if slot.multi}<span class="io-badge" title="Multi-input (fan-in)">multi</span>{/if}
-              <span class="io-arrow">←</span>
-              {#if source}
-                <button class="io-chip" type="button"
-                  onclick={() => jumpToNode(source.id)}
-                  title={source.nodeType === 'method'
-                    ? `${source.module ?? ''} · ${source.label} · ${source.handle}`
-                    : source.label}>
-                  <span class="io-chip-label">{source.label}</span>
-                  {#if source.handle && source.nodeType === 'method'}
-                    <span class="io-chip-slot">· {source.handle}</span>
-                  {/if}
-                </button>
-              {:else}
-                <span class="io-unwired">unwired</span>
-              {/if}
-            </div>
-          {/each}
-        {/if}
-      </div>
-
-      <div class="io-section">
-        <div class="section-label">Outputs</div>
-        {#if outputWiring.length === 0}
-          <div class="io-empty">No declared outputs.</div>
-        {:else}
-          {#each outputWiring as { slot, consumers } (slot.name)}
-            <div class="io-row">
-              <span class="io-name">{slot.name}</span>
-              <span class="io-type">{displaySlotType(slot.type)}</span>
-              <span class="io-arrow">→</span>
-              {#if consumers.length === 0}
-                <span class="io-unwired">no consumers</span>
-              {:else}
-                <div class="io-consumers">
-                  {#each consumers as c (c.id + ':' + c.handle)}
-                    <button class="io-chip" type="button"
-                      onclick={() => jumpToNode(c.id)}
-                      title={`${c.module ?? ''} · ${c.label} · ${c.handle}`}>
-                      <span class="io-chip-label">{c.label}</span>
-                      {#if c.handle}<span class="io-chip-slot">· {c.handle}</span>{/if}
-                    </button>
-                  {/each}
-                </div>
-              {/if}
-            </div>
-          {/each}
-        {/if}
-      </div>
-    </div>
-
     <!-- All Samples / Per Sample sub-tabs -->
     <div class="sub-tabs">
       <button class="sub-tab" class:active={paramSubTab === 'all'}
@@ -645,45 +468,7 @@
         onclick={() => { paramSubTab = 'per-sample'; }}>Per Sample</button>
     </div>
 
-    {@const prefixVal = currentNidPrefix}
-    {@const suffixVal = currentNidSuffix}
-    {@const prefixErr = nidAffixError(prefixVal)}
-    {@const suffixErr = nidAffixError(suffixVal)}
     <div class="param-form">
-      <!-- Naming: prefix/suffix applied to auto-NIDs at display time -->
-      <div class="naming-section">
-        <div class="section-label">Naming</div>
-        <div class="naming-grid">
-          <div class="field">
-            <label>NID prefix <span class="optional">(optional)</span></label>
-            <input type="text"
-              class:invalid={prefixErr}
-              value={prefixVal}
-              maxlength={NID_AFFIX_MAX}
-              placeholder="e.g., strict_"
-              oninput={(e: Event) => updateNidPrefix((e.target as HTMLInputElement).value)} />
-            {#if prefixErr}<span class="validation-error">{prefixErr}</span>{/if}
-          </div>
-          <div class="field">
-            <label>NID suffix <span class="optional">(optional)</span></label>
-            <input type="text"
-              class:invalid={suffixErr}
-              value={suffixVal}
-              maxlength={NID_AFFIX_MAX}
-              placeholder="e.g., _rerun"
-              oninput={(e: Event) => updateNidSuffix((e.target as HTMLInputElement).value)} />
-            {#if suffixErr}<span class="validation-error">{suffixErr}</span>{/if}
-          </div>
-        </div>
-        <div class="naming-preview">
-          Auto-NID preview:
-          <code>{prefixVal}v1{suffixVal}</code>,
-          <code>{prefixVal}v2{suffixVal}</code>,
-          <code>{prefixVal}v3{suffixVal}</code> …
-          <span class="muted">Custom per-run names bypass prefix/suffix.</span>
-        </div>
-      </div>
-
       {#if paramSubTab === 'all'}
         <!-- Node-level header: Lock All commits every dirty row on this node. -->
         <div class="node-param-header">
@@ -702,16 +487,24 @@
           {@const variants = (data.variants ?? {})[param.name] ?? {}}
           <div class="param-block">
             <div class="param-label-row">
-              <span class="pname">{param.name}</span>
+              <span class="pname cap-trim">{param.name}</span>
               {#if param.type || param.contractType}
-                <span class="ptype">{param.type ?? param.contractType}</span>
+                <span class="ptype"><span class="cap-trim">{param.type ?? param.contractType}</span></span>
               {/if}
               {#if param.required}<span class="required">*</span>{/if}
               {#if param.constraints && hint}
                 <span class="constraint-hint" title={hint}>ⓘ</span>
               {/if}
               {#if param.description}
-                <span class="param-desc" title={param.description}>?</span>
+                <span class="param-desc" title={param.description}>
+                  <!-- Drawn, not typed, so the ? sits at the circle's centre whatever the font. -->
+                  <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+                    <circle cx="7" cy="7" r="6.25" fill="none" stroke="currentColor" stroke-width="1"/>
+                    <path d="M5.3 5.4 C5.3 4.4 6 3.8 7 3.8 C8 3.8 8.7 4.4 8.7 5.3 C8.7 6.1 8.1 6.4 7.6 6.8 C7.2 7.1 7 7.4 7 8"
+                      fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+                    <circle cx="7" cy="10.1" r="0.75" fill="currentColor"/>
+                  </svg>
+                </span>
               {/if}
             </div>
             <ValueList
@@ -752,9 +545,9 @@
               {@const effective = hasOverride ? overrides[param.name] : (data.paramValues[param.name] ?? param.default ?? '')}
               <div class="param-block">
                 <div class="param-label-row">
-                  <span class="pname">{param.name}</span>
+                  <span class="pname cap-trim">{param.name}</span>
                   {#if param.type || param.contractType}
-                    <span class="ptype">{param.type ?? param.contractType}</span>
+                    <span class="ptype"><span class="cap-trim">{param.type ?? param.contractType}</span></span>
                   {/if}
                   {#if hasOverride || hasSampleVariants}
                     <span class="override-dot" title="Overridden for this sample">●</span>
@@ -883,7 +676,7 @@
   .param-form { display: flex; flex-direction: column; gap: 10px; }
   .field { display: flex; flex-direction: column; gap: 3px; }
   .field label { font-size: 12px; color: #888; }
-  .field input, .field select {
+  .field select {
     background: #1e1e1e;
     border: 1px solid var(--border);
     border-radius: 3px;
@@ -895,20 +688,23 @@
     box-sizing: border-box;
     min-height: 28px;
   }
-  .field input::placeholder {
-    color: #555;
-    font-style: italic;
-  }
   .required { color: #E74C3C; font-weight: 600; }
 
   /* ValueList per-param layout */
   .param-block { margin-bottom: 14px; }
   .param-block:last-child { margin-bottom: 0; }
+  /* Name, type, required mark and help badge share one centre line: each
+     text box is trimmed to cap height, so flex centring lines up the letters
+     rather than the fonts' ascenders and descenders. */
   .param-label-row {
     display: flex;
     align-items: center;
     gap: 8px;
+    min-height: 20px;
     margin-bottom: 6px;
+  }
+  .cap-trim {
+    text-box: trim-both cap alphabetic;
   }
   .param-label-row .pname {
     font-size: 15px;
@@ -916,16 +712,22 @@
     color: #f0f0f0;
     letter-spacing: .01em;
   }
+  /* An asterisk is drawn at the top of its glyph box; drop it onto the line. */
+  .param-label-row .required {
+    line-height: 1;
+    transform: translateY(0.2em);
+  }
   .param-label-row .ptype {
+    display: inline-flex;
+    align-items: center;
+    height: 16px;
     font-family: Consolas, monospace;
     font-size: 10px;
     color: #8aa8d0;
     background: #1b2430;
-    padding: 2px 6px;
+    padding: 0 6px;
     border-radius: 3px;
     text-transform: lowercase;
-    position: relative;
-    top: 3px;
   }
 
   /* Node-level Lock All header */
@@ -965,140 +767,6 @@
     font-weight: 600;
     flex-shrink: 0;
   }
-  .invalid {
-    border-color: #E74C3C !important;
-  }
-  .validation-error {
-    font-size: 11px;
-    color: #E74C3C;
-    margin-top: 1px;
-  }
-  /* NID naming section */
-  .naming-section {
-    margin-bottom: 10px;
-    padding: 10px 10px 12px;
-    background: #1f1f21;
-    border: 1px solid #2e2e32;
-    border-radius: 4px;
-  }
-
-  /* Inputs / Outputs — read-only view of canvas wiring */
-  .io-sections {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    margin-bottom: 10px;
-  }
-  .io-section {
-    padding: 10px 10px 12px;
-    background: #1f1f21;
-    border: 1px solid #2e2e32;
-    border-radius: 4px;
-  }
-  .io-row {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 6px;
-    padding: 4px 0;
-    border-bottom: 1px solid #26262a;
-    font-size: 12px;
-  }
-  .io-row:last-child { border-bottom: none; }
-  .io-name {
-    color: #ddd;
-    font-family: Consolas, monospace;
-  }
-  .io-type {
-    color: #888;
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    background: #252528;
-    border: 1px solid #303034;
-    border-radius: 3px;
-    padding: 1px 5px;
-  }
-  .io-badge {
-    color: #7fb2f3;
-    font-size: 10px;
-    border: 1px solid #2f4466;
-    border-radius: 3px;
-    padding: 1px 5px;
-  }
-  .io-arrow {
-    color: #555;
-    font-size: 14px;
-    margin: 0 2px;
-  }
-  .io-unwired {
-    color: #777;
-    font-style: italic;
-    font-size: 11px;
-  }
-  .io-empty {
-    color: #666;
-    font-size: 11px;
-    font-style: italic;
-  }
-  .io-consumers {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-  }
-  .io-chip {
-    background: #252528;
-    border: 1px solid #3a3a42;
-    color: #cfcfd4;
-    border-radius: 3px;
-    padding: 2px 7px;
-    font-size: 11px;
-    font-family: inherit;
-    cursor: pointer;
-    display: inline-flex;
-    align-items: baseline;
-    gap: 3px;
-  }
-  .io-chip:hover {
-    border-color: var(--accent);
-    color: #fff;
-  }
-  .io-chip-slot {
-    color: #888;
-    font-family: Consolas, monospace;
-    font-size: 10px;
-  }
-  .section-label {
-    font-size: 10px;
-    color: #888;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    margin-bottom: 6px;
-  }
-  .naming-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
-  }
-  .naming-grid .field { margin: 0; }
-  .naming-grid label { font-size: 11px; color: #bbb; }
-  .optional { color: #666; font-weight: 400; }
-  .naming-preview {
-    font-size: 11px;
-    color: #9aa0a6;
-    margin-top: 8px;
-    line-height: 1.5;
-  }
-  .naming-preview code {
-    background: #1a1a1a;
-    color: #4fc3f7;
-    padding: 1px 5px;
-    border-radius: 3px;
-    font-family: Consolas, monospace;
-    font-size: 10.5px;
-  }
-  .naming-preview .muted { color: #666; display: block; margin-top: 2px; }
-
   /* Builder Output tab — last-run-scoped log stream */
   .output-empty {
     padding: 12px;
@@ -1303,10 +971,13 @@
     border-color: #E9A847;
   }
   .param-desc {
-    font-size: 11px;
-    color: #666;
+    display: inline-flex;
+    color: #999;
     cursor: help;
+    flex-shrink: 0;
   }
+  .param-desc:hover { color: var(--accent); }
+  .param-desc svg { display: block; }
   .empty-hint {
     color: #555;
     font-size: 12px;

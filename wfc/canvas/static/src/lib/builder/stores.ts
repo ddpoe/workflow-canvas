@@ -127,7 +127,7 @@ export function deleteNodes(nodeIds: string[]): void {
   selectedNodeId.update(id => id && ids.has(id) ? null : id);
 }
 
-export function clearRunState(): void {
+export function clearRunState(): Promise<void> {
   runState.set({ jobId: null, running: false, pipelineError: null });
   nodes.update($nodes => {
     for (const n of $nodes) {
@@ -139,7 +139,9 @@ export function clearRunState(): void {
   // Reset the spawned actor tree alongside the node-data run fields. Lazy import to
   // avoid a load-time cycle with `machines/root.ts`, which imports
   // `runState`, `setPipelineError` and `updateNodeData` from this module.
-  import('../machines/root.js').then(m => m.dispatchReset()).catch(() => {});
+  // Returned so a caller that sends the machine its next event (Watch in
+  // canvas's attach) can wait for the reset to land first.
+  return import('../machines/root.js').then(m => m.dispatchReset()).catch(() => {});
 }
 
 export function setPipelineError(err: import('../shared/types.js').PipelineError | null): void {

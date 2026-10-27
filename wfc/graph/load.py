@@ -21,7 +21,7 @@ from pathlib import PurePath
 
 from axiom_annotations import AutoStep, Step, task
 
-from ..contracts import COLLAPSED_SAMPLE, cross_check_columns
+from ..contracts import COLLAPSED_SAMPLE, cross_check_columns, version_entry
 from .model import PipelineDef, StepDef
 from .order import topo_sort_steps
 from .validation import fan_in_upstream_errors, second_selector_errors
@@ -45,7 +45,6 @@ class ParsedDocument:
     param_sets: dict[str, dict[str, dict]]
     explicit_combos: list[dict[str, str]] | None
     nodes: list[dict]  # method nodes, document order (parallel to ``steps``)
-    has_duplicate_methods: bool
     system_node_ids: set[str] = field(default_factory=set)
     reference_nodes: dict[str, dict] = field(default_factory=dict)
     # ref raw id -> {run_id, label} as the document says
@@ -92,9 +91,10 @@ class InboundLink:
 
     Attributes:
         target_slot: The fed input slot (``"data"`` when the link names none).
-        source_id: The source node's canonical id -- a legacy numeric id
-            resolves to its method name, as the executor keys sidecars.
-        raw_source_id: The source node's id as written in the document.
+        source_id: The source node's document id, as the executor keys
+            sidecars.
+        raw_source_id: The source node's id as written in the document
+            (the same id as ``source_id``).
         source_kind: The source node's ``type`` (``"method"`` when absent).
         source_slot: The source output slot the link names, or ``None``.
         run_id: For a ``run_reference`` source, the run id the node names
@@ -113,66 +113,52 @@ class InboundLink:
 
 
 def document_node(document: dict, node_id: str) -> dict | None:
-    """The document node a node id names, under the executor's identity rule.
+    """The document node a node id names.
 
-    ``node_id`` is matched against each node's own id first (as a string);
-    failing that, against the method names of the method nodes, which is how
-    a legacy numeric-id document names its nodes. A node's raw document id
-    is the returned entry's ``id``.
+    A node's identity is its document id: ``node_id`` is matched against
+    each node's own id, as a string.
 
     Args:
         document: The pipeline document.
-        node_id: A node's own id or, for a legacy document, its method name.
+        node_id: A node's document id.
 
     Returns:
-        The node's document entry, or ``None`` when no node answers to it.
+        The node's document entry, or ``None`` when no node has that id.
     """
-    nodes = document.get("nodes", [])
-    nodes_by_id = {str(n["id"]): n for n in nodes}
-    nodes_by_method = {n["method"]: n for n in nodes if n.get("method")}
-    return nodes_by_id.get(node_id) or nodes_by_method.get(node_id)
+    for n in document.get("nodes", []):
+        if str(n["id"]) == node_id:
+            return n
+    return None
 
 
 def inbound_wiring(document: dict, node_id: str) -> list[InboundLink]:
     """The links feeding a node's input slots, in document order.
 
-    Pure over the document: no run, no database. Node identity honours both
-    spellings the executor uses -- ``node_id`` may be the node's own id
-    (canonical or raw) or, for a legacy numeric-id document, its method
-    name. A link whose source or target is not a node of the document is
-    ignored.
+    Pure over the document: no run, no database. ``node_id`` is the fed
+    node's document id. A link whose source or target is not a node of the
+    document is ignored.
 
     Args:
         document: The pipeline document.
-        node_id: The fed node, by id or (legacy) by method name.
+        node_id: The fed node's document id.
 
     Returns:
         One ``InboundLink`` per link into the node.
     """
     nodes_by_id = {str(n["id"]): n for n in document.get("nodes", [])}
-    current = document_node(document, node_id) or {}
-    resolved_raw_id = str(current.get("id", node_id))
-
-    def _canonical(raw: str, node: dict) -> str:
-        if raw.isdigit() and node.get("method"):
-            return str(node["method"])
-        return raw
 
     out: list[InboundLink] = []
     for link in document.get("links", []):
         tgt = str(link.get("target", ""))
         src = str(link.get("source", ""))
-        tgt_node = nodes_by_id.get(tgt)
         src_node = nodes_by_id.get(src)
-        if tgt_node is None or src_node is None:
-            continue
-        if node_id not in (tgt, _canonical(tgt, tgt_node)) and tgt != resolved_raw_id:
+        if tgt != node_id or tgt not in nodes_by_id or src_node is None:
             continue
         kind = src_node.get("type", "method")
         run_id = str(src_node.get("run_id") or "").strip() if kind == "run_reference" else ""
         out.append(InboundLink(
             target_slot=link.get("target_slot", "data"),
-            source_id=_canonical(src, src_node),
+            source_id=src,
             raw_source_id=src,
             source_kind=kind,
             source_slot=link.get("source_slot"),
@@ -195,7 +181,7 @@ def selector_slot(document: dict, node_id: str) -> str | None:
 
     Args:
         document: The pipeline document.
-        node_id: The fed node, by id or (legacy) by method name.
+        node_id: The fed node's document id.
 
     Returns:
         The target slot of the first selector link into the node (``"data"``
@@ -229,15 +215,13 @@ def parse_document(document: dict) -> ParsedDocument:
 
         {
           "nodes": [
-            {"id": 1, "method": "preprocess",
-             "script": "methods/preprocess/preprocess.py",
+            {"id": "pre", "method": "preprocess",
              "params": {"normalize": true}},
-            {"id": 2, "method": "filter_cells",
-             "script": "methods/filter_cells/filter_cells.py",
+            {"id": "filt", "method": "filter_cells",
              "params": {"min_quality": 0.5}}
           ],
           "links": [
-            {"source": 1, "target": 2}
+            {"source": "pre", "target": "filt"}
           ],
           "samples": ["Pa16c"]
         }
@@ -406,58 +390,24 @@ def parse_document(document: dict) -> ParsedDocument:
             source_slot_map[tgt_id][slot].append(source_slot)
 
     口 = Step(step_num=3, name="Build step definitions",
-             purpose="Convert each node into a runnable step with its upstream node requirements")
-    # Build StepDefs in node order
-    # For legacy pipelines (int IDs where each method is unique),
-    # node_id defaults to method_name.
-    seen_methods: set[str] = set()
-    has_duplicate_methods = False
-    for n in nodes:
-        m = n["method"]
-        if m in seen_methods:
-            has_duplicate_methods = True
-            break
-        seen_methods.add(m)
-
+             purpose="Convert each node into a runnable step with its upstream "
+                     "node requirements; a node's script is never read from the "
+                     "document (a legacy `script` key is ignored): what runs is "
+                     "resolved from the method's registered snapshot")
+    # A node's identity is its document id, always.
     steps = []
     for n in nodes:
         method = n["method"]
         module = n["module"]
         raw_id = str(n["id"])
+        resolved_deps = list(deps.get(raw_id, []))
 
-        # Choose node_id: use raw_id if methods repeat or ID is a
-        # human-readable string; otherwise fall back to method_name.
-        if has_duplicate_methods or not raw_id.isdigit():
-            nid = raw_id
-        else:
-            nid = method  # legacy compat: node_id == method_name
-
-        # Resolve depends_on for this node_id
-        raw_deps = deps.get(raw_id, [])
-        # Map raw source IDs to their resolved node_ids
-        resolved_deps: list[str] = []
-        for src_raw in raw_deps:
-            src_node = node_map[src_raw]
-            src_method = src_node["method"]
-            if has_duplicate_methods or not src_raw.isdigit():
-                resolved_deps.append(src_raw)
-            else:
-                resolved_deps.append(src_method)
-
-        # Build inputs dict from slot_map (slot → [resolved upstream node_ids])
+        # Build inputs dict from slot_map (slot → [upstream node ids])
         raw_slots = slot_map.get(raw_id, {})
         inputs: dict[str, list[str]] = {}
         input_source_slots_for_step: dict[str, list] = {}
         for slot, src_raw_ids in raw_slots.items():
-            resolved_slot_deps: list[str] = []
-            for sr in src_raw_ids:
-                src_node = node_map[sr]
-                src_method = src_node["method"]
-                if has_duplicate_methods or not sr.isdigit():
-                    resolved_slot_deps.append(sr)
-                else:
-                    resolved_slot_deps.append(src_method)
-            inputs[slot] = resolved_slot_deps
+            inputs[slot] = list(src_raw_ids)
             # Mirror source_slot list (same length as upstream_id list)
             input_source_slots_for_step[slot] = list(
                 source_slot_map.get(raw_id, {}).get(slot, [None] * len(src_raw_ids))
@@ -477,11 +427,10 @@ def parse_document(document: dict) -> ParsedDocument:
         steps.append(StepDef(
             method_name=method,
             module_name=module,
-            script_path=n.get("script", f"methods/{method}/{method}.py"),
             params=n.get("params", {}),
             depends_on=resolved_deps,
             output_ext=n.get("output_ext", ".parquet"),
-            node_id=nid,
+            node_id=raw_id,
             inputs=inputs,
             env=step_env,
             slot_outputs=n.get("slot_outputs", {}),
@@ -496,7 +445,6 @@ def parse_document(document: dict) -> ParsedDocument:
         param_sets=param_sets,
         explicit_combos=explicit_combos,
         nodes=nodes,
-        has_duplicate_methods=has_duplicate_methods,
         system_node_ids=system_node_ids,
         reference_nodes=run_reference_nodes,
         reference_links=run_ref_links,
@@ -805,21 +753,9 @@ def propagate_collapse(parsed: ParsedDocument) -> None:
     if fan_in_selectors:
         sorted_steps = topo_sort_steps(steps)
         step_by_nid: dict[str, StepDef] = {s.node_id: s for s in steps}
-        # raw_id → node_id mapping (built during step construction)
-        raw_id_to_nid: dict[str, str] = {}
-        for n in parsed.nodes:
-            raw = str(n["id"])
-            method_name = n["method"]
-            if parsed.has_duplicate_methods or not raw.isdigit():
-                raw_id_to_nid[raw] = raw
-            else:
-                raw_id_to_nid[raw] = method_name
-
-        # Precompute direct-selector upstreams keyed by step node_id.
-        direct_fan_in_nid: dict[str, tuple[str, str]] = {}
-        for method_raw, (selector_raw, target_slot) in parsed.fan_in_direct_upstream.items():
-            if method_raw in raw_id_to_nid:
-                direct_fan_in_nid[raw_id_to_nid[method_raw]] = (selector_raw, target_slot)
+        # A step's node_id is its document id, so the parse stage's
+        # direct-selector map is already keyed by it.
+        direct_fan_in_nid = parsed.fan_in_direct_upstream
 
         for step in sorted_steps:
             if step.node_id in direct_fan_in_nid:
@@ -876,11 +812,14 @@ def propagate_collapse(parsed: ParsedDocument) -> None:
 
 @task(purpose="Pair each input slot with the upstream output slot that feeds "
               "it and cross-check their declared columns (warnings only)")
-def cross_check_columns_moment(steps: list[StepDef], contract_map: dict) -> None:
+def cross_check_columns_moment(steps: list[StepDef], contract_map: dict,
+                               node_versions: dict[str, str | None] | None = None,
+                               ) -> None:
     """Cross-check strict columns between connected steps at load time.
 
-    For each step, reads its contract from the map (keyed
-    ``module.method``) to get input/output column specs.  For each input
+    For each step, reads its version's contract from the map (keyed
+    ``module.method``, then the node's pinned version when it has one)
+    to get input/output column specs.  For each input
     slot, finds the upstream step and checks that the upstream's declared
     output columns are a superset of the downstream's required input
     columns (strict only).  A step whose entry has no input-slot half is
@@ -892,13 +831,18 @@ def cross_check_columns_moment(steps: list[StepDef], contract_map: dict) -> None
     Args:
         steps: The parsed steps.
         contract_map: ``{"<module>.<method>": {"input_slots": ...,
-            "output_slots": ...}}`` -- Registration's contract map.
+            "output_slots": ..., "versions": ...}}`` -- Registration's
+            contract map.
+        node_versions: Node id to the version the node runs (its pin);
+            a node with none reads the newest version's contract.
     """
     # Build node_id -> StepDef lookup
     step_map: dict[str, StepDef] = {s.node_id: s for s in steps}
 
     def _slots(step: StepDef) -> tuple[dict | None, dict | None]:
         entry = contract_map.get(f"{step.module_name}.{step.method_name}")
+        if entry:
+            entry = version_entry(entry, (node_versions or {}).get(step.node_id))
         if not entry:
             return (None, None)
         return (entry.get("input_slots"), entry.get("output_slots"))
@@ -997,7 +941,10 @@ def load_pipeline(
     propagate_collapse(parsed)
 
     口 = AutoStep(step_num=5, name="Static column cross-check")
-    cross_check_columns_moment(parsed.steps, contract_map)
+    cross_check_columns_moment(
+        parsed.steps, contract_map,
+        {str(n["id"]): n.get("version") for n in parsed.nodes},
+    )
 
     口 = Step(step_num=6, name="Refuse zero samples; assemble the definition",
              purpose="A pipeline with method steps but no samples would be a "

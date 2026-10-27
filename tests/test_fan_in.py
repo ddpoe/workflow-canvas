@@ -79,8 +79,8 @@ def test_fan_in_load_and_snakefile(fan_in_pipeline_path, wfc_root):
         assert f"rule {nid}:" in snakefile
 
     # Snakemake-visible outputs are sentinels.
-    assert ".runs/sentinels/test-pid/filter_a/{sample}/{variant}/.complete" in snakefile
-    assert ".runs/sentinels/test-pid/merge_ab/" in snakefile
+    assert ".wfc/runs/sentinels/test-pid/filter_a/{sample}/{variant}/.complete" in snakefile
+    assert ".wfc/runs/sentinels/test-pid/merge_ab/" in snakefile
 
     # rule all: targets the leaf node (merge_ab), not filter nodes
     rule_all_section = snakefile.split("rule all:")[1].split("\nrule ")[0]

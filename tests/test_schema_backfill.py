@@ -1,11 +1,13 @@
 """
 Schema-backfill tests for ``wfc.persistence.ensure_schema``.
 
-``ensure_schema`` is the model-driven, additive schema backfill. It brings an older
+``ensure_schema`` is the model-driven schema backfill. It brings an older
 ``.wfc/wfc.db`` up to the current model schema BEFORE ``create_all`` runs:
 
   - existing tables gain their newly-introduced (nullable / constant-default)
-    columns via ``ALTER TABLE … ADD COLUMN``, and
+    columns via ``ALTER TABLE … ADD COLUMN`` (the best-effort column pass),
+  - existing tables whose unique constraints or indexes differ from the model
+    are rebuilt, all or nothing (the rebuild pass), and
   - wholly-missing tables are left for the subsequent ``create_all``.
 
 These tests deliberately hand-roll an OLD-shape SQLite schema (the one
@@ -13,9 +15,11 @@ allowed legacy-fixture exception per ``.pev/test-policy.json`` →
 ``db-schema-fixtures``) to prove the backfill upgrades it so an ORM
 ``select(Run)`` succeeds.
 
-The two ``ensure_schema`` upgrade tests are Tier 1 (plain pytest). The
-statement-builder and refusal cases are Tier 2: they witness the
-Persistence catalog cases ``backfill-statement`` and ``backfill-refusals``.
+The two ``ensure_schema`` upgrade tests and the rebuild-refusal test are
+Tier 1 (plain pytest). The statement-builder and column-pass refusal cases
+are Tier 2: they witness the Persistence catalog cases ``backfill-statement``
+and ``backfill-refusals``. The schema-drift witness is
+``tests/test_schema_drift.py``.
 """
 
 from __future__ import annotations
@@ -24,17 +28,26 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+import pytest
 from axiom_annotations import workflow
 from sqlalchemy import Boolean, Column, DateTime, Integer, String
 from sqlalchemy.dialects import sqlite as sqlite_dialect
-from sqlmodel import SQLModel, Session, select
+from sqlmodel import Session, SQLModel, select
 
-from wfc.persistence.backfill import _add_column_ddl
+from tests.fixtures.schema_snapshots import (
+    BACKFILL_RELEASE,
+    build_release_database,
+)
 from wfc.persistence import (
-    build_engine, ensure_schema, get_engine,
+    Method,
+    Module,
+    Run,
+    build_engine,
+    ensure_schema,
+    get_engine,
     reset_engine,
 )
-from wfc.persistence import Method, Module, Run
+from wfc.persistence.backfill import SchemaRebuildError, _add_column_ddl
 
 
 def _make_legacy_db(db_path: Path) -> None:
@@ -211,8 +224,9 @@ def _make_modules_missing_two_columns(db_path: Path) -> None:
 
 
 @workflow(purpose="Bringing an older database up to the models adds what it "
-                  "can, skips a column SQLite cannot add, and never raises, "
-                  "so building the engine is not blocked by the skipped column",
+                  "can, skips a column SQLite cannot add, and the column pass "
+                  "never raises, so building the engine is not blocked by the "
+                  "skipped column",
           inputs="An older populated table missing one nullable column and one "
                  "NOT NULL column with no usable default, bound by the override",
           outputs="The nullable column added, the other absent, the engine built")
@@ -239,3 +253,189 @@ def test_backfill_skips_what_it_cannot_add_and_never_raises(tmp_path, monkeypatc
     assert "name" not in columns, "a NOT NULL column with no default cannot land"
     assert rows == [(1,)], "the existing row survives the pass"
     assert "runs" in tables, "the pass continued: create_all still built the rest"
+
+
+def test_rebuild_refuses_rows_the_new_uniqueness_rejects_and_changes_nothing(tmp_path):
+    """Rows the new uniqueness rejects make the rebuild refuse and change nothing.
+
+    A previous-release ``methods`` table holding two rows with one
+    ``(module_id, name)`` cannot take ``uq_method_module_name``: the rebuild
+    rolls back and raises naming the table, the constraint and the key, and
+    the table keeps both rows and its old definition.
+    """
+    db_path = tmp_path / "duplicates.db"
+    build_release_database(db_path, """
+        INSERT INTO modules (id, name) VALUES (1, 'qc');
+        INSERT INTO methods (id, module_id, name, env) VALUES (1, 1, 'filter', 'pixi:a');
+        INSERT INTO methods (id, module_id, name, env) VALUES (2, 1, 'filter', 'pixi:b');
+    """, release=BACKFILL_RELEASE)
+    conn = sqlite3.connect(str(db_path))
+    methods_ddl_before = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name='methods'"
+    ).fetchone()
+    conn.close()
+
+    engine = build_engine(f"sqlite:///{db_path}")
+    try:
+        with pytest.raises(SchemaRebuildError) as refused:
+            ensure_schema(engine)
+    finally:
+        engine.dispose()
+
+    message = str(refused.value)
+    assert "methods" in message
+    assert "uq_method_module_name" in message
+    assert "(1, 'filter')" in message
+    assert "The tables are unchanged." in message
+
+    conn = sqlite3.connect(str(db_path))
+    methods = conn.execute("SELECT id, name, env FROM methods ORDER BY id").fetchall()
+    methods_ddl_after = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name='methods'"
+    ).fetchone()
+    leftovers = conn.execute(
+        "SELECT name FROM sqlite_master WHERE name LIKE '\\_wfc\\_rebuild\\_%' ESCAPE '\\'"
+    ).fetchall()
+    conn.close()
+    assert methods == [(1, "filter", "pixi:a"), (2, "filter", "pixi:b")]
+    assert methods_ddl_after == methods_ddl_before
+    assert leftovers == []
+
+
+def _running_claim_index_sql(db_path: Path) -> str | None:
+    """The stored statement of the runs table's running-claim index."""
+    conn = sqlite3.connect(str(db_path))
+    try:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='uq_runs_running_claim'"
+        ).fetchone()
+    finally:
+        conn.close()
+    return None if row is None else row[0]
+
+
+def _replace_running_claim_index(db_path: Path, create_sql: str,
+                                 rows_sql: str = "") -> None:
+    """Swap the running-claim index for another over the same columns."""
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.executescript(
+            "DROP INDEX uq_runs_running_claim;\n" + rows_sql + "\n" + create_sql
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_rebuild_restores_a_partial_index_whose_predicate_drifted(tmp_path):
+    """An index over the right columns with the wrong predicate is rebuilt."""
+    db_path = tmp_path / "drifted.db"
+    engine = build_engine(f"sqlite:///{db_path}")
+    SQLModel.metadata.create_all(engine)
+    engine.dispose()
+    want = _running_claim_index_sql(db_path)
+    _replace_running_claim_index(
+        db_path,
+        "CREATE UNIQUE INDEX uq_runs_running_claim ON runs "
+        "(method_id, sample, cache_key) WHERE cache_source_run_id IS NULL;",
+    )
+
+    engine = build_engine(f"sqlite:///{db_path}")
+    try:
+        ensure_schema(engine)
+    finally:
+        engine.dispose()
+
+    assert _running_claim_index_sql(db_path) == want
+
+
+def test_rebuild_refuses_two_running_claims_under_one_key(tmp_path):
+    """Only rows under the predicate count as duplicates, and those refuse."""
+    db_path = tmp_path / "two-claims.db"
+    engine = build_engine(f"sqlite:///{db_path}")
+    SQLModel.metadata.create_all(engine)
+    engine.dispose()
+    _replace_running_claim_index(
+        db_path,
+        "CREATE INDEX uq_runs_running_claim ON runs "
+        "(method_id, sample, cache_key);",
+        rows_sql=(
+            "INSERT INTO modules (id, name) VALUES (1, 'qc');\n"
+            "INSERT INTO methods (id, module_id, name, env) "
+            "VALUES (1, 1, 'filter', 'pixi:a');\n"
+            # Outside the predicate: a failure, a rerun, a pre-heartbeat row.
+            "INSERT INTO runs (method_id, sample, status, cache_key, heartbeat) "
+            "VALUES (1, 'S1', 'failed', 'k', 4);\n"
+            "INSERT INTO runs (method_id, sample, status, cache_key) "
+            "VALUES (1, 'S1', 'running', 'k');\n"
+            # Under it, twice.
+            "INSERT INTO runs (method_id, sample, status, cache_key, heartbeat) "
+            "VALUES (1, 'S1', 'running', 'k', 0);\n"
+            "INSERT INTO runs (method_id, sample, status, cache_key, heartbeat) "
+            "VALUES (1, 'S1', 'running', 'k', 9);\n"
+        ),
+    )
+
+    engine = build_engine(f"sqlite:///{db_path}")
+    try:
+        with pytest.raises(SchemaRebuildError) as refused:
+            ensure_schema(engine)
+    finally:
+        engine.dispose()
+
+    message = str(refused.value)
+    assert "uq_runs_running_claim" in message
+    assert "(1, 'S1', 'k')" in message
+    assert "status = 'running'" in message
+
+
+@workflow(purpose="A database from before cancel_reason gains the column, and "
+                  "its cancelled rows are given their reason once, when the "
+                  "column is added: upstream_failed with a cause linked, user "
+                  "for the cancel route's message, else not_run")
+def test_cancelled_rows_from_before_the_reason_column_get_their_reason_once(
+    tmp_path,
+):
+    db_path = tmp_path / "pre-reason.db"
+    build_release_database(db_path, """
+        INSERT INTO modules (id, name) VALUES (1, 'qc');
+        INSERT INTO methods (id, module_id, name, env) VALUES (1, 1, 'filter', 'pixi:a');
+        INSERT INTO runs (id, method_id, sample, status) VALUES (1, 1, 'S1', 'failed');
+        INSERT INTO runs (id, method_id, sample, status, cancelled_due_to_run_id)
+            VALUES (2, 1, 'S2', 'cancelled', 1);
+        INSERT INTO runs (id, method_id, sample, status, error_message)
+            VALUES (3, 1, 'S3', 'cancelled', 'Cancelled by user');
+        INSERT INTO runs (id, method_id, sample, status) VALUES (4, 1, 'S4', 'cancelled');
+        INSERT INTO runs (id, method_id, sample, status) VALUES (5, 1, 'S5', 'completed');
+    """, release=BACKFILL_RELEASE)
+
+    engine = build_engine(f"sqlite:///{db_path}")
+    try:
+        ensure_schema(engine)
+    finally:
+        engine.dispose()
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        reasons = conn.execute(
+            "SELECT id, cancel_reason FROM runs ORDER BY id").fetchall()
+        # A row the backfill already reasoned is never revisited.
+        conn.execute("UPDATE runs SET cancel_reason = NULL WHERE id = 4")
+        conn.commit()
+    finally:
+        conn.close()
+    assert reasons == [(1, None), (2, "upstream_failed"), (3, "user"),
+                       (4, "not_run"), (5, None)]
+
+    engine = build_engine(f"sqlite:///{db_path}")
+    try:
+        ensure_schema(engine)
+    finally:
+        engine.dispose()
+    conn = sqlite3.connect(str(db_path))
+    try:
+        again = conn.execute(
+            "SELECT cancel_reason FROM runs WHERE id = 4").fetchone()
+    finally:
+        conn.close()
+    assert again == (None,)

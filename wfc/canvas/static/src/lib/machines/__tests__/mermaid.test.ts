@@ -48,5 +48,8 @@ describe('mermaid generator', () => {
     expect(out).not.toContain('[object Object]');
     expect(transitionLineCount(out)).toBeGreaterThanOrEqual(3);
     expect(out).toContain('RUN_CLICKED');
+    // Watch in canvas: idle and done go straight to polling.
+    expect(out).toContain('idle --> polling: ATTACH');
+    expect(out).toContain('done --> polling: ATTACH');
   });
 });

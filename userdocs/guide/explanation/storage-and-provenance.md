@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.explanation.storage-and-provenance @ 038bb5c105dc; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/explanation/storage-and-provenance @ 5ed04a33a910; do not edit -->
 
 # Storage & Provenance
 
@@ -14,18 +14,20 @@ For how to find and read a run's outputs, see the History tab in [Build, Run and
 
 ## Where outputs live
 
-While a step runs, its method writes outputs into that run's own folder under `.runs/`. When the pipeline finishes, wfc **archives** each output: it hashes the file and copies it into the project's DVC cache under `.dvc/cache/`, where the file's address is its content hash.
+While a step runs, its method writes outputs into that run's own folder under `.wfc/runs/`. When the pipeline finishes, wfc **archives** each output: it hashes the file and puts it into the project's DVC cache under `.dvc/cache/`, where the file's address is its content hash, then removes it from the run folder (the run's logs stay). An output takes the disk space of one copy.
 
 Addressing by content has two consequences:
 
 - **Identical outputs are stored once.** Two runs that produce byte-identical files share one cache entry.
 - **Archived outputs are read-only.** Changing a file in place would change every run that points at it, so the cache refuses writes.
 
-You never need to browse these folders. `wfc export <run-id> <slot> <dest>` copies an output to a location you choose, and the copy is yours to edit. `wfc export <run-id> <slot> --path` prints the read-only cached file's path so you can open it without copying. If you write to that path, the write fails:
+You never need to browse these folders. `wfc export --run <run-id> --slot <slot> --dest <dest>` copies an output to a location you choose, and the copy is yours to edit. `wfc export --run <run-id> --slot <slot> --path` prints the read-only cached file's path so you can open it without copying. If you write to that path, the write fails:
 
 ```
 PermissionError: [Errno 13] Permission denied: '.dvc/cache/files/md5/1f/9c…'
 ```
+
+A directory output or a restored sample that a step reads is a read-only view of its cache entry, a hard link or a reflink where the filesystem allows it and a copy where it does not (`wfc doctor` says when views are copies). The end of a pipeline removes the sample views it made, unless another running pipeline is still reading them; `wfc cache prune` takes any that remain.
 
 The Canvas History tab reads outputs from the same cache. See [Run and Inspect from the Command Line](../how-to/run-and-inspect-results.md).
 
@@ -35,11 +37,17 @@ Archiving happens once, after the whole pipeline finishes, so hashing large file
 
 The cache holds bytes with no names. The database, `.wfc/wfc.db`, is what connects a run and its outputs to those bytes, and git does not track it. **Back up `.wfc/wfc.db`**: without it, the cached files can no longer be matched to the runs that produced them.
 
-`wfc cache prune` reclaims disk space by removing run folders the database no longer needs; add `--include-local` to also remove cache entries no run refers to. While an archive is configured, prune keeps any entry that has not been copied to it yet. `--force` deletes those too, and their bytes are then gone for good.
+`wfc cache prune` reclaims disk space by removing run folders the database no longer needs; add `--include-local` to also remove cache entries nothing refers to, and entries the archive already holds. Prune never removes an entry that has not been copied to the archive yet, with or without an archive configured and even with `--force`; it tells you how many it kept. `wfc cache push` copies every waiting entry to the archive now, without waiting for the next pipeline run, and lists any it could not copy and why; after it, prune can reclaim those entries.
+
+## When something changed after wfc recorded it
+
+wfc records each sample, output, cache entry and checkout it makes, and checks one against that record before a step reads it. A restored sample or a pushed cache entry that changed is put back from the cache or the archive first. An output not yet archived that changed, or an entry that was never pushed and changed, cannot be put back: the step stops and names it, and History lists the output as unavailable. Run the step again to produce it afresh.
+
+The `[integrity] inputs` setting in [Reference: wf-canvas.toml](../reference/wf-canvas-toml.md) chooses how wfc decides a file changed: by size and timestamps first (the default), or by hashing every read. `wfc verify` runs the check over everything at once and `wfc verify --repair` puts back what it can; see the [CLI Reference](../reference/cli-reference.md).
 
 ## What git records
 
-Git versions your method code. Registering a method copies its source into the project and commits that copy for you, committing only the paths registration wrote.
+Git versions your method code. Registering a method copies its source into `.wfc/registry/methods/` and commits that copy for you, committing only the paths registration wrote. Registering an environment commits its record and capture folder the same way. Your own source directory is not committed by wfc, and wfc never pushes to a git remote: its commits stay on your machine until you run `git push`.
 
 Running a pipeline makes no commits, but it does require a committed tree: a run starts only when tracked files have no uncommitted changes (untracked files are fine), and each run records the commit it ran at. If you have edits, commit or stash them first:
 
@@ -57,6 +65,8 @@ The commit is recorded for provenance only. Whether a step is reused from the ca
 Copies to the archive happen in the background during a pipeline run, so steps never wait on uploads; a run's outputs are copied after they are archived at the end of the pipeline. Registering a sample copies it to the archive straight away. A failed upload is retried.
 
 Reading works the other way round. When an output or sample is not in the local cache, wfc pulls it from the archive. This is how a pruned cache refills, and how another machine with the project and its database reads results it did not compute.
+
+Environment images travel separately, through an image registry. The registry base is the `url` key of the `[registry]` block in the same file; `wfc push-env` writes it. A collaborator whose machine lacks an image pulls it from the registry by the digest recorded at the push. [Share a Project](../how-to/sharing-a-project.md) covers the registry, the git repository and the archive together.
 
 See [Project Anatomy](project-anatomy.md) for the `[dvc]` block.
 

@@ -1,8 +1,9 @@
 /**
  * Vitest suite for the Pipelines view derived stores.
  *
- *   - pipelineRuns: groups runs by pipelineId with rolled-up status,
- *     progress N/M, sample count, started timestamp.
+ *   - pipelineRuns: groups runs by pipelineId with the server summary's
+ *     status, the run buckets (pending from the summary's expected count),
+ *     sample count, started timestamp, and the child runs in step order.
  *   - runningPipelineId(pid): returns the pid only when matching pipeline
  *     has running/pending runs; null otherwise (and on mismatch).
  *   - jumpToPipelineRun(pid, runId): cross-nav helper sets historyView,
@@ -13,6 +14,7 @@ import { get } from 'svelte/store';
 import {
   runs,
   pipelineRuns,
+  pipelineSummaries,
   runningPipelineId,
   jumpToPipelineRun,
   historyView,
@@ -26,12 +28,13 @@ function mkRun(partial: Partial<WfcRun>): WfcRun {
     id: partial.id ?? 'r1',
     module: 'm',
     method: 'method',
-    version: '1',
+    version: 1,
     timestamp: 1,
     duration: 0,
     status: 'success',
     inputs: {},
     outputs: {},
+    outputAvailability: {},
     metrics: {},
     dataSource: 'sample_a',
     parentRunIds: [],
@@ -50,42 +53,83 @@ function mkRun(partial: Partial<WfcRun>): WfcRun {
 
 beforeEach(() => {
   runs.set([]);
+  pipelineSummaries.set([]);
   historyView.set('pipelines');
   expandedPipelineIds.set(new Set());
   highlightedRunId.set(null);
 });
 
 describe('pipelineRuns derived store', () => {
-  it('groups runs by pipelineId with correct rollups', () => {
+  it('groups runs by pipelineId, takes the status from the server summary', () => {
     runs.set([
       mkRun({ id: 'r1', pipelineId: 'p1', status: 'success', dataSource: 's1', timestamp: 100 }),
       mkRun({ id: 'r2', pipelineId: 'p1', status: 'failed',  dataSource: 's2', timestamp: 200 }),
       mkRun({ id: 'r3', pipelineId: 'p2', status: 'running', dataSource: 's1', timestamp: 50 }),
       mkRun({ id: 'r4', pipelineId: null, status: 'success' }), // ignored — no pipelineId
     ]);
+    pipelineSummaries.set([
+      { pipelineId: 'p1', status: 'mixed', expected: 2, nodeOrder: null },
+    ]);
     const rows = get(pipelineRuns);
     expect(rows).toHaveLength(2);
     const p1 = rows.find(r => r.pipelineId === 'p1')!;
-    expect(p1.total).toBe(2);
-    expect(p1.done).toBe(2);                // success + failed both counted as "done"
     expect(p1.sampleCount).toBe(2);         // s1 + s2 distinct
-    expect(p1.status).toBe('failed');       // running > pending > failed > cancelled > success
+    expect(p1.status).toBe('mixed');        // the server's word, never derived here
     expect(p1.started).toBe(100);           // earliest timestamp
-    const p2 = rows.find(r => r.pipelineId === 'p2')!;
-    expect(p2.status).toBe('running');
-    expect(p2.done).toBe(0);                // running doesn't count as done
+    // No summary for p2: the browser decides no status of its own.
+    expect(rows.find(r => r.pipelineId === 'p2')!.status).toBeNull();
   });
 
-  it('counts cache-hit runs (cacheSourceRunId set) in cachedCount', () => {
+  it('counts ran, cached, failed, cancelled and running from the runs, pending from the summary', () => {
     runs.set([
-      mkRun({ id: 'r1', pipelineId: 'p1', status: 'success', cacheSourceRunId: 'orig1' }),
-      mkRun({ id: 'r2', pipelineId: 'p1', status: 'success', cacheSourceRunId: 'orig2' }),
-      mkRun({ id: 'r3', pipelineId: 'p1', status: 'success' }),
-      mkRun({ id: 'r4', pipelineId: 'p2', status: 'success' }),
+      mkRun({ id: 'r1', pipelineId: 'p1', status: 'success' }),
+      mkRun({ id: 'r2', pipelineId: 'p1', status: 'success', cacheSourceRunId: 'orig1' }),
+      mkRun({ id: 'r3', pipelineId: 'p1', status: 'success', cacheSourceRunId: 'orig2' }),
+      mkRun({ id: 'r4', pipelineId: 'p1', status: 'failed' }),
+      mkRun({ id: 'r5', pipelineId: 'p1', status: 'cancelled', cancelReason: 'not_run' }),
+      mkRun({ id: 'r6', pipelineId: 'p1', status: 'running' }),
+      mkRun({ id: 'r7', pipelineId: 'p2', status: 'success' }),
+      mkRun({ id: 'r8', pipelineId: 'p3', status: 'success' }),
+    ]);
+    pipelineSummaries.set([
+      { pipelineId: 'p1', status: 'running', expected: 9, nodeOrder: null },
+      { pipelineId: 'p2', status: 'succeeded', expected: null, nodeOrder: null },
+      // More runs than expected: pending never goes below zero.
+      { pipelineId: 'p3', status: 'succeeded', expected: 0, nodeOrder: null },
     ]);
     const rows = get(pipelineRuns);
-    expect(rows.find(r => r.pipelineId === 'p1')!.cachedCount).toBe(2);
-    expect(rows.find(r => r.pipelineId === 'p2')!.cachedCount).toBe(0);
+    expect(rows.find(r => r.pipelineId === 'p1')!.buckets).toEqual({
+      ran: 1, cached: 2, failed: 1, cancelled: 1, running: 1, pending: 3,
+    });
+    expect(rows.find(r => r.pipelineId === 'p2')!.buckets.pending).toBe(0);
+    expect(rows.find(r => r.pipelineId === 'p3')!.buckets.pending).toBe(0);
+  });
+
+  it('sorts child runs by the document node order, then sample', () => {
+    runs.set([
+      mkRun({ id: 'r1', pipelineId: 'p1', nodeId: 'n_seg2', method: 'segment', dataSource: 'b', timestamp: 1 }),
+      mkRun({ id: 'r2', pipelineId: 'p1', nodeId: 'n_load', method: 'load', dataSource: 'b', timestamp: 2 }),
+      mkRun({ id: 'r3', pipelineId: 'p1', nodeId: 'n_seg1', method: 'segment', dataSource: 'a', timestamp: 3 }),
+      mkRun({ id: 'r4', pipelineId: 'p1', nodeId: 'n_load', method: 'load', dataSource: 'a', timestamp: 4 }),
+      mkRun({ id: 'r5', pipelineId: 'p1', nodeId: 'n_seg2', method: 'segment', dataSource: 'a', timestamp: 5 }),
+      mkRun({ id: 'r6', pipelineId: 'p1', nodeId: 'n_seg1', method: 'segment', dataSource: 'b', timestamp: 6 }),
+    ]);
+    pipelineSummaries.set([
+      { pipelineId: 'p1', status: 'succeeded', expected: 6, nodeOrder: ['n_load', 'n_seg1', 'n_seg2'] },
+    ]);
+    const p1 = get(pipelineRuns)[0];
+    expect(p1.runs.map(r => r.id)).toEqual(['r4', 'r2', 'r3', 'r6', 'r5', 'r1']);
+  });
+
+  it('without a node order, orders the nodes by their first run, then sample', () => {
+    runs.set([
+      mkRun({ id: 'r1', pipelineId: 'p1', nodeId: 'n_b', dataSource: 'y', timestamp: 30 }),
+      mkRun({ id: 'r2', pipelineId: 'p1', nodeId: 'n_a', dataSource: 'y', timestamp: 10 }),
+      mkRun({ id: 'r3', pipelineId: 'p1', nodeId: 'n_b', dataSource: 'x', timestamp: 40 }),
+      mkRun({ id: 'r4', pipelineId: 'p1', nodeId: 'n_a', dataSource: 'x', timestamp: 20 }),
+    ]);
+    const p1 = get(pipelineRuns)[0];
+    expect(p1.runs.map(r => r.id)).toEqual(['r4', 'r2', 'r3', 'r1']);
   });
 
   it('titles rows with the first pipelineName in the group, else the short pipeline id', () => {

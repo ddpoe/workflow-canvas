@@ -49,6 +49,9 @@ export interface paths {
          *         run_id: When the upstream is a ``run_reference`` node, pass the
          *             referenced run id; the endpoint then uses Run.params from the
          *             DB as the resolution context.
+         *         version: The upstream node's pinned version (its content identity);
+         *             the columns are that version's. Absent: the newest version's.
+         *             A version no entry carries is a 404.
          *
          *     Returns:
          *         ``{strict, from_params, patterns, all}`` where ``all`` is the
@@ -101,8 +104,11 @@ export interface paths {
          * Get Modules
          * @description Return modules as a nested dict keyed by module/method name for the builder UI.
          *
-         *     Shape: {moduleName: {description, methods: {methodName: {inputs, outputs, ...}}}}
-         *     The builder's module palette reads this shape.
+         *     Shape: {moduleName: {description, methods: {methodName: {inputs, outputs,
+         *     params_schema, executor, env, description, versions}}}}. The method's
+         *     own contract fields and env are its newest version's; ``versions`` lists
+         *     every version (label, identity, registered_at, env, newest) with its
+         *     contract. The builder's module palette reads this shape.
          */
         get: operations["get_modules_api_modules_get"];
         put?: never;
@@ -149,7 +155,7 @@ export interface paths {
          * Get Pipeline Document
          * @description Return the run's literal frozen ``pipeline.json``.
          *
-         *     Reads ``<project_root>/.runs/pipelines/<pipeline_id>/pipeline.json`` —
+         *     Reads ``<project_root>/.wfc/runs/pipelines/<pipeline_id>/pipeline.json`` —
          *     written at submission time for canvas runs, frozen at run start by
          *     ``run_pipeline`` for CLI runs, and the same file
          *     ``WfcProvider._load_bundled_samples`` consumes for fan-in sample
@@ -160,6 +166,36 @@ export interface paths {
          *     never reached the snake-gen / run-generation stage).
          */
         get: operations["get_pipeline_document_api_pipelines__pipeline_id__document_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/pipelines/{pipeline_id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Pipeline Document
+         * @description Serve a pipeline run's frozen ``pipeline.json`` as a file download.
+         *
+         *     The file is the run's frozen copy byte for byte: enrichment wrote every
+         *     method node's resolved version into it, so running the downloaded
+         *     document again runs the same versions.
+         *
+         *     Status codes:
+         *       - 200 with the file as an ``attachment`` named
+         *         ``<pipeline_id>.pipeline.json``
+         *       - 400 for an id that names no single pipeline directory
+         *       - 404 when the pipeline has no frozen document
+         */
+        get: operations["download_pipeline_document_api_pipelines__pipeline_id__download_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -182,38 +218,24 @@ export interface paths {
          *     One row per ``Method.env`` value. Aggregates method names, total run
          *     count, and most-recent run timestamp (``Run.started_at``) across all
          *     methods sharing that env, and resolves the registered env's ``backend``
-         *     plus a ``has_packages`` flag (True when a ``source_fingerprint`` was
-         *     captured at registration — i.e. a package list is available to attempt).
-         *     It does not guarantee a non-empty result: ``GET .../packages`` parses that
-         *     blob and may return an empty list if the captured blob carries no
-         *     recognizable packages (e.g. an older capture).
+         *     plus a ``has_packages`` flag: whether the captures folder of the env's
+         *     current image holds a package list (a byo image's holds none). It does
+         *     not verify the list: ``GET .../packages`` does, and refuses one whose
+         *     bytes no longer match the record.
+         *
+         *     Each row's ``registry`` says where the env's images are, read from the
+         *     captures folders and the local daemon, never the registry: ``state``
+         *     (``pushed``, ``not_pushed``, ``none`` for no registry, ``cannot_push``
+         *     for an image on this machine whose env name no registry accepts,
+         *     ``missing``, or ``unknown`` when Docker does not answer), ``base``,
+         *     ``older_not_pushed`` (older images method versions record that are not
+         *     pushed), ``older_missing`` (versions whose older image is gone),
+         *     ``recreate`` (the command that recreates the image), ``own_registry``
+         *     (for a byo image pulled from its own registry, that ref; else ``null``)
+         *     and ``reason`` (for ``cannot_push``, why the name cannot be pushed and
+         *     the fixes; else ``null``). It is ``null`` for an env with no record.
          */
         get: operations["get_registry_envs_api_registry_envs_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/registry/envs/blob/{md5}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Registry Env Blob
-         * @description Read an env-content blob from the DVC content-addressed cache.
-         *
-         *     Returns the raw blob as ``text/plain`` so the frontend can render it
-         *     directly in a code panel. Shares its read path (and path-traversal
-         *     guard) with ``GET .../packages`` via :func:`_env_blob_text`, which maps
-         *     the errors of :func:`wfc.storage.read_env_content` to 400 and 404.
-         */
-        get: operations["get_registry_env_blob_api_registry_envs_blob__md5__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -231,21 +253,28 @@ export interface paths {
         };
         /**
          * Get Registry Env Packages
-         * @description Installed-package list for a registered pixi/conda env.
+         * @description Installed-package list for a registered env.
          *
-         *     Resolves *spec* to its :class:`wfc.environments.EnvRecord`, reads the captured
-         *     ``source_fingerprint`` blob from the DVC cache, and parses it into a
-         *     sorted, de-duplicated, source-tagged package list via
-         *     :func:`wfc.environments.parse_packages`.
+         *     Resolves *spec* to its :class:`wfc.environments.EnvRecord`, asks
+         *     Environments for the package list of the env's current image
+         *     (:func:`wfc.environments.verified_package_list`, read from the committed
+         *     captures folder and checked against the record's ``source_fingerprint``),
+         *     and parses it into a sorted, de-duplicated, source-tagged package list
+         *     via :func:`wfc.environments.parse_packages`.
          *
          *     Honest empty state: a byo env, an env that never staged source content,
          *     or an unmatched spec returns ``captured: false`` with ``packages: []`` —
-         *     never a fabricated list.
+         *     never a fabricated list. A captures folder changed outside wfc is a
+         *     409: a package list that is missing or whose bytes no longer match the
+         *     record, or an ``image.json`` that is missing or unreadable. Its detail
+         *     names the file and the remedy register-env's refusal names for the
+         *     same folder (:func:`wfc.environments.capture_remedy`): register the env
+         *     again under a new name.
          *
          *     Response::
          *
          *         {"spec": "demo",
-         *          "backend": "pixi" | "conda" | "byo" | null,
+         *          "backend": "pixi" | "conda" | "uv" | "byo" | null,
          *          "captured": true,
          *          "packages": [{"name": ..., "version": ..., "source": "pixi"}, ...]}
          */
@@ -269,38 +298,40 @@ export interface paths {
          * Get Registry Methods
          * @description List registered methods for the Registry tab.
          *
-         *     Shape: `{methods: [{name, module, env, validated, runCount, source}]}`.
+         *     Shape: `{methods: [{name, module, env, runCount, source, versions}]}`.
          *
-         *     `validated` is a `bool | null` (null = never checked); this list does not
-         *     read the validation cache, so it is always null.
+         *     `source` is the project-relative `method.yaml` of the method's
+         *     registered copy, as the code resolver finds it, or null when the
+         *     resolver refuses the record. `versions` lists every version in label
+         *     order (:func:`_version_out`); the method's `env` is its newest
+         *     version's. A version is named by its identity in the detail and export
+         *     routes; the label is for display.
          */
         get: operations["get_registry_methods_api_registry_methods_get"];
         put?: never;
         /**
          * Register Method Endpoint
          * @description Wrap ``wfc.registration.register_method`` with optional dry-run preflight.
+         *
+         *     The dry run also plans the registration (``plan_method_registration``,
+         *     nothing written) and returns the plan's message, the same text ``wfc
+         *     register-method`` prints: registers v1, adds a version naming what
+         *     changed, or matches the newest version. Beside it the plan carries its
+         *     ``label`` (the version it adds, or the newest it matches), the
+         *     ``newestLabel`` before registering, its ``changes`` and ``holds`` as
+         *     Registration states them (the data the message is rendered from), and
+         *     its ``token``: the identity of what it would write (code fingerprint,
+         *     env fingerprint, newest label). A refusal the plan makes (a folder that
+         *     does not clearly hold one method among them) is a failed pre-check
+         *     whose detail says what wfc expects.
+         *     The Register click is the confirmation of that plan: the real request
+         *     sends the token back as ``plan_token`` and registration applies only
+         *     when a fresh plan has the same token, the rule ``wfc register-method``
+         *     applies between its question and its write. A different token (the
+         *     source, the env or the version list changed since the dry run) is a 409
+         *     having changed nothing; a request with no token is a 400.
          */
         post: operations["register_method_endpoint_api_registry_methods_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/registry/methods/validate": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Validate Registry Method
-         * @description Re-validate an existing method's env+import. Caches by fingerprint.
-         */
-        post: operations["validate_registry_method_api_registry_methods_validate_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -316,14 +347,55 @@ export interface paths {
         };
         /**
          * Get Registry Method Detail
-         * @description Read-only view of a method's directory + its parsed contract.
+         * @description Read-only view of one version of a method: its files, contract and env.
          *
-         *     Lists every file in the method dir (no recursion) with its content and a
-         *     language hint for syntax highlighting. Returns the DB-parsed contract
-         *     (input_slots, output_slots, params_schema) alongside so the frontend can
-         *     render it as structured tables without re-parsing YAML.
+         *     Lists every file at the top of the version's extracted copy,
+         *     ``.wfc/runs/code/<tree hash>/`` (no recursion), with its content and a
+         *     language hint for syntax highlighting: the method's main script first,
+         *     then the rest by name. Returns the version's DB-parsed contract
+         *     (input_slots, output_slots, params_schema, executor) alongside so the
+         *     frontend can render it as structured tables without re-parsing YAML,
+         *     and the version itself (:func:`_version_out`, with its run count).
+         *
+         *     Args:
+         *         module_name: The method's module.
+         *         method_name: The method's name.
+         *         version: The version's content identity (what a pin holds); absent
+         *             is the newest version. A version no entry carries is a 404.
          */
         get: operations["get_registry_method_detail_api_registry_methods__module_name___method_name__detail_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/registry/methods/{module_name}/{method_name}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export Registry Method
+         * @description Download one version of a method's script and contract as a zip.
+         *
+         *     The zip, ``<method>_v<label>.zip``, holds every file of the version's
+         *     registered copy as Registration resolves it (``resolve_method_code``),
+         *     subfolders included, under their copy-relative paths. The copy's
+         *     verified stamp sits beside the copy, not in it, so it is never in the
+         *     zip. Unzipped and edited, the folder registers as a new version.
+         *
+         *     Args:
+         *         module_name: The method's module.
+         *         method_name: The method's name.
+         *         version: The version's content identity; absent is the newest
+         *             version. A version no entry carries is a 404 naming it.
+         */
+        get: operations["export_registry_method_api_registry_methods__module_name___method_name__export_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -409,7 +481,10 @@ export interface paths {
          *     Status codes:
          *       - 200 with synthesized JSON on success
          *       - 404 if the run id is unknown
-         *       - 422 if synthesis fails (cycle defense, malformed ancestor chain)
+         *       - 422 if synthesis fails (cycle defense, malformed ancestor chain),
+         *         or if the lineage holds a run whose record carries no version
+         *         identity, so its node cannot be pinned to the version it ran; the
+         *         ``detail`` names each such run and the canvas shows it as written
          */
         get: operations["get_run_lineage_pipeline_api_runs__run_id__lineage_pipeline_get"];
         put?: never;
@@ -530,6 +605,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/wfc/export-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Export Runs
+         * @description Plan, or download, the run bundle of the requested runs.
+         *
+         *     The dry run plans the export (:func:`wfc.run_bundle.plan_export`: the
+         *     selection, Storage's archive pass over unarchived outputs, every
+         *     refusal, the local-only images) and returns ``{"plan": ...}``, the
+         *     plan's ``to_dict`` with its ``token``. It writes no bundle and answers
+         *     200 even when the plan is refused (``ok`` false).
+         *
+         *     The download is the confirmation of that plan: it sends the token back
+         *     as ``plan_token``, plans again, and writes the bundle only when the
+         *     fresh plan has the same token, the rule ``wfc export-run`` applies
+         *     between its question and its write. A request with no token is a 400; a
+         *     refused plan is a 409 listing every reason; a different token (the runs,
+         *     the options or what they hold changed since the dry run) is a 409. The
+         *     zip is written to a temporary file, streamed, and removed afterwards.
+         */
+        post: operations["export_runs_api_wfc_export_runs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/wfc/load": {
         parameters: {
             query?: never;
@@ -581,6 +690,26 @@ export interface paths {
         };
         /** Get Wfc Modules */
         get: operations["get_wfc_modules_api_wfc_modules_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/wfc/pipelines": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Wfc Pipelines
+         * @description Return each pipeline's status and the number of runs it expects.
+         */
+        get: operations["get_wfc_pipelines_api_wfc_pipelines_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -715,13 +844,23 @@ export interface paths {
          * Stream Run Logs
          * @description Stream a run's stdout/stderr as SSE events, ending with a `terminal` event.
          *
-         *     - Terminal runs (status in {completed, success, failed, cancelled}):
-         *       read the on-disk log files, emit each line as a `stdout`/`stderr`
-         *       event, then emit the `terminal` event and close. ``?full=1`` returns
-         *       the whole file; default tails the last ``tail`` lines (default 500).
-         *     - Running runs: poll the log files every ~200 ms, emit new lines as they
-         *       appear, stop when the DB status transitions off ``running`` and emit a
-         *       final `terminal` event.
+         *     - Terminal runs (status in {completed, success, failed, cancelled})
+         *       reached with no resume id: read the on-disk log files, emit each line
+         *       as a `stdout`/`stderr` event, then emit the `terminal` event and
+         *       close. ``?full=1`` returns the whole file; default tails the last
+         *       ``tail`` lines (default 500).
+         *     - Running runs: emit a tail snapshot, then poll the log files every
+         *       ~200 ms, emit new lines as they appear, stop when the DB status
+         *       transitions off ``running`` and emit a final `terminal` event. Each
+         *       live line's event carries an SSE ``id`` naming the stdout and stderr
+         *       byte offsets read through it (the snapshot's end is marked by an
+         *       id-only frame). A reconnect sending that id as ``Last-Event-ID`` (the
+         *       browser's auto-reconnect does) opens with an id-only frame naming
+         *       the same offsets, then resumes from them with no snapshot, so no line
+         *       repeats and none is missed across a server restart. A run that ended
+         *       while the connection was down gets only the bytes after the offsets,
+         *       then its `terminal` event. An absent or malformed id gets the
+         *       snapshot, as a first connection does.
          */
         get: operations["stream_run_logs_api_wfc_run__run_id__stream_logs_get"];
         put?: never;
@@ -797,13 +936,21 @@ export interface paths {
         put?: never;
         /**
          * Cancel Workflow
-         * @description Cancel an in-flight pipeline.
+         * @description Cancel a running pipeline, in this server's job table or reached by its record.
          *
-         *     Terminates the live Snakemake subprocess (and its descendants) and
-         *     flips any ``running`` rows for this pipeline to ``cancelled`` with
-         *     ``error_message="Cancelled by user"``.  Idempotent: cancelling a
-         *     pipeline whose process has already exited returns 200 with a no-op
-         *     indication.  Returns 404 for unknown job_ids.
+         *     Goes through Execution's one cancel operation: it sets the record's
+         *     cancel flag, kills the engine's process tree when its identity matches,
+         *     and flips the ``running`` rows to ``cancelled`` for the user; when the
+         *     pipeline's owner is gone it also gives every unstarted target a ``user``
+         *     row, releases what the pipeline held and removes the record. For a job
+         *     in this server's table the in-memory flag is set first, so its run
+         *     thread's failure branch leaves the rows to the cancel and its own end
+         *     steps walk with ``user``; a job whose process is not recorded (refused
+         *     before its record was written) has that process's tree killed here.
+         *
+         *     Idempotent: a pipeline whose engine has already exited answers 200 with
+         *     ``noop: true``. An id with neither a job nor a record nor a running row,
+         *     or one that is not a pipeline id, answers 404.
          */
         post: operations["cancel_workflow_api_workflow_cancel__job_id__post"];
         delete?: never;
@@ -855,15 +1002,22 @@ export interface paths {
          * @description Return per-node and overall status for a running or completed pipeline.
          *
          *     Queries the ``runs`` table by ``pipeline_id`` and derives overall status.
-         *     Also returns whether the background thread is still alive and any captured
-         *     log output.
+         *     A job in this server's table reports its run thread's liveness, its
+         *     step map, its recorded error and its log. Any other pipeline is reached
+         *     through its record (one another process runs, a CLI pipeline among
+         *     them, or one this server ran before a restart): its step map comes from
+         *     its frozen document, its log from its run directory, and the record's
+         *     presence stands for the thread's liveness. Once reached, it is answered
+         *     from its rows after its record is gone too.
          *
          *     Args:
          *         job_id: The pipeline_id returned by the run endpoint.
          *
          *     Returns:
          *         JSON with ``job_id``, ``overall_status``, ``node_states``, ``thread_alive``,
-         *         ``log``, and ``error`` fields.
+         *         ``log``, and ``error`` fields. 404 for an id with neither a job nor
+         *         a record that this server has not reached, and for one that is not
+         *         a pipeline id.
          */
         get: operations["get_workflow_status_api_workflow_status__job_id__get"];
         put?: never;
@@ -887,10 +1041,12 @@ export interface paths {
          * Validate Workflow
          * @description Validate a pipeline graph against registered methods in the DB.
          *
-         *     The thin wrapper over the Graph unit's structural core: fetch the
-         *     contract map through Registration and hand the request document to
-         *     ``wfc.graph.validate_structure``, which answers ``{valid, errors,
-         *     warnings}``.
+         *     The thin wrapper over the Graph unit's structural core and the shared
+         *     validation entry point: substitute the document's variables with Graph's
+         *     ``resolve_variables``, hand it to ``wfc.graph.validate_structure``
+         *     (``{valid, errors, warnings}``) and merge in
+         *     ``wfc.execution.validation.validation_refusals``, the verdict submit,
+         *     ``run-pipeline`` and the runs preview give the same document.
          */
         post: operations["validate_workflow_api_workflow_validate_post"];
         delete?: never;
@@ -1005,6 +1161,33 @@ export interface components {
             /** Run Ids */
             run_ids?: string[] | null;
         };
+        /**
+         * ExportRunsRequest
+         * @description The runs to export and the bundle's options.
+         *
+         *     Attributes:
+         *         run_ids: The runs asked for; every run above them is added.
+         *         with_outputs: Carry the outputs' bytes (``--with-outputs``).
+         *         with_image: Carry each step's image (``--with-image``).
+         *         plan_token: The dry run's token; the download applies only that plan.
+         *             Unused by the dry run itself.
+         */
+        ExportRunsRequest: {
+            /** Plan Token */
+            plan_token?: string | null;
+            /** Run Ids */
+            run_ids: string[];
+            /**
+             * With Image
+             * @default false
+             */
+            with_image: boolean;
+            /**
+             * With Outputs
+             * @default false
+             */
+            with_outputs: boolean;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -1018,13 +1201,8 @@ export interface components {
             method_name?: string | null;
             /** Module */
             module: string;
-        };
-        /** MethodValidateRequest */
-        MethodValidateRequest: {
-            /** Method */
-            method: string;
-            /** Module */
-            module: string;
+            /** Plan Token */
+            plan_token?: string | null;
         };
         /** ModuleRegisterRequest */
         ModuleRegisterRequest: {
@@ -1046,6 +1224,8 @@ export interface components {
             cache_hit?: boolean | null;
             /** Cache Key */
             cache_key?: string | null;
+            /** Cancel Reason */
+            cancel_reason?: string | null;
             /** Cancelled Due To Run Id */
             cancelled_due_to_run_id?: string | null;
             /** Error */
@@ -1121,6 +1301,8 @@ export interface components {
             variables?: {
                 [key: string]: unknown;
             } | null;
+        } & {
+            [key: string]: unknown;
         };
         /** PipelineLink */
         PipelineLink: {
@@ -1170,6 +1352,24 @@ export interface components {
              * @default method
              */
             type: string | null;
+            /** Version */
+            version?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * PipelineSummary
+         * @description One pipeline as History's Pipelines view lists it.
+         */
+        PipelineSummary: {
+            /** Expected */
+            expected?: number | null;
+            /** Nodeorder */
+            nodeOrder?: string[] | null;
+            /** Pipelineid */
+            pipelineId: string;
+            /** Status */
+            status: string;
         };
         /**
          * RunPatchRequest
@@ -1277,6 +1477,7 @@ export interface operations {
                 slot: string;
                 params?: string | null;
                 run_id?: string | null;
+                version?: string | null;
             };
             header?: never;
             path: {
@@ -1408,32 +1609,12 @@ export interface operations {
             };
         };
     };
-    get_registry_envs_api_registry_envs_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
-    get_registry_env_blob_api_registry_envs_blob__md5__get: {
+    download_pipeline_document_api_pipelines__pipeline_id__download_get: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                md5: string;
+                pipeline_id: string;
             };
             cookie?: never;
         };
@@ -1455,6 +1636,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_registry_envs_api_registry_envs_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
         };
@@ -1545,18 +1746,19 @@ export interface operations {
             };
         };
     };
-    validate_registry_method_api_registry_methods_validate_post: {
+    get_registry_method_detail_api_registry_methods__module_name___method_name__detail_get: {
         parameters: {
-            query?: never;
+            query?: {
+                version?: string | null;
+            };
             header?: never;
-            path?: never;
+            path: {
+                module_name: string;
+                method_name: string;
+            };
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["MethodValidateRequest"];
-            };
-        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
@@ -1578,9 +1780,11 @@ export interface operations {
             };
         };
     };
-    get_registry_method_detail_api_registry_methods__module_name___method_name__detail_get: {
+    export_registry_method_api_registry_methods__module_name___method_name__export_get: {
         parameters: {
-            query?: never;
+            query?: {
+                version?: string | null;
+            };
             header?: never;
             path: {
                 module_name: string;
@@ -1875,6 +2079,41 @@ export interface operations {
             };
         };
     };
+    export_runs_api_wfc_export_runs_post: {
+        parameters: {
+            query?: {
+                dryRun?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExportRunsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     load_wfc_data_api_wfc_load_post: {
         parameters: {
             query?: never;
@@ -1944,6 +2183,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    get_wfc_pipelines_api_wfc_pipelines_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelineSummary"][];
                 };
             };
         };
@@ -2167,7 +2426,9 @@ export interface operations {
                 full?: number;
                 tail?: number;
             };
-            header?: never;
+            header?: {
+                "last-event-id"?: string | null;
+            };
             path: {
                 run_id: string;
             };

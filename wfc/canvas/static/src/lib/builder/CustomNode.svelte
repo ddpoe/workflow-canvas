@@ -3,6 +3,7 @@
   import type { CanvasNodeData, RunStatus } from '../shared/types.js';
   import { deleteNodes, samples as samplesStore, updateNodeData } from './stores.js';
   import { displaySlotType, slotColor, truncateSlotType } from '../shared/slotColor.js';
+  import { nodeVersion, versionTitle } from './nodeData.js';
 
   let { data, id, selected }: { data: CanvasNodeData; id: string; selected?: boolean } = $props();
 
@@ -21,8 +22,8 @@
     running: '#E9A847',
     completed: '#50C878',
     // Cached = the run was a cache hit and reused an earlier run's outputs.
-    // Green like completed, since it is a success; the footer's badge tells
-    // the two apart.
+    // Green like completed, since it is a success; the footer's amber pill,
+    // the History tab's, tells the two apart.
     cached: '#50C878',
     failed: '#E74C3C',
     cancelled: '#7f8ea3',
@@ -30,6 +31,16 @@
     // is close to "running" amber but distinct enough for accessibility.
     mixed: '#D89E2E',
   };
+
+  // The version a method node runs: a green dot beside its number when that
+  // is the newest, a yellow one when the node is pinned to an older one.
+  let running = $derived(nodeVersion(data));
+
+  // The env's name without its kind (`container:scanpy` → `scanpy`); the
+  // chip's hover gives the full value.
+  function envName(env: string): string {
+    return env.replace(/^[a-z]+:/, '');
+  }
 
   let borderColor = $derived(selected ? '#4A90D9' : borderColors[data.runStatus] || '#4a4a4a');
   let borderWidth = $derived(
@@ -259,7 +270,28 @@
     <!-- Header -->
     <div class="node-header" style="background: {data.color};">
       <span class="node-title">{data.label}</span>
-      <span class="node-module">{data.module}{data.version ? ' \u00b7 v' + data.version : ''}</span>
+      <span class="node-meta">
+        <span class="meta-chip">
+          <span class="meta-key"><span class="cap-trim">Module</span></span>
+          <span class="meta-val"><span class="cap-trim">{data.module}</span></span>
+        </span>
+        {#if running?.env}
+          <span class="meta-chip node-env" title={running.env}>
+            <span class="meta-key"><span class="cap-trim">Env</span></span>
+            <span class="meta-val"><span class="cap-trim">{envName(running.env)}</span></span>
+          </span>
+        {/if}
+        {#if running}
+          <span
+            class="meta-chip node-version"
+            class:node-version-newest={running.newest}
+            title={versionTitle(data)}
+          >
+            <span class="meta-key"><span class="cap-trim">Version</span></span>
+            <span class="meta-val"><i class="version-dot"></i><span class="cap-trim">v{running.label}</span></span>
+          </span>
+        {/if}
+      </span>
     </div>
 
     <!-- Chip strip (read-only) -->
@@ -340,8 +372,8 @@
     <!-- Footer -->
     <div class="node-footer">
       {#if statusLabel}
-        <span class="status-label" class:is-pending={data.runStatus === 'pending'} class:is-cached={data.runStatus === 'cached'} style="color: {borderColor};">
-          {#if data.runStatus === 'completed' || data.runStatus === 'cached'}&#10003;{:else if data.runStatus === 'failed'}&#10007;{:else if data.runStatus === 'running'}&#8635;{:else if data.runStatus === 'mixed'}&#9888;{:else if data.runStatus === 'pending'}&#9679;{:else if selected}&#9679;{/if}
+        <span class="status-label" class:is-pending={data.runStatus === 'pending'} class:is-cached={data.runStatus === 'cached'} style={data.runStatus === 'cached' ? '' : `color: ${borderColor};`}>
+          {#if data.runStatus === 'cached'}&#10227;{:else if data.runStatus === 'completed'}&#10003;{:else if data.runStatus === 'failed'}&#10007;{:else if data.runStatus === 'running'}&#8635;{:else if data.runStatus === 'mixed'}&#9888;{:else if data.runStatus === 'pending'}&#9679;{:else if selected}&#9679;{/if}
           {statusLabel}
         </span>
       {:else}
@@ -409,6 +441,71 @@
     color: rgba(255,255,255,0.6);
     font-size: 9px;
   }
+  /* Module, Env and Version, each a labelled chip like the Inspector
+     header's, so they read on any module colour. Zero width with a 100%
+     floor: the row takes the width the rest of the node sets and wraps to
+     it, rather than widening the node. */
+  .node-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 3px;
+    width: 0;
+    min-width: 100%;
+    font-size: 9px;
+  }
+  /* Trim the text box to the digits' cap height, so flex centring lines the
+     text up with the dot rather than with the font's ascender and descender. */
+  .cap-trim {
+    text-box: trim-both cap alphabetic;
+  }
+  .meta-chip {
+    display: inline-flex;
+    align-items: stretch;
+    height: 12px;
+    max-width: 100%;
+    border-radius: 3px;
+    overflow: hidden;
+    background: rgba(0, 0, 0, 0.3);
+    color: #fff;
+    line-height: 1;
+  }
+  .meta-key {
+    display: flex;
+    align-items: center;
+    padding: 0 4px;
+    background: rgba(0, 0, 0, 0.25);
+    color: rgba(255, 255, 255, 0.65);
+    font-size: 6.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .meta-val {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    padding: 0 4px;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+  .node-version {
+    background: rgba(0, 0, 0, 0.5);
+  }
+  .node-version .meta-val {
+    color: #eee;
+    font-weight: 600;
+  }
+  .version-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    background: #F5D547;
+  }
+  .node-version-newest .version-dot {
+    background: #7CFC9A;
+  }
   .node-slots {
     padding: 6px 0;
   }
@@ -470,10 +567,19 @@
   .status-label {
     font-size: 9px;
   }
+  /* Matches the History tab's cached pill. */
   .status-label.is-cached {
-    border: 1px solid currentColor;
-    border-radius: 6px;
-    padding: 0 4px;
+    display: inline-flex;
+    align-items: center;
+    background: rgba(233, 168, 71, 0.15);
+    color: #E9A847;
+    border: 1px solid rgba(233, 168, 71, 0.45);
+    border-radius: 9px;
+    font-size: 8px;
+    font-weight: 600;
+    padding: 0 5px;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
   }
   .status-label.is-pending {
     animation: pending-pulse 1.4s ease-in-out infinite;

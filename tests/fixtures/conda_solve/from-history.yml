@@ -1,0 +1,9 @@
+name: imaging
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - numpy
+  - python=3.11
+  - conda-forge::scipy>=1.10
+prefix: C:\Users\someone\anaconda3\envs\imaging

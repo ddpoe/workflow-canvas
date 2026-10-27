@@ -6,9 +6,10 @@ An env spec is the bare name of a registered env. Method registration
 there like any other non-name. ``wfc register-env`` (``wfc.environments.register``)
 applies the same rule before any Docker call or manifest write. The read side
 (dispatch, claim, canvas, delete-env query) strips a legacy ``container:``
-prefix once and then applies the same rule; the delete-env reference query is
-the one read-side site with a cell here, because an equality match against a
-composed prefixed form would miss bare rows there.
+prefix once and then applies the same rule; the env reference query behind
+``wfc demo --remove``'s shared-env warning is the one read-side site with a
+cell here, because an equality match against a composed prefixed form would
+miss bare rows there.
 
 The accepting case — a registered bare name resolves and is stored verbatim —
 is ``tests/test_registration.py::test_register_method_resolves_container_env``;
@@ -81,7 +82,7 @@ def test_registration_refuses_every_non_name_env_spec_with_one_message(
     method_dir = _write_method(tmp_project, "grammar_method", env_value)
 
     with pytest.raises(ValueError) as excinfo:
-        register_method(method_dir=method_dir, module_name="grammar_mod")
+        register_method(method_dir=method_dir, module_name="grammar_mod", assume_yes=True)
     message = str(excinfo.value)
 
     assert env_value in message, message
@@ -115,7 +116,7 @@ def test_registration_refusal_reports_an_unreadable_manifest(tmp_project):
     method_dir = _write_method(tmp_project, "grammar_method", env_value)
 
     with pytest.raises(ValueError) as excinfo:
-        register_method(method_dir=method_dir, module_name="grammar_mod")
+        register_method(method_dir=method_dir, module_name="grammar_mod", assume_yes=True)
     message = str(excinfo.value)
 
     assert env_value in message, message
@@ -124,19 +125,19 @@ def test_registration_refusal_reports_an_unreadable_manifest(tmp_project):
     assert "register-env" not in message, message
 
 
-@workflow(purpose="The delete-env reference query lists a method stored under "
-                  "a bare env name and one stored under the legacy prefixed "
-                  "spelling alike, and nothing bound to another env — the "
-                  "query reads stored rows through the read-side grammar "
-                  "instead of composing the prefixed form",
+@workflow(purpose="The env reference query behind wfc demo --remove's shared-env "
+                  "warning lists a method stored under a bare env name and one "
+                  "stored under the legacy prefixed spelling alike, and nothing "
+                  "bound to another env: it reads stored rows through the "
+                  "read-side grammar instead of composing the prefixed form",
           inputs="Three stored method rows: bare name, legacy prefixed name, "
                  "another env",
           outputs="module/method references for the first two only")
-def test_delete_env_reference_query_counts_bare_and_legacy_rows(tmp_project):
+def test_env_reference_query_counts_bare_and_legacy_rows(tmp_project):
     from wfc.registration import methods_referencing_env
 
     with get_session() as session:
-        mod = Module(name="query_mod", description="delete-env reference query")
+        mod = Module(name="query_mod", description="env reference query")
         session.add(mod)
         session.commit()
         session.refresh(mod)
@@ -201,7 +202,7 @@ def test_registration_refuses_an_unregistered_name_pointing_at_register_env(
     method_dir = _write_method(tmp_project, "grammar_method", "unbuilt-env")
 
     with pytest.raises(ValueError) as excinfo:
-        register_method(method_dir=method_dir, module_name="grammar_mod")
+        register_method(method_dir=method_dir, module_name="grammar_mod", assume_yes=True)
     message = str(excinfo.value)
 
     assert "'unbuilt-env' is not found in .wfc/envs.json" in message, message

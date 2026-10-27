@@ -52,13 +52,13 @@ def variant_axis(resolved_params: dict[str, dict[str, dict]]) -> list[str]:
 
 
 @task(purpose="Derive the variant model of a pipeline definition: each node's "
-              "variant table by node id with a method-name fallback, the "
+              "variant table by node id, the "
               "global axis, every node padded to cover every variant name")
 def resolve_variant_model(pipeline: PipelineDef) -> VariantModel:
     """Resolve the param/variant model the engine schedules from.
 
-    Each node's table is its ``param_sets`` entry by node id, else by method
-    name, else ``{"default": step.params}``; the axis is the union of every
+    Each node's table is its ``param_sets`` entry by node id, else
+    ``{"default": step.params}``; the axis is the union of every
     table's names; every table is padded so each name maps to the node's
     base params where the node declares no variant of that name. The
     definition's own ``param_sets`` are not mutated -- the tables are copies.
@@ -72,9 +72,7 @@ def resolve_variant_model(pipeline: PipelineDef) -> VariantModel:
     tables: dict[str, dict[str, dict]] = {}
     for step in pipeline.steps:
         tables[step.node_id] = dict(pipeline.param_sets.get(
-            step.node_id, pipeline.param_sets.get(
-                step.method_name, {"default": step.params}
-            )
+            step.node_id, {"default": step.params}
         ))
 
     axis = variant_axis(tables)

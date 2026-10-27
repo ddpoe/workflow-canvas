@@ -15,6 +15,7 @@ byo registration inspects and digest-pins a real image.
 
 from __future__ import annotations
 
+from wfc import layout
 import json
 import shutil
 import subprocess
@@ -98,8 +99,9 @@ def _init(project: Path) -> None:
     reset_engine()
 
 
-@workflow(purpose="register-env over a real image commits .wfc/envs.json by "
-                  "itself, and the tree is clean afterwards")
+@workflow(purpose="register-env over a real image commits .wfc/envs.json with "
+                  "the image's captures folder, nothing else, and the tree is "
+                  "clean afterwards")
 def test_register_env_commits_the_manifest(session_project, minimal_image):
     project = session_project
     _init(project)
@@ -110,9 +112,14 @@ def test_register_env_commits_the_manifest(session_project, minimal_image):
                 "--image", IMAGE_REF), "register-env")
 
     assert _head(project) != head
-    assert _head_files(project) == {".wfc/envs.json"}
     record = json.loads((project / ".wfc" / "envs.json").read_text())
-    assert "@sha256:" in record["envs"][ENV_NAME]["container"]
+    env = record["envs"][ENV_NAME]
+    assert "@sha256:" in env["container"]
+    folder = layout.env_capture_relpath(ENV_NAME, env["env_fingerprint"])
+    captured = {p.relative_to(project).as_posix()
+                for p in (project / folder).rglob("*") if p.is_file()}
+    # init committed .gitattributes' captures line already.
+    assert captured and _head_files(project) == {".wfc/envs.json", *captured}
     assert _porcelain(project) == ""
 
 
@@ -153,24 +160,26 @@ def test_a_whole_session_leaves_a_clean_tree(session_project, minimal_image,
     assert _porcelain(project) == ""
 
     口 = Step(step_num=4, name="Register a method kept outside the repository",
-             purpose="The registration snapshot under methods/ is committed")
+             purpose="The module-qualified registration snapshot is committed")
     source = tmp_path_factory.mktemp("elsewhere") / "transform"
     shutil.copytree(FIXTURE_METHOD, source)
-    _ok(run_cli("register-method", str(source), "--module", "test_pipeline"),
+    _ok(run_cli("register-method", "--yes", str(source), "--module", "test_pipeline"),
         "register-method")
-    assert (project / "methods" / "transform" / "transform.py").exists()
+    from wfc import layout
+    assert (layout.method_dir(project, "test_pipeline", "transform")
+            / "transform.py").exists()
     assert _porcelain(project) == ""
 
     口 = Step(step_num=5, name="Register a sample and restore it",
-             purpose="The DVC cache entry and the restored copy under data/ are "
-                     "both ignored")
+             purpose="The DVC cache entry and the restored copy in the sample "
+                     "workspace under .wfc/ are both ignored")
     csv_source = sample_source_dir(project) / "s1" / "data.csv"
     csv_source.parent.mkdir(parents=True, exist_ok=True)
     csv_source.write_text("id,value\n1,10\n2,20\n")
     _ok(run_cli("register-sample", "--name", "s1", "--source", str(csv_source)),
         "register-sample")
     _ok(run_cli("restore-sample", "--name", "s1"), "restore-sample")
-    assert any((project / "data").rglob("data.csv"))
+    assert layout.restored_sample_path(project, "s1", "data.csv").exists()
     assert _porcelain(project) == ""
 
     口 = Step(step_num=6, name="The user writes a pipeline document and commits it",
@@ -190,11 +199,19 @@ def test_a_whole_session_leaves_a_clean_tree(session_project, minimal_image,
     assert _porcelain(project) == ""
 
     口 = Step(step_num=7, name="Run the pipeline",
-             purpose="Everything the run writes -- .runs/, .snakemake/, the "
+             purpose="Everything the run writes -- .wfc/runs/, .snakemake/, the "
                      "database, the DVC cache and the archive pass -- is ignored")
     _ok(run_cli("run-pipeline", "--pipeline", str(pipeline),
                 "--project-root", str(project), "--cores", "1"), "run-pipeline")
-    assert any((project / ".runs").rglob("output.csv"))
+    # The archive pass took the output: the cache holds its one local copy
+    # and the run archive no longer does.
+    from sqlmodel import select
+    from wfc.persistence import RunOutput, get_session, reset_engine
+    reset_engine()
+    with get_session() as session:
+        rows = session.exec(select(RunOutput)).all()
+    assert rows and all(r.content_hash for r in rows), rows
+    assert not any((layout.artifact_store(project)).rglob("output.csv"))
     assert _porcelain(project) == ""
 
     口 = Step(step_num=8, name="The user commits with git add -A",

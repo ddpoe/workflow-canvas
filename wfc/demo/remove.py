@@ -11,6 +11,17 @@ enforcement is OFF here — nothing at the storage layer catches mistakes):
     -> MethodContract / TrackedFunction (+ParamDef) / MethodVersion
     -> methods -> ModuleContract -> module -> samples -> env -> files.
 
+The files are the demo module's whole snapshot directory under
+``.wfc/registry/methods/`` (which holds each demo method's snapshot and
+its version list, ``<method>.versions.json``), the demo's sample workspace directories, the
+pipeline document, the demo schema stamp (``.wfc/demo.json``), and each
+demo env's build and captures folders. The demo's envs are found through the
+demo module, never by name: the demo env plus every env the demo module's
+methods name (their rows and every entry of their version lists), read before
+anything is deleted, so an older wfc's demo env goes too. The deletions and
+the env manifest's change are then committed by pathspec, so the tree is
+clean afterwards.
+
 The DVC cache and the output archive are NEVER touched — cached bytes are
 governed by ``wfc cache prune``.
 """
@@ -23,12 +34,12 @@ from pathlib import Path
 
 from .. import layout
 from .scaffold import (
-    DEMO_ENV,
     DEMO_IMAGE_TAG,
-    DEMO_METHODS,
     DEMO_MODULE,
+    DEMO_PIPELINE_FILENAME,
     DemoError,
     _project_env,
+    demo_owned_envs,
 )
 
 
@@ -65,7 +76,7 @@ def remove_demo(
         )
 
     with _project_env(target):
-        from ..environments import load_manifest
+        from ..environments import load_manifest_for_register
         from ..persistence import (
             Method,
             MethodContract,
@@ -116,7 +127,10 @@ def remove_demo(
             sample_names = [s.name for s in samples]
 
         try:
-            manifest = load_manifest(target)
+            # The register path's read (`wfc demo --force` re-registers the
+            # demo env next, converting an older manifest), so a version-1
+            # or version-2 file is opened rather than refused.
+            manifest = load_manifest_for_register(target)
         except Exception as exc:
             print(
                 f"WARNING: could not read the env manifest ({exc}) — env "
@@ -124,30 +138,43 @@ def remove_demo(
                 file=sys.stderr,
             )
             manifest = {}
-        env_present = DEMO_ENV in manifest.get("envs", {})
+        # The demo's envs: DEMO_ENV and every env its methods name (an older
+        # wfc's demo env included), read before anything is deleted.
+        owned_envs = demo_owned_envs(target)
+        present_envs = [e for e in owned_envs if e in manifest.get("envs", {})]
+        env_present = bool(present_envs)
 
-        # Files: method dirs come from the DB rows when available, else the
-        # shipped set (partial-scaffold residue) — but a dir is only deleted
-        # when NO surviving non-demo method claims it (checked below).
-        candidate_method_dirs = sorted(set(method_names) | set(DEMO_METHODS))
+        # Files: the demo module's snapshot directory as a whole. Snapshots
+        # are module-qualified, so it holds every demo method (and any
+        # partial-scaffold residue) and nothing of another module's; no
+        # method directory is chosen by name.
+        snapshot_dir = layout.module_methods_dir(target, DEMO_MODULE)
         samples_root = layout.samples_dir(target)
         sample_dirs = sorted(
             p for p in samples_root.glob(f"{DEMO_MODULE}*")
             if p.is_dir()
         ) if samples_root.exists() else []
-        pipeline_file = target / "demo-pipeline.json"
-        build_dir = layout.env_build_dir(target, DEMO_ENV)
+        pipeline_file = target / DEMO_PIPELINE_FILENAME
+        stamp_file = layout.demo_stamp_path(target)
 
         file_targets: list[Path] = []
-        for m in candidate_method_dirs:
-            d = layout.method_dir(target, m)
-            if d.exists():
-                file_targets.append(d)
+        if snapshot_dir.exists():
+            file_targets.append(snapshot_dir)
         file_targets.extend(sample_dirs)
-        if pipeline_file.exists():
-            file_targets.append(pipeline_file)
-        if build_dir.exists():
-            file_targets.append(build_dir)
+        for f in (pipeline_file, stamp_file):
+            if f.exists():
+                file_targets.append(f)
+        # Each demo env's build folder and its captures folder, committed
+        # by its register.
+        captures_dirs: list[Path] = []
+        for env in owned_envs:
+            build_dir = layout.env_build_dir(target, env)
+            if build_dir.exists():
+                file_targets.append(build_dir)
+            captures_dir = layout.env_captures_dir(target, env)
+            if captures_dir.exists():
+                file_targets.append(captures_dir)
+                captures_dirs.append(captures_dir)
 
         nothing_in_db = module_id is None and not samples and not env_present
         if nothing_in_db and not file_targets:
@@ -162,27 +189,28 @@ def remove_demo(
         print(f"  {len(run_ids)} demo run(s) and their input/output/annotation rows")
         for s in sample_names:
             print(f"  sample {s}")
-        if env_present:
-            print(f"  env {DEMO_ENV}")
+        for env in present_envs:
+            print(f"  env {env}")
         for f in file_targets:
             print(f"  {f}")
         if purge_image:
             print(f"  Docker image {DEMO_IMAGE_TAG}")
 
-        # ---- Shared-env warning: non-demo methods on __demo__env ----
+        # ---- Shared-env warning: non-demo methods on a demo env ----
         if env_present:
             from ..registration import methods_referencing_env
 
-            refs = [
-                r for r in methods_referencing_env(DEMO_ENV)
-                if not r.startswith(f"{DEMO_MODULE}/")
-            ]
-            if refs:
-                print(
-                    f"WARNING: non-demo method(s) reference env {DEMO_ENV} and "
-                    f"will no longer resolve it: " + ", ".join(refs),
-                    file=sys.stderr,
-                )
+            for env in present_envs:
+                refs = [
+                    r for r in methods_referencing_env(env)
+                    if not r.startswith(f"{DEMO_MODULE}/")
+                ]
+                if refs:
+                    print(
+                        f"WARNING: non-demo method(s) reference env {env} and "
+                        f"will no longer resolve it: " + ", ".join(refs),
+                        file=sys.stderr,
+                    )
 
         if not assume_yes:
             answer = input("Proceed? [y/N] ").strip().lower()
@@ -289,47 +317,61 @@ def remove_demo(
                 session.delete(s)
             session.commit()
 
-            # Surviving-method claims on the shared methods/<name>/ dirs.
-            # Every candidate name now carries the __demo__ prefix, and
-            # check_reserved_name refuses that prefix to every caller but
-            # `wfc demo`, so no user method can hold one — this set is empty
-            # in practice today. It is kept rather than deleted because it is
-            # the guard that becomes live again the day the prefix is removed
-            # (per-module snapshot directories), when a user method really
-            # could be named `preprocess` alongside the demo's.
-            surviving_names = {
-                m.name
-                for m in session.exec(
-                    select(Method).where(
-                        col(Method.name).in_(candidate_method_dirs)
-                    )
-                ).all()
-            }
-
         # ---- Env ----
         if env_present:
-            from ..environments import delete as delete_env
+            from ..environments import MANIFEST_SCHEMA_VERSION, save_manifest
 
-            try:
-                delete_env(DEMO_ENV, target)
-            except KeyError:
-                pass
+            # Dropped from the manifest as read, not through `delete`, which
+            # refuses an older (version 1 or 2) file; the file keeps its
+            # version until a register converts it. A manifest left with no envs has nothing
+            # to convert, so it is saved at the current version.
+            current = load_manifest_for_register(target)
+            popped = [current.get("envs", {}).pop(env, None) for env in present_envs]
+            if any(p is not None for p in popped):
+                if not current["envs"]:
+                    current["schema_version"] = MANIFEST_SCHEMA_VERSION
+                save_manifest(target, current)
 
         # ---- Files ----
+        from ..storage import remove_restored_view
+
+        sample_hashes = {s.name: s.content_hash for s in samples}
         removed_files: list[Path] = []
         for f in file_targets:
-            name = f.name
-            if f.parent == layout.methods_dir(target) and name in surviving_names:
-                print(
-                    f"  keeping {f} — a surviving method named '{name}' "
-                    f"still uses it"
-                )
-                continue
-            if f.is_dir():
+            if f in sample_dirs:
+                # A restored sample's folder is read-only (its files are
+                # views of cache objects): Storage removes the view, and a
+                # removal that fails is named, never counted.
+                try:
+                    remove_restored_view(target, f.name, sample_hashes.get(f.name))
+                except OSError as exc:
+                    print(f"WARNING: could not remove the restored sample "
+                          f"folder {f}: {exc}", file=sys.stderr)
+                    continue
+            elif f.is_dir():
                 shutil.rmtree(f, ignore_errors=True)
             else:
                 f.unlink(missing_ok=True)
             removed_files.append(f)
+
+        # ---- Commit the removal ----
+        # The snapshot directory was committed at registration and the env
+        # manifest at env registration; deleting either without a commit
+        # leaves a dirty tree, which the next run's commit check refuses.
+        # Each demo env's captures folder was committed with its record, and
+        # the pipeline document and the stamp by `wfc demo`. Only these
+        # paths are named: nothing else the user staged is swept in.
+        from ..version import commit_paths
+
+        committed = [snapshot_dir, pipeline_file, stamp_file, *captures_dirs]
+        if env_present:
+            committed.append(layout.env_manifest_path(target))
+        sha = commit_paths(
+            target, committed, f"Remove demo module {DEMO_MODULE}",
+            require_repo=False,
+        )
+        if sha is not None:
+            print(f"  git: committed the removal as {sha[:12]}")
 
         # ---- Optional image purge ----
         if purge_image:

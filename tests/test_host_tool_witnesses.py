@@ -42,6 +42,42 @@ def test_conda_lists_a_real_env_explicitly():
     assert pinned, listing[:500]
 
 
+@requires_conda
+def test_conda_exports_a_real_env_from_history_and_as_json():
+    """conda's requested-package export, JSON list and version, for its base env.
+
+    The ``--from-history`` export is environment.yml text with a
+    ``dependencies:`` section; ``conda list --json`` is a list of packages,
+    each with a name, version and channel; the version starts with a digit.
+    """
+    from wfc.environments.introspect import (conda_env_export_from_history,
+                                             conda_list_json, conda_version)
+
+    base = subprocess.run(["conda", "info", "--base"], capture_output=True,
+                          text=True, check=True).stdout.strip()
+
+    export = conda_env_export_from_history(base)
+    listing = conda_list_json(base)
+    version = conda_version()
+
+    assert "dependencies:" in export, export[:500]
+    assert listing
+    assert all({"name", "version", "channel"} <= set(pkg) for pkg in listing)
+    assert version[:1].isdigit(), version
+
+
+@requires_conda
+def test_host_conda_platform_is_condas_own_platform():
+    """The platform wfc computes for this machine is the one conda reports."""
+    from wfc.environments.host import host_conda_platform
+
+    info = json.loads(subprocess.run(["conda", "info", "--json"],
+                                     capture_output=True, text=True,
+                                     check=True).stdout)
+
+    assert host_conda_platform() == info["platform"]
+
+
 @requires_pip
 def test_pip_freeze_of_the_running_interpreter_lists_pytest():
     """The live capture's pip freeze, run on this interpreter, lists pytest."""
@@ -222,7 +258,15 @@ def test_a_machine_that_is_not_ready_is_detected_and_reframed_at_the_door(
     an interpreter that cannot import it, and the probe's warn renders
     through the same health table.
     """
-    shown, expected = drive(tmp_path, monkeypatch)
+    from wfc.persistence import reset_engine
+
+    # The project root is cached per process: an earlier test's project
+    # would answer for the directory each leg runs in.
+    reset_engine()
+    try:
+        shown, expected = drive(tmp_path, monkeypatch)
+    finally:
+        reset_engine()
 
     assert shown == expected
 

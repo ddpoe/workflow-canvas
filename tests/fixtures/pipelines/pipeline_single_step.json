@@ -1,10 +1,9 @@
 {
   "nodes": [
     {
-      "id": 1,
+      "id": "preprocess",
       "module": "demo_pipeline",
       "method": "preprocess",
-      "script": "methods/preprocess/preprocess.py",
       "params": {
         "normalize": true,
         "scale_factor": 1.0

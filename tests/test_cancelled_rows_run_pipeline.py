@@ -327,8 +327,9 @@ def test_hard_abort_writes_cancelled_rows_for_all_sample_descendants(
     purpose="A cancelled run's failure ending: the engine exits non-zero while "
             "the caller's cancellation probe answers true, so fail_pipeline is "
             "skipped and the in-flight row keeps its state, the walk still "
-            "writes the cancelled rows under the real failure, and "
-            "run_pipeline still raises the failure message (Tier 2).",
+            "writes a cancelled row with the user reason for every target "
+            "that never started, linking the real failure where there is "
+            "one, and run_pipeline still raises the failure message (Tier 2).",
 )
 def test_cancelled_run_keeps_its_rows_and_still_walks_and_raises(
     git_project, monkeypatch,
@@ -337,8 +338,9 @@ def test_cancelled_run_keeps_its_rows_and_still_walks_and_raises(
 
     The cancel handler owns row state once the probe answers true: the
     ending must not flip S2's in-flight A to failed. The walk and the raise
-    are unconditional, so S1's B still gets its cancelled row under S1's
-    failed A, and S2's B gets none (its ancestor is not a failure).
+    are unconditional, and after a user cancel every row the walk writes
+    carries the user reason: S1's B under S1's failed A, and S2's B with no
+    cause (its ancestor is in flight, not failed).
     """
     from wfc.execution import run_pipeline
 
@@ -376,14 +378,17 @@ def test_cancelled_run_keeps_its_rows_and_still_walks_and_raises(
     # row is untouched.
     assert a_s2_row.status == "running"
 
-    # The walk still ran: S1's B under S1's failed A, and nothing for S2,
-    # whose A is in flight rather than failed.
+    # The walk still ran: both samples' B, each with the user reason; S1's
+    # links S1's failed A, S2's links nothing, its A being in flight.
     cancelled_by_sample = {(r.sample, r.method_id): r for r in cancelled}
-    assert set(cancelled_by_sample) == {("S1", method_ids["method_b"])}, (
+    s1_b = ("S1", method_ids["method_b"])
+    s2_b = ("S2", method_ids["method_b"])
+    assert set(cancelled_by_sample) == {s1_b, s2_b}, (
         f"got {list(cancelled_by_sample)}"
     )
-    assert (cancelled_by_sample[("S1", method_ids["method_b"])]
-            .cancelled_due_to_run_id == a_s1_failed)
+    assert cancelled_by_sample[s1_b].cancelled_due_to_run_id == a_s1_failed
+    assert cancelled_by_sample[s2_b].cancelled_due_to_run_id is None
+    assert {r.cancel_reason for r in cancelled} == {"user"}
 
 
 @workflow(
@@ -474,6 +479,84 @@ def test_pack_counts_a_cache_hit_target_once_after_run_pipeline(git_project,
         f"the audit row above it, got {counted}"
     )
     assert fresh.rows_for_node("a", sample="S1", status="cancelled") == []
+
+
+#: The defaults both methods of the filled scenario declare; their nodes
+#: write only ``k``, so preparation and the claim fill the rest.
+_DECLARED_DEFAULTS = {"ratio": 0.5, "label": "base"}
+
+
+@workflow(
+    purpose="A pipeline whose params preparation filled with declared "
+            "defaults, cancelled partway by a failing upstream: the run rows "
+            "and the frozen document carry the same filled params, the walk "
+            "writes a cancelled row for every target the abort left, and no "
+            "target has two rows (Tier 3).",
+)
+def test_a_filled_pipeline_cancelled_partway_walks_every_target_once(
+    git_project, monkeypatch,
+):
+    """The hard abort over methods that declare defaults their nodes leave out.
+
+    The claim fills each run's params and run_pipeline freezes the prepared
+    document, so the walk's targets (read from the frozen document) and the
+    rows production wrote are keyed on one params dict.
+    """
+    from wfc import layout
+    from wfc.execution import run_pipeline
+
+    pid = "pipe-filled-abort-1"
+    filled = {"k": 1, **_DECLARED_DEFAULTS}
+
+    Step(step_num=1, name="Run the DAG until the abort catches S2's A in flight",
+         purpose="Both methods declare defaults their nodes leave out")
+    scenario = Scenario(
+        nodes=[
+            selector(),
+            node("a", method="method_a", inputs=[wire("sel")], params={"k": 1},
+                 param_defaults=_DECLARED_DEFAULTS,
+                 behavior_by_sample={"S1": exits(1)}),
+            node("b", method="method_b", inputs=[wire("a")], params={"k": 1},
+                 param_defaults=_DECLARED_DEFAULTS),
+        ],
+        samples=list(SAMPLES),
+        pipeline_id=pid,
+    )
+    obs = run_scenario(scenario, root=git_project, monkeypatch=monkeypatch,
+                       interrupted=A_S2, pipeline_end=False)
+    project = obs.project
+    assert obs.run_row(A_S1)["status"] == "failed"
+    assert obs.run_row(A_S2)["status"] == "running"
+
+    Step(step_num=2, name="run_pipeline with failing Snakemake",
+         purpose="The failure ending flips S2's A and walks the frozen document")
+    gen_patch, popen_patch = mocked_snakemake(1)
+    stub_docker_image_inspect(monkeypatch, _IMAGE_PRESENT)
+    with gen_patch, popen_patch:
+        with pytest.raises(RuntimeError, match="Snakemake pipeline failed"):
+            run_pipeline(
+                pipeline_path=str(project.pipeline_json),
+                project_root=str(project.root),
+                wfc_root=str(project.root),
+                pipeline_id=pid,
+            )
+
+    Step(step_num=3, name="One params dict, every target matched once",
+         purpose="The frozen nodes and every row carry the filled params; B is "
+                 "cancelled for both samples; invariant 1 finds no double row")
+    frozen = json.loads(layout.pipeline_doc_path(project.root, pid)
+                        .read_text(encoding="utf-8"))
+    assert {n["id"]: n.get("params") for n in frozen["nodes"]
+            if n["id"] in ("a", "b")} == {"a": filled, "b": filled}
+    with get_session() as s:
+        rows = s.exec(select(Run).where(Run.pipeline_id == pid)).all()
+    assert sorted((r.sample, r.status) for r in rows
+                  if r.method_id == project.method_ids["method_b"]) == [
+        ("S1", "cancelled"), ("S2", "cancelled")]
+    assert all(r.params == filled for r in rows), [(r.id, r.params) for r in rows]
+    report = observe_after_pipeline(obs).invariants
+    assert "single-run-record" in report.checked, report
+    assert report.failures == {}, report
 
 
 # =============================================================================

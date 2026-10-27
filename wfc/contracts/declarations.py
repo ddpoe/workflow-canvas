@@ -19,6 +19,7 @@ from pathlib import Path
 from axiom_annotations import task
 
 from .columns import validate_columns_block
+from .param_check import normalize_param_value
 from .slots import validate_output_slot_type, validate_slot_name
 from .vocabulary import PARAM_TYPE_ALIASES, PARAM_TYPES
 
@@ -79,7 +80,11 @@ def parse_method_yaml(method_dir: Path) -> dict | None:
     input/output slots and ``contents`` key on directory output slots are
     preserved as-is from the YAML.  A param's ``type`` is written back in
     its canonical spelling (``PARAM_TYPES``); an accepted alias resolves,
-    anything else is refused.
+    anything else is refused. A param's ``default`` is then normalized by
+    its type (``normalize_param_value``: an ``int``'s ``1.0`` is stored as
+    ``1``, a ``float``'s ``1`` as ``1.0``); a default the value rule refuses
+    is kept as written, so a registered version's contract stays readable
+    (registration refuses a new one through ``declared_default_refusals``).
 
     Args:
         method_dir: Directory that may contain ``method.yaml``.
@@ -117,8 +122,23 @@ def parse_method_yaml(method_dir: Path) -> dict | None:
             f"(build one with `wfc register-env <name>`)."
         )
 
-    inputs = raw.get("inputs", {})
-    outputs = raw.get("outputs", {})
+    # A slot or param block written with no value (``outputs:``) means none,
+    # as an absent one does; a non-empty block that is not a mapping is
+    # refused here naming the key, not by a crash wherever it is first read.
+    # An empty non-mapping (``params: []``) passes as written: a registered
+    # version may hold one, and its contract must stay readable.
+    blocks = {}
+    for key in ("inputs", "outputs", "params"):
+        block = raw.get(key)
+        if block is None:
+            block = {}
+        elif block and not isinstance(block, dict):
+            raise ValueError(
+                f"{yaml_path}: `{key}` must be a mapping of names to "
+                f"declarations, not {type(block).__name__}"
+            )
+        blocks[key] = block
+    inputs, outputs = blocks["inputs"], blocks["outputs"]
 
     # A slot NAME is carried through grammars with punctuation of their own --
     # the parent entry (input:output:run), --ref-input (label=path), argv. A
@@ -205,12 +225,23 @@ def parse_method_yaml(method_dir: Path) -> dict | None:
     # normalised to the canonical name and written back, so the stored
     # contract and everything downstream see only canonical names; anything
     # else is refused here, naming the parameter.
-    params = raw.get("params", {})
+    params = blocks["params"]
     if isinstance(params, dict):
         for param_name, param_spec in params.items():
             if isinstance(param_spec, dict) and "type" in param_spec:
                 param_spec["type"] = _canonical_param_type(
                     param_name, param_spec["type"], source=yaml_path
+                )
+            # A declared default takes its type's form by the one
+            # normalization documents get (an int's 1.0 is 1, a float's 1 is
+            # 1.0). A default the value rule refuses is kept as written:
+            # registration refuses it (declared_default_refusals), while
+            # refusing it here would make an already registered version's
+            # contract unreadable.
+            if isinstance(param_spec, dict) and "default" in param_spec:
+                param_spec["default"] = normalize_param_value(
+                    param_spec.get("type"), param_spec["default"],
+                    param_spec.get("constraints"),
                 )
 
     return {

@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "workflow-canvas"
-version = "0.6.1"
+version = "0.7.0"
 description = "Reproducible computational pipelines with containerized methods, content-addressed caching, run lineage, and a visual pipeline builder; compiles to Snakemake"
 authors = ["Dante <dantepoe@noboundssolutions.com>"]
 license = "BSD-3-Clause"
@@ -57,6 +57,8 @@ wfc-client = ">=0.2.0,<0.3.0"
 fastapi = ">=0.110"
 uvicorn = {version = ">=0.27", extras = ["standard"]}
 psutil = ">=5.9"
+# Environments reads a uv.lock's markers and wheel tags for the image's target.
+packaging = ">=23.0"
 # DVC's remote plugins, each behind its own extra (a local remote needs none).
 dvc-s3 = {version = "*", optional = true}
 dvc-ssh = {version = "*", optional = true}
@@ -71,7 +73,7 @@ azure = ["dvc-azure"]
 remotes = ["dvc-s3", "dvc-ssh", "dvc-gs", "dvc-azure"]
 
 [tool.poetry.group.dev.dependencies]
-axiom-graph = {version = "^2.4.1", extras = ["viz", "js"]}
+axiom-graph = {version = "^3.0.0", extras = ["viz", "js"]}
 pytest = ">=9.0.2,<10"
 pytest-html = ">=4.0"
 mkdocs = "^1.6.1"
@@ -82,6 +84,7 @@ ruff = ">=0.6"
 mypy = ">=1.11"
 types-pyyaml = "^6.0.12.20260906"
 types-psutil = "^7.2.2.20260906"
+pytest-xdist = "^3.8.0"
 
 [tool.poetry.group.docs.dependencies]
 sphinx = ">=8.0,<9.0"
@@ -106,10 +109,11 @@ testpaths = ["tests"]
 markers = [
     "slow: tests that invoke real subprocesses",
     "integration: marks tests as requiring Docker (deselect with -m 'not integration')",
+    "ghcr: pushes to GHCR; runs only in CI's ghcr job (select with -m ghcr)",
 ]
 addopts = [
     "--tb=short",
-    "-m", "not slow and not integration",
+    "-m", "not slow and not integration and not ghcr",
 ]
 
 # pytest-html report defaults (override with CLI flags)

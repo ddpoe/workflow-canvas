@@ -92,6 +92,89 @@ describe('EnvsSubTab packages panel — populated', () => {
   });
 });
 
+describe('EnvsSubTab packages panel — uv env', () => {
+  beforeEach(() => {
+    installFetch((url) => {
+      if (url.endsWith('/packages')) {
+        return {
+          spec: 'tools',
+          backend: 'uv',
+          captured: true,
+          packages: [{ name: 'requests', version: '2.32.3', source: 'uv' }],
+        };
+      }
+      return {
+        envs: [
+          {
+            spec: 'tools',
+            methods: ['net.fetch'],
+            backend: 'uv',
+            has_packages: true,
+            last_run_at: null,
+            run_count: 0,
+          },
+        ],
+      };
+    });
+  });
+
+  it('shows the uv backend chip and tags the packages with the uv source', async () => {
+    const { findByTestId, getByText } = render(EnvsSubTab, { props: { visible: true } });
+
+    const row = await findByTestId('env-row');
+    const chip = within(row).getByText('uv');
+    expect(chip).toHaveClass('chip-backend', 'backend-uv');
+
+    await fireEvent.click(row);
+    const panel = await findByTestId('packages-panel');
+    const pkg = within(panel).getByTestId('package-row');
+    expect(pkg).toHaveTextContent('requests==2.32.3');
+    expect(within(pkg).getByText('uv')).toHaveClass('pkg-source', 'src-uv');
+    expect(getByText('requests==2.32.3')).toBeInTheDocument();
+  });
+});
+
+describe('EnvsSubTab packages panel — refused package list', () => {
+  const detail =
+    ".wfc/captures/analysis/0a/packages.lock no longer matches env 'analysis''s record. " +
+    "env 'analysis''s capture files under .wfc/captures/analysis/0a/ were changed " +
+    'outside wfc. Register the env again under a new name: `wfc register-env <new-name> ...`';
+
+  beforeEach(() => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/packages')) {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({ detail }),
+          text: async () => JSON.stringify({ detail }),
+        } as unknown as Response;
+      }
+      return jsonResponse({
+        envs: [
+          {
+            spec: 'analysis',
+            methods: ['seg.segment'],
+            backend: 'pixi',
+            has_packages: true,
+            last_run_at: null,
+            run_count: 0,
+          },
+        ],
+      });
+    }) as unknown as typeof fetch;
+  });
+
+  it('shows the refusal detail naming the re-register command', async () => {
+    const { findByTestId, findByText } = render(EnvsSubTab, { props: { visible: true } });
+
+    await fireEvent.click(await findByTestId('env-row'));
+
+    await findByText(`HTTP 409: ${detail}`);
+  });
+});
+
 describe('EnvsSubTab packages panel — empty states', () => {
   let packagesCalls = 0;
 

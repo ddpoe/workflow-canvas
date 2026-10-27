@@ -8,9 +8,10 @@ Covers:
   - env content blob is retrievable from the DVC cache under the
     returned md5
   - Legacy Run rows (env_fingerprint NULL) still load
-  - Changing the env between two otherwise-identical pre_run calls
-    invalidates the cache (different env_fingerprint -> different
-    cache_key -> MISS)
+  - The key follows the method version's recorded env: changing the
+    env record alone keeps the existing version's key (CACHED);
+    registering the method again under the changed env mints a new
+    version (different env_fingerprint -> different cache_key -> MISS)
 """
 
 from __future__ import annotations
@@ -29,12 +30,13 @@ from wfc.environments.introspect import (
     conda_list_explicit,
 )
 from wfc.environments import get as _envs_get
-from wfc.persistence import Method, MethodVersion, Module, Run, Sample
+from wfc.persistence import Method, Module, Run
 # seed_sample_row, not create_sample_csv, deliberately: these tests compose
 # cache keys, where the row's content_hash IS the input under test.
 from tests.conftest import seed_sample_row
 from tests.fixtures.conftest import write_env_record
 from tests.fixtures.fakes import stub_cache_writers
+from tests.fixtures.routes import register_test_method, sample_source_dir
 from wfc.identity import build_cache_key
 from wfc.storage import store_env_content
 from wfc.environments.fingerprint import capture_env_content
@@ -48,16 +50,17 @@ from wfc.environments.fingerprint import capture_env_content
             "on DVC cache failures"
 )
 def test_store_env_content_temp_cleanup_on_exception(tmp_path, monkeypatch):
-    """Patch cache_file to raise; verify no leftover wfc-env-* temp files."""
-    口 = Step(step_num=1, name="Record initial temp-file snapshot",
-             purpose="Capture the set of wfc-env-* files before the call")
-    import tempfile
-    tmpdir = Path(tempfile.gettempdir())
-    before = {p.name for p in tmpdir.glob("wfc-env-*")}
+    """Patch cache_file to raise; verify the temp file it was handed is gone."""
+    口 = Step(step_num=1, name="Record the temp file the cache write is handed",
+             purpose="The one temp file store_env_content wrote is the one "
+                     "cache_file receives; the shared tmpdir is not scanned, "
+                     "since other workers write wfc-env-* files there too")
+    handed: list[Path] = []
 
     口 = Step(step_num=2, name="Patch cache_file to raise",
              purpose="Force the error path inside store_env_content")
-    def boom(*a, **kw):
+    def boom(path, *a, **kw):
+        handed.append(Path(path))
         raise RuntimeError("cache write failed")
 
     # store_env_content imports cache_file at call time; patch its home.
@@ -68,9 +71,8 @@ def test_store_env_content_temp_cleanup_on_exception(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="cache write failed"):
         store_env_content("some env blob content", tmp_path)
 
-    after = {p.name for p in tmpdir.glob("wfc-env-*")}
-    leaked = after - before
-    assert not leaked, f"Leaked temp files: {leaked}"
+    assert handed, "the cache write was reached with the temp file"
+    assert not handed[0].exists(), f"Leaked temp file: {handed[0]}"
 
 
 # =============================================================================
@@ -131,20 +133,16 @@ def test_build_cache_key_env_fingerprint_sensitivity():
 )
 def test_legacy_null_env_fingerprint_run_loads(tmp_project):
     """Insert a Run with env_fingerprint unset; read it back and verify NULL."""
-    口 = Step(step_num=1, name="Seed a minimal Module+Method and Run",
-             purpose="Legacy-shaped Run row (env_fingerprint field omitted)")
+    口 = Step(step_num=1, name="Register a method and type a legacy Run",
+             purpose="Legacy-shaped Run row (env_fingerprint field omitted); "
+                     "the method is registered through production")
+    method_id = _register_env_method(tmp_project, module_name="legacy_mod",
+                                     method_name="legacy_method")
     with get_session() as session:
-        mod = Module(name="legacy_mod", description="legacy")
-        session.add(mod)
-        session.commit()
-        session.refresh(mod)
-        method = Method(name="legacy_method", module_id=mod.id, env="container:demo")
-        session.add(method)
-        session.commit()
-        session.refresh(method)
-        # Insert without env_fingerprint (Pydantic default = None)
+        # A Run row with env_fingerprint unset (Pydantic default = None): a
+        # shape no current claim writes, so it stays typed.
         run = Run(
-            method_id=method.id,
+            method_id=method_id,
             sample="s1",
             status="completed",
             cache_key="c" * 64,
@@ -167,55 +165,63 @@ def test_legacy_null_env_fingerprint_run_loads(tmp_project):
 # Integration: env change invalidates cache
 # =============================================================================
 
-def _seed_env_method(module_name="envfp_mod", method_name="envfp_method"):
-    """Seed a minimal Module + Method (env='container:demo') and return method.id."""
+def _register_env_method(project_dir, module_name="envfp_mod",
+                         method_name="envfp_method",
+                         env_digest="a" * 64) -> int:
+    """Register a minimal method on the 'demo' env through production.
+
+    The source is written beside the project and registered, so the claim
+    finds a registered snapshot and version. The 'demo' env is recorded
+    first (registration resolves the method's env against the manifest).
+    Script and contract are held fixed: this module drives the ENV axis.
+
+    Args:
+        project_dir: The project root.
+        module_name: The method's module.
+        method_name: The method's name.
+        env_digest: The image digest the 'demo' env record is written with;
+            a different digest is a different env state.
+
+    Returns:
+        The registered ``Method.id``.
+    """
+    project_dir = Path(project_dir)
+    write_env_record(project_dir, "demo", digest=env_digest)
+    src = sample_source_dir(project_dir) / "_methods" / module_name / method_name
+    src.mkdir(parents=True, exist_ok=True)
+    (src / f"{method_name}.py").write_text("def main():\n    pass\n")
+    (src / "method.yaml").write_text(
+        "env: demo\n"
+        "inputs:\n  data:\n    required: false\n"
+        "outputs:\n  result:\n    type: .csv\n"
+        # The claims in this module pass these; a claim's parameter check
+        # refuses a parameter its method does not declare.
+        "params:\n  alpha:\n    type: int\n  k:\n    type: int\n"
+    )
+    register_test_method(project_dir=project_dir, module_name=module_name,
+                         method_dir=src, method_name=method_name)
     with get_session() as session:
-        mod = Module(name=module_name, description="env fp test")
-        session.add(mod)
-        session.commit()
-        session.refresh(mod)
-        method = Method(
-            name=method_name, module_id=mod.id, env="container:demo",
-            script_path=f"methods/{method_name}/run.py",
-        )
-        session.add(method)
-        session.commit()
-        session.refresh(method)
-        return method.id
-
-
-def _ensure_method_source(project_dir, method_name="envfp_method"):
-    method_dir = Path(project_dir) / "methods" / method_name
-    method_dir.mkdir(parents=True, exist_ok=True)
-    script = method_dir / f"{method_name}.py"
-    if not script.exists():
-        script.write_text("def main():\n    pass\n")
-    # The registered copy's contract is the other half of the method's code
-    # identity, so a registered copy without one is refused at fingerprint
-    # time. It is held fixed here: this module drives the ENV axis.
-    contract = method_dir / "method.yaml"
-    if not contract.exists():
-        contract.write_text(
-            "env: demo\n"
-            "inputs:\n  data:\n    required: false\n"
-            "outputs:\n  result:\n    type: .csv\n"
-        )
+        return session.exec(
+            select(Method.id).join(Module).where(
+                Module.name == module_name, Method.name == method_name)
+        ).one()
 
 
 @workflow(
-    purpose="Two otherwise-identical pre_run calls with different env content "
-            "yield different env_fingerprint and different cache_key; the "
-            "second call is a MISS, not a CACHED hit"
+    purpose="The cache key follows the method version's recorded env "
+            "fingerprint: changing the live env record alone leaves an "
+            "existing version's key unchanged (CACHED), and registering the "
+            "method again under the changed env mints a new version whose "
+            "run is a MISS under a different key"
 )
 def test_env_change_invalidates_cache(tmp_project, monkeypatch):
-    """Integration: pre_run under two 'envs' -> distinct cache_keys and MISS."""
+    """pre_run keys on the version's env: unchanged until re-registration."""
     from wfc.execution.claim import pre_run
 
     口 = Step(step_num=1, name="Seed method, source, and a real 'demo' env",
              purpose="Method env='container:demo' resolves through the real manifest "
                      "branch — env_fingerprint comes from the registered record verbatim")
-    _seed_env_method()
-    _ensure_method_source(tmp_project)
+    _register_env_method(tmp_project)
     seed_sample_row("s_env")
     # Register a real container env 'demo' so resolve_env_fingerprint reads its
     # precomputed env_fingerprint verbatim (the manifest short-circuit).
@@ -256,13 +262,33 @@ def test_env_change_invalidates_cache(tmp_project, monkeypatch):
     from wfc.layout import run_archive_dir
     run_archive_dir(get_project_root(), run_id_1).mkdir(parents=True, exist_ok=True)
 
-    口 = Step(step_num=3, name="Re-register env 'B' and second pre_run",
-             purpose="A different env digest -> different env_fingerprint -> MISS")
-    # Overwrite 'demo' with a new digest == env state B. The manifest branch now
-    # resolves a different env_fingerprint, so the second run must MISS.
+    口 = Step(step_num=3, name="Change env 'demo' to state B without re-registering",
+             purpose="The method's version recorded env A; the live env record "
+                     "alone does not change that version's key -> CACHED")
+    # Overwrite 'demo' with a new digest == env state B. The existing version
+    # still records env A's fingerprint, and the key is composed from the
+    # version, so the same request is a cache hit under env A's key.
     write_env_record(tmp_project, "demo", digest="b" * 64)
     demo_fp_b = _envs_get("demo", tmp_project).env_fingerprint
     assert demo_fp_b != demo_fp_a
+    flag_same, audit_id = pre_run(
+        method_name="envfp_method",
+        module_name="envfp_mod",
+        sample="s_env",
+        params={"alpha": 1},
+        git_commit=commit,
+    )
+    assert flag_same == "CACHED"
+    with get_session() as session:
+        audit = session.get(Run, audit_id)
+    assert audit.cache_source_run_id == run_id_1
+    assert audit.env_fingerprint == env_fp_a
+    assert audit.cache_key == cache_key_a
+
+    口 = Step(step_num=4, name="Register the method again and second pre_run",
+             purpose="Registering under env B mints a new version recording "
+                     "env B's fingerprint -> different cache_key -> MISS")
+    _register_env_method(tmp_project, env_digest="b" * 64)
     flag_2, run_id_2 = pre_run(
         method_name="envfp_method",
         module_name="envfp_mod",
@@ -271,9 +297,9 @@ def test_env_change_invalidates_cache(tmp_project, monkeypatch):
         git_commit=commit,
     )
 
-    口 = Step(step_num=4, name="Verify cache MISS and distinct fingerprints",
-             purpose="Second run must be NEW (not CACHED); env_fingerprint "
-                     "and cache_key must differ from the first run")
+    口 = Step(step_num=5, name="Verify cache MISS and distinct fingerprints",
+             purpose="The new version's run is NEW (not CACHED); env_fingerprint "
+                     "and cache_key differ from the first run")
     assert flag_2 == "NEW"
     assert run_id_2 != run_id_1
     with get_session() as session:
@@ -296,8 +322,7 @@ def test_env_fingerprint_persisted_on_cached_audit_row(tmp_project, monkeypatch)
     from wfc.persistence import project_root as get_project_root
     from wfc.layout import run_archive_dir
 
-    _seed_env_method()
-    _ensure_method_source(tmp_project)
+    _register_env_method(tmp_project)
     seed_sample_row("s_stable")
 
     # Register a real 'demo' env; both calls resolve the same manifest

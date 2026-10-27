@@ -17,6 +17,7 @@
   import MethodPanel from './MethodPanel.svelte';
   import { stripOrphanOverrides, type OrphanRequest } from './nodeEdits.js';
   import { RenderTick } from './renderTick.svelte.js';
+  import { nodeVersion, undeclaredParams, versionSwitch, versionTitle, withoutParam } from '../builder/nodeData.js';
 
   // The canvas `nodes` store, whose deep field changes `updateNodeData`
   // makes in place (see `data` below). `renderTick.svelte.ts` owns the
@@ -39,6 +40,24 @@
   function handleDeleteNode() {
     if (!node) return;
     deleteNodes([node.id]);
+  }
+
+  /**
+   * Run the version the dropdown names: the newest clears the pin, an older
+   * one sets it. The node draws that version's contract; a value it does
+   * not declare stays, flagged, until the user removes it.
+   */
+  function switchVersion(label: string) {
+    if (!node || !data) return;
+    const picked = data.versions?.find(v => String(v.label) === label);
+    if (!picked) return;
+    updateNodeData(node.id, versionSwitch(data, picked.identity));
+  }
+
+  /** Remove a parameter the node's version does not declare. */
+  function removeParam(name: string) {
+    if (!node || !data) return;
+    updateNodeData(node.id, withoutParam(data, name));
   }
 
   // ── Orphan-override confirmation on sample removal ──
@@ -81,21 +100,55 @@
 
 <div class="inspector">
   {#if data}
-    <!-- Header -->
-    <div class="inspector-header">
-      <div class="inspector-header-text">
-        <span class="inspector-title">{data.label}</span>
-        {#if data.nodeType === 'input_selector' || data.nodeType === 'run_reference'}
-          <span class="inspector-module system-label">
+    <!-- Header: the node's own colour, its name, what it runs, and Delete -->
+    {@const isSystem = data.nodeType === 'input_selector' || data.nodeType === 'run_reference'}
+    {@const running = isSystem ? undefined : nodeVersion(data)}
+    <div class="inspector-header" class:system-header={isSystem}
+      style={isSystem ? '' : `background: ${data.color};`}>
+      <span class="inspector-title">{data.label}</span>
+      {#if !isSystem}
+        <div class="inspector-meta">
+          <span class="meta-chip"><span class="meta-key">Module</span><span class="meta-val">{data.module}</span></span>
+          {#if running?.env}
+            <span class="meta-chip"><span class="meta-key">Env</span><span class="meta-val">{running.env}</span></span>
+          {/if}
+        </div>
+      {/if}
+      <div class="inspector-action-row">
+        {#if isSystem}
+          <span class="system-label">
             {data.nodeType === 'input_selector' ? 'Input Selector' : 'Run Reference'}
           </span>
-        {:else}
-          <span class="inspector-module">{data.module}{data.version ? ' · v' + data.version : ''}</span>
+        {:else if data.versions?.length}
+          <span class="version-tag" class:version-tag-newest={running?.newest}>
+            <i class="version-dot"></i>
+            <span class="version-label">{running ? `v${running.label}` : 'unregistered'}</span>
+            {#if running}
+              <span class="version-state">{running.newest ? 'latest' : 'pinned'}</span>
+            {/if}
+            <span class="version-caret" aria-hidden="true">&#9660;</span>
+            <select
+              class="inspector-version"
+              title={versionTitle(data)}
+              value={running ? String(running.label) : ''}
+              onchange={(e) => switchVersion((e.currentTarget as HTMLSelectElement).value)}
+            >
+              {#if !running}
+                <option value="" disabled>unregistered version</option>
+              {/if}
+              {#each data.versions as v (v.label)}
+                <option value={String(v.label)}>v{v.label}</option>
+              {/each}
+            </select>
+          </span>
         {/if}
+        <button class="inspector-delete-btn" onclick={handleDeleteNode} title="Delete node" aria-label="Delete node">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>
+          </svg>
+        </button>
       </div>
-      <button class="inspector-delete-btn" onclick={handleDeleteNode} title="Delete node">
-        &#128465;
-      </button>
     </div>
 
     {#if data.nodeType === 'input_selector'}
@@ -103,6 +156,18 @@
     {:else if data.nodeType === 'run_reference'}
       <RunReferencePanel {node} {data} />
     {:else}
+      {@const undeclared = undeclaredParams(data)}
+      {#if undeclared.length}
+        {@const label = nodeVersion(data)?.label}
+        <ul class="undeclared-params">
+          {#each undeclared as name (name)}
+            <li class="undeclared-param">
+              <span><code>{name}</code> is not in v{label}, remove it</span>
+              <button class="undeclared-remove" onclick={() => removeParam(name)}>Remove</button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
       <MethodPanel {node} {data} />
     {/if}
   {:else}
@@ -176,49 +241,164 @@
     overflow: hidden;
   }
   .inspector-header {
-    padding: 10px 12px;
+    padding: 12px 12px 10px;
     background: #2d2d30;
     border-bottom: 1px solid var(--border);
     display: flex;
-    align-items: center;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .inspector-title {
+    color: #fff;
+    font-size: 17px;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+  }
+  .inspector-meta {
+    display: flex;
+    flex-wrap: wrap;
     gap: 6px;
   }
-  .inspector-header-text {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    flex: 1;
-    min-width: 0;
-  }
-  .inspector-delete-btn {
-    background: none;
-    border: 1px solid transparent;
+  .meta-chip {
+    display: inline-flex;
+    align-items: center;
+    height: 20px;
+    background: rgba(0, 0, 0, 0.35);
     border-radius: 3px;
-    color: #666;
-    font-size: 16px;
-    cursor: pointer;
-    padding: 2px 4px;
+    overflow: hidden;
+    font-size: 11px;
+    max-width: 100%;
+  }
+  .meta-key {
+    color: rgba(255, 255, 255, 0.6);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 0 6px;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    background: rgba(0, 0, 0, 0.25);
+  }
+  .meta-val {
+    color: #fff;
+    padding: 0 7px;
+    font-family: Consolas, monospace;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  /* The version picker on the left, Delete pushed right; both 24px tall so
+     their tops and bottoms line up. */
+  .inspector-action-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+  }
+  .version-tag {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 24px;
+    box-sizing: border-box;
+    padding: 0 8px;
+    background: rgba(0, 0, 0, 0.5);
+    color: #eee;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .version-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
     flex-shrink: 0;
-    line-height: 1;
+    background: #F5D547;
+  }
+  .version-tag-newest .version-dot { background: #7CFC9A; }
+  .version-tag:focus-within {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  /* The native select stays (keyboard and screen readers) and covers the
+     whole tag, invisible, so a click anywhere on the tag opens it; the spans
+     beneath draw what it shows. */
+  .inspector-version {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    opacity: 0;
+    cursor: pointer;
+    font: inherit;
+  }
+  .inspector-version option { background: #1e1e1e; color: #ccc; }
+  .version-state { color: #aaa; font-weight: 400; font-size: 10px; }
+  .version-tag-newest .version-state { color: #9fd9b3; }
+  .version-caret { color: #888; font-size: 9px; }
+  .inspector-delete-btn {
+    margin-left: auto;
+    width: 24px;
+    height: 24px;
+    box-sizing: border-box;
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    border-radius: 4px;
+    color: #fff;
+    cursor: pointer;
+    padding: 0;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
   .inspector-delete-btn:hover {
-    color: #E74C3C;
+    color: #fff;
     border-color: #E74C3C;
-    background: rgba(231, 76, 60, 0.1);
+    background: #E74C3C;
   }
-  .inspector-title { color: #ccc; font-size: 14px; font-weight: 600; }
-  .inspector-module { color: #666; font-size: 11px; }
+  .undeclared-params {
+    list-style: none;
+    margin: 0;
+    padding: 6px 12px;
+    background: rgba(231, 76, 60, 0.1);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .undeclared-param {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    color: #E74C3C;
+    font-size: 11px;
+    padding: 2px 0;
+  }
+  .undeclared-remove {
+    background: none;
+    border: 1px solid #E74C3C;
+    border-radius: 3px;
+    color: #E74C3C;
+    font-size: 11px;
+    cursor: pointer;
+    padding: 1px 6px;
+  }
   .no-selection {
     padding: 20px 10px;
     text-align: center;
     color: #666;
     font-size: 13px;
   }
-  /* System node inspector styles */
+  /* System node inspector styles: the header takes the system node's own
+     gradient, as its canvas card does. */
+  .system-header {
+    background: linear-gradient(135deg, var(--color-system), #16A085);
+  }
   .system-label {
-    color: var(--color-system) !important;
+    color: rgba(255, 255, 255, 0.85);
     text-transform: uppercase;
-    font-size: 10px !important;
+    font-size: 10px;
     letter-spacing: 0.5px;
   }
   /* ── Orphan-override confirmation modal ── */

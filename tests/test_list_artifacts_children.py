@@ -5,7 +5,7 @@ it the caret flips but the dropdown renders nothing.
 
 Seeding goes through Run/RunOutput rows + the real archive pass (the cache
 is authoritative — ``list_artifacts`` resolves outputs from the
-DVC cache, not from ``.runs/`` archive directories).
+DVC cache, not from ``.wfc/runs/`` archive directories).
 """
 
 from pathlib import Path
@@ -29,7 +29,10 @@ def test_directory_artifact_has_direct_children(tmp_path, monkeypatch):
 
     # Stage outputs: a top-level file + a directory with mixed children:
     # file + subdir + dotfile (skipped in the children listing).
-    staging = project_root / "staging"
+    # Where collect writes a run's outputs: its run archive (the database is
+    # fresh, so the one run below is run 1).
+    from wfc.layout import run_archive_dir
+    staging = run_archive_dir(project_root, 1)
     sub = staging / "tiles"
     (sub / "nested").mkdir(parents=True)
     # A directory's content is its files, so an empty subdirectory is not
@@ -54,6 +57,7 @@ def test_directory_artifact_has_direct_children(tmp_path, monkeypatch):
         session.add(run)
         session.commit()
         session.refresh(run)
+        assert run.id == 1
         session.add(RunOutput(
             run_id=run.id, slot="tiles", output_name="tiles",
             artifact_path=str(sub), artifact_type="method_directory",

@@ -2,8 +2,10 @@
 
 Every reader selects a run's output by the contract slot it fills, and every
 reader goes through one record-validity check: each output record must carry
-its slot, and a run with an output record that does not has a malformed
-record (:class:`MalformedRecordError`), named with the run to re-run.
+its slot and, until it is archived, record a path inside its run's archive
+(``layout.run_archive_dir``); a run with an output record that does not has
+a malformed record (:class:`MalformedRecordError`), named with the run to
+re-run.
 
 - :func:`output_location` is the one answer to "where are this output's
   bytes": ``local`` (a complete cache entry, or a pre-archive row's
@@ -22,6 +24,9 @@ record (:class:`MalformedRecordError`), named with the run to re-run.
 - :func:`exportable_outputs` is ``wfc export --all``'s slice: the same
   enumeration, resolved strictly — a run with no rows is a typed refusal
   rather than a skip, because a partial export is worse than none.
+  :func:`output_listing` is the same enumeration unresolved: ``wfc export``
+  with no slot lists it. :func:`output_records` returns the records
+  themselves, for a run bundle's plan.
 - :func:`output_export_name` names one output for a user: the row's output
   name carrying the artifact's suffix.  :func:`output_export_names` names
   all of a run's outputs at once, placing names two outputs share under
@@ -44,25 +49,29 @@ from pathlib import Path
 from axiom_annotations import Step, task
 from sqlmodel import select
 
-from ..persistence import Method, Run, RunOutput, get_session
+from ..layout import run_archive_dir
+from ..persistence import Method, OutputIntegrity, PushStatus, Run, RunOutput, get_session
 from ..persistence import project_root as get_project_root
 from .cache import (
+    ChangedEntryError,
     MalformedEntryError,
+    ResolveOutputError,
     _cache_path,
-    _make_read_only,
+    changed_objects,
+    changed_phrase,
     check_entry_shape,
+    entry_changes,
     entry_is_complete,
     entry_is_local,
     local_path,
     manifest_members,
     output_repair,
+    protect_entry,
+    set_aside,
 )
+from .integrity import CHANGED, check_output, inputs_setting, mark_changed
 
 logger = logging.getLogger(__name__)
-
-
-class ResolveOutputError(Exception):
-    """Base error for :func:`resolve_output` — correct bytes or a clear error."""
 
 
 class UnknownRunError(ResolveOutputError):
@@ -143,66 +152,130 @@ def _source_output_rows(session, run: Run) -> list[RunOutput]:
     return list(rows)
 
 
-def _records_without_slot(rows: Sequence[RunOutput]) -> list:
-    """The records that break the record-validity rule: the ones with no slot.
+def outside_run_archive(row: RunOutput, project_dir: Path) -> bool:
+    """Whether a pre-archive record's path lies outside its run's archive.
 
-    The rule's one test, shared by the check that raises and the predicate
-    the cache lookup asks.
+    A record the archive pass has not reached (no content hash) is read from
+    the path it records, and collect records every output inside its run's
+    archive directory (``layout.run_archive_dir``).  A recorded path that
+    resolves anywhere else (an old ``.runs/`` tree, another project, a hand
+    edit) names bytes wfc does not own.  Both sides are resolved first, so
+    ``..`` segments and, on Windows, letter case cannot carry a path out or
+    keep one in.  An archived record is never outside: its bytes come from
+    the cache.  A record that names no path is not outside either; it is
+    missing.
+
+    Args:
+        row: An output record.
+        project_dir: The project root; relative recorded paths are anchored
+            at it, as :func:`run_archive_path` anchors them.
+
+    Returns:
+        True when the record is pre-archive and its path is not inside
+        ``run_archive_dir(project_dir, row.run_id)``.
+    """
+    if row.content_hash:
+        return False
+    path = run_archive_path(row, project_dir)
+    if path is None:
+        return False
+    archive =run_archive_dir(Path(project_dir), row.run_id).resolve()
+    return archive not in path.resolve().parents
+
+
+def _records_at_fault(rows: Sequence[RunOutput], project_dir: Path) -> list:
+    """The records that break the record-validity rule.
+
+    A record breaks it when it carries no slot, or when it has not been
+    archived and its recorded path lies outside its run's archive
+    (:func:`outside_run_archive`).  The rule's one test, shared by the
+    check that raises, the predicate the cache lookup asks, and the archive
+    pass.
 
     Args:
         rows: A run's output records.
+        project_dir: The project root.
 
     Returns:
         The record ids at fault, in row order.
     """
-    return [r.id for r in rows if r.slot is None]
+    return [
+        r.id for r in rows
+        if r.slot is None or outside_run_archive(r, project_dir)
+    ]
 
 
-def _check_records(session, run: Run, rows: Sequence[RunOutput]) -> None:
-    """Apply the record-validity rule: every output record carries its slot.
+def malformed_record_message(session, run: Run) -> str:
+    """The record-validity rule's user sentence: the run, its method, the re-run.
 
-    The one place the rule and its error live.  A run with no records passes
-    (its readers report "no recorded outputs").  A run with a record that
-    lacks a slot logs the records at fault and raises the user sentence.
+    Args:
+        session: Open DB session (for the run's method name).
+        run: The run whose record is malformed.
+
+    Returns:
+        The sentence :class:`MalformedRecordError` carries.
+    """
+    method = session.get(Method, run.method_id) if run.method_id else None
+    method_name = method.name if method is not None else "unknown method"
+    return f"Run {run.id} ({method_name}) has a malformed record; re-run it."
+
+
+def _check_records(
+    session, run: Run, rows: Sequence[RunOutput], project_dir: Path | None = None
+) -> None:
+    """Apply the record-validity rule to a run's output records.
+
+    Every output record carries its slot, and a record the archive pass has
+    not reached records a path inside its run's archive.  The one place the
+    rule and its error live.  A run with no records passes (its readers
+    report "no recorded outputs").  A run with a record at fault logs the
+    records at fault and raises the user sentence.
 
     Args:
         session: Open DB session (for the run's method name).
         run: The run the reader asked about.
         rows: The records read for it (after any audit hop).
+        project_dir: The project root; defaults to the configured one.
 
     Raises:
-        MalformedRecordError: A record lacks a slot.
+        MalformedRecordError: A record lacks a slot, or a pre-archive
+            record's path lies outside its run's archive.
     """
-    lacking = _records_without_slot(rows)
-    if not lacking:
+    if not rows:
         return
-    method = session.get(Method, run.method_id) if run.method_id else None
-    method_name = method.name if method is not None else "unknown method"
+    root = Path(project_dir) if project_dir is not None else get_project_root()
+    at_fault = _records_at_fault(rows, root)
+    if not at_fault:
+        return
+    message = malformed_record_message(session, run)
     logger.error(
-        "Run %s (%s): output records %s of run %s carry no slot; every output "
-        "record must name the slot it fills",
-        run.id, method_name, lacking, rows[0].run_id,
+        "%s Output records %s of run %s are malformed: every output record "
+        "must name the slot it fills, and until it is archived its path must "
+        "lie inside its run's archive %s",
+        message, at_fault, rows[0].run_id, run_archive_dir(root, rows[0].run_id),
     )
-    raise MalformedRecordError(
-        f"Run {run.id} ({method_name}) has a malformed record; re-run it."
-    )
+    raise MalformedRecordError(message)
 
 
-def _checked_output_rows(session, run: Run) -> list[RunOutput]:
+def _checked_output_rows(
+    session, run: Run, project_dir: Path | None = None
+) -> list[RunOutput]:
     """A run's output records after the audit hop, under the record-validity rule.
 
     Args:
         session: Open DB session.
         run: The run whose outputs are read.
+        project_dir: The project root; defaults to the configured one.
 
     Returns:
         The records every reader selects from.
 
     Raises:
-        MalformedRecordError: A record lacks a slot.
+        MalformedRecordError: A record lacks a slot, or a pre-archive
+            record's path lies outside its run's archive.
     """
     rows = _source_output_rows(session, run)
-    _check_records(session, run, rows)
+    _check_records(session, run, rows, project_dir)
     return rows
 
 
@@ -246,7 +319,8 @@ def has_malformed_output_records(run_id: int, *, session=None) -> bool:
     """Whether a run's output records fail the record-validity rule.
 
     The rule the readers enforce, as a predicate: the run (after a cache-hit
-    audit hop) has output records and at least one lacks a slot.  A run
+    audit hop) has output records and at least one lacks a slot or, not yet
+    archived, records a path outside its run's archive.  A run
     that does not exist, or has no records, is not malformed.
 
     Args:
@@ -262,7 +336,10 @@ def has_malformed_output_records(run_id: int, *, session=None) -> bool:
     run = session.get(Run, run_id)
     if run is None:
         return False
-    return bool(_records_without_slot(_source_output_rows(session, run)))
+    rows = _source_output_rows(session, run)
+    if not rows:
+        return False
+    return bool(_records_at_fault(rows, get_project_root()))
 
 
 #: Where one run output's bytes can be read from (:func:`output_location`).
@@ -271,7 +348,7 @@ OUTPUT_REMOTE = "remote"
 OUTPUT_MISSING = "missing"
 
 
-def _run_archive_path(row: RunOutput, project_dir: Path) -> Path | None:
+def run_archive_path(row: RunOutput, project_dir: Path) -> Path | None:
     """The run-archive path of a record the archive pass has not reached.
 
     Relative recorded paths are resolved against the project root, so the
@@ -290,7 +367,7 @@ def _run_archive_path(row: RunOutput, project_dir: Path) -> Path | None:
     return artifact if artifact.is_absolute() else project_dir / artifact
 
 
-def output_location(row: RunOutput, project_dir: Path) -> str:
+def output_location(row: RunOutput, project_dir: Path, setting: str | None = None) -> str:
     """Place one output record: ``local``, ``remote`` or ``missing``.
 
     The one answer to "where are this output's bytes", read by the hit rule
@@ -300,41 +377,135 @@ def output_location(row: RunOutput, project_dir: Path) -> str:
 
     An archived record (it has a content hash) is local exactly when its
     cache entry is complete (``cache.entry_is_complete``: a file's object,
-    or a directory's manifest and every member), and remote when it is not
-    local but recorded pushed. A record the archive pass has not reached
-    (no content hash) is local when its recorded run-archive path exists; it
-    is never remote, because a push needs a hash. ``local`` therefore
+    or a directory's manifest and every member) and Storage's one integrity
+    check finds it unchanged (a stamp's stat fields, or a re-hash), and
+    remote when it is not local, or changed, but recorded pushed. A changed
+    entry never pushed is missing. A record the archive pass has not reached
+    (no content hash) is local when its run-archive output is what collect
+    recorded (Storage's check against collect's stat record and, under
+    ``hash``, its collect hash); a changed output marks the row and is
+    missing, and a marked row is missing without a check. It is never
+    remote, because a push needs a hash, and it is missing when its
+    path lies outside its run's archive (a malformed record, which the
+    readers refuse), so the hit rule never serves it. ``local`` therefore
     combines the DVC cache and the run archive on purpose.
 
-    A presence probe only: it builds no checkout, pulls nothing and does no
-    network I/O. A malformed cache entry (a directory tree at an unsuffixed
-    address) is ``missing`` here, so the hit rule reports the step's
-    outputs missing and the step re-runs; the reader refuses it loudly.
+    A probe only: it builds no checkout, pulls nothing and does no network
+    I/O; the integrity check reads bytes only when the stat fields do not
+    vouch (or always under ``[integrity] inputs = "hash"``). A malformed
+    cache entry (a directory tree at an unsuffixed address) is ``missing``
+    here, so the hit rule reports the step's outputs missing and the step
+    re-runs; the reader refuses it loudly.
 
     Args:
         row: The output record.
         project_dir: The project root whose DVC cache and run archive are
             consulted.
+        setting: ``[integrity] inputs``; the project's when None.
 
     Returns:
         ``OUTPUT_LOCAL``, ``OUTPUT_REMOTE`` or ``OUTPUT_MISSING``.
     """
-    from ..persistence import PushStatus
-
     if not row.content_hash:
-        path = _run_archive_path(row, project_dir)
-        return OUTPUT_LOCAL if path is not None and path.exists() else OUTPUT_MISSING
-    if entry_is_local(project_dir, row.content_hash):
-        return OUTPUT_LOCAL
+        if outside_run_archive(row, project_dir):
+            # A malformed record: its bytes are not wfc's to serve.
+            return OUTPUT_MISSING
+        return _pre_archive_location(row, project_dir, setting)
+    location, _changed = _archived_location(row, project_dir, setting)
+    return location
+
+
+def _is_marked_changed(row: RunOutput) -> bool:
+    """Whether a row carries the one-way ``changed`` mark."""
+    return row.integrity_status == OutputIntegrity.changed.value
+
+
+def _pre_archive_location(row: RunOutput, project_dir: Path,
+                          setting: str | None = None) -> str:
+    """Place a record the archive pass has not reached: its run-archive output.
+
+    A row marked changed is missing without a check. Otherwise the output
+    goes through Storage's check against what collect recorded
+    (``integrity.check_output``): intact is local; changed marks the row
+    (compare-and-set, one-way) and is missing, so the hit rule's
+    ``outputs_missing`` re-runs the step. The row's stat fields are never
+    rewritten here.
+
+    Args:
+        row: A pre-archive output record inside its run's archive.
+        project_dir: The project root.
+        setting: ``[integrity] inputs``; the project's when None.
+
+    Returns:
+        ``OUTPUT_LOCAL`` or ``OUTPUT_MISSING``.
+    """
+    if _is_marked_changed(row):
+        return OUTPUT_MISSING
+    path = run_archive_path(row, project_dir)
+    if path is None:
+        return OUTPUT_MISSING
+    verdict = check_output(row, path, project_dir, setting)
+    if verdict.status == CHANGED:
+        mark_changed(row)
+        return OUTPUT_MISSING
+    return OUTPUT_LOCAL if verdict.intact else OUTPUT_MISSING
+
+
+def _archived_location(row: RunOutput, project_dir: Path,
+                       setting: str | None = None) -> tuple[str, list[str]]:
+    """Place an archived record, and name the local objects that changed.
+
+    A complete local entry is local when the one integrity check finds what
+    its read would serve intact (``cache.entry_changes``: a file's object,
+    or a directory's checkout and, when that is not intact, its objects).
+    A changed entry is remote when recorded pushed (its reader pulls it
+    again) and missing otherwise. An entry that is not local is remote when
+    recorded pushed. A malformed entry is missing.
+
+    Args:
+        row: An archived output record.
+        project_dir: The project root.
+        setting: ``[integrity] inputs``; the project's when None.
+
+    Returns:
+        ``(location, changed objects)``.
+    """
+    content_hash = row.content_hash
+    assert content_hash is not None, "callers pass an archived record"
+    return _entry_location(project_dir, content_hash,
+                           row.push_status == PushStatus.pushed.value, setting)
+
+
+def _entry_location(project_dir: Path, content_hash: str, pushed: bool,
+                    setting: str | None = None) -> tuple[str, list[str]]:
+    """Place one cache entry by its hash, and name the local objects that changed.
+
+    The rule :func:`_archived_location` applies to an output's entry, for any
+    entry whose push state the caller read: local when complete and intact,
+    remote when not (or changed) but recorded pushed, missing otherwise; a
+    malformed entry is missing.
+
+    Args:
+        project_dir: The project root.
+        content_hash: The entry's hash.
+        pushed: Whether the entry is recorded pushed.
+        setting: ``[integrity] inputs``; the project's when None.
+
+    Returns:
+        ``(location, changed objects)``.
+    """
+    if entry_is_local(project_dir, content_hash):
+        changed = entry_changes(project_dir, content_hash, setting)
+        if not changed:
+            return OUTPUT_LOCAL, []
+        return (OUTPUT_REMOTE if pushed else OUTPUT_MISSING), changed
     try:
         # A malformed entry is never remote either: the reader refuses it
         # before any pull, so promising a pull would be a hit it cannot serve.
-        check_entry_shape(project_dir, row.content_hash)
+        check_entry_shape(project_dir, content_hash)
     except MalformedEntryError:
-        return OUTPUT_MISSING
-    if row.push_status == PushStatus.pushed.value:
-        return OUTPUT_REMOTE
-    return OUTPUT_MISSING
+        return OUTPUT_MISSING, []
+    return (OUTPUT_REMOTE if pushed else OUTPUT_MISSING), []
 
 
 @task(
@@ -426,7 +597,7 @@ def resolve_input(run_id: int, slot: str | None = None) -> str | None:
             return None
 
         try:
-            rows = _checked_output_rows(session, run)
+            rows = _checked_output_rows(session, run, project_dir)
         except MalformedRecordError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return None
@@ -466,23 +637,31 @@ def resolve_input(run_id: int, slot: str | None = None) -> str | None:
         口 = Step(step_num=2, name="Pre-archive row: the run archive",
                  purpose="A row the archive pass has not reached resolves to its "
                          "run-archive path when the one output-location rule "
-                         "places it local; a file that is gone is a loud FAIL "
-                         "raised as InputUnavailableError, naming the path and "
-                         "the re-run",
+                         "places it local (collect's record checked); a file "
+                         "that is gone, changed or marked changed is a loud "
+                         "FAIL raised as InputUnavailableError, naming the "
+                         "path, the run and the re-run",
                  critical="The hit rule serves a hit only when this resolver "
                           "can read it; deciding from the same rule is what "
                           "keeps the two from disagreeing")
         if not ro.content_hash:
-            path = _run_archive_path(ro, project_dir)
+            path = run_archive_path(ro, project_dir)
             if output_location(ro, project_dir) == OUTPUT_LOCAL:
                 print(f"resolve_input: ARCHIVE (run {run_id})", file=sys.stderr)
                 return str(path)
-            reason = (
-                f"run {run_id}, output '{ro.slot}': it was never archived and "
-                f"its run-archive file "
-                f"{path if path is not None else '(none recorded)'} is gone. "
-                f"{output_repair(run_id)}"
-            )
+            if _is_marked_changed(ro):
+                reason = (
+                    f"run {run_id}, output '{ro.slot}': its run-archive file "
+                    f"{path} changed after run {ro.run_id} wrote it, so it is "
+                    f"not that run's output. {output_repair(run_id)}"
+                )
+            else:
+                reason = (
+                    f"run {run_id}, output '{ro.slot}': it was never archived and "
+                    f"its run-archive file "
+                    f"{path if path is not None else '(none recorded)'} is gone. "
+                    f"{output_repair(run_id)}"
+                )
             print(f"resolve_input: FAIL ({reason})", file=sys.stderr)
             raise InputUnavailableError(reason)
 
@@ -507,6 +686,54 @@ def resolve_input(run_id: int, slot: str | None = None) -> str | None:
         label = "REMOTE-PULL" if pulled else "CACHE"
         print(f"resolve_input: {label} (run {run_id})", file=sys.stderr)
         return str(path)
+
+
+def reference_read_path(ref_path: str) -> str:
+    """Return the path a reference input reads: a run's output through :func:`resolve_input`.
+
+    A ``run_reference`` hands its consumer the recorded ``artifact_path``
+    of the referenced run's output, the place the run wrote it. Once that
+    output is archived it has left the run archive and the cache holds its
+    one local copy, so a path naming an output record is read through
+    :func:`resolve_input`: a pre-archive output at its run-archive path
+    (checked against collect's record), an archived one from its cache
+    entry (pulled when it is recorded pushed). A path naming no output
+    record is returned as given.
+
+    Args:
+        ref_path: The reference input's path, as the orchestrator passed it.
+
+    Returns:
+        The path to read.
+
+    Raises:
+        InputUnavailableError: The output is in neither place, or its
+            entry could not be read.
+        MalformedEntryError: Its cache address holds a directory tree.
+    """
+    from .. import layout
+
+    project_dir = get_project_root()
+    path = Path(ref_path).resolve()
+    try:
+        rel = path.relative_to(layout.artifact_store(project_dir).resolve())
+    except ValueError:
+        return ref_path
+    if not rel.parts or not rel.parts[0].isdigit():
+        return ref_path
+    run_id = int(rel.parts[0])
+    with get_session() as session:
+        rows = session.exec(select(RunOutput).where(RunOutput.run_id == run_id)).all()
+        slot = next((r.slot for r in rows if r.artifact_path
+                     and Path(r.artifact_path).resolve() == path), None)
+    if slot is None:
+        return ref_path
+    resolved = resolve_input(run_id, slot)
+    if resolved is None:
+        raise InputUnavailableError(
+            f"run {run_id}, output '{slot}' could not be read from the cache. "
+            f"{output_repair(run_id)}")
+    return resolved
 
 
 def resolve_output(
@@ -579,7 +806,7 @@ def _resolve_output_in_session(
     if run is None:
         raise UnknownRunError(f"Run {run_id} not found.")
 
-    rows = _checked_output_rows(session, run)
+    rows = _checked_output_rows(session, run, project_dir)
     if not rows:
         raise UnknownOutputError(f"Run {run_id} has no recorded outputs.")
     # _checked_output_rows refuses a record without a slot, so none is dropped.
@@ -610,12 +837,20 @@ def _local_entry_path(
     Both resolvers go through this.  The entry's place is
     :func:`output_location`'s answer, the one the hit rule reads:
 
-    - ``local`` -- the complete entry's path (``cache.local_path``: a file's
-      cache address, or a directory's read-only checkout).
-    - ``remote`` -- recorded pushed and not local: pulled (when ``pull``),
-      the pulled objects re-protected, then read as local.
-    - ``missing`` -- neither local nor recorded pushed: refused without a
-      pull, since a hash that was never pushed cannot be pulled.
+    - ``local`` -- the complete entry, checked unchanged by Storage's one
+      integrity check, and its path (``cache.local_path``: a file's cache
+      address, or a directory's read-only checkout, rebuilt when it
+      changed).
+    - ``remote`` -- recorded pushed and not local, or changed: the changed
+      objects are set aside, the entry pulled (when ``pull``), the pulled
+      objects re-protected and hashed in full, then read as local.
+    - ``missing`` -- neither local nor recorded pushed, or changed and never
+      pushed: refused without a pull, naming what changed, since a hash
+      that was never pushed cannot be pulled.
+
+    A member object that changed between the check and the checkout's
+    hashing copy is pulled again the same way when recorded pushed, and
+    refused otherwise.
 
     A malformed cache entry (a directory tree at an unsuffixed address) is
     refused before anything else, naming a re-run of its run; the location
@@ -634,60 +869,316 @@ def _local_entry_path(
 
     Raises:
         MalformedEntryError: The address holds a directory tree.
-        NotInCacheError: The entry is not local and not recorded pushed, or
-            the pull was not allowed or did not bring it whole.
+        NotInCacheError: The entry is not local, or changed, and not
+            recorded pushed; or the pull was not allowed, did not bring it
+            whole, or brought bytes that do not match their addresses.
         CheckoutFailedError: The entry is complete in the cache but its
             directory checkout could not be built.
     """
-    from .transport import pull_cache
-
-    project_dir = Path(project_dir)
     content_hash = ro.content_hash
     assert content_hash is not None, "callers pass an archived record"
-    check_entry_shape(project_dir, content_hash, output_repair(run_id))
-    where = f"run {run_id}, output '{ro.slot}' (content_hash={content_hash})"
-    location = output_location(ro, project_dir)
+    return _read_local_entry(
+        Path(project_dir), content_hash,
+        pushed=ro.push_status == PushStatus.pushed.value, pull=pull,
+        where=f"run {run_id}, output '{ro.slot}' (content_hash={content_hash})",
+        repair=output_repair(run_id), who=who,
+    )
+
+
+def _missing_entry_error(where: str, changed: list[str], repair: str) -> NotInCacheError:
+    """The refusal for an entry that is not local, or changed, and was never pushed.
+
+    Args:
+        where: The reader's description of the entry.
+        changed: The local objects found changed, if any.
+        repair: The sentence naming the repair.
+
+    Returns:
+        The error to raise.
+    """
+    if changed:
+        return NotInCacheError(
+            f"{where} changed in the local cache ({changed_phrase(changed)}) "
+            f"and was never pushed, so there is nothing to pull it again "
+            f"from. {repair}"
+        )
+    return NotInCacheError(
+        f"{where} is not complete in the local cache and was never "
+        f"pushed, so there is nothing to pull. {repair}"
+    )
+
+
+def _read_local_entry(project_dir: Path, content_hash: str, *, pushed: bool,
+                      pull: bool, where: str, repair: str,
+                      who: str) -> tuple[Path, bool]:
+    """Read one cache entry: the core every checked entry read shares.
+
+    The shape check with the entry's repair, the one integrity check, a pull
+    again when the entry is not local or changed and recorded pushed, or a
+    refusal naming the entry and the repair; then the entry's path
+    (``cache.local_path``). :func:`_local_entry_path` reads an output's entry
+    through it, and :func:`read_entry` a sample's, a pipeline document's or
+    an env content blob's.
+
+    Args:
+        project_dir: Project root whose cache is read.
+        content_hash: The entry's hash.
+        pushed: Whether the entry is recorded pushed.
+        pull: Whether a remote entry is pulled.
+        where: The reader's description of the entry, for messages.
+        repair: The sentence naming the repair, ending a refusal.
+        who: The reader's name, for the stderr trace.
+
+    Returns:
+        ``(path, whether a pull produced it)``.
+
+    Raises:
+        MalformedEntryError: The address holds a directory tree.
+        NotInCacheError: The entry cannot be served (see :func:`_local_entry_path`).
+        CheckoutFailedError: The entry is complete but its checkout failed.
+    """
+    check_entry_shape(project_dir, content_hash, repair)
+    setting = inputs_setting(project_dir)
+    location, changed = _entry_location(project_dir, content_hash, pushed, setting)
 
     if location == OUTPUT_MISSING:
-        raise NotInCacheError(
-            f"{where} is not complete in the local cache and was never "
-            f"pushed, so there is nothing to pull. {output_repair(run_id)}"
-        )
+        raise _missing_entry_error(where, changed, repair)
 
     pulled = False
     if location == OUTPUT_REMOTE:
         if not pull:
+            state = (f"changed in the local cache ({changed_phrase(changed)})"
+                     if changed else "not in the local cache")
             raise NotInCacheError(
-                f"{where} is not in the local cache; it is recorded pushed, "
-                f"but this reader does not pull"
+                f"{where} is {state}; it is recorded pushed, but this reader "
+                f"does not pull"
             )
-        try:
-            pull_cache([content_hash], project_dir)
-        except MalformedEntryError:
-            raise
-        except Exception as exc:  # noqa: BLE001 -- reported, then a miss
-            print(f"{who}: pull_cache raised for run {run_id}: {exc}",
-                  file=sys.stderr)
-        # Best-effort: DVC's fetch writer bypasses cache_file, so protect the
-        # freshly pulled objects here (the archive sweep covers them eventually).
-        for h in {content_hash} | manifest_members(project_dir, content_hash):
-            if _cache_path(project_dir, h).is_file():
-                _make_read_only(_cache_path(project_dir, h))
-        if not entry_is_complete(project_dir, content_hash):
-            raise NotInCacheError(
-                f"{where} is recorded pushed, but the pull did not bring it "
-                f"whole into the local cache ({_remote_state(project_dir)}). "
-                f"{output_repair(run_id)}"
-            )
+        pull_again(project_dir, content_hash, changed, where,
+                   repair, who, setting)
         pulled = True
 
-    path = local_path(project_dir, content_hash)
+    try:
+        path = local_path(project_dir, content_hash, setting=setting)
+    except ChangedEntryError as exc:
+        # A member changed between the check and the checkout's copy.
+        if not pushed or not pull:
+            raise NotInCacheError(f"{where}: {exc}. {repair}") from exc
+        pull_again(project_dir, content_hash, exc.objects, where,
+                   repair, who, setting)
+        pulled = True
+        try:
+            path = local_path(project_dir, content_hash, setting=setting)
+        except ChangedEntryError as again:
+            raise NotInCacheError(
+                f"{where}: {again}, even after it was pulled again. "
+                f"{repair}"
+            ) from again
     if path is None:
         raise CheckoutFailedError(
             f"{where} is complete in the local cache, but its checkout "
             f"could not be built"
         )
     return path, pulled
+
+
+#: The kind of a registered sample's entry, for :func:`read_entry`.
+KIND_SAMPLE = "sample"
+
+#: What each kind of entry is called in a message.
+_ENTRY_NAMES = {KIND_SAMPLE: "sample", "pipeline-document": "pipeline document",
+                "env-fingerprint": "env content blob"}
+
+
+def _entry_facts(content_hash: str, kind: str, name: str | None) -> tuple[bool, str, str]:
+    """Read an entry's push state from its row, and name it and its repair.
+
+    Args:
+        content_hash: The entry's hash.
+        kind: :data:`KIND_SAMPLE`, ``pipeline-document`` or ``env-fingerprint``.
+        name: The sample's name, for a sample.
+
+    Returns:
+        ``(recorded pushed, where, repair)``.
+
+    Raises:
+        ValueError: *kind* is not one of the three.
+    """
+    from ..persistence import Blob, Sample
+    from .cache import blob_repair, sample_repair
+
+    if kind not in _ENTRY_NAMES:
+        raise ValueError(f"not an entry kind: {kind!r}")
+    pushed_value = PushStatus.pushed.value
+    with get_session() as session:
+        if kind == KIND_SAMPLE:
+            query = select(Sample).where(Sample.content_hash == content_hash)
+            if name is not None:
+                query = query.where(Sample.name == name)
+            pushed = any(row.push_status == pushed_value
+                         for row in session.exec(query).all())
+        else:
+            blob = session.get(Blob, content_hash)
+            pushed = blob is not None and blob.push_status == pushed_value
+    label = _ENTRY_NAMES[kind]
+    if kind == KIND_SAMPLE and name:
+        label = f"sample '{name}'"
+    where = f"{label} (content_hash={content_hash})"
+    repair = sample_repair(name) if kind == KIND_SAMPLE else blob_repair(kind)
+    return pushed, where, repair
+
+
+@task(purpose="Read a cache entry no output row owns (a sample, a pipeline document, "
+              "an env content blob) by its hash: refuse a malformed entry with the "
+              "kind's repair, run the one integrity check, pull it again when it is "
+              "not local or changed and recorded pushed, else refuse naming it",
+      inputs="the entry's hash and kind (and a sample's name); its Sample or Blob "
+             "row's push status; the local cache; the DVC remote",
+      outputs="the checked local path (a file's cache address, or a directory's "
+              "read-only checkout); no workspace view and no row written")
+def read_entry(content_hash: str, kind: str, *, name: str | None = None,
+               project_dir: Path | str | None = None, pull: bool = True) -> Path:
+    """Return a checked local path for a sample, pipeline document or env blob entry.
+
+    The same read the output reader makes (:func:`_local_entry_path`), for an
+    entry whose push state is on its ``Sample`` row (a sample) or its
+    ``Blob`` row (a pipeline document or an env content blob). Pulling a
+    pruned entry back into the local cache is the normal read: no workspace
+    view is made and no row changes.
+
+    Args:
+        content_hash: The entry's hash.
+        kind: :data:`KIND_SAMPLE`, ``KIND_PIPELINE_DOCUMENT`` or
+            ``KIND_ENV_FINGERPRINT``.
+        name: The sample's name, for a sample (its message and repair).
+        project_dir: The project root; the ambient one when None.
+        pull: Whether an entry recorded pushed is pulled.
+
+    Returns:
+        The path: a file's cache address, or a directory's checkout.
+
+    Raises:
+        MalformedEntryError: The address holds a directory tree.
+        NotInCacheError: The entry is not local, or changed, and not recorded
+            pushed; or the pull did not bring it whole and intact. The
+            message names the entry, its hash and the repair.
+        CheckoutFailedError: A directory's checkout could not be built.
+        ValueError: *kind* is not an entry kind.
+    """
+    root = Path(project_dir) if project_dir is not None else get_project_root()
+    pushed, where, repair = _entry_facts(content_hash, kind, name)
+    path, _pulled = _read_local_entry(root, content_hash, pushed=pushed, pull=pull,
+                                      where=where, repair=repair, who="read_entry")
+    return path
+
+
+def entry_state(content_hash: str, kind: str, *, name: str | None = None,
+                project_dir: Path | str | None = None) -> str:
+    """Say whether :func:`read_entry` can serve an entry, without pulling it.
+
+    A probe for a plan: it builds no checkout and pulls nothing.
+
+    Args:
+        content_hash: The entry's hash.
+        kind: The entry's kind, as for :func:`read_entry`.
+        name: The sample's name, for a sample.
+        project_dir: The project root; the ambient one when None.
+
+    Returns:
+        ``OUTPUT_LOCAL`` (served from the local cache) or ``OUTPUT_REMOTE``
+        (the read will pull it).
+
+    Raises:
+        MalformedEntryError: The address holds a directory tree.
+        NotInCacheError: The read would refuse it: not local, or changed, and
+            never pushed; the message is the read's own.
+        ValueError: *kind* is not an entry kind.
+    """
+    root = Path(project_dir) if project_dir is not None else get_project_root()
+    pushed, where, repair = _entry_facts(content_hash, kind, name)
+    check_entry_shape(root, content_hash, repair)
+    location, changed = _entry_location(root, content_hash, pushed, inputs_setting(root))
+    if location == OUTPUT_MISSING:
+        raise _missing_entry_error(where, changed, repair)
+    return location
+
+
+@task(purpose="Pull a pushed entry again: set the changed local objects aside, "
+              "pull, protect what the pull wrote, and check every object before "
+              "anything is served",
+      inputs="the entry's hash and its changed objects; the DVC remote; "
+             "[integrity] inputs",
+      outputs="the entry complete and intact in the local cache, its pulled "
+              "objects stamped; or NotInCacheError naming the repair")
+def pull_again(project_dir: Path, content_hash: str, changed: list[str],
+               where: str, repair: str, who: str, setting: str) -> None:
+    """Pull a pushed entry (again), then check every object before it is served.
+
+    The changed local objects leave their addresses first, because DVC's
+    fetch skips an object that is present. After the pull the objects the
+    pull wrote (those still writable) are made read-only; an intact object
+    that stayed in place keeps its mode, so its stamp still matches. Then
+    each goes through the one integrity check: a pulled object has no
+    stamp, so it is hashed in full and stamped only when it matches its
+    address. Shared by the output reader, the sample restore and
+    ``wfc verify --repair``.
+
+    Args:
+        project_dir: Project root whose cache is read.
+        content_hash: The entry's hash.
+        changed: The local objects found changed (set aside first).
+        where: The reader's description of the entry, for messages.
+        repair: The sentence naming the repair (a re-run or a
+            re-registration), ending a refusal.
+        who: The reader's name, for the stderr trace.
+        setting: ``[integrity] inputs``.
+
+    Raises:
+        MalformedEntryError: The address holds a directory tree.
+        NotInCacheError: The pull did not bring the entry whole, or brought
+            bytes that do not match their addresses.
+    """
+    from .transport import pull_cache
+
+    口 = Step(step_num=1, name="Set the changed objects aside",
+             purpose="DVC's fetch skips a present object, so each changed one "
+                     "leaves its address, stamp first")
+    set_aside(project_dir, changed)
+
+    口 = Step(step_num=2, name="Pull",
+             purpose="Fetch the entry from the remote; a failure is reported "
+                     "and judged by completeness below")
+    try:
+        pull_cache([content_hash], project_dir)
+    except MalformedEntryError:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- reported, then a miss
+        print(f"{who}: pull_cache raised for {where}: {exc}",
+              file=sys.stderr)
+
+    口 = Step(step_num=3, name="Protect what the pull wrote",
+             purpose="DVC's fetch writer bypasses cache_file, so the objects it "
+                     "wrote are made read-only before they are checked and "
+                     "stamped",
+             critical="Only an object still writable is chmodded: a chmod moves "
+                      "the change time an intact object's stamp records")
+    for h in {content_hash} | manifest_members(project_dir, content_hash):
+        protect_entry(_cache_path(project_dir, h))
+
+    口 = Step(step_num=4, name="Check every object",
+             purpose="The entry must be complete, and every object pass the one "
+                     "check (the pulled ones are hashed in full and stamped)")
+    if not entry_is_complete(project_dir, content_hash):
+        raise NotInCacheError(
+            f"{where} is recorded pushed, but the pull did not bring it "
+            f"whole into the local cache ({_remote_state(project_dir)}). "
+            f"{repair}"
+        )
+    still = changed_objects(project_dir, content_hash, setting)
+    if still:
+        raise NotInCacheError(
+            f"{where} is recorded pushed, but the bytes pulled do not match "
+            f"({changed_phrase(still)}). {repair}"
+        )
 
 
 def _remote_state(project_dir: Path) -> str:
@@ -743,7 +1234,9 @@ def provider_outputs(
     cache.  Each record then resolves from the local cache only (the canvas
     never blocks an HTTP request on a remote pull).  Records that are
     un-archived or missing from the local cache are skipped with a log line
-    rather than failing the caller.
+    rather than failing the caller.  A malformed cache entry is not skipped:
+    its bytes are there in a shape nothing reads, so it raises, naming the
+    re-run.
 
     Args:
         run_id: The run's integer id.
@@ -756,17 +1249,23 @@ def provider_outputs(
 
     Raises:
         MalformedRecordError: The run has an output record without a slot.
+        MalformedEntryError: An output's cache address holds a directory
+            tree (a malformed cache entry).
         ResolveOutputError: The run's outputs cannot be named apart.
     """
     run = session.get(Run, run_id)
     if run is None:
         return []
-    rows = _checked_output_rows(session, run)
+    rows = _checked_output_rows(session, run, project_dir)
     names = output_export_names(rows)
     results: list[tuple[str, RunOutput, Path]] = []
     for name, ro in zip(names, rows):
         try:
             cache_path = _resolve_row(project_dir, run_id, ro, pull=False)
+        except MalformedEntryError:
+            # Not a miss: the entry is there in a shape nothing reads, and
+            # skipping it would hide the re-run the message names.
+            raise
         except ResolveOutputError as exc:
             print(
                 f"[wfc_provider] run {run_id}: skipping output "
@@ -912,11 +1411,84 @@ def _exportable_outputs_in_session(
     if run is None:
         raise UnknownRunError(f"Run {run_id} not found.")
 
-    rows = _checked_output_rows(session, run)
+    rows = _checked_output_rows(session, run, project_dir)
     if not rows:
         raise UnknownOutputError(f"Run {run_id} has no recorded outputs.")
 
     return [(ro, _resolve_row(project_dir, run_id, ro, pull=True)) for ro in rows]
+
+
+def output_listing(
+    run_id: int, *, project_dir: Path | None = None, session=None
+) -> list[tuple[str, str]]:
+    """List a run's outputs by slot and file name, for ``wfc export`` with no slot.
+
+    The same enumeration every reader selects from: the run's output
+    records, or a cache-hit audit row's source records, under the
+    record-validity rule.  Nothing is resolved, so an output that is not
+    archived or not local is still listed; reading it is the export's
+    business.
+
+    Args:
+        run_id: The run's integer id.
+        project_dir: Project root; defaults to the ambient project root.
+        session: Open DB session override; defaults to a fresh session.
+
+    Returns:
+        ``(slot, file name)`` per record, in row order, the file name being
+        the one a single-output export writes (:func:`output_export_name`);
+        empty when the run recorded no outputs.
+
+    Raises:
+        UnknownRunError: ``run_id`` does not exist.
+        MalformedRecordError: The run has an output record without a slot.
+    """
+    if project_dir is None:
+        project_dir = get_project_root()
+    if session is None:
+        with get_session() as _session:
+            return output_listing(run_id, project_dir=project_dir, session=_session)
+    run = session.get(Run, run_id)
+    if run is None:
+        raise UnknownRunError(f"Run {run_id} not found.")
+    rows = _checked_output_rows(session, run, project_dir)
+    # _checked_output_rows refuses a record without a slot, so every slot is set.
+    return [(str(ro.slot), output_export_name(ro)) for ro in rows]
+
+
+def output_records(
+    run_id: int, *, project_dir: Path | None = None, session=None
+) -> list[RunOutput]:
+    """A run's output records, under the record-validity rule, for a run bundle.
+
+    The enumeration :func:`output_listing` names, as the records themselves:
+    the run's output rows, or a cache-hit audit row's source rows, each
+    carrying its slot and, once archived, its content hash. Nothing is
+    resolved, so a record that is not archived or not local is still
+    returned; what is missing is the caller's to refuse.
+
+    Args:
+        run_id: The run's integer id.
+        project_dir: Project root; defaults to the ambient project root.
+        session: Open DB session override; defaults to a fresh session.
+
+    Returns:
+        The records in row order; empty when the run recorded no outputs.
+
+    Raises:
+        UnknownRunError: ``run_id`` does not exist.
+        MalformedRecordError: A record lacks a slot, or a pre-archive
+            record's path lies outside its run's archive.
+    """
+    if project_dir is None:
+        project_dir = get_project_root()
+    if session is None:
+        with get_session() as _session:
+            return output_records(run_id, project_dir=project_dir, session=_session)
+    run = session.get(Run, run_id)
+    if run is None:
+        raise UnknownRunError(f"Run {run_id} not found.")
+    return _checked_output_rows(session, run, project_dir)
 
 
 def resolve_run_reference_outputs(

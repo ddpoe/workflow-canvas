@@ -12,30 +12,33 @@ from axiom_annotations import workflow, Step
 # seed_sample_row, not create_sample_csv, deliberately: this is a canvas
 # reader over the registry, so the Sample row IS the input under test.
 from tests.conftest import seed_sample_row
+from tests.fixtures.routes import register_test_method, sample_source_dir
 from wfc.canvas.wfc_provider import WfcProvider
 from wfc.execution.claim import pre_run
-from wfc.persistence import get_session, Method, Module, Run, RunOutput
+from wfc.persistence import get_session, Run, RunOutput
 from wfc.storage import archive_outputs
 
 
-def _seed_method(module_name: str = "cachehit_mod",
-                 method_name: str = "cachehit_method") -> int:
-    """Insert a minimal Module + Method into the DB and return method.id."""
-    with get_session() as session:
-        mod = Module(name=module_name, description="cache-hit artifacts module")
-        session.add(mod)
-        session.commit()
-        session.refresh(mod)
-        method = Method(
-            name=method_name,
-            module_id=mod.id,
-            script_path=f"methods/{method_name}/{method_name}.py",
-            env="fixture-env",
-        )
-        session.add(method)
-        session.commit()
-        session.refresh(method)
-        return method.id  # type: ignore[return-value]
+def _register_method(project, module_name: str = "cachehit_mod",
+                     method_name: str = "cachehit_method") -> None:
+    """Register a minimal method (script + contract) through production registration.
+
+    The source is written beside the project; registration copies it into
+    the module-qualified snapshot, commits it and mints its version.
+    """
+    src = sample_source_dir(project) / "_methods" / module_name / method_name
+    src.mkdir(parents=True, exist_ok=True)
+    (src / f"{method_name}.py").write_text("def main():\n    pass\n")
+    (src / "method.yaml").write_text(
+        "env: fixture-env\n"
+        "inputs:\n  data:\n    required: false\n"
+        "outputs:\n  result:\n    type: .csv\n"
+        # The claims pass ``gamma``; a claim's parameter check refuses a
+        # parameter its method does not declare.
+        "params:\n  gamma:\n    type: int\n"
+    )
+    register_test_method(project_dir=project, module_name=module_name,
+                         method_dir=src, method_name=method_name)
 
 
 @workflow(
@@ -52,20 +55,10 @@ def test_cachehit_run_artifacts_resolve_via_cache_source(tmp_project):
     """
     口 = Step(
         step_num=1,
-        name="Seed module, method, and source files",
-        purpose="Insert the Module and Method rows pre_run requires and "
-                "create the method source dir for code fingerprinting")
-    _seed_method()
-    method_dir = tmp_project / "methods" / "cachehit_method"
-    method_dir.mkdir(parents=True, exist_ok=True)
-    (method_dir / "cachehit_method.py").write_text("def main():\n    pass\n")
-    # A registered copy carries its contract: both halves are the method's
-    # code identity, so a copy holding no method.yaml cannot be fingerprinted.
-    (method_dir / "method.yaml").write_text(
-        "env: fixture-env\n"
-        "inputs:\n  data:\n    required: false\n"
-        "outputs:\n  result:\n    type: .csv\n"
-    )
+        name="Register the method and seed the sample",
+        purpose="Register the method pre_run claims through production "
+                "registration (snapshot, commit, version) and seed the sample")
+    _register_method(tmp_project)
     seed_sample_row("samp_c")
 
     口 = Step(
@@ -83,8 +76,10 @@ def test_cachehit_run_artifacts_resolve_via_cache_source(tmp_project):
         git_commit=commit)
     assert flag_1 == "NEW"
 
-    staging = tmp_project / "staging"
-    staging.mkdir()
+    # Where collect writes a run's outputs: its run archive.
+    from wfc.layout import run_archive_dir
+    staging = run_archive_dir(tmp_project, source_id)
+    staging.mkdir(parents=True, exist_ok=True)
     out_file = staging / "result.csv"
     out_file.write_text("a,b\n1,2\n")
     with get_session() as session:

@@ -16,8 +16,8 @@ import shutil
 
 from axiom_annotations import workflow, Step
 
-from tests.fixtures.routes import claimed_run, completed_run
-from tests.harness import Phase, Scenario, node, selector, wire
+from tests.fixtures.routes import completed_run
+from tests.harness import Scenario, node, selector, wire
 from tests.harness.scenario import SELECTOR_ID
 
 #: The module, method and sample every lookup in this file names.
@@ -135,27 +135,47 @@ def test_params_mismatch(cli, tmp_project, monkeypatch):
 
 
 def test_no_parents_returns_newest(cli, tmp_project, monkeypatch):
-    """Two identical parentless runs → cache returns the newer one."""
+    """Two identical parentless runs, both readable → cache returns the newer one."""
+    from pathlib import Path
 
-    # Both claim and collect before either is recorded, so both are genuine
-    # (non-audit) completed rows under the same key; the lookup prefers the
-    # newest. The record phase is the complete_run verb over the output the
-    # collect phase recorded.
-    runs = [
-        claimed_run(tmp_project, monkeypatch=monkeypatch, through=Phase.COLLECT,
-                    method=_METHOD, module=_MODULE, sample=_SAMPLE)
-        for _ in range(2)
-    ]
-    for run in runs:
-        r = cli("complete_run", "--run-id", _run_id(run), "--status", "completed",
-                "--output", run.output_rows[0]["artifact_path"])
-        assert r.returncode == 0, r.stderr
-    run_new = _run_id(runs[1])
+    from wfc import layout
+    from wfc.storage.archive import archive_outputs
+    from wfc.storage.cache import _make_writable
+
+    def archived_hashes(run) -> set[str]:
+        from sqlmodel import select
+
+        from wfc.persistence import RunOutput, get_session
+        with get_session() as session:
+            return {o.content_hash for o in session.exec(
+                select(RunOutput).where(RunOutput.run_id == run.run_id))}
+
+    # The older run completes and is archived; its cache entry is then
+    # removed, as `dvc gc` would (declared deviation), so its outputs are
+    # missing and the next claim of the same key runs instead of hitting.
+    older = completed_run(tmp_project, monkeypatch=monkeypatch, method=_METHOD,
+                          module=_MODULE, sample=_SAMPLE)
+    archive_outputs(Path(tmp_project), run_id=older.run_id)
+    hashes = archived_hashes(older)
+    assert hashes and None not in hashes
+    for content_hash in hashes:
+        entry = layout.dvc_cache_entry(tmp_project, content_hash)
+        _make_writable(entry)
+        entry.unlink()
+
+    # The newer run computes the same bytes; the production archive pass
+    # writes them to the same cache entries, so the older run is readable
+    # again. Both are genuine (non-audit) completed rows under one key.
+    newer = completed_run(tmp_project, monkeypatch=monkeypatch, method=_METHOD,
+                          module=_MODULE, sample=_SAMPLE)
+    assert newer.run_id != older.run_id
+    archive_outputs(Path(tmp_project), run_id=newer.run_id)
+    assert archived_hashes(newer) == hashes
 
     r = cli("check_cache", "--method", "csv_merge",
             "--module", "csv_tools", "--sample", "S1",
             "--params", "{}")
-    assert r.stdout.strip() == run_new
+    assert r.stdout.strip() == _run_id(newer)
 
 
 def test_missing_archive_is_cache_miss(cli, tmp_project, monkeypatch):
@@ -171,6 +191,8 @@ def test_missing_archive_is_cache_miss(cli, tmp_project, monkeypatch):
     assert r.stdout.strip() == run_id
 
     # Delete the archive
+    from wfc.storage.cache import _make_writable
+    _make_writable(run.archive_dir)  # collect leaves outputs read-only
     shutil.rmtree(run.archive_dir)
 
     # Now it's a miss

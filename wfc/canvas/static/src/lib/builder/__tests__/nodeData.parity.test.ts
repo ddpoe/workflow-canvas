@@ -16,7 +16,7 @@ import { get } from 'svelte/store';
 import { nodes, edges, pipelineName, resetNodeCounter, modules } from '../stores';
 import { loadPipeline, graftRunReference } from '../pipeline';
 import { compilePipelineToJSON } from '../compile';
-import { nodeFromDragPayload } from '../nodeData';
+import { nodeFromDragPayload, nodeVersion, undeclaredParams, versionSwitch } from '../nodeData';
 import type { MethodDef, PipelineJSON, PipelineNode } from '../../shared/types';
 
 const RUN_ID = 'r_42';
@@ -103,14 +103,29 @@ describe('a loaded and a grafted run reference are the same node', () => {
 // DragEvent that supplies the payload and the pointer position.
 
 /** The payload the sidebar drags for a method: its bare `MethodDef`. */
-const DRAGGED_METHOD: MethodDef = {
-  name: 'norm',
-  module: 'mod_a',
-  version: '2.1',
-  color: '#4A90D9',
+const V1 = {
+  label: 1, identity: 'id-v1', newest: false,
+  inputs: [{ name: 'data', type: 'csv' }],
+  outputs: [{ name: 'output', type: 'csv' }],
+  params: [
+    { name: 'alpha', type: 'number', required: true },
+    { name: 'beta', type: 'number' },
+  ],
+};
+const V2 = {
+  label: 2, identity: 'id-v2', newest: true,
   inputs: [{ name: 'data', type: 'csv' }],
   outputs: [{ name: 'output', type: 'csv' }],
   params: [{ name: 'alpha', type: 'number', required: true }],
+};
+const DRAGGED_METHOD: MethodDef = {
+  name: 'norm',
+  module: 'mod_a',
+  versions: [V1, V2],
+  color: '#4A90D9',
+  inputs: V2.inputs,
+  outputs: V2.outputs,
+  params: V2.params,
 };
 
 /**
@@ -134,24 +149,51 @@ describe('a dropped node is the same node as a loaded one', () => {
     expect(dropped.data.nodeType).toBe('method');
   });
 
-  it('a loaded method carries its version, so the chip survives a reload', () => {
-    // The method is in the registry, which is the only place a version can
-    // come from: nothing saves it — the compiler never writes a version and
-    // no document carries one.
+  it('a pin is compiled for an older version only, and a reload keeps both', () => {
     modules.set([{ name: 'mod_a', color: '#4A90D9', methods: [DRAGGED_METHOD] }]);
-    loadPipeline({
+    const doc = (pin?: string): PipelineJSON => ({
       name: 'p',
       samples: [],
       links: [],
       nodes: [{
         id: 'node_1', type: 'method', method: 'norm', module: 'mod_a',
-        params: {}, position: { x: 0, y: 0 },
+        params: {}, position: { x: 0, y: 0 }, ...(pin ? { version: pin } : {}),
       }],
     });
+    const loadAndCompile = (pin?: string) => {
+      loadPipeline(doc(pin));
+      return compiledNodeSansIdentity('node_1');
+    };
 
-    // Without this the version chip on the node and in the Inspector header
-    // is there on a dropped method and gone on the same method reloaded.
-    expect(get(nodes).find(n => n.id === 'node_1')!.data.version).toBe('2.1');
+    // Dropped: follows the newest, so nothing is pinned and it runs v2.
+    const dropped = nodeFromDragPayload('node_1', { x: 0, y: 0 }, DRAGGED_METHOD);
+    expect(dropped.data.version).toBeUndefined();
+    expect(nodeVersion(dropped.data)?.label).toBe(2);
+
+    // Picking the newest writes no pin; a reload still follows the newest.
+    expect(versionSwitch(dropped.data, 'id-v2').version).toBeUndefined();
+    expect(loadAndCompile('id-v2')).not.toHaveProperty('version');
+    expect(loadAndCompile(undefined)).not.toHaveProperty('version');
+
+    // Picking an older version pins it and draws its own contract; the pin
+    // survives a reload, and the reloaded node draws v1's params again.
+    const switched = versionSwitch(dropped.data, 'id-v1');
+    expect(switched.version).toBe('id-v1');
+    expect(switched.params!.map(p => p.name)).toEqual(['alpha', 'beta']);
+    expect(loadAndCompile('id-v1')).toMatchObject({ version: 'id-v1' });
+    const reloaded = get(nodes).find(n => n.id === 'node_1')!.data;
+    expect(reloaded.params.map(p => p.name)).toEqual(['alpha', 'beta']);
+    expect(nodeVersion(reloaded)?.label).toBe(1);
+  });
+
+  it('a parameter the switched-to version does not declare is flagged until removed', () => {
+    const v1Node = nodeFromDragPayload('node_1', { x: 0, y: 0 }, DRAGGED_METHOD);
+    Object.assign(v1Node.data, versionSwitch(v1Node.data, 'id-v1'));
+    v1Node.data.paramValues = { alpha: 1, beta: 2 };
+    expect(undeclaredParams(v1Node.data)).toEqual([]);
+
+    Object.assign(v1Node.data, versionSwitch(v1Node.data, 'id-v2'));
+    expect(undeclaredParams(v1Node.data)).toEqual(['beta']);
   });
 
   it('a dropped system node wears the name the documentation calls it by', () => {

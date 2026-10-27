@@ -14,6 +14,72 @@ from ..state import _require_provider
 router = APIRouter()
 
 
+def _version_contract(module_name: str, method_name: str,
+                      version: str | None = None) -> MethodContract | None:
+    """A method version's contract (the newest when *version* is ``None``).
+
+    Args:
+        module_name: The method's module.
+        method_name: The method's name.
+        version: A version's content identity, or ``None`` for the newest.
+
+    Returns:
+        The contract, or ``None`` for a method with no version list.
+
+    Raises:
+        HTTPException: 404 when no version of the method carries *version*.
+    """
+    from ...registration import (
+        MalformedMethodRecordError,
+        UnknownVersionError,
+        method_contract,
+    )
+
+    try:
+        return method_contract(module_name, method_name, version)
+    except UnknownVersionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except MalformedMethodRecordError:
+        return None
+
+
+def _contract_fields(mc: MethodContract | None) -> dict[str, Any]:
+    """The palette's contract fields for one version (empty ones without a contract)."""
+    return {
+        "inputs":        mc.input_slots   if mc else {},
+        "outputs":       mc.output_slots  if mc else {},
+        "params_schema": mc.params_schema if mc else {},
+        "executor":      mc.executor      if mc else "python",
+    }
+
+
+def _palette_versions(module_name: str, method_name: str) -> list[dict[str, Any]]:
+    """Every version of a method, in label order, each with its contract.
+
+    Each entry names the version by its content identity (what a pin holds)
+    and its label (for display), with its registration time, env and whether
+    it is the newest. A method with no version list has none.
+    """
+    from ...registration import MalformedMethodRecordError, version_contracts
+
+    try:
+        pairs = version_contracts(module_name, method_name)
+    except MalformedMethodRecordError:
+        return []
+    newest = len(pairs) - 1
+    return [
+        {
+            "label":         synced.entry.label,
+            "identity":      synced.entry.identity,
+            "registered_at": synced.entry.registered_at,
+            "env":           synced.entry.env_name,
+            "newest":        index == newest,
+            **_contract_fields(contract),
+        }
+        for index, (synced, contract) in enumerate(pairs)
+    ]
+
+
 # =============================================================================
 # Modules endpoint -- live DB query, no provider required
 # =============================================================================
@@ -23,8 +89,11 @@ router = APIRouter()
 def get_modules():
     """Return modules as a nested dict keyed by module/method name for the builder UI.
 
-    Shape: {moduleName: {description, methods: {methodName: {inputs, outputs, ...}}}}
-    The builder's module palette reads this shape.
+    Shape: {moduleName: {description, methods: {methodName: {inputs, outputs,
+    params_schema, executor, env, description, versions}}}}. The method's
+    own contract fields and env are its newest version's; ``versions`` lists
+    every version (label, identity, registered_at, env, newest) with its
+    contract. The builder's module palette reads this shape.
     """
     with get_session() as session:
         modules = session.exec(select(Module)).all()
@@ -32,15 +101,16 @@ def get_modules():
         for mod in modules:
             methods_dict: dict[str, Any] = {}
             for meth in mod.methods:
-                mc: MethodContract | None = meth.contract
+                versions = _palette_versions(mod.name, meth.name)
+                newest = versions[-1] if versions else None
+                fields = ({k: newest[k] for k in
+                           ("inputs", "outputs", "params_schema", "executor")}
+                          if newest else _contract_fields(None))
                 methods_dict[meth.name] = {
-                    "inputs":        mc.input_slots   if mc else {},
-                    "outputs":       mc.output_slots  if mc else {},
-                    "version":       "1.0.0",
+                    **fields,
                     "description":   f"{mod.name} — {meth.name}",
-                    "params_schema": mc.params_schema if mc else {},
-                    "env":           meth.env,
-                    "executor":      mc.executor      if mc else "python",
+                    "env":           newest["env"] if newest else meth.env,
+                    "versions":      versions,
                 }
             result[mod.name] = {
                 "description": mod.description or mod.name,
@@ -58,18 +128,32 @@ def get_modules():
 def validate_workflow(pipeline: PipelineInput):
     """Validate a pipeline graph against registered methods in the DB.
 
-    The thin wrapper over the Graph unit's structural core: fetch the
-    contract map through Registration and hand the request document to
-    ``wfc.graph.validate_structure``, which answers ``{valid, errors,
-    warnings}``.
+    The thin wrapper over the Graph unit's structural core and the shared
+    validation entry point: substitute the document's variables with Graph's
+    ``resolve_variables``, hand it to ``wfc.graph.validate_structure``
+    (``{valid, errors, warnings}``) and merge in
+    ``wfc.execution.validation.validation_refusals``, the verdict submit,
+    ``run-pipeline`` and the runs preview give the same document.
     """
-    from ...graph import validate_structure
+    from ...execution.validation import validation_refusals
+    from ...graph import UnknownVariableError, resolve_variables, validate_structure
     from ...registration import load_contract_map
+
+    document = pipeline.model_dump()
+    try:
+        document = resolve_variables(document)
+    except UnknownVariableError as exc:
+        return {"valid": False, "warnings": [],
+                "errors": [f"Unknown pipeline variable: '{exc.name}'"]}
+    except ValueError as exc:
+        return {"valid": False, "warnings": [], "errors": [str(exc)]}
 
     with get_session() as session:
         contract_map = load_contract_map(session)
 
-    return validate_structure(pipeline.model_dump(), contract_map)
+    result = validate_structure(document, contract_map)
+    errors = list(result.get("errors", [])) + validation_refusals(document)
+    return {**result, "errors": errors, "valid": not errors}
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +163,7 @@ def validate_workflow(pipeline: PipelineInput):
 
 @router.get("/api/contracts/{method_full}/output_columns")
 def get_output_columns(method_full: str, slot: str, params: str | None = None,
-                       run_id: str | None = None):
+                       run_id: str | None = None, version: str | None = None):
     """Resolve declared output columns for a method's slot.
 
     The canvas inspector calls this for params declared with
@@ -96,6 +180,9 @@ def get_output_columns(method_full: str, slot: str, params: str | None = None,
         run_id: When the upstream is a ``run_reference`` node, pass the
             referenced run id; the endpoint then uses Run.params from the
             DB as the resolution context.
+        version: The upstream node's pinned version (its content identity);
+            the columns are that version's. Absent: the newest version's.
+            A version no entry carries is a 404.
 
     Returns:
         ``{strict, from_params, patterns, all}`` where ``all`` is the
@@ -139,8 +226,8 @@ def get_output_columns(method_full: str, slot: str, params: str | None = None,
         meth = next((m for m in mod.methods if m.name == method_name), None)
         if not meth:
             raise HTTPException(status_code=404, detail=f"Method {method_full} not found")
-        mc = meth.contract
-        output_slots = mc.output_slots if mc else {}
+        mc = _version_contract(module_name, method_name, version)
+        output_slots = (mc.output_slots if mc else None) or {}
         slot_spec = output_slots.get(slot, {})
         if not isinstance(slot_spec, dict):
             slot_spec = {}

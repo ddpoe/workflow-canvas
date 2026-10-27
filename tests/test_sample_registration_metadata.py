@@ -2,9 +2,10 @@
 and a restore path that follows the project.
 
 Every row here is written by ``register_sample`` (the production path).
-Declared fixture deviation: ``_make_path_absolute`` rewrites one row's
-``registered_path`` to the absolute shape rows had before this cycle, which
-production no longer writes.
+Declared fixture deviations, each rewriting one row's ``registered_path`` to
+a shape production no longer writes: ``_make_path_absolute`` sets the
+absolute path older rows hold, and ``_set_registered_path`` sets a
+value holding more than the file name.
 """
 
 from __future__ import annotations
@@ -46,9 +47,9 @@ def _cache_objects(project: Path) -> set[Path]:
 @workflow(purpose="A directory sample's row records file_type directory, the total "
                   "size, the file count and the newest mtime, each equal to the "
                   "source's own values read before the copy, and a registered "
-                  "path relative to the project root")
+                  "path that is the directory's own name")
 def test_a_directory_sample_row_carries_the_source_metadata(tmp_project):
-    """P3-6 (D-162 row fields)."""
+    """A directory row carries the source's metadata."""
     _ = Step(step_num=1, name="A source directory with known sizes and mtimes",
              purpose="Three files, one nested, one dotfile")
     src = _write(sample_source_dir(tmp_project) / "plates",
@@ -61,18 +62,19 @@ def test_a_directory_sample_row_carries_the_source_metadata(tmp_project):
     register_sample(name="plates", source_path=src, project_root=tmp_project)
 
     _ = Step(step_num=3, name="The row matches the source",
-             purpose="Directory fields from the source; the path is relative")
+             purpose="Directory fields from the source; the path is the "
+                     "directory's name")
     row = _row("plates")
     assert row.file_type == "directory"
     assert row.file_size == 9
     assert row.file_count == 3
     assert row.file_mtime == newest
-    assert row.registered_path == "data/samples/plates/plates"
+    assert row.registered_path == "plates"
     assert row.content_hash == hash_path(src)
 
 
 def test_a_file_sample_row_leaves_file_count_null(tmp_project):
-    """D-7: a file row keeps its fields; file_count is not applicable."""
+    """A file row keeps its fields; file_count is not applicable."""
     src = _write(sample_source_dir(tmp_project), {"one.csv": b"x\n"}) / "one.csv"
     register_sample(name="one", source_path=src, project_root=tmp_project)
     row = _row("one")
@@ -83,7 +85,7 @@ def test_a_file_sample_row_leaves_file_count_null(tmp_project):
                   "description: the description round-trips, and the content hash "
                   "and the run input fingerprint are identical")
 def test_a_description_is_metadata_never_identity(tmp_project, tmp_path):
-    """P3-7."""
+    """A description is metadata, never identity."""
     from wfc.execution.claim import input_fingerprint_from_rows
 
     _ = Step(step_num=1, name="Register one directory twice",
@@ -108,7 +110,8 @@ def test_a_description_is_metadata_never_identity(tmp_project, tmp_path):
 @workflow(purpose="A manifest with an unknown key is refused by the key's name, "
                   "and nothing is cached and no row is written")
 def test_an_unknown_manifest_key_is_refused_before_caching(tmp_project, tmp_path):
-    """P3-8 (no manifest gives NULL: see the P3-7 witness's plain row)."""
+    """An unknown manifest key is refused (no manifest gives NULL: see the
+    description test's plain row)."""
     _ = Step(step_num=1, name="A manifest naming a key registration does not know",
              purpose="Strict: only description")
     src = _write(sample_source_dir(tmp_project), {"s.csv": b"s\n"}) / "s.csv"
@@ -153,7 +156,7 @@ def test_an_empty_manifest_has_no_description(tmp_path):
                   "skipped, with its reason, where the OS cannot express it)")
 @pytest.mark.parametrize("case", ["empty", "symlink", "case-collision"])
 def test_unidentifiable_directory_content_is_refused_at_registration(tmp_project, case):
-    """P3-5, registration leg (the collection leg is in the execution tests)."""
+    """The registration leg (the collection leg is in the execution tests)."""
     _ = Step(step_num=1, name="Build the offending directory",
              purpose="Skip where the filesystem cannot hold it")
     src = sample_source_dir(tmp_project) / "bad"
@@ -191,7 +194,7 @@ def test_unidentifiable_directory_content_is_refused_at_registration(tmp_project
 
 
 def _make_path_absolute(name: str, project: Path) -> None:
-    """Declared deviation: the pre-cycle absolute registered_path shape."""
+    """Declared deviation: the older absolute registered_path shape."""
     with get_session() as session:
         row = session.exec(select(Sample).where(Sample.name == name)).one()
         row.registered_path = str(project / row.registered_path)
@@ -201,14 +204,14 @@ def _make_path_absolute(name: str, project: Path) -> None:
 
 @workflow(purpose="A sample restores under the project's current root after the "
                   "project directory moves, because its registered path is "
-                  "relative; a row whose registered path is absolute is refused "
+                  "only the file name; a row whose registered path is absolute is refused "
                   "as a malformed record naming re-registration")
 def test_restore_follows_a_moved_project(tmp_project, monkeypatch, capsys):
-    """P3-10 (D-90 / D-6)."""
+    """Restore follows a moved project; an absolute registered path is refused."""
     from wfc.storage import restore_sample
 
     _ = Step(step_num=1, name="Register a file and a directory sample",
-             purpose="Rows written with relative registered paths")
+             purpose="Rows written with file-name registered paths")
     src_root = sample_source_dir(tmp_project)
     f = _write(src_root, {"f.csv": b"f\n"}) / "f.csv"
     d = _write(src_root / "d", {"x.csv": b"x\n", "y/z.csv": b"z\n"})
@@ -237,3 +240,39 @@ def test_restore_follows_a_moved_project(tmp_project, monkeypatch, capsys):
         restore_sample(name="f", project_root=moved)
     err = capsys.readouterr().err
     assert "malformed record" in err and "Re-register the sample 'f'" in err
+
+
+def _set_registered_path(name: str, recorded: str) -> None:
+    """Declared deviation: a registered path holding more than a file name."""
+    with get_session() as session:
+        row = session.exec(select(Sample).where(Sample.name == name)).one()
+        row.registered_path = recorded
+        session.add(row)
+        session.commit()
+
+
+@pytest.mark.parametrize("recorded", [".wfc/workspace/samples/f/f.csv", "sub\\f.csv", ".."])
+def test_a_registered_path_with_a_directory_component_is_refused(
+        tmp_project, capsys, recorded):
+    """A row records only the sample's file name; Layout derives the rest.
+
+    A row whose ``registered_path`` holds a directory component is a
+    malformed record: the restore refuses it naming re-registration and
+    writes nothing, neither the data nor the readiness sentinel.
+    """
+    from wfc.storage import MalformedSampleRecordError, restore_sample, sample_data_path
+
+    f = _write(sample_source_dir(tmp_project), {"f.csv": b"f\n"}) / "f.csv"
+    register_sample(name="f", source_path=f, project_root=tmp_project)
+    assert _row("f").registered_path == "f.csv"
+    assert sample_data_path(tmp_project, "f") == layout.sample_dir(tmp_project, "f") / "f.csv"
+
+    _set_registered_path("f", recorded)
+    with pytest.raises(MalformedSampleRecordError):
+        sample_data_path(tmp_project, "f")
+    with pytest.raises(SystemExit):
+        restore_sample(name="f", project_root=tmp_project)
+    err = capsys.readouterr().err
+    assert "malformed record" in err and "Re-register the sample 'f'" in err
+    assert not layout.sample_dir(tmp_project, "f").exists()
+    assert not (tmp_project / "data").exists()

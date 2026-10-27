@@ -78,6 +78,20 @@ _METHOD_TREE = {
     "lib/notes.txt": "not a script\n",
 }
 _SELECTED = ["helper.R", "lib/util.py", "lower.r", "main.py", "run.sh"]
+#: Every file of the tree, sorted by relative POSIX path: what the code
+#: fingerprint digests (``method.yaml`` aside).
+_EVERY_FILE = ["data.csv", "helper.R", "lib/notes.txt", "lib/util.py",
+               "lower.r", "main.py", "run.sh"]
+
+#: One rendered contract the code fingerprint cases hold fixed. It arrives
+#: as a value because Identity imports no ``wfc`` module.
+_PROJECTION = render_contract_projection({
+    "inputs": {"data": {}},
+    "outputs": {"result": {"type": ".csv"}},
+    "executor": "python",
+    "script": None,
+    "gpus": False,
+})
 
 
 def _write_method_tree(root):
@@ -103,24 +117,89 @@ def test_collect_method_scripts_selection_order_and_dedup(tmp_path):
     # appears once, whichever glob found it.
     assert selected == _SELECTED
 
-    # The digest over that selection, in that order, computed by hashlib --
-    # then the method's declared contract, which is the other half of its
-    # code identity and arrives as an already-rendered value because Identity
-    # imports no ``wfc`` module.
-    projection = render_contract_projection({
-        "inputs": {"data": {}},
-        "outputs": {"result": {"type": ".csv"}},
-        "executor": "python",
-        "script": None,
-        "gpus": False,
-    })
+
+@workflow(
+    purpose="The code fingerprint digests every file of the directory but its "
+            "method.yaml, sorted by relative POSIX path: text files as "
+            "relpath:text, a binary file as relpath: plus its raw bytes, then "
+            "the contract projection — a literal hashlib digest"
+)
+def test_code_fingerprint_digests_every_file_but_method_yaml(tmp_path):
+    method_dir = tmp_path / "method"
+    _write_method_tree(method_dir)
+    # method.yaml enters through the contract projection only; its text is
+    # not a file of the digest.
+    (method_dir / "method.yaml").write_text("executor: python\n", encoding="utf-8")
+    # A NUL byte makes a file binary: it is hashed as raw bytes, its CRLF kept.
+    blob = b"\x00\x01binary\r\n\xff"
+    (method_dir / "lib" / "weights.bin").write_bytes(blob)
+
     hasher = hashlib.sha256()
-    for rel in _SELECTED:
-        hasher.update(f"{rel}:{_METHOD_TREE[rel]}".encode("utf-8"))
-    script_only = hasher.hexdigest()
-    assert script_only == "a01cd8b34db31b600004a63e89181cd5f39c7a526ac6f900df96bfb229bc14c9"
-    hasher.update(f"contract:{projection}".encode("utf-8"))
-    assert build_code_fingerprint(method_dir, projection) == hasher.hexdigest()
+    for rel in sorted(_EVERY_FILE + ["lib/weights.bin"]):
+        if rel == "lib/weights.bin":
+            hasher.update(b"lib/weights.bin:" + blob)
+        else:
+            hasher.update(f"{rel}:{_METHOD_TREE[rel]}".encode("utf-8"))
+    hasher.update(f"contract:{_PROJECTION}".encode("utf-8"))
+
+    assert build_code_fingerprint(method_dir, _PROJECTION) == hasher.hexdigest()
+
+
+@pytest.mark.parametrize(
+    "helper,before,after",
+    [
+        pytest.param("lookup.tsv", b"gene\tid\nA\t1\n", b"gene\tid\nA\t2\n",
+                     id="text-helper"),
+        pytest.param("model.bin", b"\x00\x01\x02", b"\x00\x01\x03",
+                     id="binary-helper"),
+    ],
+)
+@workflow(
+    purpose="A helper of any file type is part of the method's code: adding "
+            "a non-script text helper or a binary helper moves the code "
+            "fingerprint, and so does changing its content"
+)
+def test_a_helper_of_any_type_moves_the_code_fingerprint(tmp_path, helper,
+                                                          before, after):
+    method_dir = tmp_path / "method"
+    method_dir.mkdir()
+    (method_dir / "main.py").write_text("print('hi')\n", encoding="utf-8")
+    scripts_only = build_code_fingerprint(method_dir, _PROJECTION)
+
+    (method_dir / helper).write_bytes(before)
+    with_helper = build_code_fingerprint(method_dir, _PROJECTION)
+    (method_dir / helper).write_bytes(after)
+    changed_helper = build_code_fingerprint(method_dir, _PROJECTION)
+
+    assert len({scripts_only, with_helper, changed_helper}) == 3
+
+
+@workflow(
+    purpose="Line endings do not move the code fingerprint: a copy whose text "
+            "files hold CRLF fingerprints as the LF copy, while a binary "
+            "file's bytes are hashed as they are"
+)
+def test_crlf_and_lf_copies_fingerprint_alike(tmp_path):
+    files = {
+        "main.py": "import csv\nprint('hi')\n",
+        "lookup.tsv": "gene\tid\nA\t1\n",
+        "sub/run.sh": "echo run\necho done\n",
+    }
+    blob = b"\x00head\nbody\n"
+    lf, crlf = tmp_path / "lf", tmp_path / "crlf"
+    for root, newline in ((lf, b"\n"), (crlf, b"\r\n")):
+        (root / "sub").mkdir(parents=True)
+        for rel, text in files.items():
+            (root / rel).write_bytes(text.encode("utf-8").replace(b"\n", newline))
+        (root / "model.bin").write_bytes(blob)
+
+    assert (build_code_fingerprint(crlf, _PROJECTION)
+            == build_code_fingerprint(lf, _PROJECTION))
+
+    # A binary file is not text: converting its newlines is a change.
+    (crlf / "model.bin").write_bytes(blob.replace(b"\n", b"\r\n"))
+    assert (build_code_fingerprint(crlf, _PROJECTION)
+            != build_code_fingerprint(lf, _PROJECTION))
 
 
 # =============================================================================

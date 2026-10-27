@@ -11,10 +11,14 @@ each run, so each test states only what its own case is about.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 from axiom_annotations import Step, workflow
 
 from tests.fixtures.fakes import (
+    lose_claimed_script,
+    register_after_claim,
     stub_docker_image_inspect,
     stub_readiness_probes,
     stub_record_writers,
@@ -94,11 +98,11 @@ def test_cache_hit_inserts_audit_row_and_skips_three_phases(git_project,
     [
         pytest.param([selector("sel"), node("n1", inputs=[wire("sel")])],
                      "n1", "n1", id="string-id-document"),
-        # A legacy document numbers its nodes and names each by its (unique)
-        # method; the run still records the node's own document id.
+        # A document that numbers its nodes: the number is the node's id,
+        # the target it is run under and the id its runs record.
         pytest.param([selector("sel"),
-                      node("1", method="legacy_m", inputs=[wire("sel")])],
-                     "legacy_m", "1", id="legacy-numeric-id-document"),
+                      node("1", method="numbered_m", inputs=[wire("sel")])],
+                     "1", "1", id="numeric-id-document"),
     ],
 )
 @workflow(purpose="Every run records its node: the claimed run and a later "
@@ -148,9 +152,10 @@ def test_missing_parent_sidecar_fails_before_dispatch(git_project, monkeypatch):
     assert obs.exit_code(target) == 1
     assert "dispatch" not in obs.phases_ran(target)
     assert target not in obs.sentinels
-    # The materialize failure is recorded like any failed run: a failed
-    # outcome carrying the message, never a success.
+    # The claim refuses the missing sidecar through the outcome sidecar: a
+    # failed outcome carrying the message, never a success.
     assert obs.outcomes[target]["status"] == "failed"
+    assert obs.outcomes[target]["phase"] == "claim"
     assert obs.outcomes[target]["error"]
 
 
@@ -291,17 +296,85 @@ def test_missing_declared_slot_fails_the_run_naming_method_and_slot(git_project,
 # catalog.dispatch-endings: no-container / script-missing / launch-failure
 # =============================================================================
 
-def _document_names_an_env_nothing_built(spec) -> None:
-    """The document's env misses the manifest; method.yaml's still registers."""
-    spec.document_env = "ghost-env"
+def _registered_env_removed_after_the_claim(spec, monkeypatch) -> None:
+    """The method's registered env leaves the manifest through its remover.
+
+    Removed before the claim, the claim's key refuses the step (it reads
+    the env's fingerprint), so dispatch's own no-container ending is
+    reached when the removal lands between the two phases. ``wfc
+    delete-env`` refuses an env a version records, so the record goes
+    through the manifest's own remover, as a merge or a hand edit would.
+    """
+    from wfc.environments import delete
+    from wfc.persistence import project_root
+
+    def remove() -> None:
+        delete(_registered_env(spec), project_root())
+
+    register_after_claim(monkeypatch, remove)
 
 
-def _document_names_a_script_not_on_disk(spec) -> None:
-    """The method directory is real; the script the document names is not."""
-    spec.script_name = "ghost.py"
+def _registered_env(spec) -> str:
+    """The env the node's method is registered in."""
+    from wfc.registration import registered_env
+
+    return registered_env(spec.module, spec.method_name)
 
 
-def _launch_is_refused_at_the_boundary(spec) -> None:
+def _script_vanishes_after_the_claim(spec, monkeypatch) -> None:
+    """The claim resolves the snapshot's script; it is gone by dispatch.
+
+    The resolver refuses a missing script at the claim, so dispatch's own
+    host-side check is reached only when the file goes between the two
+    phases.
+    """
+    lose_claimed_script(monkeypatch)
+
+
+def _register_changed_code(spec) -> None:
+    """Change the node's source script and register it through production."""
+    from tests.harness.project import method_source_dir
+    from wfc.persistence import project_root
+    from wfc.registration import register_method
+
+    source_dir = method_source_dir(project_root(), spec)
+    script = source_dir / f"{spec.method_name}.py"
+    script.write_text(script.read_text(encoding="utf-8") + "\n# changed\n",
+                      encoding="utf-8")
+    register_method(method_dir=source_dir, module_name=spec.module, assume_yes=True)
+
+
+def _rewrite_claimed_entry(spec) -> None:
+    """Rewrite the method's version list so its newest entry records another env.
+
+    The entry's content identity changes with its env fingerprint, so the
+    version a step claimed is no longer in the list (as after a hand edit
+    or a checkout of another list).
+    """
+    from wfc import layout
+    from wfc.persistence import project_root
+
+    # A hand edit of the committed file, the event under test (no version
+    # is minted: the claimed entry's content no longer matches its identity).
+    path = layout.method_versions_path(project_root(), spec.module, spec.method_name)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    newest = max(data["versions"], key=lambda e: e["label"])
+    newest["env_fingerprint"] = "0" * 64
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8", newline="\n")
+
+
+def _claimed_version_gone_after_the_claim(spec, monkeypatch) -> None:
+    """The version list is rewritten between the claim and dispatch.
+
+    A registration in that window makes a new version and leaves the claimed
+    one intact (it launches); only a claimed version that no longer resolves
+    is refused.
+    """
+    register_after_claim(monkeypatch, lambda: _rewrite_claimed_entry(spec))
+
+
+def _launch_is_refused_at_the_boundary(spec, monkeypatch) -> None:
     """Dispatch builds the argv; the process boundary refuses to start it."""
     spec.behavior = Behavior(launch_error="the harness refused to launch")
 
@@ -309,29 +382,39 @@ def _launch_is_refused_at_the_boundary(spec) -> None:
 @pytest.mark.parametrize(
     ("ending", "declare", "error_head", "console_prefix", "starts_container"),
     [
-        ("no-container", _document_names_an_env_nothing_built,
-         "node 'n1' env 'ghost-env' does not resolve to a built container image",
+        ("no-container", _registered_env_removed_after_the_claim,
+         "node 'n1' env '{env}' does not resolve to a built container image",
          "ERROR: ", False),
-        ("script-missing", _document_names_a_script_not_on_disk,
-         "method script not found: methods/n1/ghost.py (node 'n1', method 'n1')",
+        ("script-missing", _script_vanishes_after_the_claim,
+         "method script not found: {script} (node 'n1', method 'n1')",
+         "ERROR: ", False),
+        ("changed-since-claim", _claimed_version_gone_after_the_claim,
+         "method '{module}/n1' (or its env) was registered again, or its "
+         "registered copy changed, after this step was claimed",
          "ERROR: ", False),
         ("launch-failure", _launch_is_refused_at_the_boundary,
          "the harness refused to launch",
          "ERROR: method execution failed: ", True),
     ],
-    ids=["no-container", "script-missing", "launch-failure"],
+    ids=["no-container", "script-missing", "changed-since-claim",
+         "launch-failure"],
 )
-@workflow(purpose="A dispatch-phase ending — the document naming an env "
-                  "nothing built, a script not on the host, or a launch "
-                  "refused at the process boundary — takes the failed record "
+@workflow(purpose="A dispatch-phase ending — the method's registered env "
+                  "removed after the claim, a script not on the host, the "
+                  "claimed version gone from a version list rewritten after "
+                  "the claim, or a launch refused at the process "
+                  "boundary — takes the failed record "
                   "tail: a failed row carrying the error, no sentinel, a "
-                  "failed outcome sidecar, and the ending's own console line")
+                  "failed outcome sidecar, and the ending's own console line; "
+                  "only the launch refused at the boundary has an invocation "
+                  "record, written before the launch")
 def test_dispatch_phase_endings_take_the_failed_record_tail(
     git_project, monkeypatch, capsys, ending, declare, error_head, console_prefix,
     starts_container,
 ):
     scn = Scenario(nodes=chain("n1"))
-    declare(scn.node_by_id("n1"))
+    spec = scn.node_by_id("n1")
+    declare(spec, monkeypatch)
 
     capsys.readouterr()
     obs = run_target(scn, "n1", root=git_project, monkeypatch=monkeypatch)
@@ -339,7 +422,8 @@ def test_dispatch_phase_endings_take_the_failed_record_tail(
 
     assert obs.runs[T1].ending == ending
     assert (obs.runs[T1].dispatch_cmd is not None) == starts_container, (
-        "no-container and script-missing end before any container starts; "
+        "no-container, script-missing and changed-since-claim end before "
+        "any container starts; "
         "launch-failure is refused at the boundary of one dispatch built"
     )
     phases = obs.phases_ran(T1)
@@ -349,6 +433,16 @@ def test_dispatch_phase_endings_take_the_failed_record_tail(
     assert obs.exit_code(T1) == 1
     row = obs.run_row(T1)
     assert row["status"] == "failed"
+    assert (row["invocation"] is not None) == starts_container, (
+        "the invocation is recorded just before the launch: a refusal "
+        "before it records none, a launch refused at the boundary keeps it"
+    )
+    # The version's extracted copy's script, the one the claim resolved and
+    # dispatch names (resolving again only re-extracts the same path).
+    from wfc.registration import resolve_method_code
+    script = resolve_method_code(spec.module, "n1", git_project).script
+    error_head = error_head.format(script=str(script),
+                                   module=spec.module, env=scn.env_name)
     assert row["error_message"].startswith(error_head), row["error_message"]
     assert T1 not in obs.sentinels
     outcome = obs.outcomes.get(T1)
@@ -357,6 +451,81 @@ def test_dispatch_phase_endings_take_the_failed_record_tail(
     )
     assert outcome["error"] == row["error_message"]
     assert f"{console_prefix}{row['error_message']}" in err, err
+
+
+def _version_row_id(entry) -> int:
+    """The ``MethodVersion`` row mirroring a version-list entry."""
+    from sqlmodel import select
+
+    from wfc.persistence import MethodVersion, get_session
+
+    with get_session() as session:
+        return session.exec(select(MethodVersion.id).where(
+            MethodVersion.label == entry.label,
+            MethodVersion.tree_hash == entry.tree_hash)).one()
+
+
+def _copy_rel(root, entry) -> str:
+    """A version's extracted copy, relative to the project root, POSIX form."""
+    from wfc import layout
+
+    return layout.code_copy_dir(root, entry.tree_hash).relative_to(root).as_posix()
+
+
+def _copy_bind(root, entry) -> str:
+    """The read-only ``-v`` value binding a version's extracted copy at its /work path."""
+    from wfc import layout
+
+    copy = layout.code_copy_dir(root, entry.tree_hash)
+    return f"{copy.as_posix()}:/work/{_copy_rel(root, entry)}:ro"
+
+
+@workflow(purpose="dispatch.launches-what-was-claimed: code registered again "
+                  "between the claim and the launch makes a new version and "
+                  "leaves the claimed one intact, so the step launches the "
+                  "claimed version's extracted copy, bound read-only, and its "
+                  "run row records that version and its key; the new version "
+                  "is never cached under the claimed key: the next run of the "
+                  "step is a miss under its own key that launches the new copy")
+def test_a_registration_after_the_claim_launches_the_claimed_version(
+        git_project, monkeypatch):
+    from tests.harness import build_project, drive_target
+    from wfc.registration.method_version import read_version_list
+
+    scn = Scenario(nodes=chain("n1"))
+    spec = scn.node_by_id("n1")
+    project = build_project(scn, root=git_project, monkeypatch=monkeypatch)
+    (v1,) = read_version_list(git_project, spec.module, "n1")
+
+    口 = Step(step_num=1, name="Register changed code between claim and dispatch",
+             purpose="The claim resolved v1; the registration makes v2")
+    register_after_claim(monkeypatch, lambda: _register_changed_code(spec))
+    claimed = drive_target(project, "n1", monkeypatch=monkeypatch)
+    _, v2 = read_version_list(git_project, spec.module, "n1")
+    assert (v1.label, v2.label) == (1, 2) and v2.tree_hash != v1.tree_hash
+
+    口 = Step(step_num=2, name="The claimed version launched",
+             purpose="The argv binds v1's copy read-only and runs its script; "
+                     "the run row is v1's, completed")
+    cmd = claimed.dispatch_cmd(T1)
+    assert claimed.runs[T1].ending == "completed", claimed.runs[T1].ending
+    assert _copy_bind(git_project, v1) in cmd
+    assert _copy_bind(git_project, v2) not in cmd
+    assert f"/work/{_copy_rel(git_project, v1)}/n1.py" in cmd
+    claimed_row = claimed.run_row(T1)
+    assert claimed_row["status"] == "completed"
+    assert claimed_row["version_id"] == _version_row_id(v1)
+
+    口 = Step(step_num=3, name="Run the step again",
+             purpose="The newest is v2: a cache miss under v2's own key that "
+                     "launches v2's copy; nothing of v2 was cached under v1's key")
+    rerun = drive_target(project, "n1", monkeypatch=monkeypatch)
+    rerun_row = rerun.run_row(T1)
+    assert rerun.runs[T1].ending == "completed"
+    assert _copy_bind(git_project, v2) in rerun.dispatch_cmd(T1)
+    assert rerun_row["version_id"] == _version_row_id(v2)
+    assert rerun_row["cache_key"] != claimed_row["cache_key"]
+    assert rerun_row["cache_source_run_id"] is None
 
 
 # =============================================================================

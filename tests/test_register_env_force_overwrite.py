@@ -14,6 +14,7 @@ import pytest
 
 from tests.fixtures.fakes import (
     stub_docker_build,
+    stub_docker_image_content,
     stub_docker_image_inspect,
     stub_readiness_probes,
 )
@@ -27,9 +28,7 @@ from axiom_annotations import workflow, Step
             "at --force, manifest unchanged), and --force reaches the Docker "
             "gate's not-runnable message; with Docker up, --force rebuilds "
             "and overwrites the manifest "
-            "entry with the new digest. Methods referencing the env are "
-            "NOT touched — they resolve through the manifest at run-step "
-            "time and pick up the new digest automatically."
+            "entry with the new digest."
 )
 def test_register_env_force_overwrites_existing(tmp_path, monkeypatch, capsys):
     from wfc import environments as envs_mod
@@ -42,7 +41,7 @@ def test_register_env_force_overwrites_existing(tmp_path, monkeypatch, capsys):
     (tmp_path / ".wfc").mkdir()
     old_digest = "a" * 64
     seed_manifest = {
-        "schema_version": 1,
+        "schema_version": 3,
         "envs": {
             "image-io": {
                 "backend": "pixi",
@@ -69,6 +68,7 @@ def test_register_env_force_overwrites_existing(tmp_path, monkeypatch, capsys):
 
     new_digest = "b" * 64
     stub_docker_build(monkeypatch, lambda d, t: None)
+    stub_docker_image_content(monkeypatch)
     stub_docker_image_inspect(monkeypatch, f"sha256:{new_digest}")
 
     口 = Step(step_num=2, name="Run CLI without --force on a host with no Docker",
@@ -119,3 +119,85 @@ def test_register_env_force_overwrites_existing(tmp_path, monkeypatch, capsys):
     assert new_entry["container"] == f"docker://local/image-io@sha256:{new_digest}"
     # Different env_fingerprint (digest changed).
     assert new_entry["env_fingerprint"] != "00" * 16
+
+
+ENV = "image-io"
+OTHER_ENV = "other-env"
+
+
+@workflow(
+    purpose="wfc register-env --force on an env rebuilds it and mints no "
+            "method version: it lists the methods whose newest version uses "
+            "the env (not a method whose older version did) and tells the "
+            "user to register them again with `wfc register-method`; "
+            ".wfc/envs.json holds only the env's current record"
+)
+def test_register_env_force_lists_the_methods_whose_newest_version_uses_it(
+    git_project, monkeypatch, capsys, tmp_path_factory,
+):
+    from sqlmodel import select
+
+    from tests.harness import Scenario, build_project, node, selector, wire
+    from tests.harness.project import method_source_dir
+    from wfc import environments as envs_mod
+    from wfc.cli import cli_main
+    from wfc.persistence import MethodVersion, get_session
+    from wfc.registration import register_method
+    from wfc.registration.method_version import read_version_list
+
+    口 = Step(step_num=1, name="Register two methods on the env",
+             purpose="a and b run in the env; b is registered again in another "
+                     "env, so only its older version uses the env")
+    scenario = Scenario(
+        nodes=[selector(), node("a", inputs=[wire("sel")]),
+               node("b", inputs=[wire("a")])],
+        samples=["S1"], pipeline_id="env-dependants",
+        env_name=ENV, env_backend="pixi",
+    )
+    project = build_project(scenario, root=git_project, monkeypatch=monkeypatch)
+    root = project.root
+    stub_docker_build(monkeypatch, lambda d, t: None)
+    stub_docker_image_content(monkeypatch)
+    stub_docker_image_inspect(monkeypatch, f"sha256:{'d' * 64}")
+    envs_mod.register(name=OTHER_ENV, backend="byo",
+                      source={"image": "docker://local/other:latest"},
+                      project_dir=root)
+    b = scenario.node_by_id("b")
+    b_yaml = method_source_dir(root, b) / "method.yaml"
+    b_yaml.write_text(b_yaml.read_text(encoding="utf-8")
+                      .replace(f"env: {ENV}\n", f"env: {OTHER_ENV}\n"),
+                      encoding="utf-8")
+    register_method(method_dir=method_source_dir(root, b), module_name=b.module, assume_yes=True)
+    a = scenario.node_by_id("a")
+    lists_before = {spec.method_name: read_version_list(root, spec.module, spec.method_name)
+                    for spec in (a, b)}
+    with get_session() as session:
+        versions_before = len(session.exec(select(MethodVersion)).all())
+
+    口 = Step(step_num=2, name="Rebuild the env with --force",
+             purpose="The build succeeds with a new image")
+    lock = tmp_path_factory.mktemp("lock") / "pixi.lock"
+    lock.write_text("version: 6\n", encoding="utf-8")
+    new_digest = "b" * 64
+    stub_docker_image_inspect(monkeypatch, f"sha256:{new_digest}")
+    stub_readiness_probes(monkeypatch, docker="ok")
+    capsys.readouterr()
+    rc = cli_main(["register-env", ENV, "--from", str(lock), "--backend", "pixi",
+                   "--force"])
+    out = capsys.readouterr().out
+    assert rc == 0
+
+    口 = Step(step_num=3, name="The newest-version dependants are listed",
+             purpose="a is listed, b is not; the user is told to register them "
+                     "again; no version was minted; the manifest is current-only")
+    assert f"  - {a.module}/{a.method_name}" in out
+    assert f"{b.module}/{b.method_name}" not in out
+    assert "wfc register-method" in out
+    with get_session() as session:
+        assert len(session.exec(select(MethodVersion)).all()) == versions_before
+    assert {spec.method_name: read_version_list(root, spec.module, spec.method_name)
+            for spec in (a, b)} == lists_before
+    manifest = json.loads((root / ".wfc" / "envs.json").read_text())
+    assert manifest["envs"][ENV]["container"] == f"docker://local/{ENV}@sha256:{new_digest}"
+    assert set(manifest["envs"]) == {ENV, OTHER_ENV}
+    assert "_history" not in json.dumps(manifest)

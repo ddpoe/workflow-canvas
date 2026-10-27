@@ -10,6 +10,7 @@ Uses input_selector as the pipeline root (system-node-only roots pattern).
 Tier 3: @workflow + Step() markers (stakeholder-recognizable failure scenarios).
 """
 
+from wfc import layout
 import csv
 import json
 from pathlib import Path
@@ -85,7 +86,7 @@ def test_script_crash(pipeline_factory, register_fixture_methods):
         name="Verify failure is recorded",
         purpose="Check that outcome sidecar exists with failed status",
     )
-    pipelines_dir = project_dir / ".runs" / "pipelines"
+    pipelines_dir = layout.artifact_store(project_dir) / "pipelines"
     outcome_files = list(pipelines_dir.rglob("outcomes/*.json"))
     faulty_outcomes = [
         f for f in outcome_files
@@ -189,7 +190,7 @@ def test_missing_output(pipeline_factory, register_fixture_methods):
         name="Verify missing output detected",
         purpose="Check that the outcome sidecar records the failure with missing output info",
     )
-    pipelines_dir = project_dir / ".runs" / "pipelines"
+    pipelines_dir = layout.artifact_store(project_dir) / "pipelines"
     outcome_files = list(pipelines_dir.rglob("outcomes/*.json"))
     faulty_outcomes = [
         f for f in outcome_files
@@ -266,7 +267,7 @@ def test_nonzero_method_exit_fails_pipeline(pipeline_factory, register_fixture_m
             archive=False,
         )
 
-    pipelines_dir = project_dir / ".runs" / "pipelines"
+    pipelines_dir = layout.artifact_store(project_dir) / "pipelines"
     outcome_files = list(pipelines_dir.rglob("outcomes/*.json"))
     faulty_outcomes = [
         json.loads(f.read_text()) for f in outcome_files if "faulty_1" in f.name

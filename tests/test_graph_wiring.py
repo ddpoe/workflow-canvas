@@ -1,6 +1,6 @@
 """Graph answers the wiring question: ``inbound_wiring`` over a literal document.
 
-The per-node inbound wiring (target slot, canonical source id, source kind,
+The per-node inbound wiring (target slot, source id, source kind,
 source slot, referenced run id) that the claim and materialize phases
 consume — answered once, pure, from the document alone.
 """
@@ -15,7 +15,7 @@ from wfc.graph import InboundLink, document_node, inbound_wiring
             "returns the per-slot wiring claim and materialize consume: a "
             "two-parent fan-in with source slots, a reference-only root (run id "
             "reported, an empty run id reported not decided), a selector root, "
-            "and the same wiring in a legacy numeric-id document"
+            "and the same wiring in a document that writes its ids as numbers"
 )
 def test_inbound_wiring_answers_the_document_topology():
     # Two-parent fan-in into one slot: both links into the consumer's 'sources'
@@ -72,56 +72,36 @@ def test_inbound_wiring_answers_the_document_topology():
     (wire,) = inbound_wiring(selected, "c")
     assert (wire.source_kind, wire.target_slot, wire.source_id) == ("input_selector", "data", "sel")
 
-    # Legacy numeric-id document: a numeric source id canonicalises to its
-    # method name (the executor keys sidecars by it) while the raw id is kept;
-    # the consumer is found by method name, by canonical id or by raw id; a
-    # system source with no method keeps its raw id.
-    legacy = {
+    # A document that writes its ids as numbers: each node's identity is its
+    # id read as a string, so the consumer is named '2' and its source comes
+    # back as '1', the id the executor keys the source's sidecars by.
+    numeric = {
         "nodes": [
             {"id": 1, "method": "m_a", "module": "mod"},
             {"id": 2, "method": "m_c", "module": "mod"},
         ],
         "links": [{"source": 1, "target": 2, "target_slot": "data", "source_slot": "out"}],
     }
-    by_method = inbound_wiring(legacy, "m_c")
-    assert [(w.source_id, w.raw_source_id, w.target_slot, w.source_slot) for w in by_method] == [
-        ("m_a", "1", "data", "out"),
-    ]
-    assert inbound_wiring(legacy, "2") == by_method
-    assert inbound_wiring(legacy, "m_a") == []
-
-    # A legacy system source with no method key has no name to canonicalise
-    # to: the link comes back with the source's raw id, and the walk does not
-    # raise.
-    legacy_selector = {
-        "nodes": [
-            {"id": 1, "type": "input_selector"},
-            {"id": 2, "method": "m_c", "module": "mod"},
-        ],
-        "links": [{"source": 1, "target": 2}],
-    }
-    (wire,) = inbound_wiring(legacy_selector, "m_c")
-    assert (wire.source_id, wire.raw_source_id, wire.source_kind, wire.target_slot) == (
-        "1", "1", "input_selector", "data",
+    (wire,) = inbound_wiring(numeric, "2")
+    assert (wire.source_id, wire.raw_source_id, wire.target_slot, wire.source_slot) == (
+        "1", "1", "data", "out",
     )
 
 
-def test_document_node_finds_a_node_by_its_id_else_its_legacy_method_name():
+def test_document_node_finds_a_node_by_its_id():
     # A node answers to its own id, as a string even when the document wrote
-    # it as a number; a legacy numeric-id document's method node also answers
-    # to its method name. The returned entry carries the raw id.
-    legacy = {
+    # it as a number. The returned entry is the document's own.
+    numeric = {
         "nodes": [
             {"id": 1, "type": "input_selector"},
             {"id": 2, "method": "m_c", "module": "mod"},
         ],
     }
-    assert document_node(legacy, "2") is legacy["nodes"][1]
-    assert document_node(legacy, "m_c") is legacy["nodes"][1]
-    assert document_node(legacy, "1") is legacy["nodes"][0]
+    assert document_node(numeric, "2") is numeric["nodes"][1]
+    assert document_node(numeric, "1") is numeric["nodes"][0]
 
-    # An id match wins over a method-name match: a node whose id equals
-    # another node's method name is the one returned.
+    # A node whose id equals another node's method name: the id names the
+    # node that carries it.
     shadowed = {
         "nodes": [
             {"id": "a", "method": "b", "module": "mod"},
@@ -130,6 +110,6 @@ def test_document_node_finds_a_node_by_its_id_else_its_legacy_method_name():
     }
     assert document_node(shadowed, "b") is shadowed["nodes"][1]
 
-    # Nothing answers: an unknown name, and a document with no nodes.
-    assert document_node(legacy, "m_missing") is None
+    # Nothing answers: an unknown id, and a document with no nodes.
+    assert document_node(numeric, "m_missing") is None
     assert document_node({}, "2") is None

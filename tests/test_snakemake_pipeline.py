@@ -33,7 +33,6 @@ class TestSingleStepGeneration:
             steps=[StepDef(
                 method_name="preprocess",
                 module_name="demo_pipeline",
-                script_path="methods/preprocess/preprocess.py",
                 params={"normalize": True})],
             samples=["Pa16c"])
         snakefile = generate_snakefile(pipeline, wfc_root)
@@ -49,7 +48,6 @@ class TestSingleStepGeneration:
             steps=[StepDef(
                 method_name="preprocess",
                 module_name="demo_pipeline",
-                script_path="methods/preprocess/preprocess.py",
                 params={"normalize": True})],
             samples=["Pa16c"])
         snakefile = generate_snakefile(pipeline, wfc_root)
@@ -63,7 +61,6 @@ class TestSingleStepGeneration:
             steps=[StepDef(
                 method_name="preprocess",
                 module_name="demo_pipeline",
-                script_path="methods/preprocess/preprocess.py",
                 params={"normalize": True})],
             samples=["Pa16c"])
         snakefile = generate_snakefile(pipeline, wfc_root)
@@ -86,12 +83,9 @@ class TestCartesianGeneration:
     def pipeline(self):
         return PipelineDef(
             steps=[
-                StepDef("preprocess", "demo_pipeline", "methods/preprocess/preprocess.py",
-                        {"normalize": True}, depends_on=[]),
-                StepDef("filter_cells", "demo_pipeline", "methods/filter_cells/filter_cells.py",
-                        {"min_quality": 0.5}, depends_on=["preprocess"]),
-                StepDef("label", "demo_pipeline", "methods/label/label.py",
-                        {"threshold": 0.5}, depends_on=["filter_cells"]),
+                StepDef("preprocess", "demo_pipeline", {"normalize": True}, depends_on=[]),
+                StepDef("filter_cells", "demo_pipeline", {"min_quality": 0.5}, depends_on=["preprocess"]),
+                StepDef("label", "demo_pipeline", {"threshold": 0.5}, depends_on=["filter_cells"]),
             ],
             samples=["Pa16c"],
             param_sets={
@@ -113,7 +107,7 @@ class TestCartesianGeneration:
         snakefile = generate_snakefile(pipeline, wfc_root)
 
         # filter_cells should take preprocess's output as input
-        # The sentinel path is scoped by pipeline_id: .runs/sentinels/{id}/preprocess/
+        # The sentinel path is scoped by pipeline_id: .wfc/runs/sentinels/{id}/preprocess/
         assert "/preprocess/" in snakefile
 
     def test_leaf_output_uses_unified_variant_wildcard(self, pipeline, wfc_root):
@@ -155,10 +149,8 @@ class TestSelectiveGeneration:
     def pipeline(self):
         return PipelineDef(
             steps=[
-                StepDef("preprocess", "demo_pipeline", "methods/preprocess/preprocess.py",
-                        {"normalize": True}, depends_on=[]),
-                StepDef("filter_cells", "demo_pipeline", "methods/filter_cells/filter_cells.py",
-                        {"min_quality": 0.5}, depends_on=["preprocess"]),
+                StepDef("preprocess", "demo_pipeline", {"normalize": True}, depends_on=[]),
+                StepDef("filter_cells", "demo_pipeline", {"min_quality": 0.5}, depends_on=["preprocess"]),
             ],
             samples=["Pa16c"],
             param_sets={
@@ -202,10 +194,8 @@ class TestSnakefileSyntax:
         """Generated Snakefile should compile() without SyntaxError."""
         pipeline = PipelineDef(
             steps=[
-                StepDef("preprocess", "demo_pipeline", "methods/preprocess/preprocess.py",
-                        {"normalize": True}, depends_on=[]),
-                StepDef("filter_cells", "demo_pipeline", "methods/filter_cells/filter_cells.py",
-                        {"min_quality": 0.5}, depends_on=["preprocess"]),
+                StepDef("preprocess", "demo_pipeline", {"normalize": True}, depends_on=[]),
+                StepDef("filter_cells", "demo_pipeline", {"min_quality": 0.5}, depends_on=["preprocess"]),
             ],
             samples=["Pa16c", "CFPAC1"])
         snakefile = generate_snakefile(pipeline, wfc_root)

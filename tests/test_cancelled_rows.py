@@ -158,9 +158,9 @@ def test_legacy_db_migration_adds_column(tmp_path, monkeypatch):
     [
         pytest.param(("method_a", "method_b", "method_c"), "method_c",
                      id="string-id-document"),
-        # A legacy document numbers its nodes; its steps are scheduled under
-        # their method names, yet the walk's row carries the raw document id.
-        pytest.param(("1", "2", "3"), "3", id="legacy-numeric-id-document"),
+        # A document that numbers its nodes: the walk's row carries the
+        # number, the node's document id.
+        pytest.param(("1", "2", "3"), "3", id="numeric-id-document"),
     ],
 )
 @workflow(
@@ -182,7 +182,7 @@ def test_walk_linear_chain_one_failure(tmp_project, monkeypatch, ids, c_node_id)
             node(c_id, method="method_c", inputs=[wire(b_id)]),
         ]),
         root=tmp_project, monkeypatch=monkeypatch, pipeline_end=False)
-    b_run_id = _run_id_of(obs, "method_b")
+    b_run_id = _run_id_of(obs, b_id)
 
     口 = Step(step_num=1, name="Invoke walk", purpose="Fill in missing cancelled row for C")
     _write_cancelled_rows(pid, str(tmp_project))
@@ -293,6 +293,46 @@ def test_walk_variant_sweep_isolated_failure(tmp_project, monkeypatch):
     assert cancelled[0].cancelled_due_to_run_id == a_loose
     # sanity: params correspond to loose
     assert cancelled[0].params == {"t": 0.9}
+
+
+@workflow(
+    purpose="A node with no variants under a swept node: its one target links "
+            "the failed run found under any of its variant names",
+)
+def test_walk_unswept_node_links_a_failure_under_any_variant_name(tmp_project, monkeypatch):
+    from wfc.execution.lifecycle import _write_cancelled_rows
+
+    pid = "pipe-var-unswept"
+    # Only method_a sweeps. Every node is scheduled under the whole axis
+    # ("default", "loose", "strict"): method_a runs its base params under
+    # "default", and method_b, which declares no variants, has the same
+    # params under every name -- one target, whose first name is "default".
+    # method_a succeeds under "default" and fails under "loose", and the
+    # fail-fast abort catches it in flight under "strict", so method_b never
+    # runs. Its failed ancestor is found only under a name after the first.
+    obs = run_scenario(_walk_scenario(pid, [
+        node("method_a", inputs=[wire(SELECTOR_ID)],
+             behavior_by_variant={"loose": exits(1)},
+             variants={"strict": {"t": 0.1}, "loose": {"t": 0.9}}),
+        node("method_b", inputs=[wire("method_a")]),
+    ]), root=tmp_project, monkeypatch=monkeypatch,
+        interrupted=("method_a", "S1", "strict"), pipeline_end=False)
+    a_default = _run_id_of(obs, "method_a")
+    a_loose = _run_id_of(obs, "method_a", variant="loose")
+
+    _write_cancelled_rows(pid, str(tmp_project))
+
+    with get_session() as s:
+        b_rows = s.exec(
+            select(Run).where(Run.pipeline_id == pid, Run.node_id == "method_b")
+        ).all()
+    assert len(b_rows) == 1
+    b_row = b_rows[0]
+    assert b_row.status == "cancelled"
+    assert b_row.cancel_reason == "upstream_failed"
+    # "default" finds method_a's completed run, so the cause is found under
+    # "loose", the next name in axis order.
+    assert b_row.cancelled_due_to_run_id == a_loose != a_default
 
 
 @workflow(

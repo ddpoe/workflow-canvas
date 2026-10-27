@@ -43,7 +43,7 @@ export const STATUS_LABEL: Record<PreviewStatus, string> = {
   blocked: 'blocked',
 };
 
-/** The row action for each status, when no rename or collision applies. */
+/** The row action for each status. */
 export const STATUS_ACTION: Record<PreviewStatus, string> = {
   cached_local: 'skip',
   cached_remote: 'skip · pulls',

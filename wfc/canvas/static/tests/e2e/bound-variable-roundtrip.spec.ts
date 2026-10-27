@@ -114,16 +114,25 @@ test.describe('Bound variable round-trip (smoke)', () => {
       id: 'r1',
       module: 'mod_a',
       method: 'method_a',
-      version: '1',
+      version: 1,
       timestamp: 1_700_000_000_000,
       duration: 1.5,
       status: 'success',
       inputs: {},
       outputs: {},
+      outputAvailability: {},
       metrics: {},
       dataSource: 'sample_a',
       parentRunIds: [],
       parents: [],
+      versionIdentity: null,
+      codeFingerprint: null,
+      envName: null,
+      envFingerprint: null,
+      gitCommit: null,
+      wfcVersion: null,
+      pipelineDocHash: null,
+      keyedUnderEarlierRule: false,
       experimentId: 'exp1',
       runName: `${PIPE_ID}/foo`,
       nid: 'v1',
@@ -169,7 +178,22 @@ test.describe('Bound variable round-trip (smoke)', () => {
     // `mapping` param entry, InspectorPanel won't render any rows (and
     // no paramEditorActor spawns), so the bound chip never appears.
     // Shape: { module_name: { description, methods: { method_name: {
-    // params_schema: { param_name: { type, required, ... } } } } } }.
+    // inputs, outputs, params_schema, executor, env, description,
+    // versions } } } }; the method's own contract is its newest version's
+    // and `versions` lists each version with its contract.
+    const methodAContract = {
+      inputs: { data: { type: 'csv' } },
+      outputs: { output: { type: 'csv' } },
+      params_schema: {
+        mapping: {
+          type: 'dict',
+          required: false,
+          default: {},
+          description: 'Column mapping',
+        },
+      },
+      executor: 'python',
+    };
     await page.route('**/api/modules', async (r) => r.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -178,18 +202,17 @@ test.describe('Bound variable round-trip (smoke)', () => {
           description: 'Test module',
           methods: {
             method_a: {
-              version: '1',
+              ...methodAContract,
               description: 'Test method',
-              inputs: { data: { type: 'csv' } },
-              outputs: { output: { type: 'csv' } },
-              params_schema: {
-                mapping: {
-                  type: 'dict',
-                  required: false,
-                  default: {},
-                  description: 'Column mapping',
-                },
-              },
+              env: 'x',
+              versions: [{
+                label: 1,
+                identity: '1'.repeat(40),
+                registered_at: '2026-10-01T09:00:00Z',
+                env: 'x',
+                newest: true,
+                ...methodAContract,
+              }],
             },
           },
         },

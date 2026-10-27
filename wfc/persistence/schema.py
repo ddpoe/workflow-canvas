@@ -1,16 +1,16 @@
-"""The schema: twelve SQLModel table classes and ``PushStatus``.
+"""The schema: fourteen SQLModel table classes and their enums.
 
 Tables:
   modules, methods, method_versions, tracked_functions, param_defs,
   module_contracts, method_contracts, runs, run_inputs, run_outputs,
-  run_annotations, samples
+  run_annotations, samples, blobs, in_use_records
 """
 
 from datetime import UTC, datetime
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import JSON, UniqueConstraint, text
+from sqlalchemy import JSON, Index, Integer, UniqueConstraint, text
 from sqlmodel import Column, Field, Relationship, SQLModel
 
 # =============================================================================
@@ -18,7 +18,7 @@ from sqlmodel import Column, Field, Relationship, SQLModel
 # =============================================================================
 
 class PushStatus(str, Enum):
-    """Status of a RunOutput / Sample's push to the configured DVC remote.
+    """Status of a RunOutput / Sample / Blob's push to the configured DVC remote.
 
     Lifecycle when a remote is configured:
       pending -> in_flight -> pushed         (happy path)
@@ -32,6 +32,16 @@ class PushStatus(str, Enum):
     pushed = "pushed"
     failed = "failed"
     deferred = "deferred"
+
+
+class OutputIntegrity(str, Enum):
+    """The one non-NULL value of ``RunOutput.integrity_status``.
+
+    NULL means the output is as its run wrote it (as collected). ``changed``
+    means Storage's check found it changed after the run wrote it; the mark
+    is one-way, and a changed output counts as missing.
+    """
+    changed = "changed"
 
 
 # =============================================================================
@@ -53,9 +63,18 @@ class Module(SQLModel, table=True):
 
 
 class Method(SQLModel, table=True):
-    """Specific analysis approach within a module."""
+    """Specific analysis approach within a module.
+
+    A method is named within its module: two modules may each hold a method
+    of the same name, each with its own snapshot. ``script_path`` is the
+    script's path inside the snapshot (e.g. ``filter.py``); Layout derives
+    the snapshot directory from the module and method names.
+    """
 
     __tablename__ = "methods"
+    __table_args__ = (
+        UniqueConstraint("module_id", "name", name="uq_method_module_name"),
+    )
 
     id: int | None = Field(default=None, primary_key=True)
     module_id: int = Field(foreign_key="modules.id", index=True)
@@ -79,34 +98,48 @@ class Method(SQLModel, table=True):
     module: Module | None = Relationship(back_populates="methods")
     tracked_functions: list["TrackedFunction"] = Relationship(back_populates="method")
     runs: list["Run"] = Relationship(back_populates="method")
-    contract: Optional["MethodContract"] = Relationship(back_populates="method")
     versions: list["MethodVersion"] = Relationship(back_populates="method")
 
 
 class MethodVersion(SQLModel, table=True):
-    """Records a content-addressed code version of a method.
+    """One entry of a method's version list, as a row runs can point at.
 
-    Deduplicates on (method_id, code_fingerprint) -- one row per unique
-    source-code snapshot of each method.  The DB UniqueConstraint is the
-    safety net; get_or_create_version() provides the upsert logic on top.
-
-    git_commit is retained as optional audit metadata (nullable) -- it
-    records which commit was checked out when the version was first seen,
-    but does not participate in identity or cache key computation.
+    The version list (``<method>.versions.json`` beside the snapshot,
+    committed with it) is authoritative; a row mirrors one entry: its
+    ``label`` (v1, v2, ...), code fingerprint, env name, env fingerprint,
+    image reference, snapshot tree hash and registration time
+    (``recorded_at``). Rows are written only by Registration: by
+    registration after its commit, and by the sync that creates a row for
+    an entry that arrived another way (``git pull``) and moves labels after
+    a renumbering. A row is matched to its entry by content identity and
+    registration time, never by label, so ``Run.version_id`` keeps pointing
+    at the same entry. Two labels may share a code fingerprint (an earlier
+    version's content registered again), so the fingerprint is indexed, not
+    unique; the label is unique per method. A row with no label (written
+    before version lists, or whose entry left the list) is kept for run
+    history and is never a version a node resolves. ``git_commit`` is the
+    registration commit that wrote the entry, when this database saw it; it
+    is not part of any identity or cache key.
     """
 
     __tablename__ = "method_versions"
     __table_args__ = (
-        UniqueConstraint("method_id", "code_fingerprint", name="uq_method_version"),
+        UniqueConstraint("method_id", "label", name="uq_method_version_label"),
+        Index("ix_method_versions_method_code", "method_id", "code_fingerprint"),
     )
 
     id: int | None = Field(default=None, primary_key=True)
     method_id: int = Field(foreign_key="methods.id", index=True)
     code_fingerprint: str = Field(max_length=64)
-    git_commit: str | None = Field(default=None, max_length=40)
+    git_commit: str | None = Field(default=None, max_length=64)
     recorded_at: datetime | None = Field(
         default_factory=lambda: datetime.now(UTC)
     )
+    label: int | None = Field(default=None)
+    env_name: str | None = Field(default=None, max_length=200)
+    env_fingerprint: str | None = Field(default=None, max_length=64)
+    image_ref: str | None = Field(default=None, max_length=500)
+    tree_hash: str | None = Field(default=None, max_length=64)
 
     # relationships
     method: Method | None = Relationship(back_populates="versions")
@@ -150,10 +183,56 @@ class ParamDef(SQLModel, table=True):
 # Run tracking
 # =============================================================================
 
+#: The rows the running-claim index covers: a claim that computes (not a
+#: cache-hit audit row), still running, and carrying the claim heartbeat. A
+#: failed, completed or cancelled row, and a row with no heartbeat (written
+#: before the heartbeat existed, or by the hand-run verb), is outside it, so
+#: a key may hold a retried failure and an outputs-missing rerun.
+RUNNING_CLAIM_PREDICATE = (
+    "cache_source_run_id IS NULL AND status = 'running' "
+    "AND heartbeat IS NOT NULL"
+)
+
+
+#: A cancelled row's reason: the user stopped the pipeline.
+CANCEL_REASON_USER = "user"
+#: A cancelled row's reason: an upstream run it needed failed.
+CANCEL_REASON_UPSTREAM_FAILED = "upstream_failed"
+#: A cancelled row's reason: the pipeline ended before it started.
+CANCEL_REASON_NOT_RUN = "not_run"
+#: A cancelled row's reason: the server stopped before the target started.
+CANCEL_REASON_INTERRUPTED = "interrupted"
+#: A cancelled row's reason: the engine failed before the target started.
+CANCEL_REASON_ENGINE_FAILED = "engine_failed"
+#: Every value ``Run.cancel_reason`` takes.
+CANCEL_REASONS = (CANCEL_REASON_USER, CANCEL_REASON_UPSTREAM_FAILED,
+                  CANCEL_REASON_NOT_RUN, CANCEL_REASON_INTERRUPTED,
+                  CANCEL_REASON_ENGINE_FAILED)
+#: The engine-side reasons: wfc could not run the target, so a pipeline in
+#: which nothing completed reads failed, not cancelled.
+ENGINE_SIDE_CANCEL_REASONS = (CANCEL_REASON_INTERRUPTED,
+                              CANCEL_REASON_ENGINE_FAILED)
+
+
 class Run(SQLModel, table=True):
-    """A single execution of a method with specific parameters."""
+    """A single execution of a method with specific parameters.
+
+    At most one running claim computes per method, sample and cache key: the
+    partial unique index ``uq_runs_running_claim`` refuses a second row under
+    :data:`RUNNING_CLAIM_PREDICATE`. A claim that loses the insert waits on
+    the winner. SQLite and PostgreSQL both treat a NULL in the key as
+    distinct, so a keyless row never meets the index.
+    """
 
     __tablename__ = "runs"
+    __table_args__ = (
+        Index(
+            "uq_runs_running_claim", "method_id", "sample", "cache_key",
+            unique=True,
+            sqlite_where=text(RUNNING_CLAIM_PREDICATE),
+            postgresql_where=text(RUNNING_CLAIM_PREDICATE),
+        ),
+    )
 
     id: int | None = Field(default=None, primary_key=True)
     method_id: int = Field(foreign_key="methods.id", index=True)
@@ -171,11 +250,39 @@ class Run(SQLModel, table=True):
     version_id: int | None = Field(default=None, foreign_key="method_versions.id", index=True)
     cache_key: str | None = Field(default=None, max_length=64, index=True)
     cache_source_run_id: int | None = Field(default=None, foreign_key="runs.id")
-    # env_fingerprint: 32-char MD5 hex of the DVC-cached env content blob
-    # captured at pre_run time (lock + pip freeze, or a container env's
-    # image fingerprint).  Folded into the cache key so env drift
-    # invalidates cache.  Nullable for backward compat with pre-env-fp runs.
+    # env_fingerprint: 32-char MD5 hex of the cached env content blob that
+    # identifies what the env's image contains (its layers, environment
+    # variables, user and working directory), resolved at pre_run time.
+    # Folded into the cache key so env drift invalidates cache.  Nullable for
+    # backward compat with pre-env-fp runs.
     env_fingerprint: str | None = Field(default=None, max_length=32)
+    # What the run ran under, recorded by the claim in the row's own INSERT
+    # (fresh and cache-hit rows alike) and never part of the cache key:
+    # git_commit is the project commit the claim ran at (or the one passed
+    # with --git-commit); env_name is the env of the method version actually
+    # claimed; wfc_version is the installed wfc version. NULL on rows written
+    # without a claim (refused, cancelled, register_run) and on older rows.
+    git_commit: str | None = Field(default=None, max_length=64)
+    env_name: str | None = Field(default=None, max_length=200)
+    wfc_version: str | None = Field(default=None, max_length=100)
+    # The hash (canonical JSON md5) of the pipeline document the run came
+    # from; the document is in the cache under it before any row names it.
+    # Set on every row of a launched pipeline (fresh, cached, refused,
+    # cancelled) and on a run-step given --pipeline-json. Not in the key.
+    pipeline_doc_hash: str | None = Field(default=None, max_length=36)
+    # key_recipe: the version of the key recipe (``wfc.identity.KEY_RECIPE``)
+    # that composed ``cache_key``; stamped by the claim on keyed rows only.
+    # The SQL ``DEFAULT 1`` exists for ``ensure_schema``: rows already in a
+    # database that predates the column were keyed under recipe 1, and the
+    # ADD COLUMN backfills them to 1 without rewriting them. ``evaluates_none``
+    # makes the ORM write an explicit NULL for a keyless row instead of
+    # leaving the column to that default.
+    key_recipe: int | None = Field(
+        default=None,
+        sa_column=Column(
+            Integer().evaluates_none(), nullable=True, server_default=text("1"),
+        ),
+    )
     # cache_source_run_id is set when a run reused a previous run's outputs;
     # the run still appears in the audit log, it just did not re-execute.
     # Error persistence
@@ -184,11 +291,31 @@ class Run(SQLModel, table=True):
     # Causality link for cancelled rows: points at the nearest failed ancestor
     # in the frozen pipeline DAG. Populated only for ``status='cancelled'``
     # rows written post-hoc by ``_write_cancelled_rows`` at pipeline-end.
-    # NULL on executed rows and on cancelled rows whose failed ancestor could
-    # not be resolved (defensive -- shouldn't happen in practice).
+    # NULL on executed rows and on a cancelled row with no failed ancestor.
     cancelled_due_to_run_id: int | None = Field(
         default=None, foreign_key="runs.id", index=True
     )
+    # Why a cancelled row was cancelled: one of CANCEL_REASONS. NULL on rows
+    # that are not cancelled. ``ensure_schema`` gives the cancelled rows of a
+    # database that predates the column their reason once, when it adds it.
+    cancel_reason: str | None = Field(default=None, max_length=50)
+    # The claim heartbeat: a counter the process holding a running claim
+    # advances at a fixed interval until its record phase. A waiting claim
+    # reads it only for movement, timed by its own monotonic clock; it is
+    # never a time and never compared with one. NULL on rows no claim holds
+    # (cache-hit audit rows, register_run, cancelled rows) and on rows
+    # written before this column; such a row is outside the running-claim
+    # index. Not part of any cache key or fingerprint.
+    heartbeat: int | None = Field(default=None)
+    # What the run invoked, written by dispatch just before the launch (so a
+    # run whose method then fails keeps it): the container-side launch as it
+    # was handed to Docker -- image reference, interpreter, script path,
+    # mounts as (container path, role, read-only), the WFC_* values as
+    # forwarded, user, gpus, working directory and wfc version. No host path.
+    # NULL on rows dispatch launched nothing for (cache-hit, refused,
+    # cancelled, register_run) and on rows written before this column. Not
+    # part of any cache key or fingerprint.
+    invocation: dict | None = Field(default=None, sa_column=Column(JSON))
     # NID: custom run label from canvas node (nullable = auto-version)
     nid: str | None = Field(default=None, max_length=200)
     # The pipeline node the run executed, by the node's raw document id (a
@@ -326,6 +453,32 @@ class RunOutput(SQLModel, table=True):
     # recorded before DVC integration.
     content_hash: str | None = Field(default=None, max_length=36)
 
+    # Collect's stat record of the output, written by the collect phase after
+    # it makes the output read-only (a chmod moves ctime), and read only by
+    # Storage's integrity check. For a file: its st_mtime_ns plus its change
+    # time (st_ctime_ns on Linux and macOS, NTFS's ChangeTime on Windows; NULL
+    # on a volume that keeps none) and, on Windows, its file index (st_ino;
+    # text, since an index can exceed SQLite's signed 64-bit integer). For a directory: its newest
+    # member's st_mtime_ns and its member count (each member's fields are in
+    # Layout's member stamp). ``file_size`` above is the size or total size.
+    stat_mtime_ns: int | None = None
+    stat_ctime_ns: int | None = None
+    stat_file_index: str | None = Field(default=None, max_length=40)
+    member_count: int | None = None
+    # A file's extended-attribute names, sorted, read with its stat fields
+    # (a directory's members' are in the member stamp). NULL where the read
+    # failed, for a directory, and on rows collected before names were
+    # recorded: the integrity check then compares the other fields alone.
+    stat_xattr_names: list[str] | None = Field(default=None, sa_column=Column(JSON))
+    # NULL: as collected. ``changed`` (OutputIntegrity): Storage's check found
+    # the output changed after the run wrote it; written once, compare-and-set.
+    integrity_status: str | None = Field(default=None, max_length=20)
+    # The output's hash taken at collect, only under ``[integrity] inputs =
+    # "hash"``. Never read in place of ``content_hash``, whose NULL marks an
+    # un-archived output: only Storage's integrity check and the archive pass
+    # read it, and it is never a cache address, a push or a prune key.
+    collect_hash: str | None = Field(default=None, max_length=36)
+
     # Async push-to-remote bookkeeping. ``push_status`` defaults to
     # ``deferred`` (the no-remote-configured terminal). The CLI flips it to
     # ``pending`` at row-insert time when a remote is configured; the push
@@ -344,18 +497,23 @@ class RunOutput(SQLModel, table=True):
 # =============================================================================
 
 class MethodContract(SQLModel, table=True):
-    """Per-method named slot contract parsed from ``method.yaml``.
+    """One method version's named slot contract, parsed from its ``method.yaml``.
 
-    Captures input slots, output slots (with types and filenames),
-    params schema, and executor hint so the Snakemake generator
-    and future NF/Docker shims can read contracts from the DB instead
-    of re-parsing YAML at generation time.
+    Captures input slots, output slots (with types and filenames), params
+    schema and executor hint. Keyed by ``version_id``: each version keeps
+    the contract it was registered with, and readers ask Registration for
+    a version's contract (the newest when unpinned). ``method_id`` stays as
+    a lookup column; a row with no ``version_id`` was written before
+    contracts were per version and is never read as one.
     """
 
     __tablename__ = "method_contracts"
 
     id: int | None = Field(default=None, primary_key=True)
-    method_id: int = Field(foreign_key="methods.id", unique=True, index=True)
+    method_id: int = Field(foreign_key="methods.id", index=True)
+    version_id: int | None = Field(
+        default=None, foreign_key="method_versions.id", unique=True,
+    )
     input_slots: dict | None = Field(default=None, sa_column=Column(JSON))
     # {slot_name: {type, required, multiple, description}}
     output_slots: dict | None = Field(default=None, sa_column=Column(JSON))
@@ -364,9 +522,6 @@ class MethodContract(SQLModel, table=True):
     # {param_name: {type, required, default, description}}
     executor: str = Field(default="python", max_length=50)
     # "python" | "nextflow"  (forward-looking: NF shim generation)
-
-    # relationships
-    method: Method | None = Relationship(back_populates="contract")
 
 
 # =============================================================================
@@ -377,10 +532,13 @@ class Sample(SQLModel, table=True):
     """A registered data sample managed by wfc.
 
     A registered sample is a file or a directory whose bytes live in the
-    content-addressed cache under ``content_hash``.  ``registered_path`` is
-    relative to the project root: where a run's restore materializes the
-    sample, under ``data/samples/{name}/``.  An absolute ``registered_path``
-    is a malformed record and is refused, naming re-registration.
+    content-addressed cache under ``content_hash``.  ``registered_path``
+    records only the file (or directory) name; Layout derives where a run's
+    restore materializes the sample from it,
+    ``.wfc/workspace/samples/{name}/{file name}``.  A ``registered_path``
+    that is not a bare file name (empty, absolute, or with a directory
+    component) is a malformed record and is refused, naming
+    re-registration.
     """
 
     __tablename__ = "samples"
@@ -420,3 +578,79 @@ class Sample(SQLModel, table=True):
     pushed_at: datetime | None = Field(default=None)
     push_attempts: int = Field(default=0)
     push_error: str | None = Field(default=None)
+
+
+# =============================================================================
+# Content blobs
+# =============================================================================
+
+class Blob(SQLModel, table=True):
+    """A content-addressed cache entry that no output or sample row owns.
+
+    One row per hash, entered (insert if absent) when Storage stores the
+    bytes, so the row only ever names bytes already in the cache. ``kind``
+    says what the bytes are and so what recreates them: this release writes
+    ``pipeline-document`` and ``env-fingerprint``; the column is open-ended
+    text, not an enum. The push bookkeeping has the same shape and defaults
+    as RunOutput's and Sample's, and the same push worker drives it; every
+    status change is a compare-and-set on ``push_status``, so several
+    writers never overwrite each other. ``stored_at`` is when the row was
+    entered, which gates the orphan reset of a recent failed push.
+    """
+
+    __tablename__ = "blobs"
+
+    # md5 hex; a directory's is its manifest's md5 plus ``.dir``.
+    hash: str = Field(primary_key=True, max_length=36)
+    kind: str = Field(max_length=50)
+    push_status: str = Field(default=PushStatus.deferred.value, max_length=20, index=True)
+    push_attempts: int = Field(default=0)
+    push_error: str | None = Field(default=None)
+    pushed_at: datetime | None = Field(default=None)
+    stored_at: datetime | None = Field(
+        default_factory=lambda: datetime.now(UTC)
+    )
+    # Size in bytes of the stored content, when the storer knew it.
+    size: int | None = None
+
+
+# =============================================================================
+# In-use records
+# =============================================================================
+
+class InUseKind(str, Enum):
+    """What an :class:`InUseRecord` holds in use.
+
+    ``code-copy`` is a version's extracted code copy, keyed by its snapshot
+    tree hash. ``sample-view`` is a restored sample's view in the workspace,
+    keyed by the sample's name.
+    """
+    code_copy = "code-copy"
+    sample_view = "sample-view"
+
+
+class InUseRecord(SQLModel, table=True):
+    """One holder's claim on a code copy or a sample view.
+
+    Storage owns these rows: it writes a record before the holder makes,
+    checks or reuses what it names, releases it when the holder is done, and
+    removes a copy or a view only inside the one write transaction that
+    finds no other record for it. ``kind`` (:class:`InUseKind`) and ``key``
+    name what is in use. The holder is a claim, by the token the claim drew
+    before its run row existed (``run_id`` is set once the claim binds the
+    record to its run), or a pipeline, by ``pipeline_id``. There is no time
+    column: a record never expires by age.
+    """
+
+    __tablename__ = "in_use_records"
+    __table_args__ = (
+        Index("ix_in_use_records_kind_key", "kind", "key"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    kind: str = Field(max_length=20)
+    # A code copy's snapshot tree hash, or a sample's name.
+    key: str = Field(max_length=200)
+    claim_token: str | None = Field(default=None, max_length=64, index=True)
+    run_id: int | None = Field(default=None, foreign_key="runs.id", index=True)
+    pipeline_id: str | None = Field(default=None, max_length=200, index=True)

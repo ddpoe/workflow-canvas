@@ -5,7 +5,8 @@ and run caching.
 Coverage:
   - DirtyRepositoryError raised when working tree is dirty
   - build_code_fingerprint determinism and edge cases
-  - get_or_create_version deduplicates (method_id, code_fingerprint) pairs
+  - pre_run refuses a registered snapshot changed after registration, before
+    any Run or MethodVersion row
   - build_input_fingerprint is stable regardless of the order identities are handed in
   - build_cache_key is deterministic; parameter changes break it
   - register_sample captures file_size and file_mtime from the source file
@@ -25,8 +26,6 @@ import filecmp
 import hashlib
 import shutil
 import subprocess
-import threading
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -39,7 +38,12 @@ from axiom_annotations import workflow, Step
 # compare cache keys, where the row's content_hash IS the input under test.
 # Nothing here runs a pipeline or restores a sample.
 from tests.conftest import seed_sample_row
-from tests.fixtures.routes import completed_run
+from tests.fixtures.routes import (
+    completed_run,
+    register_test_method,
+    sample_source_dir,
+)
+from wfc import layout
 from wfc.contracts import parse_method_yaml, render_contract_projection
 from wfc.persistence import get_session
 from wfc.init import init_project
@@ -52,7 +56,6 @@ from wfc.identity import (
     build_input_fingerprint,
 )
 from wfc.version import DirtyRepositoryError
-from wfc.registration import get_or_create_version
 from wfc.registration import register_sample
 from wfc.execution.claim import pre_run
 
@@ -69,21 +72,6 @@ def _projection_of(method_dir) -> str | None:
     projection from the same place.
     """
     return render_contract_projection(parse_method_yaml(Path(method_dir)))
-
-
-def _seed_method(module_name: str = "versioning_mod", method_name: str = "v_method") -> int:
-    """Insert a minimal Module + Method into the DB and return method.id."""
-    from wfc.persistence import Module, Method
-    with get_session() as session:
-        mod = Module(name=module_name, description="versioning test module")
-        session.add(mod)
-        session.commit()
-        session.refresh(mod)
-        method = Method(name=method_name, module_id=mod.id, script_path="methods/v_method/run.py", env="fixture-env")
-        session.add(method)
-        session.commit()
-        session.refresh(method)
-        return method.id  # type: ignore[return-value]
 
 
 # =============================================================================
@@ -184,106 +172,6 @@ def test_mixed_tracked_and_untracked_still_raises(git_project):
 
 
 # =============================================================================
-# get_or_create_version: deduplication
-# =============================================================================
-
-@workflow(
-    purpose="Calling get_or_create_version twice with the same (method_id, code_fingerprint) "
-            "returns the same MethodVersion.id without creating a duplicate row"
-)
-def test_get_or_create_version_dedup(tmp_project):
-    """Two calls with identical (method_id, code_fingerprint) -> same id, one DB row."""
-    口 = Step(
-        step_num=1,
-        name="Seed method",
-        purpose="Insert a minimal Module and Method so method_id is valid")
-    method_id = _seed_method()
-
-    口 = Step(
-        step_num=2,
-        name="Create version twice",
-        purpose="Call get_or_create_version twice with identical code_fingerprint")
-    fingerprint = "a" * 64
-    id_first = get_or_create_version(method_id, fingerprint)
-    id_second = get_or_create_version(method_id, fingerprint)
-
-    口 = Step(
-        step_num=3,
-        name="Verify deduplication",
-        purpose="Confirm both calls return the same ID and only one row exists in the DB")
-    assert id_first == id_second
-    with get_session() as session:
-        rows = session.exec(
-            select(MethodVersion).where(
-                MethodVersion.method_id == method_id,
-                MethodVersion.code_fingerprint == fingerprint)
-        ).all()
-    assert len(rows) == 1
-
-
-@workflow(
-    purpose="When multiple Snakemake workers attempt to record a new method version at the same "
-            "time, all workers end up with the same version record — the concurrency fallback "
-            "ensures only one row is ever written"
-)
-def test_get_or_create_version_concurrent_race(tmp_project):
-    """8 threads race to INSERT the same (method_id, code_fingerprint) simultaneously.
-
-    The first thread to commit wins; the remaining 7 hit a UNIQUE constraint
-    violation (IntegrityError) and fall through to the re-SELECT fallback.
-    All 8 must return the same MethodVersion.id and exactly one row must exist.
-    """
-    口 = Step(
-        step_num=1,
-        name="Seed method",
-        purpose="Insert a minimal Module and Method so method_id is valid for all workers")
-    method_id = _seed_method(module_name="race_mod", method_name="race_method")
-    fingerprint = "c" * 64
-
-    口 = Step(
-        step_num=2,
-        name="Race to register version",
-        purpose="Start 8 pipeline workers simultaneously, all trying to record the same "
-                "method version at the same moment")
-    results: list[int] = []
-    errors: list[Exception] = []
-    lock = threading.Lock()
-    barrier = threading.Barrier(8)
-
-    def worker():
-        try:
-            barrier.wait()  # all threads start the DB call at the same moment
-            vid = get_or_create_version(method_id, fingerprint)
-            with lock:
-                results.append(vid)
-        except Exception as exc:
-            with lock:
-                errors.append(exc)
-
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        futures = [pool.submit(worker) for _ in range(8)]
-        for f in futures:
-            f.result(timeout=10)
-
-    口 = Step(
-        step_num=3,
-        name="Verify single version record",
-        purpose="Confirm every worker received the same version ID, no errors were raised, "
-                "and exactly one version row exists in the database")
-    assert not errors, f"Workers raised exceptions: {errors}"
-    assert len(results) == 8
-    assert len(set(results)) == 1, f"Workers returned different IDs: {set(results)}"
-
-    with get_session() as session:
-        rows = session.exec(
-            select(MethodVersion).where(
-                MethodVersion.method_id == method_id,
-                MethodVersion.code_fingerprint == fingerprint)
-        ).all()
-    assert len(rows) == 1
-
-
-# =============================================================================
 # build_input_fingerprint: sorted() is load-bearing
 # =============================================================================
 
@@ -356,12 +244,12 @@ def test_build_cache_key_deterministic():
         name="Verify idempotence",
         purpose="Confirm two identical calls produce the same 64-char hex key")
     assert key_1 == key_2
-    # The composition: code + params as sorted-key JSON + input + env +
-    # <module>.<method>, no delimiter, SHA256 — pinned as hashlib over
-    # literal bytes.
+    # The composition (recipe 3): the compact JSON list [recipe, code,
+    # params with sorted keys, input, env, <module>.<method>], SHA256 —
+    # pinned as hashlib over literal bytes.
     assert key_1 == hashlib.sha256(
-        ("b" * 64 + '{"normalize": true, "threshold": 0.5}' + "c" * 64
-         + "a" * 32 + "mod_one.my_method").encode()
+        ('[3,"' + "b" * 64 + '",{"normalize":true,"threshold":0.5},"'
+         + "c" * 64 + '","' + "a" * 32 + '","mod_one.my_method"]').encode()
     ).hexdigest()
 
     口 = Step(
@@ -472,29 +360,49 @@ def test_registration_mode_link_guard(tmp_project):
 # pre_run: cache miss
 # =============================================================================
 
-def _ensure_method_source(project_dir, method_name="v_method"):
-    """Create a minimal registered method directory: a script and a contract.
+def _register_v_method(project_dir, module_name="versioning_mod",
+                       method_name="v_method",
+                       body="def main():\n    pass\n") -> int:
+    """Register a minimal method through production registration.
 
-    Both halves are part of a method's code identity, so a registered copy
-    carrying no ``method.yaml`` is refused at fingerprint time.
+    The source (a script and a contract; both halves are the method's code
+    identity) is written beside the project and registered, so registration
+    copies it into the module-qualified snapshot, commits the snapshot and
+    mints the version. Calling it again with a different ``body`` is a
+    re-registration of edited code.
+
+    Returns:
+        The registered ``Method.id``.
     """
-    method_dir = Path(project_dir) / "methods" / method_name
-    method_dir.mkdir(parents=True, exist_ok=True)
-    script = method_dir / f"{method_name}.py"
-    if not script.exists():
-        script.write_text("def main():\n    pass\n")
-    contract = method_dir / "method.yaml"
-    if not contract.exists():
-        contract.write_text(
-            "env: v_env\n"
-            "inputs:\n"
-            "  data:\n"
-            "    required: false\n"
-            "outputs:\n"
-            "  result:\n"
-            "    type: .csv\n"
-        )
-    return method_dir
+    from wfc.persistence import Method, Module
+    src = sample_source_dir(project_dir) / "_methods" / module_name / method_name
+    src.mkdir(parents=True, exist_ok=True)
+    (src / f"{method_name}.py").write_text(body)
+    (src / "method.yaml").write_text(
+        "env: fixture-env\n"
+        "inputs:\n"
+        "  data:\n"
+        "    required: false\n"
+        "outputs:\n"
+        "  result:\n"
+        "    type: .csv\n"
+        # The claims in this module pass these; a claim's parameter check
+        # refuses a parameter its method does not declare.
+        "params:\n"
+        "  alpha:\n    type: float\n"
+        "  beta:\n    type: float\n"
+        "  gamma:\n    type: float\n"
+        "  delta:\n    type: float\n"
+        "  stage:\n    type: str\n"
+        "  k:\n    type: int\n"
+    )
+    register_test_method(project_dir=Path(project_dir), module_name=module_name,
+                         method_dir=src, method_name=method_name)
+    with get_session() as session:
+        return session.exec(
+            select(Method.id).join(Module).where(
+                Module.name == module_name, Method.name == method_name)
+        ).one()
 
 
 @workflow(
@@ -505,9 +413,9 @@ def test_pre_run_miss_creates_versioned_run(tmp_project):
     口 = Step(
         step_num=1,
         name="Seed module, method, and source files",
-        purpose="Insert the Module, Method and Sample rows pre_run requires and create method source dir")
-    _seed_method(module_name="versioning_mod", method_name="v_method")
-    _ensure_method_source(tmp_project, "v_method")
+        purpose="Register the method (registration mints its version) and "
+                "seed the Sample row pre_run requires")
+    method_id = _register_v_method(tmp_project)
     seed_sample_row("samp_x")
 
     口 = Step(
@@ -537,13 +445,57 @@ def test_pre_run_miss_creates_versioned_run(tmp_project):
     assert len(run.cache_key) == 64
     assert run.cache_source_run_id is None
 
-    # Verify git_commit stored as audit metadata on MethodVersion
+    # The run carries the version registration minted, with the
+    # registration's commit as its audit metadata.
     with get_session() as session:
         mv = session.get(MethodVersion, run.version_id)
+        registered = session.exec(
+            select(MethodVersion).where(MethodVersion.method_id == method_id)
+        ).one()
     assert mv is not None
-    assert mv.code_fingerprint is not None
+    assert mv.id == registered.id
     assert len(mv.code_fingerprint) == 64
-    assert mv.git_commit == commit
+    assert mv.git_commit is not None and len(mv.git_commit) == 40
+
+
+@workflow(
+    purpose="A registered snapshot edited and committed after registration "
+            "never reaches a run: pre_run claims the registered version, "
+            "keyed on its code, and mints no version"
+)
+def test_pre_run_runs_the_registered_version_after_a_snapshot_edit(tmp_project):
+    """The claim runs the version's committed tree; it never mints a version."""
+    from wfc.registration import resolve_method_code
+
+    口 = Step(
+        step_num=1,
+        name="Register, then edit and commit the snapshot",
+        purpose="The snapshot's committed code is no longer the code "
+                "registration recorded")
+    _register_v_method(tmp_project)
+    seed_sample_row("samp_edit")
+    registered = resolve_method_code("versioning_mod", "v_method")
+    script = layout.method_dir(tmp_project, "versioning_mod", "v_method") / "v_method.py"
+    script.write_text("def main():\n    return 'edited'\n")
+    _git(tmp_project, "add", "-A")
+    _git(tmp_project, "commit", "-q", "-m", "edit the snapshot by hand")
+    with get_session() as session:
+        versions_before = len(session.exec(select(MethodVersion)).all())
+
+    口 = Step(
+        step_num=2,
+        name="Claim the run",
+        purpose="The run row records the registered version; the code it "
+                "executes is the version's copy, not the edited snapshot")
+    _flag, run_id = pre_run(method_name="v_method", module_name="versioning_mod",
+                            sample="samp_edit", params={}, git_commit="e" * 40)
+    with get_session() as session:
+        assert session.get(Run, run_id).version_id == registered.version_id
+        assert len(session.exec(select(MethodVersion)).all()) == versions_before
+    code = resolve_method_code("versioning_mod", "v_method")
+    assert code.script.read_text(encoding="utf-8") == (
+        registered.script.read_text(encoding="utf-8"))
+    assert "edited" not in code.script.read_text(encoding="utf-8")
 
 
 # =============================================================================
@@ -568,8 +520,7 @@ def test_pre_run_hit_returns_cached_flag(tmp_project):
         step_num=1,
         name="Seed module, method, and source files",
         purpose="Insert the Module, Method and Sample rows both pre_run calls require and create method source dir")
-    _seed_method(module_name="versioning_mod", method_name="v_method")
-    _ensure_method_source(tmp_project, "v_method")
+    _register_v_method(tmp_project)
     seed_sample_row("samp_y")
 
     口 = Step(
@@ -641,8 +592,7 @@ def test_pre_run_hit_records_run_inputs_for_audit_row(tmp_project, monkeypatch):
         name="Seed module, method, sample, and a fake upstream Run row",
         purpose="The audit-row lineage recording needs concrete source_run_ids to reference; "
                 "the upstream records one output so the entry's omitted source slot resolves")
-    _seed_method(module_name="versioning_mod", method_name="v_method")
-    _ensure_method_source(tmp_project, "v_method")
+    _register_v_method(tmp_project)
     # The upstream is a run that ran: one recorded output, on a sample the
     # route registers, so the entry's omitted source slot resolves to it.
     upstream_id = completed_run(
@@ -724,8 +674,7 @@ def test_consumer_key_is_the_same_whether_its_parent_ran_or_cache_hit(tmp_projec
                      "-- the state a later identical claim resolves against")
     from wfc.persistence import RunOutput
 
-    _seed_method(module_name="versioning_mod", method_name="v_method")
-    _ensure_method_source(tmp_project, "v_method")
+    _register_v_method(tmp_project)
     seed_sample_row("samp_chain")
     commit = "5" * 40
     flag_parent, parent_id = pre_run(
@@ -738,12 +687,12 @@ def test_consumer_key_is_the_same_whether_its_parent_ran_or_cache_hit(tmp_projec
         session.add(run)
         session.add(RunOutput(
             run_id=parent_id, slot="result", output_name="result.csv",
-            artifact_path=f".runs/{parent_id:08d}/result.csv",
+            artifact_path=f".wfc/runs/{parent_id:08d}/result.csv",
             artifact_type="method_file"))
         session.commit()
     # The recorded output exists in the run archive, as the collect phase
     # leaves it: the hit rule reuses a run only when its outputs can be read.
-    (tmp_project / f".runs/{parent_id:08d}/result.csv").write_text("x\n")
+    (tmp_project / f".wfc/runs/{parent_id:08d}/result.csv").write_text("x\n")
 
     口 = Step(step_num=2, name="Claim the consumer against the fresh parent",
              purpose="The entry names no source slot, so it resolves to the "
@@ -805,8 +754,7 @@ def test_pre_run_deleted_archive_is_a_miss(tmp_project):
         name="Seed and complete a cacheable run",
         purpose="First pre_run registers the run and creates its archive dir; "
                 "marking it completed makes it eligible for cache lookup")
-    _seed_method(module_name="versioning_mod", method_name="v_method")
-    _ensure_method_source(tmp_project, "v_method")
+    _register_v_method(tmp_project)
     seed_sample_row("samp_gone")
     commit = "d" * 40
     flag_1, run_id_1 = pre_run(
@@ -883,8 +831,7 @@ def test_cache_hit_lookup_is_the_one_rule(tmp_project, capsys, monkeypatch):
     # Seed a completed run with lineage and archive: pre_run registers the
     # candidate (cache key, RunInput lineage, archive dir); marking it
     # completed makes it a hit candidate.
-    _seed_method(module_name="versioning_mod", method_name="v_method")
-    _ensure_method_source(tmp_project, "v_method")
+    _register_v_method(tmp_project)
     upstream_id = completed_run(
         tmp_project, monkeypatch=monkeypatch, method="v_upstream",
         module="versioning_mod", sample="samp_one",
@@ -927,11 +874,11 @@ def test_cache_hit_lookup_is_the_one_rule(tmp_project, capsys, monkeypatch):
     assert cli_main(miss_argv) == 0
     assert capsys.readouterr().out.strip() == "NONE"
 
-    # Same lineage under a different key is a miss: edit the registered
+    # Same lineage under a different key is a miss: re-register edited
     # source -- the candidate keeps its parents and params (a lineage match)
     # but its code fingerprint, and so its key, differs; the verb prints NONE.
-    (tmp_project / "methods" / "v_method" / "v_method.py").write_text(
-        "def main():\n    return 2\n")
+    _register_v_method(tmp_project, body="def main():\n    return 2\n")
+    capsys.readouterr()  # the re-registration's output
     assert cli_main(hit_argv) == 0
     assert capsys.readouterr().out.strip() == "NONE"
 
@@ -944,21 +891,18 @@ def test_cache_hit_lookup_is_the_one_rule(tmp_project, capsys, monkeypatch):
 def test_two_modules_same_method_name_do_not_share_a_cache_entry(tmp_project):
     """A method name alone does not identify a method, and a key is over identity.
 
-    The two modules share ``methods/shared_name/`` -- the registry is keyed by
-    method name until the per-module layout lands -- so their code fingerprint,
-    params, env and sample are all identical. The module-qualified key
-    component is the only thing keeping the second module's step from being
-    served the first module's outputs.
+    The two modules register identical code into their own snapshots, so
+    their code fingerprint, params, env and sample are all identical. The
+    module-qualified key component is the only thing keeping the second
+    module's step from being served the first module's outputs.
     """
     from wfc.execution.claim import lookup_cache_hit
 
-    口 = Step(step_num=1, name="Seed two modules holding a same-named method",
-             purpose="Rows are seeded directly: the registration guard refuses "
-                     "exactly this collision once it lands, and the defect being "
-                     "witnessed is a claim-phase one")
-    _seed_method(module_name="mod_alpha", method_name="shared_name")
-    _seed_method(module_name="mod_beta", method_name="shared_name")
-    _ensure_method_source(tmp_project, "shared_name")
+    口 = Step(step_num=1, name="Register a same-named method in two modules",
+             purpose="Identical source registers into two module-qualified "
+                     "snapshots with the same code fingerprint")
+    _register_v_method(tmp_project, module_name="mod_alpha", method_name="shared_name")
+    _register_v_method(tmp_project, module_name="mod_beta", method_name="shared_name")
     seed_sample_row("samp_shared")
 
     口 = Step(step_num=2, name="Claim and complete the step under the first module",
@@ -1120,8 +1064,9 @@ def test_build_code_fingerprint_missing_dir_raises(tmp_path):
 # =============================================================================
 
 @workflow(
-    purpose="Code fingerprint remains stable when unrelated files change — "
-            "only .py files in the method directory affect the fingerprint"
+    purpose="Code fingerprint remains stable when files outside the method "
+            "directory change — only the method directory's own files affect "
+            "the fingerprint"
 )
 def test_fingerprint_stable_across_unrelated_changes(tmp_path):
     """Add/modify files outside the method dir -> fingerprint unchanged."""
@@ -1142,7 +1087,7 @@ def test_fingerprint_stable_across_unrelated_changes(tmp_path):
     other_method = tmp_path / "methods" / "other_method"
     other_method.mkdir(parents=True)
     (other_method / "other.py").write_text("def other(): pass\n")
-    (method_dir / "data.csv").write_text("a,b\n1,2\n")  # non-.py file in method dir
+    (method_dir.parent / "data.csv").write_text("a,b\n1,2\n")  # beside the method dir
 
     口 = Step(
         step_num=3,
@@ -1153,73 +1098,40 @@ def test_fingerprint_stable_across_unrelated_changes(tmp_path):
 
 
 # =============================================================================
-# Version lookup by fingerprint: same fingerprint, different commits
+# Version lookup by fingerprint: different fingerprints
 # =============================================================================
 
 @workflow(
-    purpose="Two calls to get_or_create_version with the same code_fingerprint but "
-            "different git_commits return the same MethodVersion — identical code "
-            "across commits shares cached results"
-)
-def test_same_fingerprint_different_commits_same_version(tmp_project):
-    """Same code_fingerprint + different git_commits -> same MethodVersion row."""
-    口 = Step(
-        step_num=1,
-        name="Seed method",
-        purpose="Insert a minimal Module and Method")
-    method_id = _seed_method(module_name="fp_mod", method_name="fp_method")
-
-    口 = Step(
-        step_num=2,
-        name="Create version with two different commits but same fingerprint",
-        purpose="Simulate identical code across two different git commits")
-    fingerprint = "ab" * 32  # 64 chars
-    commit_a = "a" * 40
-    commit_b = "b" * 40
-    id_a = get_or_create_version(method_id, fingerprint, git_commit=commit_a)
-    id_b = get_or_create_version(method_id, fingerprint, git_commit=commit_b)
-
-    口 = Step(
-        step_num=3,
-        name="Verify same version returned",
-        purpose="Confirm both calls return the same MethodVersion.id")
-    assert id_a == id_b
-
-    with get_session() as session:
-        rows = session.exec(
-            select(MethodVersion).where(
-                MethodVersion.method_id == method_id,
-                MethodVersion.code_fingerprint == fingerprint)
-        ).all()
-    assert len(rows) == 1
-
-
-@workflow(
-    purpose="Two calls to get_or_create_version with different code_fingerprints "
-            "return different MethodVersions — distinct code produces distinct versions"
+    purpose="Re-registering a method with edited code mints a second "
+            "MethodVersion with a different fingerprint — distinct code "
+            "produces distinct versions"
 )
 def test_different_fingerprints_different_versions(tmp_project):
-    """Different code_fingerprints -> different MethodVersion rows."""
+    """Edited code re-registered -> a second MethodVersion row."""
     口 = Step(
         step_num=1,
-        name="Seed method",
-        purpose="Insert a minimal Module and Method")
-    method_id = _seed_method(module_name="fp_mod2", method_name="fp_method2")
+        name="Register the method",
+        purpose="Registration mints the first version")
+    method_id = _register_v_method(tmp_project, module_name="fp_mod2",
+                                   method_name="fp_method2")
 
     口 = Step(
         step_num=2,
-        name="Create versions with different fingerprints",
-        purpose="Simulate two different code versions of the same method")
-    fp_v1 = "a" * 64
-    fp_v2 = "b" * 64
-    id_v1 = get_or_create_version(method_id, fp_v1, git_commit="c" * 40)
-    id_v2 = get_or_create_version(method_id, fp_v2, git_commit="d" * 40)
+        name="Re-register edited code",
+        purpose="The same method registered again with a different body")
+    _register_v_method(tmp_project, module_name="fp_mod2", method_name="fp_method2",
+                       body="def main():\n    return 2\n")
 
     口 = Step(
         step_num=3,
         name="Verify different versions",
-        purpose="Confirm the two calls return different MethodVersion.ids")
-    assert id_v1 != id_v2
+        purpose="Two version rows, one per distinct code fingerprint")
+    with get_session() as session:
+        versions = session.exec(
+            select(MethodVersion).where(MethodVersion.method_id == method_id)
+        ).all()
+    assert len(versions) == 2
+    assert len({v.code_fingerprint for v in versions}) == 2
 
 
 # =============================================================================
@@ -1227,8 +1139,8 @@ def test_different_fingerprints_different_versions(tmp_project):
 # =============================================================================
 
 @workflow(
-    purpose="After register_method, source files are copied to methods/{method_name}/ "
-            "and match the originals"
+    purpose="After register_method, source files are copied to the "
+            "module-qualified snapshot and match the originals"
 )
 def test_register_copies_source_files(tmp_project):
     """register_method copies .py files from the source dir to the registered location."""
@@ -1238,7 +1150,7 @@ def test_register_copies_source_files(tmp_project):
         purpose="Create a git-initialised project with a method in a non-registered location")
     init_project(tmp_project, init_git=True)
 
-    # Create a method source dir outside methods/ so the copy step fires
+    # A method source dir outside the registry: registration copies it
     src_dir = tmp_project / "workspace" / "my_method"
     src_dir.mkdir(parents=True)
     script = src_dir / "my_method.py"
@@ -1252,12 +1164,14 @@ def test_register_copies_source_files(tmp_project):
     sub_script.write_text("def nested():\n    return 99\n")
     # A method must name a built container env. fixture-env is the record
     # tmp_project writes into .wfc/envs.json (a manifest lookup, no Docker)
-    # — this test is about source copying, not envs.
+    # — this test is about source copying, not envs. With three scripts in
+    # the folder, method.yaml names the main one.
     (src_dir / "method.yaml").write_text(
         "inputs:\n  data:\n    type: .csv\n"
         "outputs:\n  output:\n    type: .csv\n"
         "params: {}\nexecutor: python\n"
         "env: fixture-env\n"
+        "script: my_method.py\n"
     )
 
     口 = Step(
@@ -1265,13 +1179,13 @@ def test_register_copies_source_files(tmp_project):
         name="Register module and method",
         purpose="Run register_method from the workspace source directory")
     register_module(name="test_mod", contracts=[], description="test module")
-    register_method(method_dir=src_dir, module_name="test_mod")
+    register_method(method_dir=src_dir, module_name="test_mod", assume_yes=True)
 
     口 = Step(
         step_num=3,
         name="Verify source files copied to registered location",
-        purpose="methods/my_method/ must contain all .py files matching the originals")
-    registered_dir = tmp_project / "methods" / "my_method"
+        purpose="The snapshot must contain all .py files matching the originals")
+    registered_dir = layout.method_dir(tmp_project, "test_mod", "my_method")
     assert registered_dir.is_dir(), "registered directory should exist"
 
     # Check top-level files
@@ -1291,8 +1205,7 @@ def test_register_copies_source_files(tmp_project):
 @workflow(
     purpose="Re-registering a method after one of its scripts was renamed in "
             "the source purges the stale script from the snapshot, so the code "
-            "fingerprint no longer covers it; the snapshot's data file and "
-            "method.yaml stay"
+            "fingerprint no longer covers it; method.yaml stays"
 )
 def test_reregistration_purges_stale_snapshot_script(tmp_project):
     """``registration:snapshot-purge``: snapshot = exactly the registered set."""
@@ -1311,12 +1224,12 @@ def test_reregistration_purges_stale_snapshot_script(tmp_project):
         "outputs:\n  output:\n    type: .csv\n"
         "params: {}\nexecutor: python\n"
         "env: fixture-env\n"
+        "script: purge_method.py\n"
     )
     register_module(name="purge_mod", contracts=[], description="snapshot purge")
-    register_method(method_dir=src_dir, module_name="purge_mod")
-    registered_dir = tmp_project / "methods" / "purge_method"
+    register_method(method_dir=src_dir, module_name="purge_mod", assume_yes=True)
+    registered_dir = layout.method_dir(tmp_project, "purge_mod", "purge_method")
     assert (registered_dir / "helpers_old.py").exists()
-    (registered_dir / "lookup.csv").write_text("k,v\n1,2\n")
     fp_before = build_code_fingerprint(registered_dir, _projection_of(registered_dir))
 
     口 = Step(
@@ -1324,7 +1237,7 @@ def test_reregistration_purges_stale_snapshot_script(tmp_project):
         name="Rename the helper in the source and register again",
         purpose="The registered set is now the main script and the renamed helper")
     (src_dir / "helpers_old.py").rename(src_dir / "helpers_new.py")
-    register_method(method_dir=src_dir, module_name="purge_mod")
+    register_method(method_dir=src_dir, module_name="purge_mod", assume_yes=True)
 
     口 = Step(
         step_num=3,
@@ -1333,7 +1246,6 @@ def test_reregistration_purges_stale_snapshot_script(tmp_project):
                 "and the fingerprint covers exactly the registered set")
     assert not (registered_dir / "helpers_old.py").exists()
     assert (registered_dir / "helpers_new.py").exists()
-    assert (registered_dir / "lookup.csv").exists()
     assert (registered_dir / "method.yaml").exists()
     fp_after = build_code_fingerprint(registered_dir, _projection_of(registered_dir))
     assert fp_after != fp_before
@@ -1368,11 +1280,11 @@ def test_fingerprint_stable_after_original_modified(tmp_project):
     口 = Step(
         step_num=2,
         name="Register method and compute initial fingerprint",
-        purpose="Register copies source to methods/fp_method/; fingerprint is from that copy")
+        purpose="Register copies source to the snapshot; fingerprint is from that copy")
     register_module(name="fp_mod", contracts=[], description="fingerprint test")
-    register_method(method_dir=src_dir, module_name="fp_mod")
+    register_method(method_dir=src_dir, module_name="fp_mod", assume_yes=True)
 
-    registered_dir = tmp_project / "methods" / "fp_method"
+    registered_dir = layout.method_dir(tmp_project, "fp_mod", "fp_method")
     fp_before = build_code_fingerprint(registered_dir, _projection_of(registered_dir))
 
     口 = Step(
@@ -1384,7 +1296,7 @@ def test_fingerprint_stable_after_original_modified(tmp_project):
     口 = Step(
         step_num=4,
         name="Recompute fingerprint from registered copy",
-        purpose="Fingerprint must be unchanged because it reads from methods/, not workspace/")
+        purpose="Fingerprint must be unchanged because it reads the snapshot, not the source")
     fp_after = build_code_fingerprint(registered_dir, _projection_of(registered_dir))
     assert fp_before == fp_after, (
         f"Fingerprint changed after modifying original source: {fp_before} != {fp_after}"

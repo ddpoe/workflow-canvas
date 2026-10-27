@@ -109,6 +109,46 @@ def test_a_cancelled_node_names_the_failed_run_and_the_node_behind_it():
     assert "cancelled_due_to_run_id" not in states["n_other"]
 
 
+def test_a_node_s_engine_side_cancels_reach_the_pipeline_rule():
+    """A node's cancelled rows carry their reasons into the rule, every row
+    and not only the newest: a pipeline whose rows were cancelled because the
+    server stopped (or the engine failed) reads failed, while one the user
+    stopped reads cancelled, and something completed reads mixed."""
+    step_map = {"n_head": "head", "n_tail": "tail"}
+
+    def overall(runs):
+        node_states = settle_unstarted_nodes(
+            step_map, project_node_states(step_map, tally_nodes(runs, [])),
+            thread_alive=False, error=None,
+        )
+        return derive_overall_status(node_states, thread_alive=False, error=None)
+
+    # The newest row of n_tail is a user cancel; an older one was interrupted.
+    interrupted = [
+        _run(4, "n_tail", "cancelled", cancel_reason="user"),
+        _run(3, "n_tail", "cancelled", cancel_reason="interrupted"),
+        _run(2, "n_head", "cancelled", cancel_reason="user"),
+    ]
+    stopped = [
+        _run(4, "n_tail", "cancelled", cancel_reason="user"),
+        _run(3, "n_tail", "cancelled", cancel_reason="not_run"),
+        _run(2, "n_head", "cancelled", cancel_reason="user"),
+    ]
+    engine_failed = [
+        _run(2, "n_tail", "cancelled", cancel_reason="engine_failed"),
+        _run(1, "n_head", "cancelled", cancel_reason="engine_failed"),
+    ]
+    partly_done = [
+        _run(2, "n_tail", "cancelled", cancel_reason="interrupted"),
+        _run(1, "n_head", "completed"),
+    ]
+
+    assert overall(interrupted) == "failed"
+    assert overall(stopped) == "cancelled"
+    assert overall(engine_failed) == "failed"
+    assert overall(partly_done) == "completed_with_failures"
+
+
 def test_two_nodes_of_one_method_each_project_from_their_own_rows():
     """Two canvas nodes run the same method: one failed, one reused a cached
     run. Each node's status, run ids, newest error and cache source come
@@ -135,4 +175,6 @@ def test_two_nodes_of_one_method_each_project_from_their_own_rows():
         True, "1", "ck",
     )
     assert "error" not in right
-    assert derive_overall_status(states, thread_alive=False, error=None) == "failed"
+    # One node's runs failed and the other's succeeded: the pipeline is mixed.
+    assert derive_overall_status(states, thread_alive=False,
+                                 error=None) == "completed_with_failures"

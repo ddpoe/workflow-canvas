@@ -1,0 +1,72 @@
+[
+  {
+    "base_url": "https://repo.anaconda.com/pkgs/main",
+    "build_number": 0,
+    "build_string": "py311h9606935_0",
+    "channel": "pkgs/main",
+    "dist_name": "numpy-2.4.6-py311h9606935_0",
+    "name": "numpy",
+    "platform": "win-64",
+    "version": "2.4.6"
+  },
+  {
+    "base_url": "https://repo.anaconda.com/pkgs/main",
+    "build_number": 0,
+    "build_string": "py311h89dd80d_0",
+    "channel": "pkgs/main",
+    "dist_name": "numpy-base-2.4.6-py311h89dd80d_0",
+    "name": "numpy-base",
+    "platform": "win-64",
+    "version": "2.4.6"
+  },
+  {
+    "base_url": "https://repo.anaconda.com/pkgs/main",
+    "build_number": 0,
+    "build_string": "pyhc872135_0",
+    "channel": "pkgs/main",
+    "dist_name": "pip-26.2.1-pyhc872135_0",
+    "name": "pip",
+    "platform": "noarch",
+    "version": "26.2.1"
+  },
+  {
+    "base_url": "https://repo.anaconda.com/pkgs/main",
+    "build_number": 0,
+    "build_string": "hb00fc5c_0",
+    "channel": "pkgs/main",
+    "dist_name": "python-3.11.16-hb00fc5c_0",
+    "name": "python",
+    "platform": "win-64",
+    "version": "3.11.16"
+  },
+  {
+    "base_url": "https://conda.anaconda.org/conda-forge",
+    "build_number": 0,
+    "build_string": "py311hd4686c6_0",
+    "channel": "conda-forge",
+    "dist_name": "scipy-1.13.1-py311hd4686c6_0",
+    "name": "scipy",
+    "platform": "win-64",
+    "version": "1.13.1"
+  },
+  {
+    "base_url": "https://pypi.org/",
+    "build_number": 0,
+    "build_string": "pypi_0",
+    "channel": "pypi",
+    "dist_name": "tifffile-2024.8.30-pypi_0",
+    "name": "tifffile",
+    "platform": "pypi",
+    "version": "2024.8.30"
+  },
+  {
+    "base_url": "https://repo.anaconda.com/pkgs/main",
+    "build_number": 12,
+    "build_string": "h4927774_12",
+    "channel": "pkgs/main",
+    "dist_name": "vc14_runtime-14.44.35208-h4927774_12",
+    "name": "vc14_runtime",
+    "platform": "win-64",
+    "version": "14.44.35208"
+  }
+]

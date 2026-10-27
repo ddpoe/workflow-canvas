@@ -27,7 +27,8 @@ import pytest
 
 from axiom_annotations import workflow
 
-from tests.fixtures.fakes import fake_conda_list_explicit, fake_subprocess_run
+from tests.fixtures.fakes import (fake_conda_list_explicit, fake_subprocess_run,
+                                  stub_host_conda_platform)
 
 
 @workflow(
@@ -64,6 +65,8 @@ def test_stage_live_env_source_captures_python_free_conda_env(tmp_path, monkeypa
     seen: dict[str, Path] = {}
 
     # The conda binary subprocess is the one true external edge — stub it.
+    # A linux-64 host stages its own list (another host solves instead).
+    stub_host_conda_platform(monkeypatch, "linux-64")
     fake_conda_list_explicit(monkeypatch, explicit_list, seen=seen)
 
     source = _stage_live_env_source("conda:renv", project_dir)

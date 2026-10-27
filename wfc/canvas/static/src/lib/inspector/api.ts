@@ -58,6 +58,8 @@ export function fetchRunReferenceOutputColumns(
  *     sourceSlot: The upstream edge's source handle.
  *     params: The upstream's current param values, which can change the
  *         declared columns.
+ *     version: The upstream's pin (a content identity); the columns are that
+ *         version's. Absent: the newest version's.
  *
  * Returns:
  *     The column options, or ``null`` on a non-2xx response or a wire failure.
@@ -65,12 +67,14 @@ export function fetchRunReferenceOutputColumns(
 export function fetchMethodOutputColumns(
   methodFull: string,
   sourceSlot: string,
-  params: Record<string, unknown>
+  params: Record<string, unknown>,
+  version?: string,
 ): Promise<ColumnOptionsResp | null> {
   const paramsJson = encodeURIComponent(JSON.stringify(params));
+  const pin = version ? `&version=${encodeURIComponent(version)}` : '';
   const url =
     `/api/contracts/${encodeURIComponent(methodFull)}/output_columns` +
-    `?slot=${encodeURIComponent(sourceSlot)}&params=${paramsJson}`;
+    `?slot=${encodeURIComponent(sourceSlot)}&params=${paramsJson}${pin}`;
   return fetchOutputColumns(url);
 }
 

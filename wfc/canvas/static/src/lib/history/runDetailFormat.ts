@@ -94,6 +94,28 @@ export function formatSampleReads(
   return (sampleInputs ?? []).map(({ slot, sample }) => `reads ${sample} -> ${slot}`);
 }
 
+/** What the artifact list says of an output wfc found changed after its run wrote it. */
+export const CHANGED_OUTPUT_TEXT = 'changed after the run wrote it; run the step again';
+
+/**
+ * Name the outputs of a run that are unavailable because they changed after
+ * the run wrote them.
+ *
+ * Args:
+ *     outputAvailability: The run's per-output availability, if sent.
+ *
+ * Returns:
+ *     The output names marked ``changed``, sorted; empty when none is.
+ */
+export function changedOutputs(
+  outputAvailability: Readonly<Record<string, string>> | null | undefined,
+): string[] {
+  return Object.entries(outputAvailability ?? {})
+    .filter(([, availability]) => availability === 'changed')
+    .map(([name]) => name)
+    .sort();
+}
+
 /**
  * Pick the overview tab's highlight cards from a run's metrics.
  *

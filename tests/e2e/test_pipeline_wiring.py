@@ -117,7 +117,7 @@ def test_linear_pipeline(pipeline_factory, register_fixture_methods):
         purpose="Outputs live at RunOutput.artifact_path, not in a workspace "
                 "directory; assert the sentinel and the RunOutput row exist",
     )
-    sentinel = project_dir.rglob(".runs/sentinels/*/transform_1/sample_a/default/.complete")
+    sentinel = project_dir.rglob(".wfc/runs/sentinels/*/transform_1/sample_a/default/.complete")
     sentinels = list(sentinel)
     assert len(sentinels) == 1, f"Expected 1 sentinel, found {len(sentinels)}"
     output_path = _find_run_output_path(
@@ -194,8 +194,8 @@ def test_fan_out_pipeline(pipeline_factory, register_fixture_methods):
         name="Verify both transform outputs exist",
         purpose="assert sentinels + RunOutput rows for both fan-out branches",
     )
-    sentinels_a = list(project_dir.rglob(".runs/sentinels/*/transform_a/sample_a/default/.complete"))
-    sentinels_b = list(project_dir.rglob(".runs/sentinels/*/transform_b/sample_a/default/.complete"))
+    sentinels_a = list(project_dir.rglob(".wfc/runs/sentinels/*/transform_a/sample_a/default/.complete"))
+    sentinels_b = list(project_dir.rglob(".wfc/runs/sentinels/*/transform_b/sample_a/default/.complete"))
     assert len(sentinels_a) == 1, f"Expected 1 transform_a sentinel, found {len(sentinels_a)}"
     assert len(sentinels_b) == 1, f"Expected 1 transform_b sentinel, found {len(sentinels_b)}"
     # Both fan-out branches share method='transform' / sample='sample_a';
@@ -286,7 +286,7 @@ def test_fan_in_pipeline(pipeline_factory, register_fixture_methods):
         name="Verify merged output exists",
         purpose="sentinel + RunOutput row for the fan-in merge",
     )
-    sentinels = list(project_dir.rglob(".runs/sentinels/*/merge_1/sample_a/default/.complete"))
+    sentinels = list(project_dir.rglob(".wfc/runs/sentinels/*/merge_1/sample_a/default/.complete"))
     assert len(sentinels) == 1, f"Expected 1 merge sentinel, found {len(sentinels)}"
     merge_output = _find_run_output_path(
         nf_process_name="merge", sample="sample_a", output_name="merged.csv",
@@ -322,7 +322,7 @@ def test_fan_in_selector_pipeline(pipeline_factory, register_fixture_methods):
         step_num=1,
         name="Register three samples from sources outside the project",
         purpose="Each sample contributes 3 rows; merge should produce 9. "
-                "Nothing is staged under data/samples/ and no .sample_ready "
+                "Nothing is staged under .wfc/workspace/samples/ and no .sample_ready "
                 "sentinel is written by hand — the restore_sample rules the "
                 "collapsed root steps depend on are what materialize both, "
                 "which is the only way a user's project gets them.",
@@ -367,7 +367,7 @@ def test_fan_in_selector_pipeline(pipeline_factory, register_fixture_methods):
         name="Verify collapsed merged output exists under __all__ sample segment",
         purpose="sentinel + RunOutput for the collapsed fan-in run",
     )
-    sentinels = list(project_dir.rglob(".runs/sentinels/*/merge_1/__all__/default/.complete"))
+    sentinels = list(project_dir.rglob(".wfc/runs/sentinels/*/merge_1/__all__/default/.complete"))
     assert len(sentinels) == 1, f"Expected 1 collapsed merge sentinel, found {len(sentinels)}"
     # The helper joins on Method.name (the registered method), not the
     # canvas node_id. The merge_1 node uses the 'merge' method.

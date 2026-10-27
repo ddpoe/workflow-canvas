@@ -70,7 +70,8 @@ def test_each_node_of_one_method_shows_its_own_run_on_the_status_route(
     assert right["cache_hit"] is True
     assert right["original_run_id"] == str(right_audit["cache_source_run_id"])
     assert right.get("error") is None
-    assert body["overall_status"] == "failed"
+    # One node's run failed and the other's succeeded: the pipeline is mixed.
+    assert body["overall_status"] == "completed_with_failures"
 
 
 @workflow(purpose="Each cache-hit node names its own cache source: two nodes "

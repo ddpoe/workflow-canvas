@@ -61,12 +61,15 @@ def test_run_from_hostile_root(root_name, tmp_path, monkeypatch):
              purpose="build_project pinned WFC_PROJECT_ROOT and chdir'd to "
                      "the root; undoing both is what forces the run to "
                      "resolve a root for itself, which is the whole subject",
-             outputs="No WFC_PROJECT_ROOT, cwd at <root>/methods",
+             outputs="No WFC_PROJECT_ROOT, cwd at <root>/analysis/notes",
              critical="reset_engine() is load-bearing, not hygiene: the "
                       "per-process cache still holds the root build_project "
                       "resolved, so without it the upward walk never runs "
-                      "and this test passes vacuously")
-    invocation_cwd = project.root / "methods"
+                      "and this test passes vacuously. The cwd is a user "
+                      "directory two levels down: init creates only .wfc/, "
+                      "so the test makes one, as a user would")
+    invocation_cwd = project.root / "analysis" / "notes"
+    invocation_cwd.mkdir(parents=True)
     monkeypatch.delenv("WFC_PROJECT_ROOT")
     monkeypatch.chdir(invocation_cwd)
     reset_engine()
@@ -81,14 +84,14 @@ def test_run_from_hostile_root(root_name, tmp_path, monkeypatch):
     assert obs.exit_code(TARGET) == 0, "the hostile-root run did not complete"
 
     口 = Step(step_num=4, name="The cwd-fallback tripwire",
-             purpose="The claim mkdirs the run's archive under .runs/ at "
+             purpose="The claim mkdirs the run's archive under .wfc/runs/ at "
                      "whatever root it "
-                     "resolved, so a .runs/ appearing beside the invocation "
+                     "resolved, so a .wfc/runs/ appearing beside the invocation "
                      "directory is a resolver that fell back to the cwd",
              critical="This is the assertion the whole arrangement exists "
                       "to make possible")
-    assert not (invocation_cwd / ".runs").exists(), (
-        f"a .runs/ directory was created under the invocation cwd "
+    assert not (invocation_cwd / ".wfc" / "runs").exists(), (
+        f"a .wfc/runs/ directory was created under the invocation cwd "
         f"{invocation_cwd} — the run resolved its root to the cwd instead "
         f"of walking up to {project.root}"
     )

@@ -70,10 +70,14 @@ def refusing_process(reason: str):
 
 
 @fake(
-    boundary="subprocess.run -- git (the readiness probes and init's own "
-             "git init; wfc.version runs git through Popen, which this does "
-             "not reach), docker info (check_docker), conda / pip (the live env "
-             "capture), and the dev loop's docker run",
+    boundary="subprocess.run -- not git (every git command, the readiness "
+             "probe's and init's included, runs through wfc.version's Popen, "
+             "which this does not reach), docker info (check_docker), conda / "
+             "pip (the live env capture), uv export (a uv project's capture), "
+             "the dev loop's docker run, and the docker wrappers in "
+             "wfc.environments.docker with the timeout each passes: the "
+             "daemon queries (image inspect, tag) DOCKER_QUERY_TIMEOUT_S, "
+             "manifest inspect REGISTRY_READ_TIMEOUT_S, pull and push none",
     preserves="the argv and kwargs the caller built; with `only`, every "
               "command for another program reaches the real subprocess.run",
     not_proven="that the program exists or answers as the canned result "
@@ -153,7 +157,7 @@ def fake_docker_build_process(monkeypatch, *, returncode: int = 0,
 
 
 @fake(
-    boundary="shutil.which -- whether a binary (git, docker) is on PATH",
+    boundary="shutil.which -- whether a binary (git, docker, uv) is on PATH",
     preserves="every name not listed resolves for real",
     not_proven="that the binary is really absent or present",
     backed_by="pm_mvp::tests.test_preflight_checks::test_check_git_healthy",
@@ -244,6 +248,90 @@ def fake_path_replace(monkeypatch, replacement: Callable) -> None:
 
 
 @fake(
+    boundary="pathlib.Path.unlink -- the removal of one named file. "
+             "Why a test may take it: a file the OS refuses to remove (held "
+             "open on Windows, or under a directory the user cannot write on "
+             "POSIX) cannot be produced the same way on every platform; the "
+             "caller's handling of the refusal is what is under test.",
+    preserves="every other path's real unlink, and everything around the "
+              "call; the refused file stays on disk",
+    not_proven="that a real refusal raises exactly the PermissionError the "
+               "replacement raises",
+    backed_by="pm_mvp::tests.test_cache_integrity_edges::"
+              "test_the_cache_prune_sweeps_a_crash_left_copy_tmp_and_never_a_live_one",
+)
+def refuse_path_unlink(monkeypatch, refused: pathlib.Path) -> None:
+    """Make ``pathlib.Path.unlink`` raise ``PermissionError`` for one file.
+
+    Args:
+        monkeypatch: An active ``pytest.MonkeyPatch``.
+        refused: The file whose removal is refused; every other path is
+            removed for real.
+    """
+    real = pathlib.Path.unlink
+    key = os.path.normcase(os.path.abspath(refused))
+
+    def unlink(self, *args, **kwargs):
+        if os.path.normcase(os.path.abspath(self)) == key:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "unlink", unlink)
+
+
+@fake(
+    boundary="pathlib.Path.write_text -- a write to any file of one name. "
+             "Why a test may take it: a file the OS refuses to write (a full "
+             "disk, a directory the user cannot write) cannot be produced "
+             "the same way on every platform, and the file's directory is "
+             "made by the run itself; the caller's handling of the refusal "
+             "is what is under test.",
+    preserves="every other file's real write_text, and every other way of "
+              "writing the named file (open, append); what the file held "
+              "before stays on disk",
+    not_proven="that a real refusal raises exactly the PermissionError the "
+               "replacement raises",
+    backed_by="pm_mvp::tests.test_sample_integrity::"
+              "test_the_step_log_holds_wfcs_warning_then_the_methods_output",
+)
+def refuse_path_write(monkeypatch, name: str) -> None:
+    """Make ``pathlib.Path.write_text`` raise ``PermissionError`` for one name.
+
+    Args:
+        monkeypatch: An active ``pytest.MonkeyPatch``.
+        name: The file name (``stderr.log``, say) whose writes are refused,
+            wherever the file is; every other file is written for real.
+    """
+    real = pathlib.Path.write_text
+
+    def write_text(self, *args, **kwargs):
+        if self.name == name:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "write_text", write_text)
+
+
+@fake(
+    boundary="os.replace -- the atomic landing of a .wfc/envs.json write "
+             "(the env manifest's save)",
+    preserves="everything around the call; a replacement that delegates "
+              "keeps the real landing",
+    not_proven="that a real filesystem raises what the replacement raises",
+    backed_by="pm_mvp::tests.test_envs::"
+              "test_cli_delete_env_commits_the_record_and_captures_removal",
+)
+def fake_os_replace(monkeypatch, replacement: Callable) -> None:
+    """Replace ``os.replace``.
+
+    Args:
+        monkeypatch: An active ``pytest.MonkeyPatch``.
+        replacement: ``replacement(src, dst)``.
+    """
+    monkeypatch.setattr(os, "replace", replacement)
+
+
+@fake(
     boundary="os.chmod -- the cache's read-only marking",
     preserves="everything around the call; a replacement that delegates "
               "keeps the real mode change",
@@ -310,7 +398,8 @@ def redirect_home(monkeypatch, home: Path) -> Path:
 
 @fake(
     boundary="builtins.input -- the interactive prompt (init's registry "
-             "prompt, delete-env's confirmation)",
+             "prompt, delete-env's confirmation, register-method's, "
+             "export-run's and cancel's Proceed? prompts)",
     preserves="the prompt text, recorded when asked",
     not_proven="that a user at a terminal is asked, or what they see",
     backed_by="undrivable: no terminal in the suite",
@@ -334,26 +423,33 @@ def stub_interactive_prompt(monkeypatch, answer: str = "", *,
 
 
 @fake(
-    boundary="wfc.init._stdin_is_interactive -- whether stdin is a terminal "
-             "(init's existing-project confirmation and archive prompt)",
-    preserves="everything init decides from the answer: prompting, or "
+    boundary="wfc.confirm.stdin_is_interactive -- whether stdin is a "
+             "terminal (the CLI's shared confirm-or-refuse: init's "
+             "existing-project confirmation and archive prompt, "
+             "register-method's, export-run's and cancel's Proceed? prompts)",
+    preserves="everything the verb decides from the answer: prompting, or "
               "refusing with nothing changed",
     not_proven="that a real terminal is detected as one",
     backed_by="undrivable: no terminal in the suite",
 )
 def stub_terminal(monkeypatch, interactive: bool) -> None:
-    """Make init see stdin as a terminal, or as not one.
+    """Make the CLI's confirm see stdin as a terminal, or as not one.
 
-    Signed by the user for one use only (D-23): the test that ``init`` in
-    an existing project, with a terminal present, lists its changes and
-    asks. The no-terminal refusal is tested with a real ``wfc init``
-    process whose stdin is a pipe, never through this fake.
+    Signed by the user for four uses: the test that ``init`` in an existing
+    project, with a terminal present, lists its changes and asks; the test
+    that ``wfc export-run`` over an image only this machine holds asks,
+    writes nothing on a no and writes the bundle with ``--yes``; the tests
+    that ``wfc register-method`` with a terminal present asks before it adds
+    a version and changes nothing on a no; and the test that ``wfc cancel``
+    answered no at a terminal changes nothing.
+    The no-terminal refusals are tested with pytest's own stdin, which is
+    not a terminal, never through this fake.
 
     Args:
         monkeypatch: An active ``pytest.MonkeyPatch``.
-        interactive: What ``_stdin_is_interactive`` answers.
+        interactive: What ``stdin_is_interactive`` answers.
     """
-    monkeypatch.setattr("wfc.init._stdin_is_interactive", lambda: interactive)
+    monkeypatch.setattr("wfc.confirm.stdin_is_interactive", lambda: interactive)
 
 
 @fake(
@@ -400,7 +496,9 @@ def stub_server_bind(monkeypatch, *, started: list, where: str = "uvicorn"
 def stub_wall_clock(monkeypatch, now: float) -> None:
     """Freeze the clock at one value.
 
-    Declared for the registry's completeness: no site fakes the clock today.
+    Registration's version stamp reads ``time.time()``, so a frozen clock
+    makes consecutive registrations read one value and exercises the
+    stamp's tie rule.
 
     Args:
         monkeypatch: An active ``pytest.MonkeyPatch``.
@@ -434,6 +532,66 @@ def fake_conda_list_explicit(monkeypatch, explicit_list: str, *,
 
     monkeypatch.setattr("wfc.environments.introspect.conda_list_explicit",
                         capture)
+
+
+@fake(
+    boundary="wfc.environments.introspect.conda_env_export_from_history, "
+             "conda_list_json and conda_version -- the conda binary's "
+             "requested-package export, its JSON package list and its version",
+    preserves="the solve capture built from them, and the env path asked for",
+    not_proven="that conda answers with that export, list and version",
+    backed_by="pm_mvp::tests.test_host_tool_witnesses::"
+              "test_conda_exports_a_real_env_from_history_and_as_json",
+)
+def fake_conda_solve_capture(monkeypatch, *, from_history: str,
+                             list_json: list[dict],
+                             conda_version: str = "24.11.3",
+                             seen: dict | None = None) -> None:
+    """Replace the three conda calls of a solve capture with canned answers.
+
+    Args:
+        monkeypatch: An active ``pytest.MonkeyPatch``.
+        from_history: The ``conda env export --from-history`` text returned.
+        list_json: The parsed ``conda list --json`` answer returned.
+        conda_version: The conda version returned.
+        seen: When given, receives the env path each call was asked for,
+            under ``"from_history"`` and ``"list_json"``.
+    """
+    def export(env_path):
+        if seen is not None:
+            seen["from_history"] = Path(env_path)
+        return from_history
+
+    def listing(env_path):
+        if seen is not None:
+            seen["list_json"] = Path(env_path)
+        return list_json
+
+    monkeypatch.setattr(
+        "wfc.environments.introspect.conda_env_export_from_history", export)
+    monkeypatch.setattr("wfc.environments.introspect.conda_list_json", listing)
+    monkeypatch.setattr("wfc.environments.introspect.conda_version",
+                        lambda: conda_version)
+
+
+@fake(
+    boundary="wfc.environments.host.host_conda_platform -- the conda "
+             "platform of the machine wfc runs on",
+    preserves="the live capture's choice between staging the host's list "
+              "and solving for linux-64",
+    not_proven="that this machine is that platform",
+    backed_by="pm_mvp::tests.test_host_tool_witnesses::"
+              "test_host_conda_platform_is_condas_own_platform",
+)
+def stub_host_conda_platform(monkeypatch, platform: str) -> None:
+    """Make the host report *platform* (a conda subdir such as ``win-64``).
+
+    Args:
+        monkeypatch: An active ``pytest.MonkeyPatch``.
+        platform: The conda platform reported.
+    """
+    monkeypatch.setattr("wfc.environments.host.host_conda_platform",
+                        lambda: platform)
 
 
 @fake(

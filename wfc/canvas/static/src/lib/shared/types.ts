@@ -30,18 +30,25 @@ interface ParamConstraints {
 }
 
 /**
- * Raw contract type as declared in `method.yaml` (source of truth is
- * `wfc/contracts/declarations.py::parse_method_yaml`).  The canvas uses these for
- * chip coercion/validation in ChipEditor.  `unknown` means the param
- * was not found in the method contract at all — values are treated
- * as pass-through strings.
+ * The parameter type vocabulary a `method.yaml` declares, the same list the
+ * server checks against (`wfc/contracts/vocabulary.py::PARAM_TYPES`).
  */
-export type ContractType = 'str' | 'int' | 'float' | 'bool' | 'list' | 'dict' | 'unknown';
+export const PARAM_TYPES = ['str', 'int', 'float', 'bool', 'list', 'dict', 'any'] as const;
+
+/**
+ * Raw contract type as declared in `method.yaml` (source of truth is
+ * `wfc/contracts/declarations.py::parse_method_yaml`).  `any` is unchecked.
+ * `unknown` means the param was not found in the method contract at all,
+ * or its type is outside the vocabulary — values are treated as
+ * pass-through strings.
+ */
+export type ContractType = (typeof PARAM_TYPES)[number] | 'unknown';
 
 export interface ParamDef {
   name: string;
-  type: string;        // Inspector-facing type: "string" | "number" | "boolean"
-  /** Raw contract type from method.yaml. Used by ChipEditor for typed coercion. */
+  /** The type as the contract spells it (e.g. `int`, `any`); the Inspector shows it. */
+  type: string;
+  /** Raw contract type from method.yaml, narrowed to the vocabulary. Drives the editor and its check. */
   contractType?: ContractType;
   /** Native default — string for primitives, native dict/array for list/dict params. */
   default?: unknown;
@@ -87,10 +94,30 @@ export interface VarRef {
   $var: string;
 }
 
+/**
+ * One registered version of a method, as `/api/modules` lists it: its
+ * display label, the content identity a pin holds, and that version's own
+ * contract.
+ */
+export interface MethodVersionDef {
+  /** The display label (`v{label}`); never what a pin names. */
+  label: number;
+  /** The version's content identity: the value a node's `version` holds. */
+  identity: string;
+  /** True on the method's newest version only. */
+  newest: boolean;
+  registeredAt?: string;
+  env?: string;
+  inputs: SlotDef[];
+  outputs: SlotDef[];
+  params: ParamDef[];
+}
+
 export interface MethodDef {
   name: string;
   module: string;
-  version?: string;
+  /** Every registered version in label order, newest last. */
+  versions?: MethodVersionDef[];
   description?: string;
   script_path?: string;
   inputs: SlotDef[];
@@ -117,7 +144,8 @@ export interface PipelineNode {
   type?: NodeType;
   method: string;
   module?: string;
-  script?: string;
+  /** A method node's pin: an older version's content identity. */
+  version?: string;
   params: Record<string, unknown>;
   position?: { x: number; y: number };
   // input_selector fields
@@ -220,7 +248,13 @@ export interface CanvasNodeData {
   label: string;
   method: string;
   module: string;
+  /**
+   * The content identity of the older version this node is pinned to.
+   * Absent when the node follows the newest version.
+   */
   version?: string;
+  /** The method's versions, for the node's version number and dropdown. */
+  versions?: MethodVersionDef[];
   color: string;
   inputs: SlotDef[];
   outputs: SlotDef[];
@@ -237,14 +271,6 @@ export interface CanvasNodeData {
    * Example: `{ min_quality: { v1: 0.3, v2: 0.7 } }`.
    */
   variants?: Record<string, Record<string, unknown>>;
-  /**
-   * Optional prefix/suffix applied to auto-generated NIDs (v1, v2, ...).
-   * Stored on the node, applied at display/compile time — not persisted per
-   * run. Custom per-run names (set via inline rename in the runs preview)
-   * bypass prefix/suffix entirely.
-   */
-  nidPrefix?: string;
-  nidSuffix?: string;
   /**
    * Per-sample overrides authored on this node.
    * Shape: `{ sampleName: { paramName: value } }`.

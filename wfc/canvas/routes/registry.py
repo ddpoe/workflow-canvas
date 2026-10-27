@@ -2,17 +2,24 @@
 
 from __future__ import annotations
 
-import hashlib
-import subprocess
-import sys
+import io
+import zipfile
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlmodel import select
 
 from ...persistence import Module, Run, get_session
+from ...registration import (
+    MalformedMethodRecordError,
+    UnknownVersionError,
+    method_contract,
+    resolve_method_code,
+    sync_version_rows,
+)
 from ..state import _server_project_root
 
 router = APIRouter()
@@ -58,15 +65,20 @@ def get_registry_modules():
 def get_registry_methods():
     """List registered methods for the Registry tab.
 
-    Shape: `{methods: [{name, module, env, validated, runCount, source}]}`.
+    Shape: `{methods: [{name, module, env, runCount, source, versions}]}`.
 
-    `validated` is a `bool | null` (null = never checked); this list does not
-    read the validation cache, so it is always null.
+    `source` is the project-relative `method.yaml` of the method's
+    registered copy, as the code resolver finds it, or null when the
+    resolver refuses the record. `versions` lists every version in label
+    order (:func:`_version_out`); the method's `env` is its newest
+    version's. A version is named by its identity in the detail and export
+    routes; the label is for display.
     """
     with get_session() as session:
         run_counts: dict[int, int] = {}
-        for row in session.exec(select(Run.method_id)).all():
-            run_counts[row] = run_counts.get(row, 0) + 1
+        version_runs = _version_run_counts(session)
+        for method_id in session.exec(select(Run.method_id)).all():
+            run_counts[method_id] = run_counts.get(method_id, 0) + 1
 
         modules = session.exec(select(Module)).all()
         out: list[dict[str, Any]] = []
@@ -76,61 +88,99 @@ def get_registry_methods():
                     "name": meth.name,
                     "module": mod.name,
                     "env": meth.env,
-                    "validated": None,
                     "runCount": run_counts.get(meth.id, 0),
-                    "source": f"methods/{meth.name}/method.yaml",
                 })
+    root = _server_project_root().resolve()
+    for row in out:
+        row["versions"] = _listed_versions(row["module"], row["name"], root,
+                                           version_runs)
+        if row["versions"]:
+            row["env"] = row["versions"][-1]["env"]
+        row["source"] = _registered_yaml(row["module"], row["name"], root)
     return {"methods": out}
 
 
-# ---- Method validation (env + import check) --------------------------------
-#
-# A method's validation state is `validated: bool | null`, populated from an
-# in-memory cache keyed on
-# `(method_id, script_fingerprint)`. POST /api/registry/methods/validate
-# runs the check on demand and reads the cache; GET /api/registry/methods
-# does not read it, so the list's `validated` is always null.
-
-_method_validate_cache: dict[tuple, dict[str, Any]] = {}
+def _version_run_counts(session) -> dict[int, int]:
+    """Run count per ``MethodVersion`` row id."""
+    counts: dict[int, int] = {}
+    for version_id in session.exec(select(Run.version_id)).all():
+        if version_id is not None:
+            counts[version_id] = counts.get(version_id, 0) + 1
+    return counts
 
 
-def _default_run_import_check(python_bin: str, script_path: str):
-    """Load the script as a non-`__main__` module under the declared env.
+def _version_out(entry, git_commit: str | None, run_count: int,
+                 newest: bool) -> dict[str, Any]:
+    """One version as the Registry names it.
 
-    Uses importlib.util so any ``if __name__ == "__main__":`` guard inside the
-    script does NOT fire — we want import-time side effects only (failed
-    imports, syntax errors), not execution of the method's main() body.
+    Args:
+        entry: The version-list entry.
+        git_commit: The registration commit the version's row records, or
+            ``None`` for a version this database did not register (it
+            arrived by a pull or a fresh clone).
+        run_count: The runs that used the version.
+        newest: Whether it is the newest version.
 
-    Returns (returncode, stdout, stderr). Overridable via
-    ``_run_import_check_fn`` module-level attribute for tests.
+    Returns:
+        ``{label, identity, registered_at, env, runCount, newest, commit,
+        envFingerprint, image, codeTree}``.
     """
-    code = (
-        "import importlib.util, sys\n"
-        f"spec = importlib.util.spec_from_file_location('_wfc_validate_mod', {script_path!r})\n"
-        "mod = importlib.util.module_from_spec(spec)\n"
-        "sys.modules['_wfc_validate_mod'] = mod\n"
-        "spec.loader.exec_module(mod)\n"
-    )
-    result = subprocess.run(
-        [python_bin, "-c", code],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=60,
-    )
-    return (result.returncode, result.stdout, result.stderr)
+    return {
+        "label": entry.label,
+        "identity": entry.identity,
+        "registered_at": entry.registered_at,
+        "env": entry.env_name,
+        "runCount": run_count,
+        "newest": newest,
+        "commit": git_commit,
+        "envFingerprint": entry.env_fingerprint,
+        "image": entry.image_ref,
+        "codeTree": entry.tree_hash,
+    }
 
 
-_run_import_check_fn = _default_run_import_check
+def _listed_versions(module: str, method: str, root: Path,
+                     version_runs: dict[int, int]) -> list[dict[str, Any]]:
+    """Every version of a method for the Registry listing, in label order.
+
+    Args:
+        module: The method's module name.
+        method: The method's name.
+        root: The resolved project root.
+        version_runs: Run count per ``MethodVersion`` row id.
+
+    Returns:
+        One :func:`_version_out` per version-list entry; none for a method
+        with no version list.
+    """
+    try:
+        versions = sync_version_rows(module, method, root)
+    except MalformedMethodRecordError:
+        return []
+    newest = len(versions) - 1
+    return [
+        _version_out(v.entry, v.git_commit, version_runs.get(v.version_id, 0),
+                     index == newest)
+        for index, v in enumerate(versions)
+    ]
 
 
-def _script_fingerprint(script_path: Path) -> str | None:
-    if not script_path.exists():
+def _registered_yaml(module: str, method: str, root: Path) -> str | None:
+    """Return the project-relative method.yaml of a method's registered copy.
+
+    Args:
+        module: The method's module name.
+        method: The method's name.
+        root: The resolved project root.
+
+    Returns:
+        The POSIX path, or ``None`` when the resolver refuses the record.
+    """
+    try:
+        code = resolve_method_code(module, method, root)
+    except MalformedMethodRecordError:
         return None
-    return hashlib.sha256(script_path.read_bytes()).hexdigest()
-
-
-class MethodValidateRequest(BaseModel):
-    module: str
-    method: str
+    return (code.snapshot_dir.resolve() / "method.yaml").relative_to(root).as_posix()
 
 
 _LANG_BY_EXT: dict[str, str] = {
@@ -148,49 +198,54 @@ _LANG_BY_EXT: dict[str, str] = {
 
 
 @router.get("/api/registry/methods/{module_name}/{method_name}/detail")
-def get_registry_method_detail(module_name: str, method_name: str):
-    """Read-only view of a method's directory + its parsed contract.
+def get_registry_method_detail(module_name: str, method_name: str,
+                               version: str | None = None):
+    """Read-only view of one version of a method: its files, contract and env.
 
-    Lists every file in the method dir (no recursion) with its content and a
-    language hint for syntax highlighting. Returns the DB-parsed contract
-    (input_slots, output_slots, params_schema) alongside so the frontend can
-    render it as structured tables without re-parsing YAML.
+    Lists every file at the top of the version's extracted copy,
+    ``.wfc/runs/code/<tree hash>/`` (no recursion), with its content and a
+    language hint for syntax highlighting: the method's main script first,
+    then the rest by name. Returns the version's DB-parsed contract
+    (input_slots, output_slots, params_schema, executor) alongside so the
+    frontend can render it as structured tables without re-parsing YAML,
+    and the version itself (:func:`_version_out`, with its run count).
+
+    Args:
+        module_name: The method's module.
+        method_name: The method's name.
+        version: The version's content identity (what a pin holds); absent
+            is the newest version. A version no entry carries is a 404.
     """
-    with get_session() as session:
-        mod = session.exec(select(Module).where(Module.name == module_name)).first()
-        if mod is None:
-            raise HTTPException(status_code=404, detail=f"Module not found: {module_name}")
-        meth = next((m for m in mod.methods if m.name == method_name), None)
-        if meth is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Method not found: {module_name}.{method_name}",
-            )
-        contract = meth.contract
-        contract_out = {
-            "input_slots":   contract.input_slots   if contract else {},
-            "output_slots":  contract.output_slots  if contract else {},
-            "params_schema": contract.params_schema if contract else {},
-            "executor":      contract.executor      if contract else "python",
-        }
-        script_rel = meth.script_path or f"methods/{meth.name}/{meth.name}.py"
-
-    # Method dir = parent dir of the script path. Guard against DB poisoning:
-    # the resolved dir must stay under the project root.
-    project_root = _server_project_root().resolve()
-    method_dir = (project_root / script_rel).parent.resolve()
+    method_name = _registered_method_name(module_name, method_name)
+    root = _server_project_root().resolve()
     try:
-        method_dir.relative_to(project_root)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=f"method directory escapes project root (path traversal): {script_rel}",
-        ) from exc
-    if not method_dir.is_dir():
-        return {"files": [], "contract": contract_out}
+        contract = method_contract(module_name, method_name, version, root)
+        # The resolver extracts the version's copy and refuses a record that
+        # does not lead to a script inside it (no list, a tree git no longer
+        # holds).
+        code = resolve_method_code(module_name, method_name, root, version=version)
+    except UnknownVersionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except MalformedMethodRecordError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    contract_out = {
+        "input_slots":   contract.input_slots   if contract else {},
+        "output_slots":  contract.output_slots  if contract else {},
+        "params_schema": contract.params_schema if contract else {},
+        "executor":      contract.executor      if contract else "python",
+    }
+    newest = sync_version_rows(module_name, method_name, root)[-1].entry
+    with get_session() as session:
+        run_count = _version_run_counts(session).get(code.version_id, 0)
+    version_out = _version_out(code.entry, code.git_commit, run_count,
+                               code.entry.label == newest.label)
+    method_dir = code.code_dir
+    script = code.script.resolve()
 
     files: list[dict[str, Any]] = []
-    for entry in sorted(method_dir.iterdir()):
+    # The main script first, then the rest by name.
+    for entry in sorted(method_dir.iterdir(),
+                        key=lambda p: (p.resolve() != script, p.name)):
         if not entry.is_file():
             continue
         if entry.name.startswith(".") or entry.name.endswith(".pyc"):
@@ -204,55 +259,66 @@ def get_registry_method_detail(module_name: str, method_name: str):
             "language": _LANG_BY_EXT.get(entry.suffix, "text"),
             "content": content,
         })
-    return {"files": files, "contract": contract_out}
+    return {"files": files, "contract": contract_out, "env": code.entry.env_name,
+            "version": version_out}
 
 
-@router.post("/api/registry/methods/validate")
-def validate_registry_method(req: MethodValidateRequest):
-    """Re-validate an existing method's env+import. Caches by fingerprint."""
+def _registered_method_name(module_name: str, method_name: str) -> str:
+    """The registered method's name, or a 404 naming the module or method.
+
+    Raises:
+        HTTPException: 404 when no module or no method of it has that name.
+    """
     with get_session() as session:
-        mod = session.exec(select(Module).where(Module.name == req.module)).first()
+        mod = session.exec(select(Module).where(Module.name == module_name)).first()
         if mod is None:
-            raise HTTPException(status_code=404, detail=f"Module not found: {req.module}")
-        meth = next((m for m in mod.methods if m.name == req.method), None)
+            raise HTTPException(status_code=404, detail=f"Module not found: {module_name}")
+        meth = next((m for m in mod.methods if m.name == method_name), None)
         if meth is None:
             raise HTTPException(
                 status_code=404,
-                detail=f"Method not found: {req.module}.{req.method}",
+                detail=f"Method not found: {module_name}.{method_name}",
             )
-        method_id = meth.id
-        script_rel = meth.script_path or f"methods/{meth.name}/{meth.name}.py"
-        env_spec = meth.env
+        return meth.name
 
-    script_path = _server_project_root() / script_rel
-    fingerprint = _script_fingerprint(script_path)
 
-    pre_checks: list[dict[str, Any]] = []
-    if fingerprint is None:
-        pre_checks.append({
-            "status": "fail",
-            "label": "script file exists",
-            "detail": f"not found: {script_rel}",
-        })
-        return {"validated": False, "preChecks": pre_checks}
+@router.get("/api/registry/methods/{module_name}/{method_name}/export")
+def export_registry_method(module_name: str, method_name: str,
+                           version: str | None = None):
+    """Download one version of a method's script and contract as a zip.
 
-    cache_key = (method_id, fingerprint)
-    if cache_key in _method_validate_cache:
-        return _method_validate_cache[cache_key]
+    The zip, ``<method>_v<label>.zip``, holds every file of the version's
+    registered copy as Registration resolves it (``resolve_method_code``),
+    subfolders included, under their copy-relative paths. The copy's
+    verified stamp sits beside the copy, not in it, so it is never in the
+    zip. Unzipped and edited, the folder registers as a new version.
 
-    python_bin = sys.executable
-    rc, stdout, stderr = _run_import_check_fn(python_bin, str(script_path))
+    Args:
+        module_name: The method's module.
+        method_name: The method's name.
+        version: The version's content identity; absent is the newest
+            version. A version no entry carries is a 404 naming it.
+    """
+    method_name = _registered_method_name(module_name, method_name)
+    root = _server_project_root().resolve()
+    try:
+        code = resolve_method_code(module_name, method_name, root, version=version)
+    except UnknownVersionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except MalformedMethodRecordError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    validated = rc == 0
-    pre_checks.append({
-        "status": "ok" if validated else "fail",
-        "label": "script imports under env",
-        "detail": (stderr or "").strip()[:500] if not validated else f"env={env_spec}",
-    })
-
-    response = {"validated": validated, "preChecks": pre_checks}
-    _method_validate_cache[cache_key] = response
-    return response
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for path in sorted(code.code_dir.rglob("*")):
+            if path.is_file():
+                zf.write(path, path.relative_to(code.code_dir).as_posix())
+    buf.seek(0)
+    filename = f"{method_name}_v{code.entry.label}.zip"
+    return StreamingResponse(
+        buf, media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ---- Registry writes (module / method / sample) ----------------------------
@@ -385,6 +451,9 @@ class MethodRegisterRequest(BaseModel):
     directory: str
     module: str
     method_name: str | None = None
+    # The dry run's plan token; the Register POST sends it back so only
+    # the plan the user saw is applied. Unused by the dry run itself.
+    plan_token: str | None = None
 
 
 def _method_register_pre_checks(req: MethodRegisterRequest) -> list[dict[str, Any]]:
@@ -448,25 +517,79 @@ def _method_register_pre_checks(req: MethodRegisterRequest) -> list[dict[str, An
 
 @router.post("/api/registry/methods")
 def register_method_endpoint(req: MethodRegisterRequest, dryRun: bool = False):
-    """Wrap ``wfc.registration.register_method`` with optional dry-run preflight."""
+    """Wrap ``wfc.registration.register_method`` with optional dry-run preflight.
+
+    The dry run also plans the registration (``plan_method_registration``,
+    nothing written) and returns the plan's message, the same text ``wfc
+    register-method`` prints: registers v1, adds a version naming what
+    changed, or matches the newest version. Beside it the plan carries its
+    ``label`` (the version it adds, or the newest it matches), the
+    ``newestLabel`` before registering, its ``changes`` and ``holds`` as
+    Registration states them (the data the message is rendered from), and
+    its ``token``: the identity of what it would write (code fingerprint,
+    env fingerprint, newest label). A refusal the plan makes (a folder that
+    does not clearly hold one method among them) is a failed pre-check
+    whose detail says what wfc expects.
+    The Register click is the confirmation of that plan: the real request
+    sends the token back as ``plan_token`` and registration applies only
+    when a fresh plan has the same token, the rule ``wfc register-method``
+    applies between its question and its write. A different token (the
+    source, the env or the version list changed since the dry run) is a 409
+    having changed nothing; a request with no token is a 400.
+    """
+    from ...registration import RegistrationPlanChangedError
+
     checks = _method_register_pre_checks(req)
     ok = all(c["status"] != "fail" for c in checks)
 
-    if dryRun or not ok:
+    if not ok:
         return {"ok": ok, "preChecks": checks}
+    if dryRun:
+        from ...registration import plan_method_registration
+        try:
+            plan = plan_method_registration(
+                method_dir=Path(req.directory),
+                module_name=req.module,
+                method_name=req.method_name,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            checks.append({"status": "fail", "label": "registration plan",
+                           "detail": str(exc)})
+            return {"ok": False, "preChecks": checks}
+        return {"ok": True, "preChecks": checks,
+                "plan": {"outcome": plan.outcome, "message": plan.message,
+                         "label": plan.label, "newestLabel": plan.newest_label,
+                         "changes": plan.changes, "holds": plan.holds,
+                         "token": plan.token}}
 
+    if not req.plan_token:
+        raise HTTPException(
+            status_code=400,
+            detail="Register applies the plan its check states: check the "
+                   "registration first. Nothing was registered.")
     try:
-        _register_method_fn(
+        registration = _register_method_fn(
             method_dir=Path(req.directory),
             module_name=req.module,
             method_name=req.method_name,
+            assume_yes=True,
+            planned=req.plan_token,
         )
+    except RegistrationPlanChangedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return {"ok": True, "preChecks": checks, "method": {"name": req.method_name or Path(req.directory).name}}
+    return {
+        "ok": True,
+        "preChecks": checks,
+        "method": {"name": req.method_name or Path(req.directory).name},
+        "notCopied": list(registration.not_copied),
+        "advice": registration.advice,
+        "message": registration.message,
+    }
 
 
 @router.get("/api/fs/browse")

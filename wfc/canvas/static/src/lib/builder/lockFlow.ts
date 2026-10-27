@@ -15,11 +15,13 @@
  * every parameter that runs the method's declared default, by node and
  * parameter, with its value. Confirming commits the rows; a row that cannot
  * be committed is named in the summary and nothing proceeds, and the wait
- * never hangs. Run is disabled while the current lock has blocked rows.
+ * never hangs. Run is disabled while the current lock has blocked rows, and
+ * while a node holds a parameter the version it runs does not declare.
  */
 import { writable, derived, get } from 'svelte/store';
 import { nodes, pipelineName, pipelineVariables, edges, setPipelineError } from './stores.js';
 import { exportPipeline } from './pipeline.js';
+import { nodeVersion, undeclaredParams } from './nodeData.js';
 import { fetchCacheStatus } from './api.js';
 import { projectRuns } from '../graph/projection.js';
 import { blockedVerdict, verdictsFor, type RowVerdict } from './runsPreviewStatus.js';
@@ -109,10 +111,34 @@ export async function lockNow(): Promise<void> {
   watchForEdits(fingerprint);
 }
 
-/** The distinct blocked reasons of the current lock; empty when unlocked. */
-export const blockedReasons = derived(lockState, $s => {
-  if ($s.status !== 'locked') return [] as string[];
-  const out = new Set<string>();
+/**
+ * Every parameter a method node holds that the version it runs does not
+ * declare, as ``node.param is not in vN, remove it``.
+ *
+ * Args:
+ *     canvasNodes: The canvas nodes.
+ */
+export function undeclaredParamLines(canvasNodes: { id: string; data: CanvasNodeData }[]): string[] {
+  const out: string[] = [];
+  for (const n of canvasNodes) {
+    const d = n.data;
+    if (!d || (d.nodeType && d.nodeType !== 'method')) continue;
+    const names = undeclaredParams(d);
+    if (names.length === 0) continue;
+    const label = nodeVersion(d)?.label;
+    for (const p of names) out.push(`${d.label || n.id}.${p} is not in v${label}, remove it`);
+  }
+  return out;
+}
+
+/**
+ * Why Run is refused: a parameter a node's version does not declare (until
+ * the user removes it), and the distinct blocked reasons of the current
+ * lock (none while unlocked).
+ */
+export const blockedReasons = derived([lockState, nodes], ([$s, $nodes]) => {
+  const out = new Set<string>(undeclaredParamLines($nodes as { id: string; data: CanvasNodeData }[]));
+  if ($s.status !== 'locked') return Array.from(out);
   for (const v of Object.values($s.verdicts)) {
     if (v.status === 'blocked') out.add(v.reason || 'blocked');
   }

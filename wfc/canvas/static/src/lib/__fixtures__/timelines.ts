@@ -322,6 +322,7 @@ export const cancelledByUpstreamFailureTimeline: Timeline = [
       },
       method_b: {
         status: 'cancelled',
+        cancel_reason: 'upstream_failed',
         upstream_node_id: 'method_a',
         upstream_run_id: 'run-a-1',
         cancelled_due_to_run_id: 'run-a-1',
@@ -358,6 +359,7 @@ export const refusedAtClaimTimeline: Timeline = [
       },
       method_b: {
         status: 'cancelled',
+        cancel_reason: 'upstream_failed',
         upstream_node_id: 'method_a',
         upstream_run_id: '7',
         cancelled_due_to_run_id: '7',
@@ -550,6 +552,7 @@ export const errorMidGraphTimeline: Timeline = [
       },
       method_c: {
         status: 'cancelled',
+        cancel_reason: 'upstream_failed',
         upstream_node_id: 'method_b',
         upstream_run_id: 'run-b-1',
         cancelled_due_to_run_id: 'run-b-1',
@@ -1076,6 +1079,7 @@ export const behaviorCatalog: Record<string, BehaviorRow> = {
         payload: frame('cancelled', {
           method_a: {
             status: 'cancelled',
+            cancel_reason: 'user',
             run_ids: ['run-cancel-1'],
             tally: { running: 0, completed: 0, failed: 0 },
             error: 'Cancelled by user',

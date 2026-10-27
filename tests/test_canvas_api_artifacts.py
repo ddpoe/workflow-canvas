@@ -17,6 +17,7 @@ from sqlmodel import Session
 from tests.fixtures.fakes import bind_provider
 from wfc.canvas import state as canvas_state
 from wfc.canvas.wfc_provider import WfcProvider
+from wfc.layout import run_archive_dir
 from wfc.persistence import Method, Module, Run, RunOutput
 from wfc.storage import archive_outputs
 
@@ -41,8 +42,6 @@ def archived_runs(canvas_db, tmp_project, monkeypatch):
     # one Windows refuses in a directory name, so no run over ``s:1`` can
     # stage or materialize its sample through the route on this OS. The
     # literal sample name is the sanitization claim's own input.
-    staging = tmp_project / "staging"
-    staging.mkdir()
     outputs = {
         "a": {"table": ("a_table.csv", A_TABLE), "stats": ("a_stats.json", A_STATS)},
         "b": {"table": ("b_table.csv", B_TABLE)},
@@ -60,6 +59,9 @@ def archived_runs(canvas_db, tmp_project, monkeypatch):
             session.add(run)
             session.flush()
             run_ids[label] = run.id
+            # Where collect writes a run's outputs: its run archive.
+            staging = run_archive_dir(tmp_project, run.id)
+            staging.mkdir(parents=True)
             for slot, (filename, content) in slots.items():
                 (staging / filename).write_bytes(content)
                 session.add(RunOutput(run_id=run.id, slot=slot, output_name=slot,

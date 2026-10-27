@@ -2,11 +2,12 @@
 
 Pinning:
 
-- **Pixi and conda bases are digest-pinned** (``<host>/<path>@sha256:<hex>``).
-  The build-time tools (``pixi install --locked``, ``micromamba install -f``)
-  run inside these base images, so the tool version is load-bearing for
-  build determinism. Two users on the same wfc version building the same
-  env must invoke the same tool binaries.
+- **Every base is digest-pinned** (``<host>/<path>@sha256:<hex>``): pixi's,
+  micromamba's, the four Python bases uv projects build on, and the uv
+  binary. The build-time tools (``pixi install --locked``, ``micromamba
+  install -f``, ``uv pip install``) run inside these images, so the tool
+  version is load-bearing for build determinism. Two users on the same wfc
+  version building the same env must invoke the same tool binaries.
 
 Bumping the pinned digests is a manual maintainer step on each wfc release —
 no Renovate config, no ``wfc refresh-bases`` command. Hand-edit the constant
@@ -54,12 +55,41 @@ MICROMAMBA_BASE: Final[str] = (
     "@sha256:fb18405d6004af757a38ec498a078240b4fd5549146990a484c28bb7e78aace4"
 )
 
-
 # -----------------------------------------------------------------------------
-# Backend → base lookup (used by the Dockerfile generator dispatch)
+# Python bases and the uv binary — used by the uv backend
 # -----------------------------------------------------------------------------
-
-BASES_BY_BACKEND: Final[dict[str, str]] = {
-    "pixi": PIXI_BASE,
-    "conda": MICROMAMBA_BASE,
+# docker.io/library/python:3.X-slim-bookworm, one per Python minor a uv
+# project can pin, index digests read with `docker buildx imagetools inspect`
+# on 2026-10-14. The image's interpreter is the base's; the minor's tag is
+# kept alongside the digest for readability. Debian bookworm's glibc (2.36)
+# bounds the manylinux wheels the uv lock guard accepts
+# (wfc.environments.uv) — bump both together if the Debian release moves.
+PYTHON_BASES: Final[dict[str, str]] = {
+    "3.10": (
+        "docker.io/library/python:3.10-slim-bookworm"
+        "@sha256:5be5aaecb962a41567bc8041f1e9e3432cb085b037fe057f9a562630b2e4b370"
+    ),
+    "3.11": (
+        "docker.io/library/python:3.11-slim-bookworm"
+        "@sha256:0a310eeecf4e1f5a0743f9a6520c90c88d089c903ca5fd283f501e3a805f5f89"
+    ),
+    "3.12": (
+        "docker.io/library/python:3.12-slim-bookworm"
+        "@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258"
+    ),
+    "3.13": (
+        "docker.io/library/python:3.13-slim-bookworm"
+        "@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641"
+    ),
 }
+
+# ghcr.io/astral-sh/uv:0.11.16, index digest read on 2026-10-14. The uv
+# recipe copies its binary into the python base to create the venv and
+# install the exported requirements.
+UV_IMAGE: Final[str] = (
+    "ghcr.io/astral-sh/uv:0.11.16"
+    "@sha256:440fd6477af86a2f1b38080c539f1672cd22acb1b1a47e321dba5158ab08864d"
+)
+
+# Which backend builds on which base is the backend table's
+# (``wfc.environments.backends.BACKENDS``, each row's ``pinned_bases``).

@@ -32,8 +32,9 @@ def export_output(
 
     Args:
         run_id: The run's integer id.
-        slot: The output slot to export; ``None`` triggers the discovery
-            error listing the run's slots with their file names.
+        slot: The output slot to export; ``None`` without ``export_all``
+            lists the run's slots with their file names on stdout and
+            returns 0.
         dest: Destination file/directory (copy mode).
         export_all: Export every output of the run into ``dest`` (a
             directory) — or print every path with ``path_only``.
@@ -50,10 +51,30 @@ def export_output(
         exportable_outputs,
         output_export_name,
         output_export_names,
+        output_listing,
         resolve_output,
     )
 
-    口 = Step(step_num=1, name="Resolve every requested output",
+    if slot is None and not export_all:
+        口 = Step(step_num=1, name="List the run's outputs",
+                 purpose="With no slot the answer is the listing: each output's "
+                         "slot and file name on stdout, exit 0; a run that does "
+                         "not exist or has a malformed record is still refused")
+        try:
+            listing = output_listing(run_id)
+        except ResolveOutputError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+        if not listing:
+            print(f"Run {run_id} has no recorded outputs.")
+            return 0
+        width = max(len("SLOT"), *(len(s) for s, _ in listing))
+        print(f"{'SLOT'.ljust(width)}  FILE")
+        for listed_slot, file_name in listing:
+            print(f"{listed_slot.ljust(width)}  {file_name}")
+        return 0
+
+    口 = Step(step_num=2, name="Resolve every requested output",
              purpose="Fail before producing anything: a bad slot, a malformed "
                      "record, an un-archived row, a cache miss or outputs "
                      "that cannot be named apart end the export with nothing "
@@ -68,8 +89,6 @@ def export_output(
             resolved = exportable_outputs(run_id)
             names = output_export_names([ro for ro, _ in resolved])
         else:
-            # slot=None raises UnknownOutputError listing the run's slots —
-            # that error IS the discovery listing.
             cache_path, ro = resolve_output(run_id, slot, pull=True)
             resolved.append((ro, cache_path))
     except ResolveOutputError as exc:
@@ -77,7 +96,7 @@ def export_output(
         return 1
 
     if path_only:
-        口 = Step(step_num=2, name="Print the cache path(s)",
+        口 = Step(step_num=3, name="Print the cache path(s)",
                  purpose="stdout carries only the path(s), script-friendly; "
                          "the read-only warning goes to stderr")
         print(
@@ -101,7 +120,7 @@ def export_output(
         return 1
 
     if export_all:
-        口 = Step(step_num=3, name="Copy every output into the destination",
+        口 = Step(step_num=4, name="Copy every output into the destination",
                  purpose="Each output under its export name (its file name, or "
                          "its slot folder when two outputs share a file name), "
                          "every existing destination named and refused before "
@@ -122,9 +141,9 @@ def export_output(
 
         conflicts = [t for _, _, t in targets if t.exists()]
         if conflicts and not force:
-            listing = ", ".join(str(c) for c in conflicts)
+            existing = ", ".join(str(c) for c in conflicts)
             print(
-                f"ERROR: destination(s) already exist: {listing}. "
+                f"ERROR: destination(s) already exist: {existing}. "
                 f"Use --force to overwrite.",
                 file=sys.stderr,
             )
@@ -135,7 +154,7 @@ def export_output(
             print(f"Exported {name} -> {target}")
         return 0
 
-    口 = Step(step_num=4, name="Copy the one selected output out",
+    口 = Step(step_num=5, name="Copy the one selected output out",
              purpose="Place the file (a directory destination receives it "
                      "under its original name), refuse an existing "
                      "destination without --force, then copy it writable")

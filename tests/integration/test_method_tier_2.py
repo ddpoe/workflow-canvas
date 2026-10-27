@@ -19,6 +19,7 @@ SKIPs cleanly when Docker isn't reachable.
 """
 from __future__ import annotations
 
+from wfc import layout
 import hashlib
 import json
 import os
@@ -151,7 +152,7 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
     write_env_record(proj, "minimal-env", image="local/wfc-test-minimal",
                      digest=image_digest)
 
-    method_dir = proj / "methods" / "qc"
+    method_dir = sample_source_dir(proj) / "_methods" / "qc"
     method_dir.mkdir(parents=True)
     (method_dir / "qc.py").write_text(_TIER2_QC_SOURCE)
     (method_dir / "method.yaml").write_text(_QC_METHOD_YAML)
@@ -169,7 +170,7 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
     register_sample_row(proj, "s1", source_dir / "data.csv")
     # run-step drives this directly, so no Snakemake restore_sample rule
     # materializes the bytes: call the production restore, the only
-    # sanctioned writer under data/samples/.
+    # sanctioned writer under .wfc/workspace/samples/.
     restore_sample("s1", project_root=proj)
 
     pipeline = {
@@ -184,7 +185,6 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
                 "method": "qc",
                 "module": "qcmod",
                 "env": "minimal-env",
-                "script": "methods/qc/qc.py",
                 "slot_outputs": {
                     "report": "report.json",
                     "clean": "clean.csv",
@@ -252,15 +252,15 @@ def test_tier2_no_manifest_archives_identically(
     )
 
     # No manifest: a pure Tier-2 outputs-only method writes none.
-    manifests = list((proj / ".runs").rglob("_wfc_results.json"))
+    manifests = list((layout.artifact_store(proj)).rglob("_wfc_results.json"))
     assert not manifests, (
         f"Tier-2 method must not write _wfc_results.json; found {manifests}"
     )
 
     # All three declared outputs exist on the host (scanned from run_dir).
     for filename in ("report.json", "clean.csv", "dropped.csv"):
-        matches = list((proj / ".runs").rglob(filename))
-        assert matches, f"declared output {filename} not found under .runs"
+        matches = list((layout.artifact_store(proj)).rglob(filename))
+        assert matches, f"declared output {filename} not found under .wfc/runs"
 
     reset_engine()
     with get_session() as session:
@@ -279,7 +279,13 @@ def test_tier2_no_manifest_archives_identically(
         # No manifest -> no metrics channel for a pure outputs-only Tier-2 run.
         assert not run.metrics, run.metrics
 
+    # The produced bytes, hashed while they are in the run archive: the
+    # archive pass moves each output out of it into the cache.
+    clean_path = list((layout.artifact_store(proj)).rglob("clean.csv"))[0]
+    expected_md5 = hashlib.md5(clean_path.read_bytes()).hexdigest()
+
     archive_outputs(project_dir=proj, run_id=run_id)
+    assert not clean_path.exists(), "archived clean.csv is still in the run archive"
     reset_engine()
     with get_session() as session:
         rows = session.exec(
@@ -305,8 +311,6 @@ def test_tier2_no_manifest_archives_identically(
     # an identical method run (Tier-1) caching identical bytes lands the same
     # DVC entries. clean.csv/dropped.csv/report.json carry the kept-2/dropped-1
     # split both tiers compute.
-    clean_path = list((proj / ".runs").rglob("clean.csv"))[0]
-    expected_md5 = hashlib.md5(clean_path.read_bytes()).hexdigest()
     assert hashes_by_name["clean.csv"] == expected_md5, (
         f"clean.csv content_hash {hashes_by_name['clean.csv']} != md5 of bytes "
         f"{expected_md5}"

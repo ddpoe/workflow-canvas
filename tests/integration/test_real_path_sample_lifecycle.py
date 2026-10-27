@@ -3,7 +3,7 @@
 Every stage here goes through the CLI a researcher actually types --
 ``wfc init``, ``wfc register-sample``, ``wfc restore-sample``,
 ``wfc run-pipeline``. Nothing hand-writes a row, nothing stages a file
-under ``data/samples/``, and no ``.dvc/config`` is wired by hand. The point
+under ``.wfc/workspace/samples/``, and no ``.dvc/config`` is wired by hand. The point
 is a real path with no shortcuts: a user never inserts a sample row.
 
 Three tests plus one pinned expectation:
@@ -42,6 +42,8 @@ two witnesses rather than one contorted to cover both.
 
 from __future__ import annotations
 
+from wfc.storage import sample_data_path
+from wfc import layout
 import os
 import stat
 from pathlib import Path
@@ -79,9 +81,9 @@ def launched_pipeline_ids(project: Path) -> set[str]:
         project: The project root.
 
     Returns:
-        The directory names under ``.runs/pipelines/``.
+        The directory names under ``.wfc/runs/pipelines/``.
     """
-    pipelines = project / ".runs" / "pipelines"
+    pipelines = layout.artifact_store(project) / "pipelines"
     if not pipelines.exists():
         return set()
     return {p.name for p in pipelines.iterdir() if p.is_dir()}
@@ -97,6 +99,9 @@ def force_unlink(path: Path) -> None:
     Args:
         path: The file to remove.
     """
+    from wfc.storage.cache import open_dirs
+
+    open_dirs(path.parent)  # POSIX refuses an unlink in a read-only folder
     os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
     path.unlink()
 
@@ -239,8 +244,8 @@ def test_register_push_delete_restore(uninitialised_project):
     口 = Step(step_num=2, name="Register a file the user keeps outside the project",
              purpose="Registration caches the source's bytes, pushes them to "
                      "the archive and records where a restore will later "
-                     "materialize them -- it copies nothing into data/samples/",
-             critical="data/samples/<name>/ must still be empty afterwards. "
+                     "materialize them -- it copies nothing into .wfc/workspace/samples/",
+             critical=".wfc/workspace/samples/<name>/ must still be empty afterwards. "
                       "A fixture that finds the file there is reading "
                       "something registration did not write")
     payload = b"id,value\n1,42\n2,43\n"
@@ -275,11 +280,11 @@ def test_register_push_delete_restore(uninitialised_project):
         f"push_status=pushed, got {row.push_status!r} "
         f"(push_error={row.push_error!r})"
     )
-    registered_path = project / row.registered_path
+    registered_path = sample_data_path(project, row)
     workspace_dir = registered_path.parent
     assert not workspace_dir.exists() or not list(workspace_dir.iterdir()), (
         f"registration materialized {list(workspace_dir.iterdir())} under "
-        f"{workspace_dir}; data/samples/ is written by restore_sample alone"
+        f"{workspace_dir}; .wfc/workspace/samples/ is written by restore_sample alone"
     )
 
     口 = Step(step_num=3, name="Delete the local cache entry, then restore",
@@ -372,7 +377,7 @@ def test_register_push_delete_restore(uninitialised_project):
         f"wfc restore-sample exited {result.returncode} over a directory: "
         f"{result.stderr}"
     )
-    restored = project / dir_row.registered_path
+    restored = sample_data_path(project, dir_row)
     restored_tree = {p.relative_to(restored).as_posix(): p.read_bytes()
                      for p in restored.rglob("*") if p.is_file()}
     assert restored_tree == members, (
@@ -432,10 +437,11 @@ def test_a_directory_sample_reaches_the_archive(uninitialised_project):
         "a pipeline materializes a sample file no fixture ever staged, and "
         "does it again after the local cache entry is gone"
     ),
-    inputs="a sample registered from outside data/, and a pipeline whose "
+    inputs="a sample registered from outside the project, and a pipeline whose "
            "root step reads it",
-    outputs="data/samples/<sample>/ populated by the run's restore rule, "
-            "twice -- the second time from the archive",
+    outputs=".wfc/workspace/samples/<sample>/ populated by the run's restore rule, "
+            "twice -- the second time from the archive -- and gone with its "
+            "last holder",
 )
 def test_pipeline_restores_a_sample_it_never_staged(
     pipeline_factory, register_fixture_methods
@@ -445,13 +451,21 @@ def test_pipeline_restores_a_sample_it_never_staged(
     A pipeline test that stages its sample at its own ``registered_path``
     makes every restore take ``restore_from_cache``'s dest-already-valid
     skip, so the rule that materializes a sample is never exercised. Here
-    ``data/samples/`` starts empty and the run has to fill it.
+    ``.wfc/workspace/samples/`` starts empty and the run has to fill it.
+
+    A pipeline's end removes the views it restored unless another pipeline
+    holds them, so a holder outside the pipeline (``observer``) keeps each
+    run's view past its end to be looked at; releasing it removes the view.
     """
+    from wfc.persistence import InUseKind
+    from wfc.storage import end_pipeline_samples
+    from wfc.storage.in_use import hold_for_pipeline
+
     project = register_fixture_methods
 
-    口 = Step(step_num=1, name="Register a sample from outside data/",
+    口 = Step(step_num=1, name="Register a sample from outside the project",
              purpose="The fixture stages the CSV beside the project and "
-                     "registers that; data/samples/ is left for the run to "
+                     "registers that; .wfc/workspace/samples/ is left for the run to "
                      "write",
              critical="If this precondition is false the test proves nothing "
                       "-- a file already at registered_path makes the restore "
@@ -461,7 +475,7 @@ def test_pipeline_restores_a_sample_it_never_staged(
     payload = source.read_bytes()
     row = sample_row("sample_a")
     assert row is not None, "create_sample_csv left no samples row"
-    registered_path = project / row.registered_path
+    registered_path = sample_data_path(project, row)
     workspace_dir = registered_path.parent
     assert not workspace_dir.exists() or not list(workspace_dir.iterdir()), (
         f"{workspace_dir} is not empty before the run: "
@@ -469,7 +483,7 @@ def test_pipeline_restores_a_sample_it_never_staged(
     )
     entry = cache_entry(project, row.content_hash)
     assert entry.exists(), f"registration cached nothing at {entry}"
-    sentinel = project / "data" / "samples" / "sample_a" / ".sample_ready"
+    sentinel = layout.sample_ready_sentinel(project, "sample_a")
 
     口 = Step(step_num=2, name="Run a pipeline whose root step reads the sample",
              purpose="input_selector -> transform -> transform, through the "
@@ -490,6 +504,7 @@ def test_pipeline_restores_a_sample_it_never_staged(
         ],
         samples=[],
     )
+    hold_for_pipeline(InUseKind.sample_view, "sample_a", "observer")
     result = run_cli("run-pipeline", "--pipeline", str(pipeline_path),
                      "--project-root", str(project),
                      "--wfc-root", str(_WFC_ROOT), "--cores", "1")
@@ -512,25 +527,29 @@ def test_pipeline_restores_a_sample_it_never_staged(
         f"the restore rule left no readiness sentinel at {sentinel}"
     )
 
-    口 = Step(step_num=4, name="Clear the cache entry, the copy and every sentinel",
-             purpose="The local cache entry is the deletion that forces a "
-                     "remote round trip; the archive still holds the object",
+    口 = Step(step_num=4, name="Clear the cache entry, the view and every sentinel",
+             purpose="The view goes with its last holder; the local cache "
+                     "entry is the deletion that forces a remote round trip; "
+                     "the archive still holds the object",
              critical=".sample_ready is the restore rule's own output:, so a "
                       "stale one makes Snakemake consider the rule satisfied "
                       "and skip the restore entirely. Leave it behind and the "
                       "re-run passes without running the thing under test")
     import shutil
 
+    assert end_pipeline_samples(project, "observer") == ["sample_a"]
+    assert not registered_path.exists() and not sentinel.exists(), (
+        "releasing the last holder left the restored view or its sentinel"
+    )
     force_unlink(entry)
-    force_unlink(registered_path)
-    sentinel.unlink()
-    shutil.rmtree(project / ".runs" / "sentinels", ignore_errors=True)
-    assert not entry.exists() and not registered_path.exists()
+    shutil.rmtree(layout.artifact_store(project) / "sentinels", ignore_errors=True)
+    assert not entry.exists()
 
     口 = Step(step_num=5, name="Re-run: the pipeline pulls the sample back",
              purpose="With the bytes only in the archive the run repopulates "
                      "the cache and the workspace from it, which is the cold "
                      "start a second machine is in")
+    hold_for_pipeline(InUseKind.sample_view, "sample_a", "observer")
     result = run_cli("run-pipeline", "--pipeline", str(pipeline_path),
                      "--project-root", str(project),
                      "--wfc-root", str(_WFC_ROOT), "--cores", "1")
@@ -549,6 +568,8 @@ def test_pipeline_restores_a_sample_it_never_staged(
         f"the restore rule did not run on the re-run -- no sentinel at "
         f"{sentinel}"
     )
+    assert end_pipeline_samples(project, "observer") == ["sample_a"]
+    assert not registered_path.exists() and not sentinel.exists()
 
 
 @pytest.mark.integration

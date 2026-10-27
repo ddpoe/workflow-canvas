@@ -14,6 +14,7 @@ import pytest
 from axiom_annotations import workflow
 
 from wfc.graph import load_pipeline, validate_structure
+from wfc.layout import artifact_store_relpath
 
 CONTRACTS = {
     "demo.join": {
@@ -87,7 +88,7 @@ def test_second_per_sample_selector_is_refused_at_both_moments():
     )
     result, loaded = _both_moments(
         beside_a_reference,
-        {"ref_1": {"output_paths": {"out": ".runs/run-1/out/out.csv"},
+        {"ref_1": {"output_paths": {"out": f"{artifact_store_relpath()}/run-1/out/out.csv"},
                    "sample": "s1"}},
     )
     assert result["valid"] is True, result["errors"]

@@ -3,8 +3,10 @@
 Two guards the string-level generator tests cannot provide:
 
   * Every pinned base-image digest in ``wfc.environments.dockerfiles.bases`` resolves
-    in its registry — a placeholder or stale digest fails every
-    pixi/conda build at ``FROM``.
+    in its registry by digest (``<repo>@<digest>``, the readability tag
+    dropped, as ``FROM`` and ``docker pull`` resolve it) — a placeholder or
+    stale digest fails every pixi/conda build at ``FROM``, while an upstream
+    retag of the tag does not.
   * The generated pixi Dockerfile actually builds against the real base,
     and the interpreter path recorded in the manifest exists inside the
     built image — the exact path ``wfc run-step`` execs at dispatch time.
@@ -32,23 +34,32 @@ pytestmark = [pytest.mark.integration, requires_docker]
 
 @workflow(
     purpose="Every pinned base-image digest in wfc.environments.dockerfiles.bases "
-            "resolves in its registry via `docker manifest inspect` — the "
-            "manual bump-the-constant maintainer step is enforced here "
-            "instead of trusted (a placeholder digest fails every build "
-            "at FROM)."
+            "resolves in its registry by digest alone (`docker manifest inspect "
+            "<repo>@<digest>`, the readability tag dropped, as a build and a "
+            "pull resolve it) — the manual bump-the-constant maintainer step "
+            "is enforced here instead of trusted (a placeholder digest fails "
+            "every build at FROM), and an upstream retag does not fail it."
 )
 def test_pinned_base_digests_exist_in_registries():
-    from wfc.environments.dockerfiles.bases import BASES_BY_BACKEND
+    from wfc.environments.backends import BACKENDS
 
-    for backend, ref in BASES_BY_BACKEND.items():
+    for backend, ref in ((name, base) for name, row in BACKENDS.items()
+                         for base in row.pinned_bases):
+        # `name:tag@digest` would fetch by tag and check the digest against it,
+        # so probe `repo@digest`: drop a tag from the last path segment only
+        # (a `host:port/` registry keeps its port).
+        name, _, digest = ref.partition("@")
+        head, sep, last = name.rpartition("/")
+        by_digest = f"{head}{sep}{last.split(':', 1)[0]}@{digest}"
         proc = subprocess.run(
-            ["docker", "manifest", "inspect", ref],
+            ["docker", "manifest", "inspect", by_digest],
             capture_output=True,
             text=True,
             timeout=60,
         )
         assert proc.returncode == 0, (
-            f"{backend} base {ref!r} does not resolve in its registry: "
+            f"{backend} base {ref!r} does not resolve in its registry "
+            f"(probed {by_digest!r}): "
             f"{proc.stderr.strip()}"
         )
 
@@ -78,16 +89,14 @@ pip = "*"
             "a real docker build), and the interpreter path recorded in "
             "the manifest exists and runs inside the built image."
 )
-def test_generated_pixi_dockerfile_builds_and_records_live_interpreter(tmp_path):
+def test_generated_pixi_dockerfile_builds_and_records_live_interpreter(tmp_project):
     from wfc import environments as envs_mod
     from wfc.environments.dockerfiles.bases import PIXI_BASE
     from wfc.environments.dockerfiles.pixi import env_python_path
 
-    (tmp_path / ".wfc").mkdir()
-
     # Lock the smoke project with the SAME pixi version the image build
     # will run (`pixi install --locked` rejects a mismatched lock).
-    ctx = tmp_path / "ctx"
+    ctx = tmp_project / "ctx"
     ctx.mkdir()
     (ctx / "pixi.toml").write_text(_SMOKE_PIXI_TOML, encoding="utf-8")
     lock_proc = subprocess.run(
@@ -112,7 +121,7 @@ def test_generated_pixi_dockerfile_builds_and_records_live_interpreter(tmp_path)
             "pixi_toml_content": _SMOKE_PIXI_TOML,
             "pip_freeze_content": "",
         },
-        project_dir=tmp_path,
+        project_dir=tmp_project,
     )
 
     # The manifest records the generator's env python, and that exact

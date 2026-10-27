@@ -48,6 +48,9 @@ class TargetRun:
         dispatch_env: The environment handed to the method process.
         stdout_log: Path to the per-run stdout log, when one was written.
         stderr_log: Path to the per-run stderr log, when one was written.
+        step_log_at_launch: What the per-run stderr log held when the
+            method process started (stub rung only), or ``None`` when no
+            log existed then or no process started.
         run_id: The run identity the claim phase registered.
         ending: The ending the record phase was handed.
         output_rows_before: ``RunOutput`` rows as the collect phase left
@@ -70,6 +73,7 @@ class TargetRun:
     dispatch_env: dict[str, str] | None = None
     stdout_log: Path | None = None
     stderr_log: Path | None = None
+    step_log_at_launch: str | None = None
     run_id: int | None = None
     ending: str | None = None
     output_rows_before: list[dict] | None = None
@@ -397,21 +401,25 @@ def max_run_id() -> int:
     return max(ids) if ids else 0
 
 
-def read_output_rows(run_id: int) -> list[dict]:
+def read_output_rows(run_id: int, session=None) -> list[dict]:
     """Read one run's ``RunOutput`` rows, every column, ordered by name.
 
     Args:
         run_id: The run whose output rows to read.
+        session: An open transaction's session to read through (it sees
+            that transaction's own writes); ``None`` reads committed rows.
 
     Returns:
         One dict per row.
     """
+    from contextlib import nullcontext
+
     from sqlmodel import select
 
     from wfc.persistence import get_session, RunOutput
 
     cols = [c.name for c in RunOutput.__table__.columns]
-    with get_session() as session:
+    with (nullcontext(session) if session is not None else get_session()) as session:
         rows = session.exec(
             select(RunOutput)
             .where(RunOutput.run_id == run_id)

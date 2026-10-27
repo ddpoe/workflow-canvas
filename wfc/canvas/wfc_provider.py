@@ -23,7 +23,9 @@ from sqlmodel import Session, col, select
 
 from wfc.persistence import (
     Method,
+    MethodVersion,
     Module,
+    OutputIntegrity,
     Run,
     RunAnnotation,
     RunInput,
@@ -33,8 +35,23 @@ from wfc.persistence import (
 )
 
 from .. import layout
-from ..contracts import COLLAPSED_SAMPLE
+from ..contracts import COLLAPSED_SAMPLE, declared_param_types
+from ..execution import expected_targets, list_pipeline_records, pipeline_status
+from ..identity import (
+    KEY_RECIPE,
+    SampleIdentity,
+    UpstreamRunIdentity,
+    build_input_fingerprint,
+    build_version_identity,
+    canonical_json_hash,
+)
 from ..lineage.relation import cancelled_descendants, upstreams
+from ..registration import contracts_by_version
+
+#: ``WfcRun.outputAvailability`` values: an output as its run wrote it, as
+#: far as wfc's record says, and one Storage found changed after that.
+OUTPUT_AVAILABLE = "available"
+OUTPUT_CHANGED = "changed"
 
 
 class ArtifactPathRefusedError(ValueError):
@@ -81,18 +98,101 @@ def _refuse_unsafe_artifact_name(name: str) -> None:
     raise ArtifactPathRefusedError(name, reason)
 
 
+def recorded_params_hash(params: Any) -> str | None:
+    """Return the hash of a run's recorded params, for the History payload.
+
+    Identity's canonical JSON hash, so equal params give an equal hash
+    whatever their key order. No recorded params are the empty params the
+    key was built over.
+
+    Args:
+        params: The run's params as the provider read them.
+
+    Returns:
+        The hash, or ``None`` when canonical JSON refuses the params.
+    """
+    try:
+        return canonical_json_hash(params if params is not None else {})
+    except (TypeError, ValueError):
+        return None
+
+
+def recorded_inputs_hash(cache_key: str | None, keyed_under_earlier_rule: bool,
+                         parents: list[dict[str, str | None]],
+                         sample_inputs: list[dict[str, str | None]],
+                         inputs_complete: bool = True) -> str | None:
+    """Return the input fingerprint over a run's inputs as the run recorded them.
+
+    Each parent becomes ``UpstreamRunIdentity(input slot, source slot, run
+    id, the parent's cache key)`` and each sample read ``SampleIdentity(slot,
+    content hash)``; Identity fingerprints them. Only recorded values are
+    used: resolving a parent entry that named no output is Execution's, at
+    the claim, against that day's rows, so such a run gets no hash rather
+    than one computed from today's.
+
+    Args:
+        cache_key: The run's cache key.
+        keyed_under_earlier_rule: Whether that key was built under an earlier
+            key recipe.
+        parents: The run's payload ``parents`` (slot, sourceRunId,
+            sourceSlot, cacheKey).
+        sample_inputs: The run's payload ``sampleInputs`` (slot, sample,
+            contentHash).
+        inputs_complete: False when an input the key was built over is no
+            longer readable: an input row whose source was removed (``wfc
+            demo --remove`` nulls it), or a parent with no run row. The
+            remaining inputs would hash to a fingerprint the key was never
+            built over.
+
+    Returns:
+        The fingerprint, or ``None`` when the run has no key, its key is
+        under an earlier rule, an input is no longer readable, a parent
+        records no source slot or a sample read records no content hash.
+    """
+    if not cache_key or keyed_under_earlier_rule or not inputs_complete:
+        return None
+    if any(not p.get("sourceSlot") for p in parents):
+        return None
+    if any(not s.get("contentHash") for s in sample_inputs):
+        return None
+    return build_input_fingerprint(
+        [UpstreamRunIdentity(input_slot=cast(str, p["slot"]),
+                             source_slot=cast(str, p["sourceSlot"]),
+                             run_id=int(cast(str, p["sourceRunId"])),
+                             cache_key=p.get("cacheKey"))
+         for p in parents],
+        [SampleIdentity(input_slot=cast(str, s["slot"]),
+                        content_hash=cast(str, s["contentHash"]))
+         for s in sample_inputs],
+    )
+
+
 @dataclass
 class WfcRun:
     """Represents a wfc run in workflow canvas format."""
     id: str  # wfc uses int IDs, converted to string for canvas
     module: str
     method: str
-    version: str = "1.0.0"
+    # The label of the method version the run ran (``v<label>`` on screen),
+    # read from its ``MethodVersion`` row; None when the run records no
+    # version or its version has no label.
+    version: int | None = None
+    # That version's content identity (what a pin holds), so a lineage
+    # opened from the run pins each node to the version it ran. None when
+    # the run records no version, or when its version row has no env
+    # fingerprint (a row made before versions carried one); the provider
+    # reports that and decides nothing, and lineage synthesis refuses it.
+    versionIdentity: str | None = None
     timestamp: float = 0  # Unix timestamp in ms
     duration: float = 0  # Duration in seconds
     status: str = "unknown"
     inputs: dict[str, Any] = field(default_factory=dict)
     outputs: dict[str, Any] = field(default_factory=dict)
+    # Each output's availability, keyed like ``outputs``: ``changed`` when
+    # Storage's check found the output changed after the run wrote it (the
+    # mark on its record), else ``available``. Read from the record only;
+    # no file is looked at when History loads.
+    outputAvailability: dict[str, str] = field(default_factory=dict)
     metrics: dict[str, float] = field(default_factory=dict)
     dataSource: str = ""  # sample name
     # Full lineage: every upstream run that fed this one, in slot order.
@@ -103,15 +203,45 @@ class WfcRun:
     # Slot-aware view of the same data. ``slot`` is the method input name
     # (``experiment_config``, ``corrected_dir``, …), ``sourceRunId`` is the
     # run that produced it and ``sourceSlot`` is the output slot of that run
-    # the input consumed (None when the input record names none). Order
-    # matches ``parentRunIds``.
+    # the input consumed (None when the input record names none).
+    # ``cacheKey`` is that parent run's own cache key, the value this run's
+    # key was built over (None for a keyless parent). Order matches
+    # ``parentRunIds``.
     parents: list[dict[str, str | None]] = field(default_factory=list)
     # The samples this run read, as recorded at the claim: ``slot`` is the
-    # method input the sample arrived on, ``sample`` the sample's name, in
-    # record order. Sample reads are not parents: they never appear in
+    # method input the sample arrived on, ``sample`` the sample's name and
+    # ``contentHash`` the sample's content hash at the claim (the value the
+    # key is over; None when the read predates its recording), in record
+    # order. Sample reads are not parents: they never appear in
     # ``parents``, ``parentRunIds`` or ``upstreamRunIds``. Empty for a run
     # that read no sample or whose reads were never recorded.
-    sampleInputs: list[dict[str, str]] = field(default_factory=list)
+    sampleInputs: list[dict[str, str | None]] = field(default_factory=list)
+    # The rest of the cache key's inputs: the method version's code
+    # fingerprint, and the run's own env name and env fingerprint. None
+    # when the run did not record them; the env name is never read from
+    # the method version instead.
+    codeFingerprint: str | None = None
+    envName: str | None = None
+    envFingerprint: str | None = None
+    # Recorded by the claim, not in the key: the commit the run ran at, the
+    # installed wfc version and the hash of the pipeline document it came
+    # from. None when the run did not record them.
+    gitCommit: str | None = None
+    wfcVersion: str | None = None
+    pipelineDocHash: str | None = None
+    # Whether the run's key was composed under an earlier key recipe than
+    # the one Identity composes today. A keyless run is never flagged. The
+    # recipe number itself is not sent.
+    keyedUnderEarlierRule: bool = False
+    # Computed when History loads, never stored: Identity's hash of the
+    # params (None when canonical JSON refuses them), and the input
+    # fingerprint over the recorded inputs -- the one the key was built over
+    # (None per ``recorded_inputs_hash``).
+    paramsHash: str | None = None
+    inputsHash: str | None = None
+    # Each param's type as the run's method version's contract declares it,
+    # by name; a param the contract does not declare is absent.
+    paramTypes: dict[str, str] = field(default_factory=dict)
     experimentId: str = ""  # pipeline_id
     runName: str = ""
     user: str = ""
@@ -139,6 +269,18 @@ class WfcRun:
     # executed rows. Stored as string to match the ``parentRunId``
     # convention on the frontend (all run IDs are strings canvas-side).
     cancelledDueToRunId: str | None = None
+    # That failed run's method and sample, so a reason can name the step and
+    # sample before the run id. None when the row names no failed run, or
+    # the run it names is no longer in the table.
+    cancelledDueToMethod: str | None = None
+    cancelledDueToSample: str | None = None
+    # Why a cancelled run was cancelled: ``user``, ``upstream_failed``,
+    # ``not_run``, ``interrupted`` or ``engine_failed``. None on a run that
+    # was not cancelled.
+    cancelReason: str | None = None
+    # The pipeline node the run executed, by the node's document id. None
+    # for a run no node wrote.
+    nodeId: str | None = None
     # For cache-hit audit rows: the original run whose outputs were reused.
     # NULL for fresh executions. Surfaced in RunDetailPanel so users can
     # see "Cached from #N" and click through to the source.
@@ -160,13 +302,12 @@ class WfcProvider:
     {project_root}/
         .wfc/
             wfc.db          ← SQLite database
-        .runs/
+        .wfc/runs/
             {id:08d}/      ← Run archive directories
                 meta.json
                 output.parquet / output.csv / etc.
-        data/
-            samples/
-                {name}/    ← Registered sample files
+        .wfc/workspace/samples/
+            {name}/        ← Restored sample files
     """
 
     def __init__(self, project_root: str):
@@ -174,7 +315,7 @@ class WfcProvider:
 
         Args:
             project_root: Absolute path to the wfc project directory (contains
-                .wfc/ and .runs/).
+                .wfc/ and .wfc/runs/).
 
         Raises:
             FileNotFoundError: The project has no ``.wfc/wfc.db``.
@@ -189,6 +330,14 @@ class WfcProvider:
             )
 
         self._runs: dict[str, WfcRun] = {}
+        # Each pipeline's runs as stored, ``(status, cancel_reason)``, by
+        # pipeline id.
+        self._pipeline_statuses: dict[str, list[tuple[str, str | None]]] = {}
+        # Each pipeline's expected targets, counted once and kept: a frozen
+        # document never changes. A frozen document that cannot be loaded is
+        # kept as None too; a pipeline with no frozen document yet is not
+        # kept, so a document frozen later is still counted.
+        self._expected: dict[str, tuple[int, list[str]] | None] = {}
         self._modules: dict[int, str] = {}  # id → name
         self._methods: dict[int, dict[str, Any]] = {}  # id → {name, module_id, script_path}
         self._loaded = False
@@ -391,6 +540,30 @@ class WfcProvider:
                     "env": method.env,
                 }
 
+            # Each method version's label and content identity, for the run
+            # that ran it. A row with no env fingerprint (made before
+            # versions carried one) has no identity: None, never one
+            # derived from the code fingerprint alone.
+            version_labels: dict[int, int | None] = {}
+            version_identities: dict[int, str | None] = {}
+            version_code_fps: dict[int, str | None] = {}
+            for version_id, label, code_fp, env_fp in session.exec(
+                    select(MethodVersion.id, MethodVersion.label,
+                           MethodVersion.code_fingerprint,
+                           MethodVersion.env_fingerprint)):
+                version_labels[version_id] = label
+                version_code_fps[version_id] = code_fp or None
+                version_identities[version_id] = (
+                    build_version_identity(code_fp, env_fp)
+                    if code_fp and env_fp else None)
+
+            # Each version's declared param types, from the contract
+            # Registration stored for it, read once per version.
+            version_param_types: dict[int, dict[str, str]] = {
+                version_id: declared_param_types(contract.params_schema)
+                for version_id, contract
+                in contracts_by_version(session, version_labels).items()}
+
             # Aggregate every ``run_inputs`` row up front, ordered by id to
             # keep each list in stable slot order. A row is one of three
             # kinds:
@@ -400,11 +573,15 @@ class WfcProvider:
             #   RunDetailPanel; ``source_slot`` is the parent's output slot
             #   it consumed, which lineage synthesis wires the edge from.
             # - a sample name: a sample read, reported as the slot it
-            #   arrived on and the sample's name.
+            #   arrived on, the sample's name and its content hash at the
+            #   claim.
             # - neither: a parent whose run was deleted (``wfc demo
-            #   --remove`` nulls the source), skipped.
+            #   --remove`` nulls the source), skipped; its run is noted, as
+            #   its recorded inputs no longer rebuild its key.
+            # A parent's cache key is filled in after the runs are read.
             parents_by_run: dict[str, list[dict[str, str | None]]] = {}
-            samples_by_run: dict[str, list[dict[str, str]]] = {}
+            samples_by_run: dict[str, list[dict[str, str | None]]] = {}
+            orphaned_runs: set[str] = set()
             for ri in session.exec(select(RunInput).order_by(col(RunInput.id))):
                 rid = str(ri.run_id)
                 if ri.source_run_id is not None:
@@ -417,8 +594,15 @@ class WfcProvider:
                     samples_by_run.setdefault(rid, []).append({
                         "slot": ri.input_name,
                         "sample": ri.sample_name,
+                        "contentHash": ri.content_hash,
                     })
+                else:
+                    orphaned_runs.add(rid)
 
+            cache_keys: dict[str, str | None] = {}
+            # Each pipeline's runs as stored, ``(status, cancel_reason)``,
+            # for its summary.
+            statuses: dict[str, list[tuple[str, str | None]]] = {}
             for run_row in session.exec(select(Run)):
                 method_info = methods.get(run_row.method_id, {})
                 module_name = modules.get(
@@ -472,7 +656,10 @@ class WfcProvider:
                     id=str(run_row.id),
                     module=module_name,
                     method=method_name,
-                    version="1.0.0",
+                    version=(version_labels.get(run_row.version_id)
+                             if run_row.version_id is not None else None),
+                    versionIdentity=(version_identities.get(run_row.version_id)
+                                     if run_row.version_id is not None else None),
                     timestamp=started_ms,
                     duration=duration,
                     status=status,
@@ -493,18 +680,73 @@ class WfcProvider:
                     error_message=run_row.error_message,
                     error_traceback=run_row.error_traceback,
                     cancelledDueToRunId=cancelled_due,
+                    cancelReason=run_row.cancel_reason,
+                    nodeId=run_row.node_id,
                     cacheSourceRunId=cache_source,
+                    codeFingerprint=(version_code_fps.get(run_row.version_id)
+                                     if run_row.version_id is not None else None),
+                    envName=run_row.env_name,
+                    envFingerprint=run_row.env_fingerprint,
+                    gitCommit=run_row.git_commit,
+                    wfcVersion=run_row.wfc_version,
+                    pipelineDocHash=run_row.pipeline_doc_hash,
+                    # Compared here, against Identity's recipe, so the
+                    # client never holds the number. A keyless row (the
+                    # backfill gives it recipe 1 too) has no key to flag.
+                    keyedUnderEarlierRule=(
+                        run_row.cache_key is not None
+                        and run_row.key_recipe is not None
+                        and run_row.key_recipe < KEY_RECIPE),
+                    paramTypes=dict(version_param_types.get(run_row.version_id, {})
+                                    if run_row.version_id is not None else {}),
                 )
 
                 runs[run.id] = run
+                cache_keys[run.id] = run_row.cache_key
+                if run_row.pipeline_id:
+                    statuses.setdefault(run_row.pipeline_id, []).append(
+                        (run_row.status or "unknown", run_row.cancel_reason))
+
+            # The failed run behind a cancellation, named by its method and
+            # sample from that run's own record.
+            for run in runs.values():
+                cause = runs.get(run.cancelledDueToRunId or "")
+                if cause is not None:
+                    run.cancelledDueToMethod = cause.method
+                    run.cancelledDueToSample = cause.dataSource
+
+            # Each parent's own cache key, from the parent's row read above;
+            # None for a parent no longer in the table.
+            for parents_list in parents_by_run.values():
+                for parent in parents_list:
+                    parent["cacheKey"] = cache_keys.get(
+                        cast(str, parent["sourceRunId"]))
+
+            # The params hash and the inputs hash, from the values just read.
+            # A run with an orphaned input row, or a parent no longer in the
+            # table, cannot rebuild the fingerprint its key was built over.
+            for rid, run in runs.items():
+                run.paramsHash = recorded_params_hash(run.inputs)
+                run.inputsHash = recorded_inputs_hash(
+                    cache_keys[rid], run.keyedUnderEarlierRule,
+                    run.parents, run.sampleInputs,
+                    inputs_complete=(
+                        rid not in orphaned_runs
+                        and all(p["sourceRunId"] in cache_keys
+                                for p in run.parents)))
 
             # Load outputs for each run, keyed by the slot each one fills. A
             # record that names no slot is malformed and is not listed; its
-            # run's readers report it when its outputs are read.
+            # run's readers report it when its outputs are read. Each
+            # output's availability is its record's changed mark.
             for out in session.exec(select(RunOutput)):
                 run_id = str(out.run_id)
                 if run_id in runs and out.slot:
                     runs[run_id].outputs[out.slot] = out.artifact_path or ""
+                    runs[run_id].outputAvailability[out.slot] = (
+                        OUTPUT_CHANGED
+                        if out.integrity_status == OutputIntegrity.changed.value
+                        else OUTPUT_AVAILABLE)
 
             # Load user annotations (favorite / tags / archived). The
             # ``run_annotations`` table and its ``archived_at`` column are
@@ -536,7 +778,7 @@ class WfcProvider:
         # Resolve bundled sample lists for collapsed fan-in runs. A run with
         # sample=COLLAPSED_SAMPLE was produced by a step downstream of an
         # input_selector(fan_mode="in"); the actual sample list is stored in
-        # the pipeline.json at .runs/pipelines/<pipeline_id>/pipeline.json.
+        # the pipeline.json at .wfc/runs/pipelines/<pipeline_id>/pipeline.json.
         # Cache per pipeline_id so we only read each file once.
         pipeline_samples_cache: dict[str, list[str]] = {}
         for run in runs.values():
@@ -580,6 +822,7 @@ class WfcProvider:
         self._modules = modules
         self._methods = methods
         self._runs = runs
+        self._pipeline_statuses = statuses
         self._loaded = True
         print(
             f"WfcProvider: Loaded {len(self._modules)} modules, "
@@ -590,6 +833,56 @@ class WfcProvider:
         """Get all runs in workflow canvas format."""
         self.load()
         return [run.to_dict() for run in self._runs.values()]
+
+    def _expected_targets(self, pipeline_id: str) -> tuple[int, list[str]] | None:
+        """A pipeline's expected run count and node order, read once and kept.
+
+        Returns:
+            The count of the targets its frozen document expects and its
+            method nodes in document order, or None when the pipeline has no
+            readable frozen document.
+        """
+        if pipeline_id not in self._expected:
+            targets = expected_targets(pipeline_id, str(self.project_root))
+            if targets is not None:
+                self._expected[pipeline_id] = (len(targets.targets),
+                                               targets.node_order)
+            elif layout.pipeline_doc_path(self.project_root, pipeline_id).exists():
+                # A document that exists but does not load stays unreadable.
+                self._expected[pipeline_id] = None
+            else:
+                return None
+        return self._expected[pipeline_id]
+
+    def get_pipeline_summaries(self) -> list[dict[str, Any]]:
+        """Each pipeline's status and the runs its frozen document expects.
+
+        The status is Execution's ``pipeline_status`` over the pipeline's
+        runs (each status and cancel reason) and its pending targets. A
+        pipeline has pending targets only while it has a pipeline record
+        (read through Execution on every call, never cached): the expected
+        count minus its runs of every status, never below zero. A pipeline
+        with no record, or no frozen document (``expected`` is then None),
+        has none, so its status comes from its rows as they are.
+
+        Returns:
+            ``{pipelineId, status, expected, nodeOrder}`` per pipeline.
+        """
+        self.load()
+        recorded = {r.pipeline_id for r in list_pipeline_records(self.project_root)}
+        summaries = []
+        for pipeline_id, statuses in self._pipeline_statuses.items():
+            expected = self._expected_targets(pipeline_id)
+            count, node_order = expected if expected is not None else (None, None)
+            pending = (max(count - len(statuses), 0)
+                       if count is not None and pipeline_id in recorded else 0)
+            summaries.append({
+                "pipelineId": pipeline_id,
+                "status": pipeline_status(statuses, pending),
+                "expected": count,
+                "nodeOrder": node_order,
+            })
+        return summaries
 
     def run_records(self) -> dict[str, WfcRun]:
         """Return the loaded run records by id, loading them first if needed.

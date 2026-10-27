@@ -9,7 +9,7 @@ Covers:
   - Tier 2: discovery / explicit-name error taxonomy — never a
     wrong path, never a file produced on error.
   - Tier 2: Canvas provider artifact methods resolve archived runs
-    from the DVC cache (nothing left in .runs/).
+    from the DVC cache (nothing left in .wfc/runs/).
 """
 
 from __future__ import annotations
@@ -119,7 +119,7 @@ def test_export_copy_semantics(cli, tmp_project, monkeypatch):
     口 = Step(step_num=2, name="Export one output to a file",
              purpose="Copy comes out byte-identical and writable")
     dest = tmp_project / "exports" / "my_masks.tif"
-    result = cli("export", str(run_id), "masks", str(dest))
+    result = cli("export", "--run", str(run_id), "--slot", "masks", "--dest", str(dest))
     assert result.returncode == 0, result.stderr
     assert dest.read_bytes() == payload
     # Writable — the whole point of an export (cache entries are 0444 and
@@ -129,13 +129,14 @@ def test_export_copy_semantics(cli, tmp_project, monkeypatch):
 
     口 = Step(step_num=3, name="Refuse to overwrite without --force",
              purpose="Existing destination file is never silently replaced")
-    result = cli("export", str(run_id), "masks", str(dest))
+    result = cli("export", "--run", str(run_id), "--slot", "masks", "--dest", str(dest))
     assert result.returncode != 0
     assert "--force" in result.stderr
     # dest untouched by the refused export (still has our appended byte)
     assert dest.read_bytes() == payload + b"!"
 
-    result = cli("export", str(run_id), "masks", str(dest), "--force")
+    result = cli("export", "--force", "--run", str(run_id), "--slot", "masks",
+                 "--dest", str(dest))
     assert result.returncode == 0, result.stderr
     assert dest.read_bytes() == payload
 
@@ -144,7 +145,7 @@ def test_export_copy_semantics(cli, tmp_project, monkeypatch):
                      "its original name")
     dest_dir = tmp_project / "exports" / "into_dir"
     dest_dir.mkdir(parents=True)
-    result = cli("export", str(run_id), "masks", str(dest_dir))
+    result = cli("export", "--run", str(run_id), "--slot", "masks", "--dest", str(dest_dir))
     assert result.returncode == 0, result.stderr
     assert (dest_dir / "masks.tif").read_bytes() == payload
 
@@ -152,7 +153,7 @@ def test_export_copy_semantics(cli, tmp_project, monkeypatch):
              purpose="File outputs land as <name><suffix>, directory outputs "
                      "as <dest>/<name>/, all writable")
     all_dir = tmp_project / "exports" / "all"
-    result = cli("export", str(run_id), "--all", str(all_dir))
+    result = cli("export", "--run", str(run_id), "--all", "--dest", str(all_dir))
     assert result.returncode == 0, result.stderr
     assert (all_dir / "masks.tif").read_bytes() == payload
     tile = all_dir / "tiles" / "tile_0.png"
@@ -186,7 +187,7 @@ def test_export_path_and_readonly_cache(cli, tmp_project, monkeypatch):
 
     口 = Step(step_num=2, name="Export --path prints exactly the cache path",
              purpose="stdout carries only the path; the warning goes to stderr")
-    result = cli("export", str(run_id), "big", "--path")
+    result = cli("export", "--run", str(run_id), "--slot", "big", "--path")
     assert result.returncode == 0, result.stderr
     # Exactly one line on stdout: the path (script-friendly). Compared via
     # samefile — Windows resolves the temp dir's username segment with
@@ -219,10 +220,12 @@ def test_export_path_and_readonly_cache(cli, tmp_project, monkeypatch):
 # ---------------------------------------------------------------------------
 
 @workflow(
-    purpose="Wrong or missing output names never produce a path or file: "
-            "bare `wfc export <id>` and a mistyped name exit nonzero listing "
-            "the run's actual output names; an un-archived output points at "
-            "`wfc cache archive`; an unknown run errors clearly.",
+    purpose="`wfc export --run <id>` with no slot lists the run's outputs on "
+            "stdout and exits 0, archived or not; a mistyped name never "
+            "produces a path or file and exits nonzero listing the run's "
+            "actual output names; an un-archived output points at "
+            "`wfc cache archive`; an unknown run errors clearly, listing "
+            "included.",
 )
 def test_export_errors_and_discovery(cli, tmp_project, monkeypatch):
     from wfc.persistence import get_session, RunOutput
@@ -234,8 +237,10 @@ def test_export_errors_and_discovery(cli, tmp_project, monkeypatch):
     archive_outputs(tmp_project, run_id=run_id)
 
     # Add a second, NEVER-archived output (content_hash NULL).
-    beta = tmp_project / "staging" / "beta.csv"
-    beta.parent.mkdir(parents=True)
+    # Where collect writes a run's outputs: its run archive.
+    from wfc.layout import run_archive_dir
+    beta = run_archive_dir(tmp_project, run_id) / "beta.csv"
+    beta.parent.mkdir(parents=True, exist_ok=True)
     beta.write_text("c\n3\n")
     with get_session() as session:
         session.add(RunOutput(
@@ -244,33 +249,41 @@ def test_export_errors_and_discovery(cli, tmp_project, monkeypatch):
         ))
         session.commit()
 
-    # Bare run id: the error IS the discovery listing.
-    result = cli("export", str(run_id))
-    assert result.returncode != 0
-    assert "alpha" in result.stderr and "beta" in result.stderr
+    # No slot: the listing is the answer, on stdout, exit 0 -- the archived
+    # output and the un-archived one alike, each with its file name.
+    result = cli("export", "--run", str(run_id))
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    rows = [line.split() for line in result.stdout.strip().splitlines()]
+    assert rows == [["SLOT", "FILE"], ["alpha", "alpha.csv"], ["beta", "beta.csv"]]
+
+    # The listing of a run that does not exist is still a refusal.
+    result = cli("export", "--run", "99999")
+    assert result.returncode == 1
+    assert "99999" in result.stderr
     assert result.stdout == ""
 
     # Wrong name: nonzero, lists available names, prints no path.
-    result = cli("export", str(run_id), "nope", "--path")
+    result = cli("export", "--run", str(run_id), "--slot", "nope", "--path")
     assert result.returncode != 0
     assert "alpha" in result.stderr and "beta" in result.stderr
     assert result.stdout == ""
 
     # Wrong name in copy mode: no file is ever produced.
     dest = tmp_project / "exports" / "never.csv"
-    result = cli("export", str(run_id), "nope", str(dest))
+    result = cli("export", "--run", str(run_id), "--slot", "nope", "--dest", str(dest))
     assert result.returncode != 0
     assert not dest.exists()
 
     # Un-archived output: distinct error pointing at `wfc cache archive` —
     # never an artifact_path fallback.
-    result = cli("export", str(run_id), "beta", "--path")
+    result = cli("export", "--run", str(run_id), "--slot", "beta", "--path")
     assert result.returncode != 0
     assert "wfc cache archive" in result.stderr
     assert result.stdout == ""
 
     # Unknown run id.
-    result = cli("export", "99999", "alpha", "--path")
+    result = cli("export", "--run", "99999", "--slot", "alpha", "--path")
     assert result.returncode != 0
     assert "99999" in result.stderr
     assert result.stdout == ""
@@ -292,7 +305,7 @@ def test_export_all_audit_row_exports_source_outputs(cli, tmp_project, monkeypat
     source_id, audit_id = source.run_id, audit.run_id
     archive_outputs(tmp_project, run_id=source_id)
 
-    result = cli("export", str(audit_id), "--all", "--path")
+    result = cli("export", "--run", str(audit_id), "--all", "--path")
     assert result.returncode == 0
     cache_path = _cache_path_for(tmp_project, source_id, "alpha")
     assert "alpha" in result.stdout
@@ -321,8 +334,10 @@ def test_export_all_is_all_or_nothing(cli, tmp_project, monkeypatch):
 
     # Second row, never archived (content_hash NULL) — resolvable only
     # after `wfc cache archive`.
-    beta = tmp_project / "staging" / "beta.csv"
-    beta.parent.mkdir(parents=True)
+    # Where collect writes a run's outputs: its run archive.
+    from wfc.layout import run_archive_dir
+    beta = run_archive_dir(tmp_project, run_id) / "beta.csv"
+    beta.parent.mkdir(parents=True, exist_ok=True)
     beta.write_text("c\n3\n")
     with get_session() as session:
         session.add(RunOutput(
@@ -332,7 +347,7 @@ def test_export_all_is_all_or_nothing(cli, tmp_project, monkeypatch):
         session.commit()
 
     dest_dir = tmp_project / "exports" / "partial"
-    result = cli("export", str(run_id), "--all", str(dest_dir))
+    result = cli("export", "--run", str(run_id), "--all", "--dest", str(dest_dir))
     assert result.returncode == 1
     assert "wfc cache archive" in result.stderr
     assert result.stdout == ""
@@ -340,7 +355,7 @@ def test_export_all_is_all_or_nothing(cli, tmp_project, monkeypatch):
     # half-exported directory holding only the archived output.
     assert not dest_dir.exists()
 
-    result = cli("export", str(run_id), "--all", "--path")
+    result = cli("export", "--run", str(run_id), "--all", "--path")
     assert result.returncode == 1
     assert "wfc cache archive" in result.stderr
     assert result.stdout == ""
@@ -360,7 +375,7 @@ def test_export_all_is_all_or_nothing(cli, tmp_project, monkeypatch):
     (occupied / "gamma.csv").write_text("MINE\n")
     (occupied / "delta.csv").write_text("MINE TOO\n")
 
-    result = cli("export", str(second_id), "--all", str(occupied))
+    result = cli("export", "--run", str(second_id), "--all", "--dest", str(occupied))
     assert result.returncode == 1
     assert "--force" in result.stderr
     assert "gamma.csv" in result.stderr and "delta.csv" in result.stderr
@@ -373,11 +388,12 @@ def test_export_all_is_all_or_nothing(cli, tmp_project, monkeypatch):
 # ---------------------------------------------------------------------------
 
 @workflow(
-    purpose="The export branch refuses four argument shapes before it reaches "
-            "the engine: `--all` with an output name and a destination, "
-            "`--path` with a destination, an output name with no destination "
-            "and no `--path`, and `--all` with neither a destination nor "
-            "`--path`. Each exits 2 with its own message, nothing is "
+    purpose="`wfc export` takes every value by a named flag, in any order, "
+            "and refuses an argument shape before it reaches the engine: a "
+            "positional, a missing --run, `--all` with --slot, `--path` with "
+            "--dest, --slot with neither --dest nor `--path`, `--all` with "
+            "neither --dest nor `--path`, and --dest with neither --slot nor "
+            "`--all`. Each refusal exits 2 with its own message, nothing is "
             "resolved, and no destination is written.",
 )
 def test_export_argument_shapes_are_refused_before_resolving(
@@ -391,22 +407,42 @@ def test_export_argument_shapes_are_refused_before_resolving(
                        lambda **kwargs: reached.append(kwargs) or 0)
 
     dest = tmp_project / "exports" / "refused"
+
+    # A value-taking option before the flags and after them parses the same.
+    accepted = [
+        ("export", "--dest", str(dest), "--all", "--run", "412"),
+        ("export", "--all", "--run", "412", "--dest", str(dest)),
+    ]
+    for argv in accepted:
+        result = cli(*argv)
+        assert result.returncode == 0, f"{argv} -> {result!r}"
+    assert reached == [dict(run_id=412, slot=None, dest=str(dest), export_all=True,
+                            path_only=False, force=False)] * 2
+    reached.clear()
+
     refused = [
+        (("export", "--run", "1", "masks"), "unrecognized arguments: masks"),
+        (("export", "--slot", "masks", "--path"),
+         "the following arguments are required: --run"),
         (
-            ("export", "1", "masks", str(dest), "--all"),
-            "--all exports every output; do not pass a slot",
+            ("export", "--run", "1", "--slot", "masks", "--dest", str(dest), "--all"),
+            "--all exports every output; do not pass --slot",
         ),
         (
-            ("export", "1", "masks", str(dest), "--path"),
-            "--path cannot be combined with a destination",
+            ("export", "--run", "1", "--slot", "masks", "--dest", str(dest), "--path"),
+            "--path cannot be combined with --dest",
         ),
         (
-            ("export", "1", "masks"),
-            "destination required (or use --path to print the cache path)",
+            ("export", "--run", "1", "--slot", "masks"),
+            "--dest required (or use --path to print the cache path)",
         ),
         (
-            ("export", "1", "--all"),
-            "--all requires a destination directory (or --path)",
+            ("export", "--run", "1", "--all"),
+            "--all requires --dest DIR (or --path)",
+        ),
+        (
+            ("export", "--run", "1", "--dest", str(dest)),
+            "--slot or --all required with --dest, --path or --force",
         ),
     ]
 
@@ -431,7 +467,7 @@ def test_export_argument_shapes_are_refused_before_resolving(
     purpose="The Canvas History-tab export flow and RunDetailPanel artifact "
             "browser work for archived runs: get_artifacts, "
             "list_artifacts, and get_artifact_path resolve RunOutput rows to "
-            "DVC cache paths (frozen dict shapes, no .runs/ globbing, local "
+            "DVC cache paths (frozen dict shapes, no .wfc/runs/ globbing, local "
             "cache only).",
 )
 def test_provider_artifacts_resolve_from_cache(cli, tmp_project, monkeypatch):
@@ -445,11 +481,14 @@ def test_provider_artifacts_resolve_from_cache(cli, tmp_project, monkeypatch):
     run_id = run.run_id
     archive_outputs(tmp_project, run_id=run_id)
 
-    # Post-archive reality: the archive pass copies the run archive's files
-    # into the cache and leaves them where the collect phase wrote them, so
-    # a provider that globbed the run archive would still find files here.
-    # Every path asserted below is therefore checked to be a cache path.
-    assert [p for p in run.archive_dir.rglob("*") if p.is_file()]
+    # Post-archive reality: the archive pass moves the outputs into the cache
+    # and removes them from the run archive, which keeps only the run's logs
+    # and sidecars. A provider that globbed the run archive would find those
+    # files and none of the outputs, so every path asserted below is checked
+    # to be a cache path.
+    left = [p for p in run.archive_dir.rglob("*") if p.is_file()]
+    assert left, "the run archive keeps its logs and sidecars"
+    assert not {p.name for p in left} & {"report.csv", "t0.png", "t1.png"}, left
 
     provider = WfcProvider(str(tmp_project))
     rid = str(run_id)

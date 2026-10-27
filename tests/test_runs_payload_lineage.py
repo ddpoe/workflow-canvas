@@ -32,7 +32,7 @@ from tests.harness import (
 from wfc.canvas import state as canvas_state
 from wfc.demo.remove import remove_demo
 from wfc.lineage import ancestors, descendants, upstreams
-from wfc.persistence import RunInput, get_session, reset_engine
+from wfc.persistence import Run, RunInput, Sample, get_session, reset_engine
 
 
 def _produce_history(root, monkeypatch) -> dict[str, str]:
@@ -246,6 +246,9 @@ def test_sample_reads_reach_the_payload_apart_from_parents(git_project, monkeypa
             with get_session() as session:
                 rows = session.exec(select(RunInput).where(
                     RunInput.run_id == int(quantify))).all()
+                norm_key = session.get(Run, int(norm)).cache_key
+                s1_hash = session.exec(select(Sample.content_hash)
+                                       .where(Sample.name == "s1")).one()
             assert sorted((r.input_name, r.source_run_id, r.sample_name)
                           for r in rows) == [
                 ("mask", None, None), ("raw", None, "s1"),
@@ -258,15 +261,18 @@ def test_sample_reads_reach_the_payload_apart_from_parents(git_project, monkeypa
             # read is listed apart, and the orphaned row is in neither.
             q = runs[quantify]
             assert q["parents"] == [
-                {"slot": "table", "sourceRunId": norm, "sourceSlot": "data"}]
+                {"slot": "table", "sourceRunId": norm, "sourceSlot": "data",
+                 "cacheKey": norm_key}]
             assert q["parentRunIds"] == [norm]
             assert q["upstreamRunIds"] == [norm]
-            assert q["sampleInputs"] == [{"slot": "raw", "sample": "s1"}]
+            assert q["sampleInputs"] == [
+                {"slot": "raw", "sample": "s1", "contentHash": s1_hash}]
 
             # A root reads its sample and has no parents.
             n = runs[norm]
             assert n["parents"] == [] and n["parentRunIds"] == []
             assert n["upstreamRunIds"] == []
-            assert n["sampleInputs"] == [{"slot": "data", "sample": "s1"}]
+            assert n["sampleInputs"] == [
+                {"slot": "data", "sample": "s1", "contentHash": s1_hash}]
     finally:
         reset_engine()

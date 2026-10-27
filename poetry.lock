@@ -506,13 +506,13 @@ files = [
 
 [[package]]
 name = "axiom-graph"
-version = "2.4.1"
+version = "3.0.0"
 description = "Project knowledge indexer for AI agents — scans code, tracks documentation staleness, and serves a knowledge graph to AI agents via MCP"
 optional = false
 python-versions = "<4.0,>=3.10"
 files = [
-    {file = "axiom_graph-2.4.1-py3-none-any.whl", hash = "sha256:8fd9eeb5ab858e0dcf186fb3de995a6dcc50885b66436bb5cd3d0722b2b44c92"},
-    {file = "axiom_graph-2.4.1.tar.gz", hash = "sha256:b74e79827243d83a591312207ed48d588e239f877061500187bacdf6591bfaa9"},
+    {file = "axiom_graph-3.0.0-py3-none-any.whl", hash = "sha256:132f6fc554f16873a8d8bdcbd06fa76d1739dba8752ebfa56dfa3c0902bfb998"},
+    {file = "axiom_graph-3.0.0.tar.gz", hash = "sha256:dc4ed4bd42b7d776d6f4fbf8e85e736e97967ef133c6c20a5bc4b7b74ad5b6d1"},
 ]
 
 [package.dependencies]
@@ -531,8 +531,6 @@ uvicorn = {version = ">=0.20", optional = true, markers = "extra == \"viz\""}
 
 [package.extras]
 js = ["tree-sitter (>=0.25.2,<0.26.0)", "tree-sitter-javascript (>=0.25.0,<0.26.0)", "tree-sitter-typescript (>=0.23.2,<0.24.0)"]
-semantic = ["fastembed (>=0.3)", "onnxruntime (>=1.17,<1.20)", "sqlite-vec (>=0.1.1)"]
-semantic-torch = ["sentence-transformers (>=2.0)", "sqlite-vec (>=0.1.1)"]
 viz = ["fastapi (>=0.100)", "pygments (>=2.14)", "uvicorn (>=0.20)"]
 
 [[package]]
@@ -1877,6 +1875,20 @@ files = [
     {file = "entrypoints-0.4-py3-none-any.whl", hash = "sha256:f174b5ff827504fd3cd97cc3f8649f3693f51538c7e4bdf3ef002c8429d42f9f"},
     {file = "entrypoints-0.4.tar.gz", hash = "sha256:b706eddaa9218a19ebcd67b56818f05bb27589b1ca9e8d797b74affad4ccacd4"},
 ]
+
+[[package]]
+name = "execnet"
+version = "2.1.2"
+description = "execnet: rapid multi-Python deployment"
+optional = false
+python-versions = ">=3.8"
+files = [
+    {file = "execnet-2.1.2-py3-none-any.whl", hash = "sha256:67fba928dd5a544b783f6056f449e5e3931a5c378b128bc18501f7ea79e296ec"},
+    {file = "execnet-2.1.2.tar.gz", hash = "sha256:63d83bfdd9a23e35b9c6a3261412324f964c2ec8dcd8d3c6916ee9373e0befcd"},
+]
+
+[package.extras]
+testing = ["hatch", "pre-commit", "pytest", "tox"]
 
 [[package]]
 name = "fastapi"
@@ -5706,6 +5718,26 @@ pytest = ">=7.0.0"
 test = ["black (>=22.1.0)", "flake8 (>=4.0.1)", "pre-commit (>=2.17.0)", "tox (>=3.24.5)"]
 
 [[package]]
+name = "pytest-xdist"
+version = "3.8.0"
+description = "pytest xdist plugin for distributed testing, most importantly across multiple CPUs"
+optional = false
+python-versions = ">=3.9"
+files = [
+    {file = "pytest_xdist-3.8.0-py3-none-any.whl", hash = "sha256:202ca578cfeb7370784a8c33d6d05bc6e13b4f25b5053c30a152269fd10f0b88"},
+    {file = "pytest_xdist-3.8.0.tar.gz", hash = "sha256:7e578125ec9bc6050861aa93f2d59f1d8d085595d6551c2c90b6f4fad8d3a9f1"},
+]
+
+[package.dependencies]
+execnet = ">=2.1"
+pytest = ">=7.0.0"
+
+[package.extras]
+psutil = ["psutil (>=3.0)"]
+setproctitle = ["setproctitle"]
+testing = ["filelock"]
+
+[[package]]
 name = "python-dateutil"
 version = "2.9.0.post0"
 description = "Extensions to the standard Python datetime module"
@@ -8101,4 +8133,4 @@ ssh = ["dvc-ssh"]
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.12,<3.13"
-content-hash = "672a17b436ffbbeb16c047283eb46e372da02abd87a6e0231ccd700d78838701"
+content-hash = "1695671cf51e87be7ee34618609dc16c21c9dcd6ef714055a9b5a99e5046a096"

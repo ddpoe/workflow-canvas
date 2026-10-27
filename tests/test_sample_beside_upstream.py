@@ -197,26 +197,34 @@ def test_sample_beside_an_upstream_and_a_reference(tmp_path_factory, monkeypatch
 # Honest refusals
 # =============================================================================
 
-@workflow(purpose="A slot the document wires but the claim was not handed is "
-                  "refused as a wfc defect naming the slot and its source "
-                  "node, before any run row exists")
-def test_a_wired_slot_not_delivered_is_refused_as_a_wfc_defect(git_project,
-                                                               monkeypatch, capsys):
+@pytest.mark.parametrize("optional", [False, True], ids=["required", "optional"])
+@workflow(purpose="A slot the document wires from a method whose run-id "
+                  "sidecar is missing is refused at the claim, required or "
+                  "optional alike, naming the slot, its source node and the "
+                  "missing sidecar, before any run row exists")
+def test_a_wired_slot_whose_sidecar_is_missing_is_refused(optional, git_project,
+                                                          monkeypatch, capsys):
     口 = Step(step_num=1, name="Seed the upstream, then lose its run-id sidecar",
              purpose="A run production really made, whose sidecar is then "
                      "gone: the claim's sidecar walk finds nothing to hand "
-                     "the wired slot")
-    scn = Scenario(nodes=selector_beside_method(),
+                     "the wired slot, which the method declares required or "
+                     "optional")
+    nodes = selector_beside_method()
+    if optional:
+        nodes[-1].optional_inputs = ("mask",)
+    scn = Scenario(nodes=nodes,
                    prior_runs=[completed("segment", sentinel_deleted=True)])
     obs = run_target(scn, "quantify", root=git_project, monkeypatch=monkeypatch)
 
-    口 = Step(step_num=2, name="Refused with the defect message, before any row",
+    口 = Step(step_num=2, name="Refused at the claim, before any row",
              purpose="The user wired the slot, so the message must not tell "
-                     "them to wire it")
+                     "them to wire it; an optional slot is not silently "
+                     "left unfed")
     err = capsys.readouterr().err
     assert obs.exit_code(Q) == 1
-    assert "'mask' (wired from node 'segment')" in err
-    assert "wfc defect" in err
+    assert "input slot 'mask' is wired from node 'segment'" in err
+    assert "no run-id sidecar" in err
+    assert "a record wfc owns disagrees with the pipeline" in err
     assert "which nothing feeds" not in err
     assert obs.rows_for_node("quantify") == []
     assert obs.outcomes[Q]["phase"] == "claim"
@@ -247,7 +255,7 @@ def test_a_reference_whose_artifact_does_not_resolve_is_refused_at_claim(
     project = build_project(consumer, root=git_project, monkeypatch=monkeypatch)
     capsys.readouterr()
     result = run_claim(node_id="sink", sample="s1", variant="default",
-                       method_name=None, module_name=None, script_path=None,
+                       method_name=None, module_name=None, 
                        params=None, parent_run_ids=None,
                        pipeline_id=project.pipeline_id,
                        pipeline_json=str(project.pipeline_json), git_commit=None)
@@ -298,10 +306,11 @@ def _refused_mid_chain() -> Scenario:
 
 @workflow(purpose="A pipeline whose middle step is refused at the claim ends "
                   "with one failed row for that step carrying its message and "
-                  "each descendant cancelled against it; the canvas status "
-                  "is terminal failed and the pipeline summary agrees with it")
+                  "each descendant cancelled against it; head succeeded, so "
+                  "the canvas status is terminal mixed and the pipeline "
+                  "summary agrees with it")
 def test_a_claim_refusal_is_a_visible_failure(git_project, monkeypatch):
-    from wfc.canvas.run_state import aggregate_pipeline_status
+    from wfc.canvas.run_state import CANVAS_OVERALL_STATUS, aggregate_pipeline_status
     from wfc.execution.lifecycle import _write_cancelled_rows, summarize_pipeline
 
     口 = Step(step_num=1, name="Run the pipeline and its pipeline-end walk",
@@ -335,15 +344,16 @@ def test_a_claim_refusal_is_a_visible_failure(git_project, monkeypatch):
     assert _write_cancelled_rows(obs.project.pipeline_id, str(obs.project.root)) == 0
     assert len(obs.rows_for_node("mid")) == 1
 
-    口 = Step(step_num=5, name="The canvas status is terminal failed",
-             purpose="The engine thread died with an error; the refused node "
+    口 = Step(step_num=5, name="The canvas status is terminal mixed",
+             purpose="The engine thread died with an error after head "
+                     "succeeded and mid failed; the refused node "
                      "carries its message and the descendant names its cause: "
                      "the failed run and the canvas node that run ran for")
     step_map = {"head": "head", "mid": "mid", "tail": "tail"}
     status = aggregate_pipeline_status(obs.project.pipeline_id, step_map,
                                        thread_alive=False, error="engine failed",
                                        log_dir=None)
-    assert status.overall_status == "failed"
+    assert status.overall_status == "completed_with_failures"
     assert "'nope'" in status.node_states["mid"]["error"]
     assert status.node_states["tail"]["cancelled_due_to_run_id"] == str(mid["id"])
     assert status.node_states["tail"]["upstream_run_id"] == str(mid["id"])
@@ -353,11 +363,61 @@ def test_a_claim_refusal_is_a_visible_failure(git_project, monkeypatch):
              purpose="Both read the same rows after the walk, so the failure "
                      "count includes the refused step")
     summary = summarize_pipeline(obs.project.pipeline_id)
-    assert summary.status == status.overall_status
+    assert summary.status == "mixed"
+    assert CANVAS_OVERALL_STATUS[summary.status] == status.overall_status
     assert (summary.completed, summary.failed, summary.cancelled) == (1, 1, 1)
     tallied = sum(sum(t.values()) for t in
                   (ns.get("tally", {}) for ns in status.node_states.values()))
     assert summary.total == tallied
+
+
+@workflow(purpose="Opening the lineage of a run that never ran -- a step "
+                  "refused at its claim, or its descendant cancelled against "
+                  "it -- is refused in its own words: the canvas answers 422 "
+                  "naming the run and saying it was refused, or cancelled, "
+                  "before it ran, not that it ran an unrecorded version")
+def test_a_lineage_of_a_run_that_never_ran_is_refused_saying_so(git_project,
+                                                                 monkeypatch):
+    from tests.fixtures.fakes import bind_provider
+    from tests.fixtures.routes import canvas_client
+    from wfc.persistence import reset_engine
+
+    口 = Step(step_num=1, name="Run the pipeline whose middle step is refused",
+             purpose="The pipeline-end walk writes mid's failed row and "
+                     "tail's cancelled row, neither with a start time")
+    obs = run_scenario(_refused_mid_chain(), root=git_project, monkeypatch=monkeypatch)
+    [mid] = obs.rows_for_node("mid")
+    [tail] = obs.rows_for_node("tail")
+    assert (mid["status"], mid["started_at"]) == ("failed", None)
+    assert (tail["status"], tail["started_at"]) == ("cancelled", None)
+
+    口 = Step(step_num=2, name="Open each one's lineage through the canvas",
+             purpose="The real provider loads the rows; the real route "
+                     "answers")
+    bind_provider(monkeypatch, None)
+    try:
+        with canvas_client(git_project, monkeypatch) as client:
+            refused = client.get(f"/api/runs/{mid['id']}/lineage-pipeline")
+            cancelled = client.get(f"/api/runs/{tail['id']}/lineage-pipeline")
+    finally:
+        reset_engine()
+
+    口 = Step(step_num=3, name="Each refusal says the run never ran",
+             purpose="Named by run id, with the cause in its own words and "
+                     "the way back; never the unrecorded-version wording")
+    assert refused.status_code == 422
+    detail = refused.json()["detail"]
+    assert f"run {mid['id']} (" in detail
+    assert "was refused before it ran" in detail
+    assert "no version to pin" in detail
+    assert "no version list records" not in detail
+
+    assert cancelled.status_code == 422
+    detail = cancelled.json()["detail"]
+    assert f"run {tail['id']} (" in detail
+    assert "was cancelled before it ran" in detail
+    assert "no version to pin" in detail
+    assert "no version list records" not in detail
 
 
 @workflow(purpose="wfc run-pipeline over a pipeline the engine reports as "

@@ -68,13 +68,26 @@ METHOD_CELLS = [
     pytest.param(BASE + "inputs:\n  raw:\n    type: csv\n", None,
                  lambda c, log: c["inputs"]["raw"]["type"] == ".csv",
                  id="input-type-canonical-form"),
+    pytest.param("env: parse-env\ninputs:\noutputs:\nparams:\n", None,
+                 lambda c, log: (c["inputs"], c["outputs"], c["params"]) == ({}, {}, {}),
+                 id="parse-empty-slot-blocks-mean-none"),
+    pytest.param("env: parse-env\noutputs: [out]\n", "outputs", None,
+                 id="parse-outputs-not-a-mapping"),
+    pytest.param(BASE + "inputs: raw\n", "inputs", None,
+                 id="parse-inputs-not-a-mapping"),
+    pytest.param(BASE + "params: [alpha]\n", "params", None,
+                 id="parse-params-not-a-mapping"),
+    pytest.param(BASE + "params: []\n", None, lambda c, log: c["params"] == [],
+                 id="parse-empty-params-list-kept-as-registered"),
 ]
 
 
 @pytest.mark.parametrize("content,refused,check", METHOD_CELLS)
 @workflow(purpose="A method declaration parsed from a real file: absent means "
                   "nothing, malformed YAML or a non-mapping top level is an "
-                  "error naming the path, script and helpers are refused on "
+                  "error naming the path, an empty inputs/outputs/params "
+                  "block means none and any other non-mapping one is an "
+                  "error naming the key, script and helpers are refused on "
                   "shape and survive verbatim when well-shaped, an advisory "
                   "input type warns naming the slot without breaking the "
                   "wiring, and a valid input type comes back canonical",
@@ -185,3 +198,20 @@ def test_clean_slot_names_still_parse(tmp_path):
     contract = parse_method_yaml(method_dir)
     assert set(contract["inputs"]) == {"ref_panel-1", "counts.raw"}
     assert set(contract["outputs"]) == {"out-2"}
+
+
+def test_declared_int_and_float_defaults_parse_to_their_declared_type(tmp_path):
+    """An ``int`` default written ``1.0`` is stored as ``1`` and a ``float``
+    default written ``1`` as ``1.0``; a default the value rule refuses
+    (``1.5`` for an ``int``) is kept as written, not refused."""
+    method_dir = _dir_with(
+        tmp_path, "method.yaml",
+        BASE + "params:\n"
+        "  count:\n    type: int\n    default: 1.0\n"
+        "  ratio:\n    type: float\n    default: 1\n"
+        "  steps:\n    type: integer\n    default: 1.5\n",
+    )
+    params = parse_method_yaml(method_dir)["params"]
+    assert (params["count"]["default"], type(params["count"]["default"])) == (1, int)
+    assert (params["ratio"]["default"], type(params["ratio"]["default"])) == (1.0, float)
+    assert (params["steps"]["default"], type(params["steps"]["default"])) == (1.5, float)

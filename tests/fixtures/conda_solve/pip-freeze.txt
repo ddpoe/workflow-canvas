@@ -1,0 +1,4 @@
+numpy @ file:///C:/b/abs_c1ywpu18ar/croot/numpy_and_numpy_base_1708638617955/work/dist/numpy-2.4.6-cp311-cp311-win_amd64.whl#sha256=0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9
+pip==26.2.1
+scipy @ file:///D:/bld/scipy-split_1716470219380/work/dist/scipy-1.13.1-cp311-cp311-win_amd64.whl#sha256=1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a
+tifffile==2024.8.30

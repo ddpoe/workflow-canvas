@@ -52,8 +52,8 @@ def test_build_project_executes_nothing(git_project, monkeypatch):
     project = build_project(Scenario(), root=git_project, monkeypatch=monkeypatch)
 
     assert project.pipeline_json.exists()
-    assert (project.root / "methods" / "n1" / "n1.py").exists()
-    assert not (project.root / ".runs" / "sentinels").exists()
+    assert project.method_scripts["n1"].exists()
+    assert not (project.root / ".wfc" / "runs" / "sentinels").exists()
 
 
 def test_build_project_leaves_no_readiness_sentinel_behind(git_project,

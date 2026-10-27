@@ -34,6 +34,7 @@ from .expansion import (
     resolve_variant_model,
     variant_axis,
 )
+from .keys import NODE_KEYS, TOP_LEVEL_KEYS, document_key_refusals
 from .load import (
     InboundLink,
     ParsedDocument,
@@ -81,5 +82,8 @@ __all__ = [
     "resolve_variant_model",
     "topo_sort_steps",
     "validate_structure",
+    "NODE_KEYS",
+    "TOP_LEVEL_KEYS",
+    "document_key_refusals",
     "variant_axis",
 ]

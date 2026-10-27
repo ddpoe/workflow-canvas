@@ -281,12 +281,13 @@ def test_cancel_endpoint_kills_real_snakemake_subprocess_tree(
         method_dir=heartbeat_dest,
         module_name="test_pipeline",
         method_name="heartbeat",
+        assume_yes=True,
     )
 
     # Register the sample the way a user does: the CSV is staged outside the
     # project (create_sample_csv puts it under <project>-sources/) and
     # registered from there, so the bytes land in the DVC cache and the row
-    # records data/samples/sample_a/data.csv as where the run's restore_sample
+    # records .wfc/workspace/samples/sample_a/data.csv as where the run's restore_sample
     # rule will materialize them. Writing the file there by hand instead left
     # input_selector pointing at a sample wfc never registered -- a project no
     # user can produce, and one that keeps passing after registration or

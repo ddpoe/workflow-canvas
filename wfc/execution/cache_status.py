@@ -94,8 +94,9 @@ class CacheStatusReport:
     blocked_reason: str | None = None
 
 
-def _method_env(method_name: str, module_name: str) -> tuple[str, dict]:
-    """Read a method's env and declared inputs the way ``pre_run`` step 2 does.
+def _method_env(method_name: str, module_name: str,
+                version: str | None = None) -> tuple[str, dict]:
+    """Read a method's env and its version's declared inputs as ``pre_run`` does.
 
     Raises:
         ValueError: The module or the method in it is not registered.
@@ -115,7 +116,9 @@ def _method_env(method_name: str, module_name: str) -> tuple[str, dict]:
             raise ValueError(
                 f"Method '{method_name}' not found in module '{module_name}'"
             )
-        declared = (method.contract.input_slots if method.contract else {}) or {}
+        from ..registration import method_contract
+        contract = method_contract(module_name, method_name, version)
+        declared = (contract.input_slots if contract else {}) or {}
         return method.env, dict(declared)
 
 
@@ -200,8 +203,9 @@ def _predict_row(document, step, sample, variant, params, predicted) -> CacheSta
     upstream target at the same sample and variant (where the sidecar would
     be); a ``run_reference`` is the run it names.
     """
-    from ..graph import carries_sample_bundle, inbound_wiring
+    from ..graph import carries_sample_bundle, document_node, inbound_wiring
     from ..identity import UpstreamRunIdentity
+    from ..registration import verify_registered_snapshot
     from .claim import (
         cache_key_from_identities,
         check_required_inputs,
@@ -213,12 +217,15 @@ def _predict_row(document, step, sample, variant, params, predicted) -> CacheSta
     from .parents import ParentEntry
 
     node_id = step.node_id
+    # The version the node runs: the prepared document pins every node.
+    version = (document_node(document, node_id) or {}).get("version") or None
     row = CacheStatusRow(node_id=node_id, sample=sample, variant=variant,
                          status=BLOCKED)
     try:
         method_env, declared_inputs = _method_env(step.method_name,
-                                                  step.module_name)
-        code_fp, env_fp = method_fingerprints(step.method_name, method_env)
+                                                  step.module_name, version)
+        code_fp, env_fp = method_fingerprints(step.module_name, step.method_name,
+                                             method_env, version=version)
 
         wired: dict[str, str] = {}
         predicted_upstreams: list[UpstreamRunIdentity] = []
@@ -265,6 +272,11 @@ def _predict_row(document, step, sample, variant, params, predicted) -> CacheSta
             declared_inputs, entries, sample_inputs, wired,
             step_label=node_id, method_name=step.method_name,
         )
+        # The claim's verify rule, at the point the claim applies it: a
+        # snapshot that is not a registered version's code is refused there,
+        # so it is blocked here with the same message.
+        verify_registered_snapshot(step.module_name, step.method_name,
+                                   version=version)
         cache_key = cache_key_from_identities(
             code_fp, env_fp, f"{step.module_name}.{step.method_name}", params,
             predicted_upstreams + list(reference_runs), sample_identities,
@@ -303,11 +315,16 @@ def cache_status(document: Mapping[str, Any]) -> CacheStatusReport:
 
     Returns:
         The report. A document the preparation or the load refuses gives
-        ``blocked_reason`` and no rows; a refusal is data, never raised.
+        ``blocked_reason`` and no rows; such a refusal is data.
+
+    Raises:
+        PipelineRefusedError: The validator refuses the document, the same
+            verdict validate, submit and run-pipeline give it.
     """
     from ..graph import expand_step_combos, resolve_variant_model, topo_sort_steps
     from .composer import DatabaseUnreachableError, load_pipeline_from_document
     from .prepare import prepare_document
+    from .validation import PipelineRefusedError
 
     口 = Step(step_num=1, name="Prepare and load",
              purpose="The run path's own preparation and load; its refusal is the "
@@ -319,6 +336,8 @@ def cache_status(document: Mapping[str, Any]) -> CacheStatusReport:
         tables = resolve_variant_model(pipeline).tables
         targets = expand_step_combos(steps, pipeline.samples, tables,
                                      pipeline.explicit_combos)
+    except PipelineRefusedError:
+        raise  # the validator's verdict, which every door gives as itself
     except (ValueError, DatabaseUnreachableError) as exc:
         return CacheStatusReport(rows=[], blocked_reason=str(exc))
 

@@ -1,6 +1,6 @@
 """Unit tests for wfc_client.RunContext (Tier-1 ctx surface).
 
-Behavior-first: each test pins one ADR-020 ctx member. Pure stdlib;
+Behavior-first: each test pins one ctx member. Pure stdlib;
 no Docker, no wfc, no pandas.
 """
 
@@ -91,7 +91,7 @@ def test_save_artifact_rejects_path_outside_run_dir(tmp_path, monkeypatch):
 def test_save_artifact_does_not_validate_extension(tmp_path, monkeypatch):
     """save_artifact validates ONLY path-inside-run_dir, not extension/type.
 
-    Output type/extension correctness is a host-side concern (ADR-005),
+    Output type/extension correctness is a host-side concern,
     so an arbitrary extension inside run_dir must be accepted here.
     """
     _set_env(monkeypatch, tmp_path)

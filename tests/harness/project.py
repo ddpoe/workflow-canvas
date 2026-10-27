@@ -89,7 +89,7 @@ class Project:
 
     @property
     def runs_dir(self) -> Path:
-        """The project's ``.runs`` directory."""
+        """The project's ``.wfc/runs`` directory."""
         return _layout().artifact_store(self.root)
 
     def sample_file(self, sample: str) -> Path:
@@ -105,7 +105,8 @@ class Project:
         Returns:
             Path to the sample's registered data file.
         """
-        return _layout().sample_dir(self.root, sample) / f"{sample}.csv"
+        return (_layout().sample_dir(self.root, sample)
+                / self.scenario.file_name_for(sample))
 
     def sentinel_dir(self, node_id: str, sample: str, variant: str) -> Path:
         """Return the sentinel directory for one target.
@@ -188,8 +189,8 @@ def build_project(scn: Scenario, *, root: Path, monkeypatch) -> Project:
     口 = Step(step_num=4, name="Write each declared method's script",
              purpose="Turn every method node's declared behavior into an "
                      "executable script on disk",
-             outputs="methods/<name>/ populated, and method name -> script "
-                     "path for the project handle")
+             outputs="each method's source dir beside the project populated, "
+                     "and method name -> script path for the project handle")
     method_scripts: dict[str, Path] = {}
     by_method: dict[str, list[NodeSpec]] = {}
     for spec in scn.method_nodes():
@@ -212,11 +213,19 @@ def build_project(scn: Scenario, *, root: Path, monkeypatch) -> Project:
         register_test_method(
             project_dir=root,
             module_name=spec.module,
-            method_dir=_layout().method_dir(root, spec.method_name),
+            method_dir=method_source_dir(root, spec),
             method_name=spec.method_name,
             module_contracts=(list(module_spec.contracts) if module_spec else None),
             module_description=(module_spec.description if module_spec else None),
             allow_reserved=bool(module_spec and module_spec.demo_owned),
+        )
+
+    # A run executes the registered snapshot, so the handle's script is the
+    # snapshot's copy, not the source the harness wrote.
+    for name, specs in by_method.items():
+        method_scripts[name] = (
+            _layout().method_dir(root, specs[0].module, name)
+            / method_scripts[name].name
         )
 
     口 = Step(step_num=6, name="Stage each declared sample's source file",
@@ -227,9 +236,10 @@ def build_project(scn: Scenario, *, root: Path, monkeypatch) -> Project:
                      "sample",
              critical="Outside data/, and outside it deliberately. "
                       "register_sample caches the source's bytes and records "
-                      "data/samples/<s>/<s>.csv as where restore_sample will "
-                      "later put them, so a source staged at its own "
-                      "registered_path makes every restore the "
+                      "only the source's file name; restore_sample later puts "
+                      "them at Layout's sample workspace path for that name, "
+                      ".wfc/workspace/samples/<s>/<s>.csv, so a source staged "
+                      "at that destination makes every restore the "
                       "dest-already-valid skip — a state no user can produce. "
                       "Content comes from Scenario.content_for, which defaults "
                       "to bytes derived from the sample NAME: identical content "
@@ -240,7 +250,7 @@ def build_project(scn: Scenario, *, root: Path, monkeypatch) -> Project:
                       "Windows would make the staged file's md5 differ from "
                       "the content the scenario declared")
     for sample in scn.samples:
-        source_file = _sample_source_file(root, sample)
+        source_file = _sample_source_file(root, scn, sample)
         source_file.parent.mkdir(parents=True, exist_ok=True)
         source_file.write_bytes(scn.content_for(sample).encode("utf-8"))
 
@@ -284,9 +294,9 @@ def build_project(scn: Scenario, *, root: Path, monkeypatch) -> Project:
                      "missing_samples, empty_samples and sample_ready_sentinel "
                      "declarations so a scenario can still state an absent or "
                      "empty input",
-             outputs="data/samples/<sample>/<sample>.csv for every staged "
+             outputs=".wfc/workspace/samples/<sample>/<sample>.csv for every staged "
                      "sample and, when declared, a .sample_ready sentinel",
-             critical="restore_sample is the ONLY writer under data/samples/ — "
+             critical="restore_sample is the ONLY writer under .wfc/workspace/samples/ — "
                       "the harness stages its sources elsewhere and never "
                       "copies one in. The readiness sentinel a restore leaves "
                       "is removed again unless the scenario declares it: "
@@ -302,10 +312,17 @@ def build_project(scn: Scenario, *, root: Path, monkeypatch) -> Project:
             口 = AutoStep(step_num=8.1, name="Restore one sample")
             restore_sample(sample, project_root=root)
         sentinel = _layout().sample_ready_sentinel(root, sample)
+        # The restore leaves the sample's folder read-only (POSIX refuses
+        # an entry written or removed there): it is opened for the sentinel
+        # and protected again, as the restore leaves it.
+        from wfc.storage.cache import open_dirs, protect_dirs
+        open_dirs(sentinel.parent)
         if scn.sample_ready_sentinel:
             sentinel.write_text("")
         else:
             sentinel.unlink(missing_ok=True)
+        if sample not in scn.empty_samples:
+            protect_dirs(sentinel.parent)
 
     口 = Step(step_num=9,
              name="Commit the tree, then dirty it if the scenario declares it",
@@ -336,24 +353,43 @@ def build_project(scn: Scenario, *, root: Path, monkeypatch) -> Project:
     )
 
 
-def _sample_source_file(root: Path, sample: str) -> Path:
-    """Return where the harness stages one sample's source file.
+def method_source_dir(root: Path, spec: NodeSpec) -> Path:
+    """Return where the harness writes one method's source, beside the project.
 
-    Beside the project, never inside it: registration reads this file and
-    records ``data/samples/<sample>/<sample>.csv`` as where a restore will
-    later materialize it. The file NAME matters — ``register_sample``
-    derives ``registered_path`` from the source's own name, so calling it
-    ``<sample>.csv`` is what puts the restored file exactly where
-    :meth:`Project.sample_file` and the collapsed fan-in resolver look.
+    The author's source, which registration copies into the snapshot; it
+    lies outside the project tree, so it never shows in the project's git
+    status, and nothing reads it after registration.
 
     Args:
         root: Project root.
+        spec: A node naming the method.
+
+    Returns:
+        ``<project>-sources/_methods/<module>/<method>/``. Not created here.
+    """
+    return sample_source_dir(root) / "_methods" / spec.module / spec.method_name
+
+
+def _sample_source_file(root: Path, scn: Scenario, sample: str) -> Path:
+    """Return where the harness stages one sample's source file.
+
+    Beside the project, never inside it: registration reads this file and
+    records ``.wfc/workspace/samples/<sample>/<file>`` as where a restore will
+    later materialize it. The file NAME matters — ``register_sample``
+    derives ``registered_path`` from the source's own name, so the name
+    :meth:`Scenario.file_name_for` declares (``<sample>.csv`` by default)
+    is what puts the restored file exactly where :meth:`Project.sample_file`
+    looks.
+
+    Args:
+        root: Project root.
+        scn: The scenario declaration.
         sample: Sample identifier.
 
     Returns:
         The source path. Its parent is not created here.
     """
-    return sample_source_dir(root) / sample / f"{sample}.csv"
+    return sample_source_dir(root) / sample / scn.file_name_for(sample)
 
 
 def _read_method_ids(scn: Scenario) -> dict[str, int]:
@@ -381,11 +417,11 @@ def _read_method_ids(scn: Scenario) -> dict[str, int]:
       inputs="The project root and the scenario declaration",
       outputs="Sample name -> the row id registration wrote",
       critical="Registers the DECLARED content from its source OUTSIDE the "
-               "project, never the data/samples/ copy. register_sample caches "
+               "project, never the .wfc/workspace/samples/ copy. register_sample caches "
                "the source's bytes and records where restore_sample will later "
                "materialize them, so registration and staging stay separate "
                "acts and a sample the scenario declared missing or empty under "
-               "data/samples/ still gets a row. A missing SOURCE is a harness "
+               ".wfc/workspace/samples/ still gets a row. A missing SOURCE is a harness "
                "bug and raises. Nothing here constructs a Sample row: the row's "
                "shape, its push status and its cached bytes are all production's")
 def _record_samples(root: Path, scn: Scenario) -> dict[str, int]:
@@ -400,13 +436,14 @@ def _record_samples(root: Path, scn: Scenario) -> dict[str, int]:
 
     The registration *source* is the staged declared content under
     :func:`sample_source_dir`, beside the project and outside its ``data/``
-    tree. ``register_sample`` copies nothing into ``data/samples/``; it
-    records there as ``registered_path`` where the ``restore_sample`` rule
-    will put the file later. So ``registered_path != source_path`` and a
-    restore is a real copy rather than the dest-already-valid skip.
+    tree. ``register_sample`` copies nothing into ``.wfc/workspace/samples/``;
+    it records only the source's file name, and the ``restore_sample`` rule
+    later puts the file at Layout's sample workspace path for the sample and
+    that name. The source is never that destination, so a restore is a real
+    copy rather than the dest-already-valid skip.
 
     A sample the scenario declared missing or empty still gets a row —
-    row-present/file-absent under ``data/samples/`` is the normal
+    row-present/file-absent under ``.wfc/workspace/samples/`` is the normal
     pre-restore state, and those declarations are about that staged path,
     not about the source, which step 6 writes for every declared sample. A
     missing source is therefore a harness inconsistency and raises.
@@ -414,10 +451,11 @@ def _record_samples(root: Path, scn: Scenario) -> dict[str, int]:
     Re-registration on rebuild: ``build_project`` re-runs against an
     existing project whenever a scenario needs a second execution over the
     same database, and ``register_sample`` refuses a duplicate name. A row
-    whose ``content_hash`` still matches the declared content is left
-    alone; one that does not is deleted and re-registered, so a rebuild
-    that changes content moves the key instead of silently keeping the
-    first build's hash.
+    whose ``content_hash`` still matches the declared content and whose
+    ``registered_path`` is the declared file name is left alone; one that
+    does not is deleted and re-registered, so a rebuild that changes
+    content moves the key instead of silently keeping the first build's
+    hash, and a rebuild that declares another file name records it.
 
     Args:
         root: Project root.
@@ -439,7 +477,7 @@ def _record_samples(root: Path, scn: Scenario) -> dict[str, int]:
 
     ids: dict[str, int] = {}
     for sample in scn.samples:
-        source_file = _sample_source_file(root, sample)
+        source_file = _sample_source_file(root, scn, sample)
         if not source_file.exists():
             raise FileNotFoundError(
                 f"sample {sample!r} has no staged source file at "
@@ -454,7 +492,8 @@ def _record_samples(root: Path, scn: Scenario) -> dict[str, int]:
             existing = session.exec(
                 select(Sample).where(Sample.name == sample)
             ).first()
-            if existing is not None and existing.content_hash == declared_hash:
+            if (existing is not None and existing.content_hash == declared_hash
+                    and existing.registered_path == source_file.name):
                 ids[sample] = int(existing.id)
                 continue
             if existing is not None:
@@ -513,18 +552,14 @@ def _pipeline_nodes(scn: Scenario) -> list[dict]:
             "method": spec.method_name,
             "module": spec.module,
             "params": dict(spec.params),
-            # The document's env is what dispatch looks up in the manifest;
-            # method.yaml's env is what registration validated. They agree
-            # unless the node declares a document_env, which is how a node
-            # reaches dispatch naming an env nothing built.
-            "env": spec.document_env or spec.env or scn.env_name,
+            # What enrichment writes for display; execution runs the node
+            # in its method's registered env and never reads this.
+            "env": spec.env or scn.env_name,
         }
         if spec.label is not None:
             entry["label"] = spec.label
         if spec.output_files:
             entry["slot_outputs"] = dict(spec.output_files)
-        if spec.script_name is not None:
-            entry["script"] = f"methods/{spec.method_name}/{spec.script_name}"
 
         out.append(entry)
     return out
@@ -548,13 +583,13 @@ def _pipeline_links(scn: Scenario) -> list[dict]:
 
 
 def _param_sets(scn: Scenario) -> dict | None:
-    """Build the ``param_sets`` map from the scenario's variant sweep."""
-    if not scn.variants:
-        return None
-    return {
-        spec.id: {v: dict(params) for v, params in scn.variants.items()}
-        for spec in scn.method_nodes()
-    }
+    """Build the ``param_sets`` map from the scenario's and the nodes' variant sweeps."""
+    param_sets = {}
+    for spec in scn.method_nodes():
+        sweep = spec.variants if spec.variants is not None else scn.variants
+        if sweep:
+            param_sets[spec.id] = {v: dict(params) for v, params in sweep.items()}
+    return param_sets or None
 
 
 # =============================================================================
@@ -608,14 +643,14 @@ def _write_method(root: Path, scn: Scenario, specs: list[NodeSpec]) -> Path:
                 f"method has one contract, so declare the same slots, "
                 f"files, columns, env, executor and gpus on both"
             )
-    method_dir = _layout().method_dir(root, spec.method_name)
+    method_dir = method_source_dir(root, spec)
     method_dir.mkdir(parents=True, exist_ok=True)
 
     口 = Step(step_num=1, name="Write the method.yaml contract",
              purpose="Declare the input and output slots, the executor and "
                      "the env — what registration reads and what the "
                      "materialize phase resolves each slot against",
-             outputs="methods/<name>/method.yaml",
+             outputs="<source dir>/method.yaml",
              critical="env is written as the bare name of a registered env, "
                       "the only form a method.yaml accepts, and the written "
                       "file is read back through the Contracts parser and its "
@@ -626,7 +661,8 @@ def _write_method(root: Path, scn: Scenario, specs: list[NodeSpec]) -> Path:
                       "with no inputs block is not a document production "
                       "accepts. A slot's declared columns block is dumped "
                       "verbatim beneath it")
-    input_slots = ([(w.target_slot, True) for w in _unique_target_slots(spec)]
+    input_slots = ([(w.target_slot, w.target_slot not in spec.optional_inputs)
+                    for w in _unique_target_slots(spec)]
                    or [("data", False)])
     inputs_yaml = "".join(
         _slot_yaml(slot, ".csv", required, spec.input_columns.get(slot))
@@ -637,11 +673,30 @@ def _write_method(root: Path, scn: Scenario, specs: list[NodeSpec]) -> Path:
         for slot, slot_type in spec.outputs.items()
     ) or "  data:\n    type: .csv\n    required: true\n"
 
+    # Every parameter a node of this method passes, or the scenario's variant
+    # sweep passes (each variant runs in place of every method node's
+    # params), is declared (optional; type any unless the node names its
+    # type), so the validator accepts the document the scenario builds --
+    # except a param the node declares undeclared. A parameter the node
+    # declares a default for is declared with it, passed or not.
+    param_names = [name for name in dict.fromkeys(
+        [name for s in specs for name in s.params]
+        + [name for params in (scn.variants or {}).values() for name in params]
+        + [name for s in specs for params in (s.variants or {}).values()
+           for name in params]
+        + list(spec.param_defaults))
+        if name not in spec.undeclared_params]
+    params_yaml = ("params:\n" + "".join(
+        f"  {name}:\n    type: {spec.param_types.get(name, 'any')}\n"
+        + (f"    default: {json.dumps(spec.param_defaults[name])}\n"
+           if name in spec.param_defaults else "")
+        for name in param_names)
+                   if param_names else "params: {}\n")
     env_spec = spec.env or scn.env_name
     (method_dir / "method.yaml").write_text(
         f"inputs:\n{inputs_yaml}"
         f"outputs:\n{outputs_yaml}"
-        "params: {}\n"
+        f"{params_yaml}"
         f"executor: {spec.executor}\n"
         f"env: {env_spec}\n"
         f"gpus: {'true' if spec.gpus else 'false'}\n"
@@ -657,7 +712,7 @@ def _write_method(root: Path, scn: Scenario, specs: list[NodeSpec]) -> Path:
              purpose="Turn the node's declared behavior — its exit code, its "
                      "outputs, whatever it is meant to do or fail to do — "
                      "into an executable the dispatch phase can launch",
-             outputs="methods/<name>/<name>.py, returned as the script path")
+             outputs="<source dir>/<name>.py, returned as the script path")
     script = method_dir / f"{spec.method_name}.py"
     script.write_text(_stub_script(specs))
     return script
@@ -674,9 +729,10 @@ def _contract_shape(spec: NodeSpec) -> tuple:
     """
     return (
         sorted(w.target_slot for w in _unique_target_slots(spec)),
+        sorted(spec.optional_inputs),
         dict(spec.outputs), dict(spec.output_files),
         dict(spec.input_columns), dict(spec.output_columns),
-        spec.env, spec.executor, spec.gpus,
+        spec.env, spec.executor, spec.gpus, dict(spec.param_defaults),
     )
 
 
@@ -842,6 +898,9 @@ for rel in BEHAVIOR["delete_paths"]:
     elif victim.exists():
         victim.unlink()
 
+for name in BEHAVIOR["write_beside_script"]:
+    (Path(__file__).resolve().parent / name).write_text("written by the run\\n")
+
 if BEHAVIOR["raises"]:
     raise RuntimeError(BEHAVIOR["raises"])
 
@@ -881,13 +940,6 @@ def _stub_script(specs: list[NodeSpec]) -> str:
         }
         for spec in specs
     }
-    # A node of a legacy numeric-id document is scheduled -- and so
-    # dispatched with WFC_NODE_ID -- under its method name, which only a
-    # method one node names can stand for. Only a numeric id gets the alias:
-    # a string-id node is dispatched under its own id, so one dispatched
-    # under its method name must still fail loudly.
-    if len(specs) == 1 and str(specs[0].id).isdigit():
-        by_node.setdefault(specs[0].method_name, by_node[specs[0].id])
     return _STUB_TEMPLATE.format(by_node=repr(by_node))
 
 
@@ -924,6 +976,7 @@ def _behavior_payload(spec: NodeSpec, behavior) -> dict:
         "nested": list(behavior.nested_outputs),
         "saved": dict(behavior.saved_files or {}),
         "delete_paths": list(behavior.delete_paths),
+        "write_beside_script": list(behavior.write_beside_script),
         "slot_files": slot_files,
         "dir_slots": {
             slot: str(t).lower() in ("directory", "dir")

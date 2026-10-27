@@ -30,8 +30,9 @@ def register_test_method(
     hand-crafting, no stub registration.
 
     The helper temporarily ``chdir``\\ s into ``project_dir`` for the
-    registration call because ``register_method`` and ``_git_commit_registration``
-    use ``Path.cwd()`` to resolve relative script paths and the git repo root.
+    registration call because ``register_method`` and its git commit
+    (``commit_registration``) use ``Path.cwd()`` to resolve relative script
+    paths and the git repo root.
     Original cwd is restored on return.
 
     Caller responsibility: ``WFC_PROJECT_ROOT`` and ``DATABASE_URL`` must be set
@@ -91,9 +92,43 @@ def register_test_method(
             module_name=module_name,
             method_name=method_name,
             allow_reserved=allow_reserved,
+            assume_yes=True,
         )
     finally:
         os.chdir(prev_cwd)
+
+
+def register_again_with_params(root: Path, spec, params: dict) -> None:
+    """Edit one harness method's declared params, then register it again.
+
+    The params declaration is part of the contract projection, so the
+    registration mints the method's next version; its script is not
+    touched. The method was first registered by the scenario harness's
+    ``build_project``, whose source directory is
+    ``tests.harness.project.method_source_dir``.
+
+    Pins: the ``method.yaml`` rewritten through ``yaml.safe_dump`` with its
+    ``params`` block replaced; registration confirmed (``assume_yes``).
+    Does not prove: ``wfc register``'s argument parsing, or anything about
+    a script change -- the script is the one the harness wrote.
+
+    Args:
+        root: The project root the harness built.
+        spec: The harness node spec whose method is registered again
+            (its ``module`` and method name locate the source directory).
+        params: The full ``params`` block the next version declares.
+    """
+    import yaml
+
+    from tests.harness.project import method_source_dir
+    from wfc.registration import register_method
+
+    method_dir = method_source_dir(root, spec)
+    contract = yaml.safe_load((method_dir / "method.yaml").read_text(encoding="utf-8"))
+    contract["params"] = params
+    (method_dir / "method.yaml").write_text(
+        yaml.safe_dump(contract, sort_keys=False), encoding="utf-8")
+    register_method(method_dir=method_dir, module_name=spec.module, assume_yes=True)
 
 
 def register_sample_row(project_dir: Path, sample_name: str, data_file: Path) -> None:
@@ -101,35 +136,36 @@ def register_sample_row(project_dir: Path, sample_name: str, data_file: Path) ->
 
     A step's cache key carries the content of the sample it reads, so the
     claim refuses a sample name that has no registered row. A fixture that
-    only stages a file under ``data/samples/`` therefore models a project a
+    only stages a file under ``.wfc/workspace/samples/`` therefore models a project a
     user cannot have: data ``wfc`` never registered.
 
     Registration caches the source's bytes and writes the row; it copies
-    nothing into ``data/samples/``. ``registered_path`` records where the
-    ``restore_sample`` rule will materialize the file later. ``data_file``
-    must therefore be the user's own copy, somewhere the project's ``data/``
-    is not — register a file that already sits at its own
-    ``registered_path`` and every restore takes ``restore_from_cache``'s
-    dest-already-valid skip, so the real-copy path is never exercised.
-    :func:`sample_source_dir` is where a fixture stages one.
+    nothing into ``.wfc/workspace/samples/``. ``registered_path`` records the
+    file name the ``restore_sample`` rule will materialize there later
+    (``layout.restored_sample_path``). ``data_file`` must therefore be the
+    user's own copy, somewhere outside the sample workspace — register a
+    file that already sits at its own restore location and every restore
+    takes ``restore_from_cache``'s dest-already-valid skip, so the
+    real-copy path is never exercised. :func:`sample_source_dir` is where a
+    fixture stages one.
 
     Idempotent by name: registration refuses a duplicate, and a fixture
     that re-stages a sample is re-staging the same declared content.
 
-    Pins: the source staged outside the project's ``data/`` tree; a second
-    registration of the same name is skipped rather than refused.
-    Does not prove: that the bytes reach ``data/samples/`` -- only a run's
+    Pins: the source staged outside the sample workspace
+    ``.wfc/workspace/samples/``; a second registration of the same name is
+    skipped rather than refused.
+    Does not prove: that the bytes reach ``.wfc/workspace/samples/`` -- only a run's
     ``restore_sample`` rule puts them there.
 
     Args:
         project_dir: Project root directory.
         sample_name: Sample identifier.
         data_file: The source file to register. Must be outside the
-            project's ``data/`` tree.
+            sample workspace ``.wfc/workspace/samples/``.
 
     Raises:
-        AssertionError: If ``data_file`` is inside the project's ``data/``
-            tree.
+        AssertionError: If ``data_file`` is inside the sample workspace.
     """
     from sqlmodel import select
 
@@ -138,15 +174,17 @@ def register_sample_row(project_dir: Path, sample_name: str, data_file: Path) ->
 
     project_dir = Path(project_dir).resolve()
     data_file = Path(data_file).resolve()
-    data_root = project_dir / "data"
+    from wfc import layout
+
+    data_root = layout.samples_dir(project_dir)
     if data_root == data_file or data_root in data_file.parents:
         raise AssertionError(
             f"register_sample_row source {data_file} is inside {data_root}. "
-            "Registration materializes nothing under data/samples/ — a source "
-            "staged there makes registered_path == source_path and every "
+            "Registration materializes nothing under .wfc/workspace/samples/ — a source "
+            "staged there can sit at its own restore location, making every "
             "restore the dest-already-valid skip. Stage it under "
             "sample_source_dir(project_dir) and let restore_sample be the only "
-            "writer under data/samples/."
+            "writer under .wfc/workspace/samples/."
         )
 
     with get_session() as session:
@@ -172,14 +210,14 @@ def create_sample_csv(project_dir: Path, sample_name: str, num_rows: int = 3) ->
 
     The CSV is the user's own file, so it is written under
     :func:`sample_source_dir` — beside the project, not inside it. Nothing
-    appears under ``data/samples/{sample_name}/`` until a run's
+    appears under ``.wfc/workspace/samples/{sample_name}/`` until a run's
     ``restore_sample`` rule puts it there, which is the only way a user's
     project gets it.
 
     Pins: the content (an ``id,value`` header plus ``num_rows`` rows) and
     the source location under :func:`sample_source_dir`.
     Does not prove: the same as :func:`register_sample_row` -- nothing is
-    materialized under ``data/samples/``.
+    materialized under ``.wfc/workspace/samples/``.
 
     Args:
         project_dir: Project root directory.
@@ -221,10 +259,12 @@ def write_env_record(
     :func:`wfc.environments.register`: the record is built through ``EnvRecord`` /
     ``to_dict`` and written with ``save_manifest``, the container ref passes
     ``validate_container_ref``, and ``env_fingerprint`` / ``source_fingerprint``
-    are computed through the production precompute path (canonical blob ->
-    ``store_env_content`` -> 32-char md5, blob landing in the project's DVC
-    cache). Any drift between what registration writes and what a fixture
-    stages therefore fails here, at fixture time.
+    are computed through the production precompute path (the content blob
+    -> ``store_env_content`` -> 32-char md5 in the DVC cache; the package
+    list -> its md5), and the image's captures folder is written through
+    :func:`wfc.environments.captures.write_capture`. Any drift between what
+    registration writes and what a fixture stages therefore fails here, at
+    fixture time.
 
     Pins: the image digest (a placeholder unless the caller passes a built
     image's), ``built_at`` and the ``local/<name>`` repo; the record is
@@ -272,18 +312,35 @@ def write_env_record(
     # Production self-validation: register() refuses to write any other shape.
     validate_container_ref(container_ref)
 
-    # env_fingerprint through the production precompute path (canonical
-    # container blob -> md5 + DVC cache blob). 32-char md5 — NOT the 64-hex
-    # image digest.
-    blob = capture_env_content(f"container:{image}@sha256:{digest}")
-    env_fingerprint = store_env_content(blob, project_dir)
+    # env_fingerprint through the production render and store (content blob
+    # -> md5 + DVC cache blob). 32-char md5 — NOT the 64-hex image digest.
+    # The content is synthetic, derived from the digest alone: one layer
+    # named by it and an empty config, so equal digests give equal
+    # fingerprints whatever the image name, as production's content does.
+    blob = capture_env_content({"layers": [f"sha256:{digest}"], "env": None,
+                                "user": None, "workdir": None})
+    env_fingerprint = store_env_content(blob, project_dir, kind="env-fingerprint")
 
-    # source_fingerprint through the production package-list formula.
+    # source_fingerprint through the production package-list formula: the
+    # md5 of the captures folder's packages.lock, which lives in git only.
+    from wfc.environments.captures import (
+        ImageInfo,
+        package_list_md5,
+        package_list_text,
+        write_capture,
+    )
+    package_list = None
     source_fingerprint = None
     if lock_content is not None and backend in ("pixi", "conda"):
-        from wfc.environments.packages import PIP_FREEZE_DELIMITER
-        sf_blob = f"{lock_content}{PIP_FREEZE_DELIMITER}{pip_freeze_content}"
-        source_fingerprint = store_env_content(sf_blob, project_dir)
+        package_list = package_list_text(lock_content, pip_freeze_content)
+        source_fingerprint = package_list_md5(package_list)
+    interpreter = python or default_python_for_backend(backend, name)
+    # The captures folder through Environments' writer, as register writes it.
+    write_capture(
+        project_dir, name, env_fingerprint,
+        ImageInfo(backend=backend, interpreter=interpreter, image=container_ref),
+        package_list=package_list,
+    )
 
     if backend == "pixi":
         source, built_from_lock = "pixi.toml", "pixi.lock"
@@ -301,7 +358,7 @@ def write_env_record(
         built_at=built_at,
         built_from_lock=built_from_lock,
         source_fingerprint=source_fingerprint,
-        python=python or default_python_for_backend(backend, name),
+        python=interpreter,
     )
     record_dict = record.to_dict()
     if legacy_no_python:
@@ -309,6 +366,6 @@ def write_env_record(
 
     manifest = load_manifest(project_dir)
     manifest["envs"][name] = record_dict
-    manifest.setdefault("schema_version", MANIFEST_SCHEMA_VERSION)
+    manifest["schema_version"] = MANIFEST_SCHEMA_VERSION
     save_manifest(project_dir, manifest)
     return record_dict

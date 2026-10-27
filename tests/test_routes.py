@@ -12,12 +12,16 @@ import pytest
 from axiom_annotations import workflow
 from sqlmodel import select
 
+from tests.fixtures.fakes import short_claim_stall_window
 from tests.fixtures.routes import (
     canvas_client,
     claimed_run,
     completed_run,
+    register_again_with_params,
     register_test_method,
 )
+from tests.harness import Scenario, build_project, node, selector, wire
+from tests.harness.scenario import SELECTOR_ID
 
 
 def _names_in(payload) -> set[str]:
@@ -96,6 +100,10 @@ def test_claimed_run_is_the_claim_phase_row(tmp_project, monkeypatch):
     from wfc.execution.claim import candidate_cache_key, pre_run
     from wfc.persistence import Run, RunOutput, get_session
 
+    # The harness abandons the first claim after its claim phase, as a
+    # killed process would; the second claim of the key takes it over
+    # after the stall window, shortened here.
+    short_claim_stall_window(monkeypatch)
     claimed = claimed_run(tmp_project, monkeypatch=monkeypatch, method="quantify")
     module = claimed.project.scenario.node_by_id("quantify").module
     sample = claimed.target[1]
@@ -152,3 +160,36 @@ def test_canvas_client_serves_the_pinned_project_and_refuses_a_bare_dir(
     with pytest.raises(AssertionError, match="not an initialised project"):
         canvas_client(bare, monkeypatch)
     assert not (bare / ".wfc").exists()
+
+
+@workflow(purpose="register_again_with_params mints the harness method's next "
+                  "version through production registration: the version list "
+                  "grows by one and the new version's contract declares the "
+                  "given params, while the earlier version keeps its own")
+def test_register_again_with_params_mints_the_next_version(tmp_project, monkeypatch):
+    from wfc.registration import version_contracts
+
+    scenario = Scenario(
+        nodes=[selector(), node("fit", inputs=[wire(SELECTOR_ID)],
+                                params={"count": 2})],
+        samples=["S1"], pipeline_id="route-register-again", name="route_register_again",
+    )
+    project = build_project(scenario, root=tmp_project, monkeypatch=monkeypatch)
+    spec = scenario.node_by_id("fit")
+    before = version_contracts(spec.module, "fit", project.root)
+    params = {"count": {"type": "int", "required": True, "default": 3,
+                        "constraints": {"min": 1, "max": 10}},
+              "label": {"type": "str", "required": False, "default": "base"}}
+
+    register_again_with_params(project.root, spec, params)
+
+    after = version_contracts(spec.module, "fit", project.root)
+    assert len(after) == len(before) + 1
+    # The earlier versions are untouched; the new one is the newest label.
+    assert [v.entry.identity for v, _ in after[:-1]] == \
+        [v.entry.identity for v, _ in before]
+    newest, contract = after[-1]
+    assert newest.entry.label == before[-1][0].entry.label + 1
+    assert contract is not None
+    assert contract.params_schema == params
+    assert before[-1][1] is None or before[-1][1].params_schema != params

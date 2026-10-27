@@ -13,6 +13,8 @@ tests/test_legacy_samples.py, beside the pipeline-start refusal it pairs
 with.
 """
 
+from wfc import layout
+from wfc.storage import sample_data_path
 import hashlib
 import os
 import stat
@@ -148,7 +150,7 @@ def test_register_sample_stores_hash_and_caches(tmp_project):
                   "the refused source, the remote received none, and the "
                   "existing row is unchanged")
 def test_register_sample_duplicate_name_refused(tmp_project, monkeypatch):
-    """``registration:sample-duplicate`` and P3-11 (the refusal precedes the cache write)."""
+    """``registration:sample-duplicate``: the refusal precedes the cache write."""
     from wfc import layout
     from wfc.identity import hash_path
 
@@ -208,8 +210,8 @@ def test_register_sample_no_dvc_errors(tmp_project):
         row = session.exec(select(Sample).where(Sample.name == "fail_sample")).first()
     assert row is None
 
-    _ = Step(step_num=5, name="Verify no file copy", purpose="data/samples/ should not have the file")
-    assert not (tmp_project / "data" / "samples" / "fail_sample").exists()
+    _ = Step(step_num=5, name="Verify no file copy", purpose=".wfc/workspace/samples/ should not have the file")
+    assert not layout.sample_dir(tmp_project, "fail_sample").exists()
 
 
 # =============================================================================
@@ -225,12 +227,12 @@ def test_restore_sample_happy_path(tmp_project):
     src.write_text("col\n42\n")
     register_sample(name="restorable", source_path=src, project_root=tmp_project)
 
-    _ = Step(step_num=2, name="Ensure clean workspace", purpose="register_sample does not copy into data/samples/; registered_path is restore_sample's target")
+    _ = Step(step_num=2, name="Ensure clean workspace", purpose="register_sample does not copy into .wfc/workspace/samples/; registered_path is restore_sample's target")
     with get_session() as session:
         row = session.exec(select(Sample).where(Sample.name == "restorable")).first()
-    registered = Path(row.registered_path)
+    registered = sample_data_path(tmp_project, row)
     # register_sample writes only to the DVC cache (no copy
-    # into data/samples/).  Use missing_ok=True so this is a no-op when the
+    # into .wfc/workspace/samples/).  Use missing_ok=True so this is a no-op when the
     # workspace path was never populated.
     registered.unlink(missing_ok=True)
     assert not registered.exists()
@@ -238,9 +240,21 @@ def test_restore_sample_happy_path(tmp_project):
     _ = Step(step_num=3, name="Restore sample", purpose="Call restore_sample to materialize from cache")
     restore_sample(name="restorable", project_root=tmp_project)
 
-    _ = Step(step_num=4, name="Verify file restored", purpose="File should be back at registered_path")
+    _ = Step(step_num=4, name="Verify file restored",
+             purpose="File should be back at registered_path, a read-only view "
+                     "of its cache entry")
     assert registered.exists()
     assert registered.read_text() == "col\n42\n"
+    import os
+
+    from wfc import layout
+    from wfc.storage import links
+    obj = layout.dvc_cache_entry(tmp_project, row.content_hash)
+    assert not os.access(registered, os.W_OK), "a restored sample is a read-only view"
+    # The view's own folder is read-only; the tier is probed beside it.
+    beside = next(d for d in registered.parents if os.access(d, os.W_OK))
+    if links.probe_pair(obj.parent, beside).tier == links.TIER_HARDLINK:
+        assert os.path.samefile(registered, obj), "the view is the cache object's inode"
 
 
 # A sample row with no content_hash is a malformed record and is refused,
@@ -265,8 +279,8 @@ def test_restore_sample_propagates_pull_errors(tmp_project, monkeypatch):
     _ = Step(step_num=2, name="Get hash and delete local cache", purpose="Force a cache miss")
     with get_session() as session:
         row = session.exec(select(Sample).where(Sample.name == "pull_err")).first()
-    registered = Path(row.registered_path)
-    # register_sample does not populate data/samples/ -- the
+    registered = sample_data_path(tmp_project, row)
+    # register_sample does not populate .wfc/workspace/samples/ -- the
     # workspace file may not exist.  missing_ok keeps the step safe.
     registered.unlink(missing_ok=True)
     _rmtree_force(tmp_project / ".dvc" / "cache")
@@ -309,7 +323,6 @@ def test_snakefile_restore_sample_rules(tmp_project):
     step = StepDef(
         method_name="preprocess",
         module_name="data_prep",
-        script_path="methods/preprocess/preprocess.py",
         params={"threshold": 0.5},
         depends_on=[],
         output_ext=".parquet",
@@ -344,7 +357,6 @@ def test_restore_rule_is_emitted_from_the_handed_hash_table(tmp_path):
     step = StepDef(
         method_name="preprocess",
         module_name="data_prep",
-        script_path="methods/preprocess/preprocess.py",
         params={},
         depends_on=[],
         output_ext=".parquet",

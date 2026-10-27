@@ -46,8 +46,9 @@ def _sparse_form(enriched: dict) -> dict:
 @workflow(purpose="run-pipeline prepares a sparse document the way the canvas "
                   "does: its variables are substituted and each method node is "
                   "enriched with the named output slots its contract declares, "
-                  "so the composer loads it; an enriched document passes "
-                  "through unchanged")
+                  "so the composer loads it, and every method node gains "
+                  "its newest version; an enriched document gains only the "
+                  "versions, and a second preparation changes nothing")
 def test_sparse_document_is_prepared_as_the_canvas_does(tmp_project, monkeypatch):
     from wfc.execution.composer import load_pipeline_from_document
     from wfc.execution.prepare import prepare_document
@@ -59,7 +60,7 @@ def test_sparse_document_is_prepared_as_the_canvas_does(tmp_project, monkeypatch
         nodes=[
             selector(),
             node("producer", inputs=[wire(SELECTOR_ID)],
-                 outputs={"table": ".csv"}),
+                 outputs={"table": ".csv"}, params={"rows": 1}),
             node("consumer", inputs=[wire("producer", source_slot="table")]),
         ],
         pipeline_id="prepare-doc", name="prepare_doc",
@@ -81,13 +82,21 @@ def test_sparse_document_is_prepared_as_the_canvas_does(tmp_project, monkeypatch
             if key in n:
                 assert by_id[n["id"]][key] == n[key], (n["id"], key)
     assert by_id["producer"]["slot_outputs"] == {"table": "table.csv"}
-    assert by_id["producer"]["script"]
     assert by_id["producer"]["params"]["rows"] == 3
     assert prepared["links"] == enriched["links"]
     loaded = load_pipeline_from_document(prepared)
     assert loaded.pipeline is not None
 
-    口 = Step(step_num=4, name="An enriched document passes through",
-             purpose="The frozen document run-pipeline reads back is prepared "
-                     "again without change")
-    assert prepare_document(enriched)["nodes"] == enriched["nodes"]
+    口 = Step(step_num=4, name="An enriched document gains only its versions",
+             purpose="Each method node is pinned to the newest version, the "
+                     "same one the sparse form resolved; nothing else "
+                     "changes, and the prepared document prepares to itself")
+    once = prepare_document(enriched)
+    for before, after in zip(enriched["nodes"], once["nodes"]):
+        if before.get("type") in (None, "method"):
+            assert after == {**before, "version": by_id[before["id"]]["version"]}
+        else:
+            assert after == before
+    assert all(n["version"] for n in prepared["nodes"]
+               if n.get("type") in (None, "method"))
+    assert prepare_document(once)["nodes"] == once["nodes"]

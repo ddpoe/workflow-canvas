@@ -27,6 +27,24 @@ def get_wfc_runs():
     return _require_provider().get_all_runs()
 
 
+class PipelineSummary(BaseModel):
+    """One pipeline as History's Pipelines view lists it."""
+
+    pipelineId: str
+    #: ``running``, ``succeeded``, ``failed``, ``cancelled`` or ``mixed``.
+    status: str
+    #: The runs the pipeline's frozen document expects; None without one.
+    expected: int | None = None
+    #: The pipeline's method nodes by document id, in document order.
+    nodeOrder: list[str] | None = None
+
+
+@router.get("/api/wfc/pipelines", response_model=list[PipelineSummary])
+def get_wfc_pipelines():
+    """Return each pipeline's status and the number of runs it expects."""
+    return _require_provider().get_pipeline_summaries()
+
+
 @router.get("/api/wfc/run/{run_id}")
 def get_wfc_run(run_id: str):
     run = _require_provider().get_run(run_id)
@@ -104,7 +122,7 @@ def get_pipeline_editable(pipeline_id: str):
 def get_pipeline_document(pipeline_id: str):
     """Return the run's literal frozen ``pipeline.json``.
 
-    Reads ``<project_root>/.runs/pipelines/<pipeline_id>/pipeline.json`` —
+    Reads ``<project_root>/.wfc/runs/pipelines/<pipeline_id>/pipeline.json`` —
     written at submission time for canvas runs, frozen at run start by
     ``run_pipeline`` for CLI runs, and the same file
     ``WfcProvider._load_bundled_samples`` consumes for fan-in sample
@@ -128,6 +146,37 @@ def get_pipeline_document(pipeline_id: str):
             status_code=500,
             detail=f"Pipeline document for {pipeline_id} is unreadable: {exc}",
         ) from exc
+
+
+@router.get("/api/pipelines/{pipeline_id}/download")
+def download_pipeline_document(pipeline_id: str):
+    """Serve a pipeline run's frozen ``pipeline.json`` as a file download.
+
+    The file is the run's frozen copy byte for byte: enrichment wrote every
+    method node's resolved version into it, so running the downloaded
+    document again runs the same versions.
+
+    Status codes:
+      - 200 with the file as an ``attachment`` named
+        ``<pipeline_id>.pipeline.json``
+      - 400 for an id that names no single pipeline directory
+      - 404 when the pipeline has no frozen document
+    """
+    from fastapi.responses import FileResponse
+
+    if not pipeline_id or pipeline_id in {".", ".."} or any(
+            sep in pipeline_id for sep in ("/", "\\")):
+        raise HTTPException(status_code=400,
+                            detail=f"Not a pipeline id: {pipeline_id!r}")
+    provider = _require_provider()
+    pipeline_json = layout.pipeline_doc_path(provider.project_root, pipeline_id)
+    if not pipeline_json.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Pipeline document not found for {pipeline_id}",
+        )
+    return FileResponse(pipeline_json, media_type="application/json",
+                        filename=f"{pipeline_id}.pipeline.json")
 
 
 @router.get("/api/pipelines/demo")
@@ -167,7 +216,10 @@ def get_run_lineage_pipeline(run_id: str):
     Status codes:
       - 200 with synthesized JSON on success
       - 404 if the run id is unknown
-      - 422 if synthesis fails (cycle defense, malformed ancestor chain)
+      - 422 if synthesis fails (cycle defense, malformed ancestor chain),
+        or if the lineage holds a run whose record carries no version
+        identity, so its node cannot be pinned to the version it ran; the
+        ``detail`` names each such run and the canvas shows it as written
     """
     from ...lineage import LineageSynthesisError, synthesize_lineage_pipeline
 

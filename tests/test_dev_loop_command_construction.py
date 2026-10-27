@@ -19,14 +19,19 @@ import pytest
 from axiom_annotations import workflow
 
 from tests.fixtures.fakes import (
+    FAKE_PUSHED_DIGEST,
     fake_subprocess_run,
     stub_docker_build,
     stub_docker_command_builder,
+    stub_docker_image_content,
     stub_docker_image_inspect,
     stub_docker_pull,
+    stub_docker_push,
+    stub_docker_tag,
 )
 from wfc.environments.docker import ImageNotFoundError
 
+BASE = "ghcr.io/owner/repo"
 VALID_DIGEST = "a" * 64
 #: The env is a locally built pixi env, recorded as
 #: docker://local/image-io@sha256:<image ID>; Docker is handed its daemon
@@ -44,17 +49,27 @@ def _fresh_resolver():
     reset_engine()
 
 
-def _setup_project(tmp_path: Path, *, executor: str | None = None) -> Path:
-    (tmp_path / ".wfc").mkdir()
-    toml = '[project]\nname="t"\n[database]\nurl="sqlite:///:memory:"\n'
+def _setup_project(project: Path, *, executor: str | None = None) -> Path:
+    """Register the test's env in a ``tmp_project`` and set its executor.
+
+    Args:
+        project: The ``tmp_project`` fixture's root (``wfc init``'s project,
+            already active).
+        executor: Executor type appended to init's config, or ``None`` to
+            keep init's default.
+
+    Returns:
+        The project root.
+    """
     if executor is not None:
-        toml += f'[executor]\ntype="{executor}"\n'
-    (tmp_path / ".wfc" / "wf-canvas.toml").write_text(toml)
+        config = project / ".wfc" / "wf-canvas.toml"
+        with config.open("a", encoding="utf-8") as fh:
+            fh.write(f'\n[executor]\ntype = "{executor}"\n')
     # A pixi env built locally: the record production writes names the
     # local/<name> repo with the image ID in the digest slot.
     from tests.fixtures.conftest import write_env_record
-    write_env_record(tmp_path, "image-io", backend="pixi", digest=VALID_DIGEST)
-    return tmp_path
+    write_env_record(project, "image-io", backend="pixi", digest=VALID_DIGEST)
+    return project
 
 
 # ---------------------------------------------------------------------------
@@ -64,10 +79,9 @@ def _setup_project(tmp_path: Path, *, executor: str | None = None) -> Path:
 @workflow(purpose="wfc shell and wfc exec both delegate argv construction to "
                   "wfc.environments.argv.build_docker_command so bind-mount, "
                   "--user, and -w /work discipline matches wfc run-step")
-def test_dev_loop_reuses_container_runner_helper(tmp_path, monkeypatch):
-    proj = _setup_project(tmp_path)
-    monkeypatch.chdir(proj)
-    # The daemon holds the env's image, so nothing is rebuilt.
+def test_dev_loop_reuses_container_runner_helper(tmp_project, monkeypatch):
+    proj = _setup_project(tmp_project)
+    # The daemon holds the env's image, so nothing is pulled.
     stub_docker_image_inspect(monkeypatch, DAEMON_REF)
 
     sentinel_argv = [
@@ -147,69 +161,84 @@ def test_dev_loop_reuses_container_runner_helper(tmp_path, monkeypatch):
         assert ":/dvc-cache" in joined
 
 
+@pytest.mark.parametrize("pushed", [True, False], ids=["pushed", "never-pushed"])
 @workflow(purpose="wfc shell and wfc exec on a pixi env whose image the "
-                  "Docker daemon lacks rebuild it through ensure_runnable from "
-                  "the staged build context before the docker run argv is "
-                  "built, and hand Docker the rebuilt image ID; nothing is "
-                  "pulled")
-def test_dev_loop_rebuilds_a_missing_env_before_the_argv(tmp_path, monkeypatch):
+                  "Docker daemon lacks ask ensure_runnable before the docker "
+                  "run argv is built: a pushed image is pulled once by its "
+                  "registry ref, checked, and that ref is run with --pull "
+                  "never; a never-pushed one is refused naming `wfc "
+                  "register-env <env> --force` and nothing runs; nothing is "
+                  "ever built and the record is unchanged")
+def test_dev_loop_pulls_or_refuses_a_missing_env_before_the_argv(
+    tmp_project, monkeypatch, capsys, pushed,
+):
     from wfc import environments as envs_mod
 
-    (tmp_path / ".wfc").mkdir()
-    (tmp_path / ".wfc" / "wf-canvas.toml").write_text(
-        '[project]\nname="t"\n[database]\nurl="sqlite:///:memory:"\n')
-    monkeypatch.chdir(tmp_path)
     stub_docker_build(monkeypatch, None)
+    content = {"layers": ["sha256:layer"], "env": [], "user": "", "workdir": "/"}
+    stub_docker_image_content(monkeypatch, content)
     stub_docker_image_inspect(monkeypatch, DAEMON_REF)
-    envs_mod.register(
+    record = envs_mod.register(
         name="image-io", backend="pixi",
         source={"pixi_lock_content":
                     "version: 6\nenvironments:\n  image-io:\n    packages: {}\n",
                 "pixi_toml_content": '[project]\nname = "image-io"\n',
                 "pip_freeze_content": "numpy==1.26.4\n"},
-        project_dir=tmp_path,
+        project_dir=tmp_project, push=False,
     )
+    registry_ref = f"{BASE}/image-io@{FAKE_PUSHED_DIGEST}"
+    if pushed:
+        from wfc.persistence import set_registry_url
 
-    new_ref = "sha256:" + "b" * 64
-    events: list[str] = []
+        set_registry_url(tmp_project, BASE)
+        stub_docker_tag(monkeypatch, None)
+        stub_docker_push(monkeypatch, None)
+        envs_mod.push_image(tmp_project, "image-io", record.env_fingerprint,
+                            record.container, BASE)
+
+    held: set = set()
+    pulls: list[str] = []
 
     def inspect(ref):
-        # Only the rebuilt image exists: by its build tag or its image ID.
-        if ref in ("local/image-io:_wfc-build", new_ref) and "build" in events:
-            return new_ref
+        # The registered image is gone; only a pulled ref is held.
+        if ref in held:
+            return "sha256:" + "f" * 64
         raise ImageNotFoundError(f"Error: No such image: {ref}")
 
-    def build(build_dir, tag):
-        events.append("build")
-
     stub_docker_image_inspect(monkeypatch, inspect)
-    stub_docker_build(monkeypatch, build)
-    stub_docker_pull(monkeypatch, AssertionError("a local/ image was pulled"))
+    stub_docker_image_content(monkeypatch, content)
+    stub_docker_pull(monkeypatch, lambda ref: (pulls.append(ref), held.add(ref)))
+    stub_docker_build(monkeypatch, AssertionError("built in the dev loop"))
 
-    image_refs: list[str] = []
-
-    def _fake_build(image_ref, project_root, dvc_cache_dir, inner_argv,
-                    *, uid, gid, gpus=False):
-        events.append("argv")
-        image_refs.append(image_ref)
-        return ["docker", "run", "--rm", image_ref, *inner_argv]
+    docker_runs: list[list[str]] = []
 
     class _FakeResult:
         returncode = 0
 
-    fake_subprocess_run(monkeypatch, lambda argv, check=False: _FakeResult())
-    with stub_docker_command_builder(_fake_build):
-        from wfc.environments import dev_loop
+    def _run(argv, check=False):  # noqa: ARG001
+        docker_runs.append(list(argv))
+        return _FakeResult()
 
-        assert dev_loop.shell("image-io") == 0
-        assert dev_loop.exec_("image-io", ["python", "-V"]) == 0
+    fake_subprocess_run(monkeypatch, _run)
+    from wfc.environments import dev_loop
 
-    # One rebuild, before the first argv; the second verb finds it present
-    # through the rebuilt record.
-    assert events[:2] == ["build", "argv"]
-    assert events.count("build") == 1
-    assert image_refs == [new_ref, new_ref]
-    assert envs_mod.get("image-io", tmp_path).container         == "docker://local/image-io@" + new_ref
+    rc_shell = dev_loop.shell("image-io")
+    rc_exec = dev_loop.exec_("image-io", ["python", "-V"])
+
+    assert envs_mod.get("image-io", tmp_project) == record
+    if not pushed:
+        assert (rc_shell, rc_exec) == (1, 1)
+        assert pulls == [] and docker_runs == []
+        assert "wfc register-env image-io --force" in capsys.readouterr().err
+        return
+    assert (rc_shell, rc_exec) == (0, 0)
+    # Pulled once; the second verb finds the registry ref held.
+    assert pulls == [registry_ref]
+    assert len(docker_runs) == 2
+    for argv in docker_runs:
+        assert argv[argv.index("--pull") + 1] == "never"
+        assert registry_ref in argv
+        assert DAEMON_REF not in argv
 
 
 # ---------------------------------------------------------------------------
@@ -217,12 +246,11 @@ def test_dev_loop_rebuilds_a_missing_env_before_the_argv(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("verb", ["jupyter", "shell", "exec"])
-def test_slurm_executor_carve_out_errors(tmp_path, monkeypatch, capsys, verb):
+def test_slurm_executor_carve_out_errors(tmp_project, monkeypatch, capsys, verb):
     """Under executor=slurm, all three dev-loop verbs exit non-zero with a
     clear 'cluster Apptainer dispatch is not supported' message and never
     invoke docker."""
-    proj = _setup_project(tmp_path, executor="slurm")
-    monkeypatch.chdir(proj)
+    _setup_project(tmp_project, executor="slurm")
 
     called = {"docker": False}
 
@@ -286,9 +314,8 @@ def test_dev_loop_help_includes_ephemeral_reminder(verb, capsys):
 # Resolution error paths (Tier 1)
 # ---------------------------------------------------------------------------
 
-def test_dev_loop_errors_when_env_not_registered(tmp_path, monkeypatch, capsys):
-    proj = _setup_project(tmp_path)
-    monkeypatch.chdir(proj)
+def test_dev_loop_errors_when_env_not_registered(tmp_project, capsys):
+    _setup_project(tmp_project)
     from wfc.environments import dev_loop
     rc = dev_loop.shell("nonexistent")
     assert rc == 1

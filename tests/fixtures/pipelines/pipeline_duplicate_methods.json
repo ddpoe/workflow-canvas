@@ -4,7 +4,6 @@
       "id": "filter_rep2",
       "method": "csv_filter",
       "module": "image_analysis",
-      "script": "methods/csv_filter/csv_filter.py",
       "params": {
         "column": "replicate",
         "value": "Rep2"
@@ -16,7 +15,6 @@
       "id": "filter_rep3",
       "method": "csv_filter",
       "module": "image_analysis",
-      "script": "methods/csv_filter/csv_filter.py",
       "params": {
         "column": "replicate",
         "value": "Rep3"
@@ -28,7 +26,6 @@
       "id": "qc_rep2",
       "method": "feature_qc",
       "module": "image_analysis",
-      "script": "methods/feature_qc/feature_qc.py",
       "params": {
         "min_cells": 100
       },
@@ -39,7 +36,6 @@
       "id": "qc_rep3",
       "method": "feature_qc",
       "module": "image_analysis",
-      "script": "methods/feature_qc/feature_qc.py",
       "params": {
         "min_cells": 100
       },

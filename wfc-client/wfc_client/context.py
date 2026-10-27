@@ -1,7 +1,7 @@
 """RunContext — the ``ctx`` object handed to ``@wfc.method`` functions.
 
-This is the Tier-1 sugar over the canonical Tier-2 env-var + file contract
-(ADR-020). It is a *metadata recorder*: it never copies, moves, reads, or
+This is the Tier-1 sugar over the canonical Tier-2 env-var + file
+contract. It is a *metadata recorder*: it never copies, moves, reads, or
 serializes the user's data bytes. ``save_artifact(name, path)`` records a
 path; ``log_metric(name, value)`` records a scalar; at exit ``_finalize()``
 writes a single ``_wfc_results.json`` manifest the host reads.

@@ -4,6 +4,15 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      keep_probe:
+        type: boolean
+        default: false
+        description: "Leave the GHCR probe package in place for a manual read (diagnostic)"
+      skip_windows:
+        type: boolean
+        default: false
+        description: "Test on Linux and macOS only (the Windows job takes about an hour)"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -16,7 +25,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # Linux on every push and pull request; Windows and macOS (a Windows
+        # minute bills twice, a macOS minute ten times) on main and on a
+        # manual run. A manual run with skip_windows leaves Windows out.
+        os: >-
+          ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.skip_windows)
+          && '["ubuntu-latest", "macos-latest"]'
+          || (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main')
+          && '["ubuntu-latest", "windows-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
         python-version: ["3.12"]
     steps:
       - uses: actions/checkout@v7
@@ -43,7 +59,11 @@ jobs:
           poetry env use python
           poetry install --with dev
       - name: Test workflow-canvas
-        run: poetry run pytest
+        # Windows runs the suite in four parallel workers: serially it takes
+        # over an hour there, and `-n auto` counts physical cores, which is
+        # one on the runner. The tests wait on git, Snakemake and the
+        # filesystem, so four workers beat two on a two-CPU runner too.
+        run: poetry run pytest ${{ runner.os == 'Windows' && '-n 4' || '' }}
       - name: Test wfc-client
         run: poetry run pytest wfc-client/tests
 
@@ -138,3 +158,85 @@ jobs:
           poetry install --with dev
       - name: Integration tests
         run: poetry run pytest -m integration
+
+  ghcr:
+    # Pushes a labelled image to the throwaway package <repo>/wfc-ci-probe and
+    # reads its repository link with `gh api`. Main pushes, and a manual run on
+    # any branch; never a pull request (one from a fork gets no packages: write).
+    name: GHCR push and package link
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+      || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      WFC_GHCR_TAG: ci-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Configure git
+        run: |
+          git config --global user.name "CI"
+          git config --global user.email "ci@example.com"
+          git config --global init.defaultBranch main
+      - run: pipx install poetry
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: poetry
+      - name: Install
+        run: |
+          poetry env use python
+          poetry install --with dev
+      - name: Log Docker in to ghcr.io
+        run: echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: GHCR test
+        run: poetry run pytest -m ghcr
+      - name: Delete the pushed test version
+        if: always() && !inputs.keep_probe
+        run: |
+          repo="${GITHUB_REPOSITORY#*/}"
+          package=$(printf '%s' "${repo,,}/wfc-ci-probe" | jq -sRr @uri)
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          for kind in users orgs; do
+            route="/$kind/$owner/packages/container/$package"
+            # The owner is a user or an organisation: the other route answers
+            # 404, which is printed here and is expected once.
+            if ! versions=$(gh api "$route/versions" --paginate \
+              --jq ".[] | select(.metadata.container.tags | index(\"$WFC_GHCR_TAG\")) | .id"); then
+              echo "No package at $route; trying the next owner kind."
+              continue
+            fi
+            if [ -z "$versions" ]; then
+              echo "::warning::$route has no version tagged $WFC_GHCR_TAG to delete."
+              exit 0
+            fi
+            # Tagged versions this run did not push (a kept probe, another run).
+            if ! others=$(gh api "$route/versions" --paginate \
+              --jq ".[] | select((.metadata.container.tags | length) > 0 and (.metadata.container.tags | index(\"$WFC_GHCR_TAG\") | not)) | .id"); then
+              echo "::error::Could not list the versions of $route."
+              exit 1
+            fi
+            if [ -z "$others" ]; then
+              # GitHub refuses to delete a package's last tagged version on
+              # its own: delete the whole probe package instead.
+              echo "The version tagged $WFC_GHCR_TAG is the last one: deleting the package $route."
+              if ! gh api -X DELETE "$route"; then
+                echo "::error::Could not delete the package $route."
+                exit 1
+              fi
+              exit 0
+            fi
+            failed=0
+            for id in $versions; do
+              if ! gh api -X DELETE "$route/versions/$id"; then
+                echo "::error::Could not delete the version $id of $route."
+                failed=1
+              fi
+            done
+            exit "$failed"
+          done
+          echo "::error::Could not find the package $package under users/ or orgs/$owner to delete the test version."
+          exit 1

@@ -21,8 +21,8 @@ from wfc.graph import load_pipeline, resolve_variables
 from wfc.orchestration import generate_snakefile
 
 PID = "pipe-diverse"
-TABLE_PATH = ".runs/run-r/table/table.parquet"
-PLOT_PATH = ".runs/run-r/plot/plot.png"
+TABLE_PATH = f"{layout.artifact_store_relpath()}/run-r/table/table.parquet"
+PLOT_PATH = f"{layout.artifact_store_relpath()}/run-r/plot/plot.png"
 
 
 def _method(node_id: str, method: str, params: dict) -> dict:

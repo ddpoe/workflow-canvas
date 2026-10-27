@@ -329,7 +329,9 @@ export async function resolveColumnsFor(
   return fetchMethodOutputColumns(
     `${ud.module}.${ud.method}`,
     sourceSlot,
-    ud.paramValues ?? {}
+    ud.paramValues ?? {},
+    // A pinned upstream declares its own version's columns.
+    ud.version,
   );
 }
 

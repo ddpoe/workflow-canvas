@@ -108,7 +108,7 @@ def test_input_selector_pipeline(pipeline_factory, register_fixture_methods):
         name="Verify output exists for selected sample",
         purpose="sentinel + RunOutput row for transform_1 / sel_sample",
     )
-    sentinels = list(project_dir.rglob(".runs/sentinels/*/transform_1/sel_sample/default/.complete"))
+    sentinels = list(project_dir.rglob(".wfc/runs/sentinels/*/transform_1/sel_sample/default/.complete"))
     assert len(sentinels) == 1, f"Expected 1 sentinel for sel_sample, found {len(sentinels)}"
     output_path = _find_run_output_path(
         nf_process_name="transform", sample="sel_sample", output_name="output.csv",
@@ -326,7 +326,11 @@ def test_run_reference_bad_path_fails(pipeline_factory, register_fixture_methods
         ).all()[-1]
         prior_run_id = prior_run.id
 
-    # The record stays; the file it names does not.
+    # The record stays; the file it names does not. Collect left it
+    # read-only, which on Windows refuses the unlink.
+    import os
+    import stat as _stat
+    os.chmod(prior_output, _stat.S_IREAD | _stat.S_IWRITE)
     prior_output.unlink()
 
     pipeline_path = pipeline_factory(

@@ -53,10 +53,10 @@ def register_sample(
 
     Last, writes the sample row: the name, the content hash, the source
     path with its metadata, the description, the push fields, and
-    ``registered_path``, relative to the project root.  Nothing is copied
-    into ``data/samples/{name}/`` at registration: ``registered_path``
-    records where the ``restore_sample`` rule will materialize the sample
-    later, not something that exists now.
+    ``registered_path``, which records only the source's file name.
+    Nothing is copied into the sample workspace at registration: Layout
+    derives where the ``restore_sample`` rule will materialize the sample
+    later (``.wfc/workspace/samples/{name}/{file name}``) from that name.
 
     If the cache write fails, no row is written.
 
@@ -76,7 +76,7 @@ def register_sample(
             its description is stored on the row.
 
     Returns:
-        The absolute path under ``data/samples/{name}/`` where the
+        The absolute path under ``.wfc/workspace/samples/{name}/`` where the
         ``restore_sample`` rule will materialize the sample.  Nothing is
         there at registration.
 
@@ -149,11 +149,11 @@ def register_sample(
                      "then hand the bytes to Storage's sample store, which "
                      "hashes them, caches them in copy mode and settles the "
                      "first push status")
-    # Do NOT copy into data/samples/. The DVC cache is the sole
-    # store; data/samples/ is ephemeral workspace, populated lazily by the
-    # Snakemake restore_sample rule. registered_path is a contract (where the
-    # sample WILL be restored) not a claim that it exists there now.
-    dest = layout.sample_dir(project_root, name) / source_path.name
+    # Do NOT copy into the sample workspace. The DVC cache is the sole
+    # store; .wfc/workspace/samples/ is ephemeral, populated lazily by the
+    # Snakemake restore_sample rule. registered_path records only the file
+    # name; Layout derives where the sample WILL be restored from it.
+    dest = layout.restored_sample_path(project_root, name, source_path.name)
 
     # Capture the metadata FROM THE SOURCE, before the copy.
     if tree is not None:
@@ -173,13 +173,13 @@ def register_sample(
     stored = store_sample_bytes(source_path, project_root)
 
     口 = Step(step_num=3, name="Write the row",
-             purpose="Insert the sample row, with registered_path relative "
-                     "to the project root")
+             purpose="Insert the sample row, with registered_path recording "
+                     "only the source's file name")
     with get_session() as session:
         sample = Sample(
             name=name,
             source_path=str(source_path),
-            registered_path=dest.relative_to(project_root).as_posix(),
+            registered_path=source_path.name,
             file_type=file_type,
             file_size=src_file_size,
             file_mtime=src_file_mtime,

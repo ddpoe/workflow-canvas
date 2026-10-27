@@ -12,7 +12,7 @@ run-step dispatches.
 
 Base-digest liveness for BOTH backends is already asserted by
 ``test_pixi_dockerfile_builds.py::test_pinned_base_digests_exist_in_registries``
-(it iterates ``BASES_BY_BACKEND``) — not duplicated here.
+(it iterates the backend table's pinned bases) — not duplicated here.
 
 ``integration``-marked (deselected by default), skips cleanly without a
 reachable Docker daemon, and ``slow`` — the first run solves and
@@ -43,12 +43,10 @@ pytestmark = [pytest.mark.integration, requires_docker]
             "tree — and the recorded container ref plus interpreter run "
             "under docker in exactly the form run-step dispatches."
 )
-def test_generated_conda_dockerfile_builds_r_env_no_pip(tmp_path):
+def test_generated_conda_dockerfile_builds_r_env_no_pip(tmp_project):
     from wfc import environments as envs_mod
     from wfc.environments.dockerfiles.bases import MICROMAMBA_BASE
     from wfc.environments.introspect import PIP_MISSING_SENTINEL
-
-    (tmp_path / ".wfc").mkdir()
 
     # Capture a real explicit list INSIDE the pinned base — no host conda
     # needed. The base image's `base` env starts EMPTY; the install step
@@ -80,7 +78,7 @@ def test_generated_conda_dockerfile_builds_r_env_no_pip(tmp_path):
             "pip_freeze_content": PIP_MISSING_SENTINEL,
         },
         python_override="/opt/conda/bin/Rscript",
-        project_dir=tmp_path,
+        project_dir=tmp_project,
     )
 
     assert re.fullmatch(

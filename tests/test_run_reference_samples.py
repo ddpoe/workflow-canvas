@@ -97,6 +97,31 @@ def test_resolve_populates_sample_and_all_output_paths(referenced_run):
     assert set(literal["output_paths"]) == set(info["output_paths"])
 
 
+@workflow(purpose="A reference input naming a run's output reads it through the "
+                  "input resolver: at its run-archive path before the archive "
+                  "pass, from the cache once archived (the run-archive file is "
+                  "gone); a path naming no output record is read as given")
+def test_a_reference_reads_an_archived_output_from_the_cache(referenced_run, tmp_project):
+    from pathlib import Path
+
+    from wfc.storage import archive_outputs
+    from wfc.storage.resolve import reference_read_path
+
+    recorded = {row["slot"]: row["artifact_path"] for row in referenced_run.output_rows}
+    written = Path(recorded["labels"]).read_bytes()
+    assert Path(reference_read_path(recorded["labels"])) == Path(recorded["labels"])
+
+    archive_outputs(tmp_project, run_id=referenced_run.run_id)
+    assert not Path(recorded["labels"]).exists()
+    # The orchestrator passes the path with forward slashes.
+    read = Path(reference_read_path(recorded["labels"].replace("\\", "/")))
+    assert read.is_relative_to(tmp_project / ".dvc" / "cache")
+    assert read.read_bytes() == written
+
+    elsewhere = str(tmp_project / "elsewhere.csv")
+    assert reference_read_path(elsewhere) == elsewhere
+
+
 def test_run_reference_root_inherits_sample():
     """A run_reference-rooted pipeline compiles to SAMPLES=[Run.sample].
 

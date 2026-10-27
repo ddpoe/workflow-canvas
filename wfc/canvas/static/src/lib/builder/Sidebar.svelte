@@ -1,7 +1,7 @@
 <script lang="ts">
   import { modules } from './stores.js';
-  import { fetchModuleRegistry } from './api.js';
-  import type { ModuleDef, MethodDef } from '../shared/types.js';
+  import { fetchModuleRegistry, moduleDefsFromRegistry } from './api.js';
+  import type { MethodDef } from '../shared/types.js';
   import PipelineVariablesPanel from './PipelineVariablesPanel.svelte';
 
   let searchQuery = $state('');
@@ -28,62 +28,15 @@
     expandedMethods[key] = !expandedMethods[key];
   }
 
-  // Module accent colors by index
-  const MODULE_COLORS = ['#1ABC9C', '#2ecc71', '#9b59b6', '#E9A847', '#4A90D9', '#E74C3C', '#3498db', '#e67e22'];
+  /** The newest version's label, for the palette chip. */
+  function newestLabel(method: MethodDef): number | undefined {
+    return method.versions?.find(v => v.newest)?.label;
+  }
 
   async function fetchModules() {
     try {
       const raw = await fetchModuleRegistry();
-      if (raw) {
-        // API returns {module_name: {description, methods: {method_name: {...}}}}
-        // Transform to ModuleDef[]
-        const result: ModuleDef[] = Object.entries(raw).map(([modName, modData]: [string, any], i: number) => ({
-          name: modName,
-          description: modData.description,
-          color: MODULE_COLORS[i % MODULE_COLORS.length],
-          methods: Object.entries(modData.methods || {}).map(([methName, methData]: [string, any]) => ({
-            name: methName,
-            module: modName,
-            version: methData.version,
-            description: methData.description,
-            inputs: Object.entries(methData.inputs || {}).map(([slotName, slotData]: [string, any]) => ({
-              name: slotName,
-              type: slotData.type || 'csv',
-              multi: slotData.multiple || false,
-              description: slotData.description ?? undefined,
-            })),
-            outputs: Object.entries(methData.outputs || {}).map(([slotName, slotData]: [string, any]) => ({
-              name: slotName,
-              type: slotData.type || 'csv',
-              description: slotData.description ?? undefined,
-            })),
-            params: Object.entries(methData.params_schema || {}).map(([pName, pData]: [string, any]) => {
-              const rawType = (pData.type ?? 'str') as string;
-              const contractType = (
-                ['str', 'int', 'float', 'bool', 'list', 'dict'].includes(rawType)
-                  ? rawType
-                  : 'unknown'
-              );
-              return {
-                name: pName,
-                type: rawType === 'bool' ? 'boolean' : (rawType === 'int' || rawType === 'float') ? 'number' : 'string',
-                contractType,
-                // Preserve native dict/list defaults; only coerce primitives to string.
-                // Without this, `{}.toString()` becomes the literal
-                // string "[object Object]" and every dict-defaulted param gets corrupted.
-                default: pData.default !== undefined && pData.default !== null
-                  ? (typeof pData.default === 'object' ? pData.default : pData.default.toString())
-                  : undefined,
-                description: pData.description ?? undefined,
-                required: pData.required || false,
-                constraints: pData.constraints || undefined,
-              };
-            }),
-            color: MODULE_COLORS[i % MODULE_COLORS.length],
-          })),
-        }));
-        modules.set(result);
-      }
+      if (raw) modules.set(moduleDefsFromRegistry(raw));
     } catch { /* dev mode — modules may not be available */ }
   }
 
@@ -173,7 +126,7 @@
                   <span class="method-name-text" title={method.name}>{method.name}</span>
                 </div>
                 <div class="method-meta">
-                  {#if method.version}<span class="version">v{method.version}</span>{/if}
+                  {#if newestLabel(method) !== undefined}<span class="version" title="newest version">v{newestLabel(method)}</span>{/if}
                   <button class="info-btn" onclick={(e: MouseEvent) => { e.stopPropagation(); detailMethod = method; }}>i</button>
                 </div>
               </div>

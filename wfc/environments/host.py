@@ -2,6 +2,7 @@
 
 ``resolve_python_for_env`` — the python binary for a pixi env spec.
 ``resolve_conda_env_dir`` — a conda env's prefix, without requiring a python.
+``host_conda_platform`` — the conda platform of this machine (``win-64``, ...).
 
 ``wfc register-env <name> <spec>`` resolves the live host env through these
 before it captures the env's package list.
@@ -9,8 +10,41 @@ before it captures the env's package list.
 
 from __future__ import annotations
 
+import platform
 import subprocess
+import sys
 from pathlib import Path
+
+# =============================================================================
+# Host platform
+# =============================================================================
+
+#: The conda platform env images are built for.
+IMAGE_CONDA_PLATFORM = "linux-64"
+
+# platform.machine() spellings, lowercased, to conda's architecture suffix.
+_CONDA_ARCH = {"x86_64": "64", "amd64": "64", "arm64": "arm64",
+               "aarch64": "aarch64", "x86": "32", "i386": "32", "i686": "32"}
+
+
+def host_conda_platform() -> str:
+    """Return the conda platform (subdir) of the machine wfc runs on.
+
+    ``win-64``, ``osx-arm64``, ``linux-64`` and so on: the platform a conda
+    env on this machine was installed for. Live capture asks it to decide
+    whether the env's own explicit list can build the linux-64 image.
+
+    Returns:
+        The conda subdir name, e.g. ``"win-64"``.
+    """
+    machine = platform.machine().lower()
+    arch = _CONDA_ARCH.get(machine, machine)
+    if sys.platform.startswith("win"):
+        return f"win-{arch}"
+    if sys.platform == "darwin":
+        return f"osx-{'arm64' if arch == 'aarch64' else arch}"
+    return f"linux-{'aarch64' if arch == 'arm64' else arch}"
+
 
 # =============================================================================
 # Environment resolution

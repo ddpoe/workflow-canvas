@@ -50,6 +50,38 @@ def _seed_methods(engine, names: list[str]) -> dict[str, int]:
         return {m.name: m.id for m in methods}
 
 
+def _register_clean(root) -> None:
+    """Register ``demo/clean`` through production registration.
+
+    A submitted node's method must have a version to run, so the method is
+    registered against an env record naming a registry image. The test
+    stubs ``run_pipeline``, so the env pre-flight (which would ask Docker
+    whether the image is present) is not reached.
+
+    Args:
+        root: The served project's root.
+    """
+    from tests.fixtures.conftest import (
+        register_test_method,
+        sample_source_dir,
+        write_env_record,
+    )
+
+    write_env_record(root, MODULE, digest="d" * 64, image="ghcr.io/wfc-test/demo")
+    method_dir = sample_source_dir(root) / "_methods" / "clean"
+    method_dir.mkdir(parents=True)
+    (method_dir / "method.yaml").write_text(
+        f"env: {MODULE}\n"
+        "inputs:\n  data:\n    type: .csv\n    required: false\n"
+        "outputs: {}\n"
+        "params: {}\n",
+        encoding="utf-8",
+    )
+    (method_dir / "clean.py").write_text("def main():\n    pass\n", encoding="utf-8")
+    register_test_method(root, module_name=MODULE, method_dir=method_dir,
+                         method_name="clean")
+
+
 @pytest.mark.parametrize("cancel_first", [False, True], ids=["no-cancel", "after-cancel"])
 @workflow(
     purpose="A background run that raises closes the pipeline's rows only when no "
@@ -58,9 +90,9 @@ def _seed_methods(engine, names: list[str]) -> dict[str, int]:
             "failed, or cancelled when the user cancelled it",
 )
 def test_a_failed_background_run_closes_rows_unless_cancelled(
-    canvas_client, canvas_db, ready_preflight, cancel_first
+    canvas_client, tmp_project, ready_preflight, cancel_first
 ):
-    _seed_methods(canvas_db, ["clean"])
+    _register_clean(tmp_project)
     started = threading.Event()
     release = threading.Event()
     failed_pipelines: list[str] = []
@@ -99,6 +131,58 @@ def test_a_failed_background_run_closes_rows_unless_cancelled(
     assert error["kind"] == "dirty_repo"
     assert error["message"] == "Working tree has uncommitted changes to tracked files"
     assert error["hint"]
+
+
+def test_a_terminal_cancel_of_a_canvas_run_keeps_its_rows_from_the_failure_flip(
+    canvas_client, tmp_project, ready_preflight
+):
+    """A `wfc cancel` from a terminal sets only the pipeline record's flag; the
+    background run that then raises leaves the rows to the cancel, though the
+    record is gone by the time the failure is handled."""
+    from wfc.execution.pipeline_record import (
+        ENTRY_POINT_CANVAS,
+        remove_pipeline_record,
+        request_cancel,
+        write_pipeline_record,
+    )
+
+    _register_clean(tmp_project)
+    started = threading.Event()
+    release = threading.Event()
+    failed_pipelines: list[str] = []
+
+    def fake_run_pipeline(**kwargs):
+        root, pid = kwargs["project_root"], kwargs["pipeline_id"]
+        write_pipeline_record(root, pid, ENTRY_POINT_CANVAS)
+        started.set()
+        release.wait(timeout=10)
+        # The engine loop's cancel probe sees the record's flag; the run's
+        # end then removes the record before the exception reaches the thread.
+        assert kwargs["is_cancelled"]() is True
+        remove_pipeline_record(root, pid)
+        raise RuntimeError("Snakemake exited with code 1")
+
+    payload = {
+        "name": "terminal-cancel",
+        "nodes": [{"id": "clean_1", "type": "method", "method": "clean", "module": MODULE}],
+        "links": [],
+        "samples": [],
+    }
+    with stub_pipeline_submission(run_pipeline=fake_run_pipeline,
+                                  fail_pipeline=failed_pipelines.append):
+        submitted = canvas_client.post("/api/workflow/run", json=payload)
+        assert submitted.status_code == 200, submitted.text
+        job_id = submitted.json()["job_id"]
+        thread = _active_jobs[job_id]["thread"]
+        assert started.wait(timeout=10), "the background run never started"
+        assert request_cancel(tmp_project, job_id).cancel_requested
+        assert not _active_jobs[job_id]["cancel_requested"], (
+            "the premise: only the record's flag is set")
+        release.set()
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+
+    assert failed_pipelines == []
 
 
 @pytest.mark.parametrize(

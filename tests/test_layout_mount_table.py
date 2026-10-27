@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from axiom_annotations import workflow
 
 from wfc import layout
@@ -69,3 +70,49 @@ def test_mount_table_is_the_single_source(tmp_path):
     # name is not under it, and passes through unchanged.
     sibling = tmp_path / "proj-other" / "f.txt"
     assert layout.translate_host_path(str(sibling), table) == str(sibling)
+
+
+@workflow(purpose="A run's extracted code copy is one more mount-table row, "
+                  "bound read-only at the /work path translation already gives "
+                  "it, rendered with :ro; the rows before it and the script "
+                  "path the container sees are unchanged",
+          inputs="A project root, its DVC cache dir and a code copy under the "
+                 "artifact store",
+          outputs="The base rows, then a read-only code row whose bind spec "
+                  "ends in :ro")
+def test_code_copy_row_is_bound_read_only_at_its_work_path(tmp_path):
+    project = tmp_path / "proj"
+    cache = tmp_path / "dvc cache"
+    project.mkdir()
+    cache.mkdir()
+    copy = layout.code_copy_dir(project, "4b825dc6")
+
+    base = layout.mount_table(project, cache)
+    table = layout.mount_table(project, cache, code_copy=copy)
+
+    # Without a copy nothing is read-only; with one, the base rows come
+    # first, unchanged, and the copy's row is last.
+    assert not any(row.read_only for row in base)
+    assert table[:-1] == base
+    code_row = table[-1]
+    assert code_row.read_only
+    assert code_row.container == "/work/.wfc/runs/code/4b825dc6"
+    assert layout.bind_spec(code_row) == (
+        f"{Path(copy).resolve().as_posix()}:/work/.wfc/runs/code/4b825dc6:ro")
+    assert layout.bind_spec(base[0]) == f"{project.resolve().as_posix()}:/work"
+
+    # The script path the container sees keeps its form: translation over
+    # the table with the code row equals translation over the base table.
+    script = copy / "sub dir" / "main.py"
+    assert (layout.translate_host_path(str(script), table)
+            == layout.translate_host_path(str(script), base)
+            == "/work/.wfc/runs/code/4b825dc6/sub dir/main.py")
+
+
+def test_a_code_copy_outside_the_project_root_is_refused(tmp_path):
+    """A copy translation cannot place under /work has no container path."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    with pytest.raises(ValueError, match="not under the project root"):
+        layout.mount_table(project, tmp_path / "cache",
+                           code_copy=tmp_path / "elsewhere" / "4b825dc6")

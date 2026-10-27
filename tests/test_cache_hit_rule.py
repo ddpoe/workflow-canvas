@@ -22,11 +22,11 @@ Every row starts from a run produced by production's five phases
 (``completed_run``); outputs are archived by the production archive pass.
 Declared fixture deviations: cache entries, member objects and archive
 files are removed from disk the way ``dvc gc``, an interrupted pull or a
-pruned archive leaves them; ``_lay_tree_at`` lays the pre-cycle directory
-shape at an unsuffixed address, which production no longer writes; the
-pushed state of a file row is the declared ``flip_push_status`` shortcut,
-while a directory row is pushed by the production push worker to the
-harness's real local remote.
+pruned archive leaves them; ``_lay_tree_at`` lays the legacy directory
+shape at an unsuffixed address, which production no longer writes; a failed
+push is the declared ``flip_push_status`` shortcut. A pushed row is pushed by
+the production push worker to the harness's real local remote, and pulled
+back from it.
 """
 
 from __future__ import annotations
@@ -142,7 +142,7 @@ def _push(project: Path, run_id: int) -> None:
 
 
 def _lay_tree_at(project: Path, run_id: int, slot: str) -> None:
-    """Declared deviation: the pre-cycle directory shape at an unsuffixed address."""
+    """Declared deviation: the legacy directory shape at an unsuffixed address."""
     from wfc import layout
 
     content_hash, _ = _outputs(run_id)[slot]
@@ -165,11 +165,11 @@ _TABLE = [
      lambda p, r: _archive(p, r),
      "local", {"left": "local", "right": "local"}, ()),
     ("archived, one entry pruned and pushed", "files",
-     lambda p, r: (_archive(p, r), flip_push_status(r, "pushed"),
+     lambda p, r: (_archive(p, r), _push(p, r),
                    _prune_cache(p, r, "right")),
      "remote", {"left": "local", "right": "remote"}, ()),
     ("archived, both entries pruned and pushed", "files",
-     lambda p, r: (_archive(p, r), flip_push_status(r, "pushed"),
+     lambda p, r: (_archive(p, r), _push(p, r),
                    _prune_cache(p, r, "left"), _prune_cache(p, r, "right")),
      "remote", {"left": "remote", "right": "remote"}, ()),
     ("archived, one entry pruned and not pushed", "files",
@@ -261,23 +261,14 @@ def test_resolver_agrees_with_the_hit_rule(tmp_project, monkeypatch, capsys,
     run_id = driven.run_id
     run = _run_row(run_id)
     arrange(Path(tmp_project), run_id)
-    by_hash = {h: Path(a) for h, a in _outputs(run_id).values() if h}
     pulled: list[str] = []
 
     def _pull(hashes, project_dir):
-        # The DVC remote is the true external edge. A directory row was
-        # pushed for real, so its pull is the real one against the harness's
-        # local remote. A file row was recorded pushed by the shortcut; the
-        # archive pass copies (never moves) an output into the cache, so the
-        # run-archive file holds the bytes a pull materializes.
-        for h in hashes:
-            pulled.append(h)
-            if h.endswith(".dir"):
-                return real_pull_cache([h], project_dir)
-            entry = layout.dvc_cache_entry(Path(project_dir), h)
-            entry.parent.mkdir(parents=True, exist_ok=True)
-            entry.write_bytes(by_hash[h].read_bytes())
-        return True
+        # Every pushed row was pushed for real by the production push worker,
+        # so the pull is the real one against the harness's local remote; the
+        # wrapper only records that a pull was asked for.
+        pulled.extend(hashes)
+        return real_pull_cache(list(hashes), project_dir)
 
     stub_transport(monkeypatch, pull_cache=_pull)
 

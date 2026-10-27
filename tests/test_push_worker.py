@@ -12,9 +12,10 @@ import pytest
 from axiom_annotations import workflow, task, Step
 from sqlmodel import select
 
+from tests.fixtures.conftest import fixture_env_blob
 from tests.fixtures.fakes import stub_transport
 from tests.fixtures.routes import completed_run
-from wfc.persistence import get_session, PushStatus, Run, RunOutput, Sample
+from wfc.persistence import Blob, get_session, PushStatus, Run, RunOutput, Sample
 from wfc.storage.cache import _cache_path
 
 
@@ -180,12 +181,17 @@ def test_reset_orphan_pushes_requeues_recent_stuck_rows(tmp_project):
              purpose="Recent stuck rows are pending with zero attempts; every "
                      "other row keeps its state and attempts")
     requeued = {f"recent-{s.value}" for s in stuck}
+    # The project's fixture env was registered with it, so its content blob
+    # is a pending blob row stored moments ago: a recent stuck row as well.
+    env_blob = fixture_env_blob(tmp_project)
     with get_session() as session:
         outputs = [(r.output_name, r.push_status, r.push_attempts)
                    for r in session.exec(select(RunOutput)).all()]
         samples = [(r.name, r.push_status, r.push_attempts)
                    for r in session.exec(select(Sample)).all()]
-    assert n == 2 * len(requeued)
+        blob = session.get(Blob, env_blob)
+    assert n == 2 * len(requeued) + 1
+    assert (blob.push_status, blob.push_attempts) == (PushStatus.pending.value, 0)
     assert len(outputs) == len(samples) == len(seeded)
     for label, status, attempts in outputs + samples:
         if label in requeued:
@@ -212,12 +218,23 @@ def test_push_worker_tick_retries_on_failure(tmp_project, monkeypatch):
     pushed, remaining = _push_worker_tick(tmp_project)
 
     assert pushed == 0
-    assert remaining == 1
+    # Every pending row's push failed: the output, the pipeline document the
+    # run's claim kept, and the content blob of each env the project has
+    # registered (tmp_project's fixture env and the run's own), each a
+    # pending blob row.
+    from wfc.environments.manifest import list_envs
+    env_blobs = {record.env_fingerprint for _name, record in list_envs(tmp_project)}
+    assert len(env_blobs) == 2
+    assert remaining == 2 + len(env_blobs)
     with get_session() as session:
         rows = session.exec(select(RunOutput)).all()
+        blobs = [session.get(Blob, h) for h in env_blobs]
     assert rows[0].push_status == PushStatus.failed.value
     assert rows[0].push_attempts == 1
     assert "network down" in (rows[0].push_error or "")
+    for blob in blobs:
+        assert (blob.push_status, blob.push_attempts) == (PushStatus.failed.value, 1)
+        assert "network down" in (blob.push_error or "")
 
 
 @workflow(purpose="register_sample standalone routes synchronous push")
@@ -295,23 +312,22 @@ def test_register_sample_in_pipeline_enqueues(tmp_project, monkeypatch):
 
 
 def test_prune_dvc_cache_skips_unpushed_when_remote_configured(tmp_project, monkeypatch):
-    """prune skips cache entries whose row has pushed_at IS NULL."""
+    """prune keeps a cache entry whose row is not pushed; once pushed, it goes."""
     # A real cache entry through the archive pass (real md5 + read-only
-    # cache blob) whose RunOutput row is pending with pushed_at=None.
+    # cache blob) whose RunOutput row is pending; tmp_project's own
+    # local-folder archive is the configured remote.
+    from wfc.storage.push_worker import _push_worker_tick
+
     _, h = _archived_pending_output(tmp_project, monkeypatch)
     entry = _cache_path(tmp_project, h)
     assert entry.exists()
-    # Configure .dvc/config so has_remote_configured returns True.
-    (tmp_project / ".dvc").mkdir(parents=True, exist_ok=True)
-    (tmp_project / ".dvc" / "config").write_text(
-        '[core]\nremote = default\n[remote "default"]\nurl = /tmp/x\n'
-    )
 
     from wfc.storage import prune_dvc_cache
-    deleted = prune_dvc_cache(tmp_project, all_entries=True, dry_run=False)
+    deleted = prune_dvc_cache(tmp_project, dry_run=False)
     assert entry.exists(), "entry referencing unpushed row must be preserved"
     assert entry not in deleted
 
-    # --force overrides the guard.
-    deleted2 = prune_dvc_cache(tmp_project, all_entries=True, dry_run=False, force=True)
+    # Recorded pushed: the reader pulls it back, so the prune removes it.
+    _push_worker_tick(tmp_project)
+    prune_dvc_cache(tmp_project, dry_run=False)
     assert not entry.exists()

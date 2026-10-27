@@ -29,6 +29,7 @@ from tests.fixtures.fakes import (
     canned_process,
     fake_subprocess_run,
     stub_docker_build,
+    stub_docker_image_content,
     stub_docker_image_inspect,
     stub_docker_pull,
     stub_docker_repo_digest,
@@ -46,10 +47,9 @@ REGISTRY_DIGEST = "d" * 64
             "'docker://<orig>@sha256:<registry digest>' — the ref Docker "
             "is handed runs on the classic store"
 )
-def test_register_env_byo_floating_tag_not_local_pulls(tmp_path, monkeypatch):
+def test_register_env_byo_floating_tag_not_local_pulls(tmp_project, monkeypatch):
     from wfc import environments as envs_mod
 
-    (tmp_path / ".wfc").mkdir()
 
     pull_calls = []
     inspect_calls = []
@@ -67,6 +67,7 @@ def test_register_env_byo_floating_tag_not_local_pulls(tmp_path, monkeypatch):
         repo_digest_calls.append((ref, repository))
         return f"sha256:{REGISTRY_DIGEST}"
 
+    stub_docker_image_content(monkeypatch)
     stub_docker_image_inspect(monkeypatch, fake_inspect)
     stub_docker_repo_digest(monkeypatch, fake_repo_digest)
     stub_docker_pull(monkeypatch, pull_calls.append)
@@ -80,7 +81,7 @@ def test_register_env_byo_floating_tag_not_local_pulls(tmp_path, monkeypatch):
         name="cellpose",
         backend="byo",
         source={"image": "docker://reg/img:latest"},
-        project_dir=tmp_path,
+        project_dir=tmp_project,
     )
 
     # docker pull was called exactly once with the daemon-side ref (no docker:// prefix).
@@ -103,10 +104,9 @@ def test_register_env_byo_floating_tag_not_local_pulls(tmp_path, monkeypatch):
             "(only inspects, then reads the registry digest) — wfc does not "
             "waste a network round-trip when the image is resolvable locally"
 )
-def test_register_env_byo_already_local_skips_pull(tmp_path, monkeypatch):
+def test_register_env_byo_already_local_skips_pull(tmp_project, monkeypatch):
     from wfc import environments as envs_mod
 
-    (tmp_path / ".wfc").mkdir()
 
     pull_calls = []
     inspect_calls = []
@@ -115,6 +115,7 @@ def test_register_env_byo_already_local_skips_pull(tmp_path, monkeypatch):
         inspect_calls.append(ref)
         return f"sha256:{IMAGE_ID}"
 
+    stub_docker_image_content(monkeypatch)
     stub_docker_image_inspect(monkeypatch, fake_inspect)
     stub_docker_repo_digest(monkeypatch, f"sha256:{REGISTRY_DIGEST}")
     stub_docker_pull(monkeypatch, pull_calls.append)
@@ -123,7 +124,7 @@ def test_register_env_byo_already_local_skips_pull(tmp_path, monkeypatch):
         name="cellpose",
         backend="byo",
         source={"image": "docker://reg/img:v1"},
-        project_dir=tmp_path,
+        project_dir=tmp_project,
     )
 
     # No pull, single inspect.
@@ -137,11 +138,11 @@ def test_register_env_byo_already_local_skips_pull(tmp_path, monkeypatch):
             "registry digest is accepted even though the image ID differs, "
             "and the record carries that pin"
 )
-def test_register_env_byo_supplied_registry_digest_accepted(tmp_path, monkeypatch):
+def test_register_env_byo_supplied_registry_digest_accepted(tmp_project, monkeypatch):
     from wfc import environments as envs_mod
 
-    (tmp_path / ".wfc").mkdir()
 
+    stub_docker_image_content(monkeypatch)
     stub_docker_image_inspect(monkeypatch, f"sha256:{IMAGE_ID}")
     stub_docker_repo_digest(monkeypatch, f"sha256:{REGISTRY_DIGEST}")
     stub_docker_pull(monkeypatch, None)
@@ -150,10 +151,10 @@ def test_register_env_byo_supplied_registry_digest_accepted(tmp_path, monkeypatc
         name="cellpose",
         backend="byo",
         source={"image": f"docker://reg/img@sha256:{REGISTRY_DIGEST}"},
-        project_dir=tmp_path,
+        project_dir=tmp_project,
     )
 
-    stored = envs_mod.get("cellpose", tmp_path)
+    stored = envs_mod.get("cellpose", tmp_project)
     assert stored.container == f"docker://reg/img@sha256:{REGISTRY_DIGEST}"
 
 
@@ -169,6 +170,7 @@ def test_register_env_byo_supplied_digest_mismatch_refused(tmp_path, monkeypatch
 
     (tmp_path / ".wfc").mkdir()
 
+    stub_docker_image_content(monkeypatch)
     stub_docker_image_inspect(monkeypatch, f"sha256:{IMAGE_ID}")
     stub_docker_repo_digest(monkeypatch, f"sha256:{REGISTRY_DIGEST}")
     stub_docker_pull(monkeypatch, None)
@@ -192,11 +194,11 @@ def test_register_env_byo_supplied_digest_mismatch_refused(tmp_path, monkeypatch
             "shape), which has no RepoDigests, records its image ID and is "
             "never pulled; Docker is handed the bare image ID"
 )
-def test_register_env_byo_local_image_records_image_id(tmp_path, monkeypatch):
+def test_register_env_byo_local_image_records_image_id(tmp_project, monkeypatch):
     from wfc import environments as envs_mod
 
-    (tmp_path / ".wfc").mkdir()
 
+    stub_docker_image_content(monkeypatch)
     stub_docker_image_inspect(monkeypatch, f"sha256:{IMAGE_ID}")
     stub_docker_repo_digest(
         monkeypatch,
@@ -208,7 +210,7 @@ def test_register_env_byo_local_image_records_image_id(tmp_path, monkeypatch):
         name="demo-env",
         backend="byo",
         source={"image": "docker://local/wfc-demo-env:latest"},
-        project_dir=tmp_path,
+        project_dir=tmp_project,
     )
 
     assert record.container == f"docker://local/wfc-demo-env@sha256:{IMAGE_ID}"
@@ -223,6 +225,7 @@ def test_register_env_byo_missing_local_image_is_refused_not_pulled(
 
     (tmp_path / ".wfc").mkdir()
 
+    stub_docker_image_content(monkeypatch)
     stub_docker_image_inspect(monkeypatch,
                               RuntimeError("Error: No such image"))
     stub_docker_pull(monkeypatch, AssertionError("wfc never pulls local/"))
@@ -235,6 +238,31 @@ def test_register_env_byo_missing_local_image_is_refused_not_pulled(
             project_dir=tmp_path,
         )
     assert envs_mod.get("demo-env", tmp_path) is None
+
+
+def test_register_env_byo_probe_that_times_out_is_refused_not_pulled(
+    tmp_path, monkeypatch,
+):
+    """A probe Docker never answers refuses the registration; it is no miss."""
+    from wfc import environments as envs_mod
+    from wfc.environments.docker import DockerTimeoutError
+
+    (tmp_path / ".wfc").mkdir()
+
+    stub_docker_image_content(monkeypatch)
+    stub_docker_image_inspect(monkeypatch, DockerTimeoutError(
+        "docker image inspect 'ghcr.io/org/tool:1' did not finish within "
+        "15 s: Docker is not answering"))
+    stub_docker_pull(monkeypatch, AssertionError("a timed-out probe is no miss"))
+
+    with pytest.raises(RuntimeError, match="did not finish within 15 s"):
+        envs_mod.register(
+            name="tool",
+            backend="byo",
+            source={"image": "docker://ghcr.io/org/tool:1"},
+            project_dir=tmp_path,
+        )
+    assert envs_mod.get("tool", tmp_path) is None
 
 
 def test_register_env_byo_rejects_base_image(tmp_path, monkeypatch):

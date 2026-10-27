@@ -25,10 +25,26 @@ pipeline when a named sample's content is unreachable (Registration's
 the push worker, hand the pipeline to Orchestration's engine, and close the
 run (the failure sequence raises the engine's message).
 
+``pipeline_record.py`` is the pipeline record ``run_pipeline`` keeps in the
+pipeline run dir while it runs a pipeline: the entry point, the owning and
+engine processes (each a pid and its creation time) and the cancel flag. It
+also reads a frozen document's step map.
+
+``recovery.py`` answers whether a recorded pipeline is still being run (its
+owner, its engine, its heartbeats: ``judge_liveness``), closes out one that
+is not (``close_out_pipeline``: running rows failed as interrupted, a row for
+every target, Storage's release, the record removed), and cancels one
+through its record (``cancel_recorded_pipeline``).
+
 ``readiness.py`` answers whether a run can start at all: the git, DVC,
-Docker and sample probes, each returning a uniform ``CheckResult``, and
-``run_all_checks``, which runs the four in display order. ``wfc init``,
-``wfc doctor`` and the canvas's run gate share them.
+Docker, sample and view probes, each returning a uniform ``CheckResult``, and
+``run_all_checks``, which runs the five in display order. The view probe
+writes a scratch file into each directory it probes and removes it again.
+``wfc init``, ``wfc doctor`` and the canvas's run gate share them.
+``env_image_checks`` runs two more rows, the registry and the method
+versions that cannot run, which ``wfc doctor`` prints after them.
+``share_checks`` is ``wfc share``'s read-only checklist of what a
+collaborator will be missing.
 """
 from .composer import (
     DatabaseUnreachableError,
@@ -36,28 +52,110 @@ from .composer import (
     load_pipeline_from_document,
     load_pipeline_from_path,
 )
+from .lifecycle import (
+    PIPELINE_CANCELLED,
+    PIPELINE_FAILED,
+    PIPELINE_MIXED,
+    PIPELINE_RUNNING,
+    PIPELINE_SUCCEEDED,
+    ExpectedTarget,
+    ExpectedTargets,
+    expected_targets,
+    pipeline_status,
+)
 from .pipeline import run_pipeline
+from .pipeline_record import (
+    ENTRY_POINT_CANVAS,
+    ENTRY_POINT_CLI,
+    PipelineRecord,
+    PipelineRecordError,
+    ProcessIdentity,
+    cancel_requested,
+    frozen_step_map,
+    is_pipeline_id,
+    list_pipeline_records,
+    process_identity,
+    read_pipeline_record,
+    request_cancel,
+)
 from .readiness import (
     CheckResult,
     check_docker,
     check_dvc,
     check_git,
+    check_registry,
+    check_runnable_versions,
     check_samples,
+    env_image_checks,
     run_all_checks,
+    share_checks,
+)
+from .recovery import (
+    INTERRUPTED_RUN_MESSAGE,
+    CancelOutcome,
+    CloseOut,
+    HeartbeatSampler,
+    ProcessState,
+    UnknownPipelineError,
+    Verdict,
+    assess_pipeline,
+    cancel_recorded_pipeline,
+    close_out_pipeline,
+    judge_liveness,
+    kill_process_tree,
+    probe_process,
 )
 from .run_step import run_step
 
 __all__ = [
+    "ENTRY_POINT_CANVAS",
+    "ENTRY_POINT_CLI",
+    "INTERRUPTED_RUN_MESSAGE",
+    "PIPELINE_CANCELLED",
+    "PIPELINE_FAILED",
+    "PIPELINE_MIXED",
+    "PIPELINE_RUNNING",
+    "PIPELINE_SUCCEEDED",
+    "CancelOutcome",
     "CheckResult",
+    "CloseOut",
     "DatabaseUnreachableError",
+    "ExpectedTarget",
+    "ExpectedTargets",
+    "HeartbeatSampler",
     "LoadedPipeline",
+    "PipelineRecord",
+    "PipelineRecordError",
+    "ProcessIdentity",
+    "ProcessState",
+    "UnknownPipelineError",
+    "Verdict",
+    "assess_pipeline",
+    "cancel_recorded_pipeline",
+    "cancel_requested",
     "check_docker",
     "check_dvc",
     "check_git",
+    "check_registry",
+    "check_runnable_versions",
     "check_samples",
+    "close_out_pipeline",
+    "env_image_checks",
+    "expected_targets",
+    "frozen_step_map",
+    "is_pipeline_id",
+    "judge_liveness",
+    "kill_process_tree",
+    "list_pipeline_records",
     "load_pipeline_from_document",
     "load_pipeline_from_path",
+    "pipeline_status",
+    "probe_process",
+    "process_identity",
+    "read_pipeline_record",
+    "request_cancel",
     "run_all_checks",
     "run_pipeline",
     "run_step",
+    "share_checks",
 ]

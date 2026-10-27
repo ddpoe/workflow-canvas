@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.tutorials.writing-contracts @ d549a21f3d7a; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/tutorials/writing-contracts @ e61071483827; do not edit -->
 
 # Tutorial: Writing Contracts
 
@@ -12,7 +12,7 @@ This tutorial covers:
 - **Column declarations** -- naming the columns a CSV or Parquet slot carries.
 - **When contracts are checked** -- at registration, when a pipeline is validated and loaded, and when a step runs.
 
-It builds on the method from [Authoring a Method Script](authoring-a-method-script.md). For every key and its default, see [method.yaml Schema](../reference/method-yaml-schema.md).
+It builds on the method from [Writing a Method in Python](authoring-a-method-script.md). For every key and its default, see [method.yaml Schema](../reference/method-yaml-schema.md).
 
 
 ## Two tiers: module and method contracts
@@ -174,7 +174,7 @@ Metrics a method reports are stored with the run; a method does not have to repo
 ## Next steps
 
 - For every `method.yaml` key, including all column options and the `env` and `executor` fields, see [method.yaml Schema](../reference/method-yaml-schema.md).
-- To write the script a contract describes, see [Authoring a Method Script](authoring-a-method-script.md).
+- To write the script a contract describes, see [Writing a Method in Python](authoring-a-method-script.md).
 - To build and register the env a method runs in, see [Registering an Environment](registering-an-environment.md).
 - To wire methods into a pipeline, see [Build, Run and Inspect in the Canvas](../how-to/canvas.md).
 

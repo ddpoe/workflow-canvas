@@ -20,10 +20,13 @@
  *   on SSE_ERROR (genuine wire failure that survived services.ts's grace
  *   window) → failed with synthesized error_message="Connection lost"
  *
- * Transient wire blips are absorbed inside `subscribeSSE` (services.ts):
- * the browser's built-in EventSource auto-reconnect handles the retry,
- * and a wallclock guard suppresses SSE_ERROR until the failure persists
- * past the grace window. The machine never sees transient errors.
+ * Wire failures are absorbed inside `subscribeSSE` (services.ts): the
+ * browser's built-in EventSource auto-reconnect handles the retry (the
+ * server resumes from the last event id, so no line repeats or goes
+ * missing), and a wallclock guard suppresses SSE_ERROR until the failure
+ * persists past the grace window, the status poller's retry bound
+ * (`POLL_RETRY_BOUND_MS`). A server restart shorter than that is never
+ * seen by the machine.
  */
 import { setup, assign, fromCallback, type ActorRefFrom } from 'xstate';
 import { isSuccessStatus, isCancelledStatus } from './streaming.guards';

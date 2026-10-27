@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -26,12 +27,15 @@ class ProjectSnapshot:
         database_url: The ``DATABASE_URL`` the build pinned.
         db_path: The live database file.
         snapshot: The pristine copy taken right after the build.
+        commit: The project's ``HEAD`` right after the build -- the commit
+            the database's registered versions point at.
     """
 
     project: "Project"
     database_url: str
     db_path: Path
     snapshot: Path
+    commit: str
 
 
 def build_project_snapshot(scenario: "Scenario", root: Path) -> ProjectSnapshot:
@@ -45,10 +49,12 @@ def build_project_snapshot(scenario: "Scenario", root: Path) -> ProjectSnapshot:
     needs the environment pinned, not every test in the module.
 
     Pins: everything ``build_project`` pins, for the duration of the build
-    only; the snapshot is a byte copy of the SQLite file.
-    Does not prove: anything about the working tree between tests -- only
-    the database is restored, so a test that writes under ``.runs/`` leaves
-    that for the next test in the module.
+    only; the snapshot is a byte copy of the SQLite file plus the ``HEAD``
+    commit the build left, so a restore puts the database and the committed
+    tree (the registered snapshots under ``.wfc/registry/``) back together.
+    Does not prove: anything about untracked state outside ``.wfc/registry/``
+    between tests -- a test that writes under ``.wfc/runs/`` leaves that for
+    the next test in the module.
 
     Args:
         scenario: The declaration to build.
@@ -69,22 +75,40 @@ def build_project_snapshot(scenario: "Scenario", root: Path) -> ProjectSnapshot:
         reset_engine()
         snapshot = root.parent / f"{root.name}.wfc.db.snapshot"
         shutil.copyfile(db_path, snapshot)
+    commit = _git(root, "rev-parse", "HEAD").strip()
     return ProjectSnapshot(project=project, database_url=url, db_path=db_path,
-                           snapshot=snapshot)
+                           snapshot=snapshot, commit=commit)
+
+
+def _git(root: Path, *args: str) -> str:
+    """Run one git command in ``root`` and return its stdout.
+
+    Args:
+        root: The project root (a git repository).
+        *args: The git arguments.
+
+    Returns:
+        The command's stdout.
+    """
+    return subprocess.run(["git", *args], cwd=root, check=True,
+                          capture_output=True, text=True).stdout
 
 
 def restore_project_snapshot(snapshot: ProjectSnapshot, monkeypatch) -> "Project":
     """Restore the pristine database and pin the built project for one test.
 
-    Per-test isolation is snapshot-restore of the SQLite file: the cached
-    production engine is dropped first (its pooled connection would
-    otherwise hold the file open on Windows), the post-build copy is
-    written back over the live file, and cwd, ``WFC_PROJECT_ROOT`` and
-    ``DATABASE_URL`` are re-pinned to the built project through this
-    test's ``monkeypatch``.
+    Per-test isolation is snapshot-restore of the SQLite file and of the
+    commit it describes: the cached production engine is dropped first (its
+    pooled connection would otherwise hold the file open on Windows), the
+    tree is reset to the build's ``HEAD`` and untracked files under
+    ``.wfc/registry/`` are removed (an earlier test that re-registered
+    changed code moved ``HEAD`` to a registration commit the restored
+    database has never heard of), the post-build copy is written back over
+    the live file, and cwd, ``WFC_PROJECT_ROOT`` and ``DATABASE_URL`` are
+    re-pinned to the built project through this test's ``monkeypatch``.
 
-    Pins: cwd and the ``WFC_*`` environment; the database's contents as
-    the build left them.
+    Pins: cwd and the ``WFC_*`` environment; the database's contents and
+    the committed tree as the build left them.
     Does not prove: see :func:`build_project_snapshot`.
 
     Args:
@@ -98,6 +122,10 @@ def restore_project_snapshot(snapshot: ProjectSnapshot, monkeypatch) -> "Project
     from wfc.persistence import reset_engine
 
     reset_engine()
+    root = snapshot.project.root
+    _git(root, "reset", "--hard", "-q", snapshot.commit)
+    registry = layout.registry_dir(root).relative_to(root).as_posix()
+    _git(root, "clean", "-fdq", "--", registry)
     shutil.copyfile(snapshot.snapshot, snapshot.db_path)
     monkeypatch.setenv("DATABASE_URL", snapshot.database_url)
     monkeypatch.setenv(layout.ROOT_ENV_VAR, str(snapshot.project.root))

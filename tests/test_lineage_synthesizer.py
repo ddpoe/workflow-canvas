@@ -12,20 +12,22 @@ with ``bundledSamples`` already resolved. It does NOT read
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from axiom_annotations import workflow
-from sqlmodel import SQLModel, Session, create_engine
 
+from tests.harness import Scenario, node, run_scenario, selector, wire
+from wfc.canvas.wfc_provider import WfcProvider, WfcRun
+from wfc.contracts import COLLAPSED_SAMPLE
 from wfc.lineage import LineageSynthesisError, synthesize_lineage_pipeline
-from wfc.canvas.wfc_provider import WfcRun
-from wfc.persistence import Module, Method, Run, RunInput
+from wfc.persistence import reset_engine
 
 
 def _records(runs):
     """Key literal ``WfcRun`` records by id, the shape synthesis reads."""
     return {r.id: r for r in runs}
+
+
+_RECORDED = object()
 
 
 def _mk(
@@ -40,18 +42,32 @@ def _mk(
     pipeline_id="p1",
     bundled=None,
     reads=None,
+    identity=_RECORDED,
+    status="success",
+    started_ms=1_700_000_000_000,
 ):
     """Build a ``WfcRun`` populated with the fields the synthesizer reads.
 
     ``reads`` is the run's recorded sample reads as ``(slot, sample)`` pairs,
     the ``sampleInputs`` the provider builds from sample rows. Omitted, the
     run has none, as a run recorded before sample rows existed.
+
+    ``identity`` is the content identity of the version the run ran. Omitted,
+    the run carries one, as every run this release records does; ``None``
+    stands for a run made before versions carried an env fingerprint.
+
+    ``status`` and ``started_ms`` default to a run that ran and succeeded;
+    ``started_ms=0`` is a run with no start time, as the provider reports it.
     """
     parents = parents or []
     return WfcRun(
         id=run_id,
         module=module,
         method=method,
+        status=status,
+        timestamp=started_ms,
+        versionIdentity=(f"identity-of-{module}.{method}"
+                         if identity is _RECORDED else identity),
         dataSource=sample,
         parentRunIds=[p["sourceRunId"] for p in parents],
         parents=list(parents),
@@ -210,64 +226,35 @@ def test_recorded_sample_reads_are_wired_from_one_head_per_sample():
 # =============================================================================
 
 
-def test_aggregator_run_emits_fan_in_input_selector(tmp_path, monkeypatch):
+def test_aggregator_run_emits_fan_in_input_selector(tmp_project, monkeypatch):
     """Aggregator/bundledSamples case over REAL DB rows → WfcProvider.load()
     → synthesize.
 
-    Two per-sample runs feed an ``__all__`` aggregator through real run_inputs
-    edges; the bundled sample list is resolved from the on-disk pipeline.json
-    fan-in selector exactly as ``WfcProvider.load()`` does in production. The
+    A fan-in selector bundling s1 and s2 feeds a collapsed ``merge`` run, and
+    the run harness drives it through production's own phases, so its run
+    row, version and recorded sample reads are the ones registration and the
+    claim wrote. The bundled sample list is resolved from the frozen
+    pipeline.json exactly as ``WfcProvider.load()`` does in production. The
     aggregator must then emit one ``fan_mode='in'`` selector carrying that
-    list.
+    list, and its node is pinned to the version the run ran.
     """
-    db_path = tmp_path / ".wfc" / "wfc.db"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    url = f"sqlite:///{db_path}"
-    monkeypatch.setenv("DATABASE_URL", url)
-    from wfc.persistence import reset_engine
+    obs = run_scenario(Scenario(
+        nodes=[
+            selector("bundle", fan_mode="in"),
+            node("merge", inputs=[wire("bundle", target_slot="tables", bundle=True)]),
+        ],
+        samples=["s1", "s2"], pipeline_id="p1", name="p1",
+    ), root=tmp_project, monkeypatch=monkeypatch)
+    agg_id = str(obs.runs[("merge", COLLAPSED_SAMPLE, "default")].run_id)
+
     reset_engine()
-    engine = create_engine(url)
-    SQLModel.metadata.create_all(engine)
-
-    with Session(engine) as s:
-        mod = Module(name="m", description="x")
-        s.add(mod)
-        s.flush()
-        pre = Method(name="preprocess", module_id=mod.id,
-                     script_path="methods/preprocess/preprocess.py", env="container:demo")
-        mrg = Method(name="merge_csv", module_id=mod.id,
-                     script_path="methods/merge_csv/merge_csv.py", env="container:demo")
-        s.add_all([pre, mrg])
-        s.flush()
-        r1 = Run(method_id=pre.id, pipeline_id="p1", status="completed", sample="s1")
-        r2 = Run(method_id=pre.id, pipeline_id="p1", status="completed", sample="s2")
-        s.add_all([r1, r2])
-        s.flush()
-        agg = Run(method_id=mrg.id, pipeline_id="p1", status="completed", sample="__all__")
-        s.add(agg)
-        s.flush()
-        s.add(RunInput(run_id=agg.id, source_run_id=r1.id, input_name="data"))
-        s.add(RunInput(run_id=agg.id, source_run_id=r2.id, input_name="data"))
-        s.commit()
-        agg_id = str(agg.id)
-
-    # bundledSamples for the __all__ run come from the fan-in input_selector on
-    # the frozen pipeline.json — the same file WfcProvider._load_bundled_samples
-    # reads.
-    pdir = tmp_path / ".runs" / "pipelines" / "p1"
-    pdir.mkdir(parents=True)
-    (pdir / "pipeline.json").write_text(json.dumps({
-        "nodes": [{"id": "sel", "type": "input_selector",
-                   "fan_mode": "in", "samples": ["s1", "s2"]}],
-        "links": [],
-        "samples": ["s1", "s2"],
-    }))
-
-    from wfc.canvas.wfc_provider import WfcProvider
-    provider = WfcProvider(str(tmp_path))
+    provider = WfcProvider(str(tmp_project))
     provider.load()
 
     pipe = synthesize_lineage_pipeline(provider.run_records(), agg_id)
+    merge_node = next(n for n in pipe["nodes"] if n.get("type") == "method")
+    assert merge_node["version"] == provider.run_records()[agg_id].versionIdentity
+    assert merge_node["version"]
 
     fan_in = [
         n
@@ -402,6 +389,82 @@ def test_cycle_in_parents_raises_synthesis_error():
 # =============================================================================
 # 404-equivalent: unknown run id at module level
 # =============================================================================
+
+
+def test_a_run_with_no_recorded_version_refuses_the_lineage_naming_it():
+    """An ancestor whose record carries no version identity refuses the
+    lineage before any node is minted, naming that run by id with its
+    ``module.method`` and pointing to the palette; nothing is opened
+    unpinned."""
+    old = _mk("1", "filter", "s1", module="qc", identity=None)
+    new = _mk("2", "filter", "s1", module="align",
+              parents=[{"slot": "table", "sourceRunId": "1"}])
+
+    with pytest.raises(LineageSynthesisError) as refused:
+        synthesize_lineage_pipeline(_records([old, new]), "2")
+
+    message = str(refused.value)
+    assert "run 1 (qc.filter)" in message
+    assert "align.filter" not in message
+    assert "Add qc.filter from the palette" in message
+
+
+def test_every_run_with_no_recorded_version_is_named_at_once():
+    """With two such runs in the lineage, one refusal names both, each by
+    run id with its ``module.method``, in collection order (the clicked run
+    first)."""
+    old = _mk("1", "filter", "s1", module="qc", identity=None)
+    mid = _mk("2", "filter", "s1", module="align", identity=None,
+              parents=[{"slot": "table", "sourceRunId": "1"}])
+    tail = _mk("3", "report", "s1",
+               parents=[{"slot": "data", "sourceRunId": "2"}])
+
+    with pytest.raises(LineageSynthesisError) as refused:
+        synthesize_lineage_pipeline(_records([old, mid, tail]), "3")
+
+    message = str(refused.value)
+    assert "runs 2 (align.filter), 1 (qc.filter)" in message
+    assert "m.report" not in message
+    assert "palette" in message
+
+
+@pytest.mark.parametrize(
+    ("status", "started_ms", "says", "never_says"),
+    [
+        ("cancelled", 0, "run 7 (demo.tail) was cancelled before it ran",
+         "no version list records"),
+        ("failed", 0, "run 7 (demo.tail) was refused before it ran",
+         "no version list records"),
+        # Ran, then failed: it ran a version no version list records.
+        ("failed", 1_700_000_000_000, "run 7 (demo.tail) ran a version that "
+         "no version list records", "before it ran"),
+        # A seed row with no start time that completed keeps that wording.
+        ("success", 0, "run 7 (demo.tail) ran a version that no version list "
+         "records", "before it ran"),
+    ],
+    ids=["cancelled-no-start", "failed-no-start", "failed-with-start",
+         "completed-no-start"],
+)
+def test_a_clicked_run_that_never_ran_is_refused_saying_so(
+        status, started_ms, says, never_says):
+    """A clicked run with no version identity, no start time and status
+    ``cancelled`` or ``failed`` never ran: the refusal says so, names it by
+    run id with its ``module.method``, says it has no version to pin and
+    points to History. A run that started, or a row with no start time and
+    another status, keeps the no-version-list wording."""
+    clicked = _mk("7", "tail", "s1", module="demo", identity=None,
+                  status=status, started_ms=started_ms)
+
+    with pytest.raises(LineageSynthesisError) as refused:
+        synthesize_lineage_pipeline(_records([clicked]), "7")
+
+    message = str(refused.value)
+    assert says in message
+    assert never_says not in message
+    if "before it ran" in says:
+        assert "no version to pin" in message
+        assert "Open its pipeline in Canvas from History" in message
+        assert "old version" not in message
 
 
 def test_unknown_run_returns_none_via_caller_check():

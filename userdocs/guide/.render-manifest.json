@@ -1,74 +1,94 @@
 {
   "explanation/caching-and-reproducibility.md": {
-    "doc_id": "pm_mvp::docs.consumer.explanation.caching-and-reproducibility",
-    "hash": "5a6cf3167911"
+    "doc_id": "pm_mvp::docs/consumer/explanation/caching-and-reproducibility",
+    "hash": "ded7ab0e511a"
   },
   "explanation/how-a-run-executes.md": {
-    "doc_id": "pm_mvp::docs.consumer.explanation.how-a-run-executes",
-    "hash": "0b9fcc8fcdcd"
+    "doc_id": "pm_mvp::docs/consumer/explanation/how-a-run-executes",
+    "hash": "39cd7037eb66"
   },
   "explanation/how-the-pieces-fit-together.md": {
-    "doc_id": "pm_mvp::docs.consumer.explanation.how-the-pieces-fit-together",
-    "hash": "de5860292c04"
+    "doc_id": "pm_mvp::docs/consumer/explanation/how-the-pieces-fit-together",
+    "hash": "a8feeb1c4eb4"
   },
   "explanation/project-anatomy.md": {
-    "doc_id": "pm_mvp::docs.consumer.explanation.project-anatomy",
-    "hash": "68b3f897d035"
+    "doc_id": "pm_mvp::docs/consumer/explanation/project-anatomy",
+    "hash": "bf331c8cdfaa"
   },
   "explanation/storage-and-provenance.md": {
-    "doc_id": "pm_mvp::docs.consumer.explanation.storage-and-provenance",
-    "hash": "038bb5c105dc"
+    "doc_id": "pm_mvp::docs/consumer/explanation/storage-and-provenance",
+    "hash": "5ed04a33a910"
   },
   "how-to/canvas.md": {
-    "doc_id": "pm_mvp::docs.consumer.how-to.canvas",
-    "hash": "2353d862b823"
+    "doc_id": "pm_mvp::docs/consumer/how-to/canvas",
+    "hash": "e8e6609da6b9"
   },
   "how-to/registration.md": {
-    "doc_id": "pm_mvp::docs.consumer.how-to.registration",
-    "hash": "a17f4f921d1b"
+    "doc_id": "pm_mvp::docs/consumer/how-to/registration",
+    "hash": "77f88bbfc730"
   },
   "how-to/run-and-inspect-results.md": {
-    "doc_id": "pm_mvp::docs.consumer.how-to.run-and-inspect-results",
-    "hash": "6ef3704b85f0"
+    "doc_id": "pm_mvp::docs/consumer/how-to/run-and-inspect-results",
+    "hash": "820d028c1a1c"
+  },
+  "how-to/see-your-images-on-github.md": {
+    "doc_id": "pm_mvp::docs/consumer/how-to/see-your-images-on-github",
+    "hash": "72c6a07cad8d"
+  },
+  "how-to/sharing-a-project.md": {
+    "doc_id": "pm_mvp::docs/consumer/how-to/sharing-a-project",
+    "hash": "f6554f864119"
+  },
+  "how-to/write-an-r-method.md": {
+    "doc_id": "pm_mvp::docs/consumer/how-to/write-an-r-method",
+    "hash": "a544701b5fa8"
   },
   "overview/what-is-workflow-canvas.md": {
-    "doc_id": "pm_mvp::docs.consumer.overview.what-is-workflow-canvas",
-    "hash": "cd47468b649c"
+    "doc_id": "pm_mvp::docs/consumer/overview/what-is-workflow-canvas",
+    "hash": "ec1c672cc7fb"
   },
   "reference/cli-reference.md": {
-    "doc_id": "pm_mvp::docs.consumer.reference.cli-reference",
-    "hash": "6f7abe87a494"
+    "doc_id": "pm_mvp::docs/consumer/reference/cli-reference",
+    "hash": "1a3d062c50bc"
+  },
+  "reference/method-script-contract.md": {
+    "doc_id": "pm_mvp::docs/consumer/reference/method-script-contract",
+    "hash": "57a6dd49f8f9"
   },
   "reference/method-yaml-schema.md": {
-    "doc_id": "pm_mvp::docs.consumer.reference.method-yaml-schema",
-    "hash": "d5f407d65d06"
+    "doc_id": "pm_mvp::docs/consumer/reference/method-yaml-schema",
+    "hash": "e540d18d78ce"
+  },
+  "reference/pipeline-document.md": {
+    "doc_id": "pm_mvp::docs/consumer/reference/pipeline-document",
+    "hash": "057b5ff5f724"
   },
   "reference/wf-canvas-toml.md": {
-    "doc_id": "pm_mvp::docs.consumer.reference.wf-canvas-toml",
-    "hash": "b451fb3ebc1e"
+    "doc_id": "pm_mvp::docs/consumer/reference/wf-canvas-toml",
+    "hash": "2c5972cde74d"
   },
   "reference/wfc-client-api.md": {
-    "doc_id": "pm_mvp::docs.consumer.reference.wfc-client-api",
-    "hash": "b863cb41817d"
+    "doc_id": "pm_mvp::docs/consumer/reference/wfc-client-api",
+    "hash": "b4744057ea1c"
   },
   "tutorials/authoring-a-method-script.md": {
-    "doc_id": "pm_mvp::docs.consumer.tutorials.authoring-a-method-script",
-    "hash": "16391e807643"
+    "doc_id": "pm_mvp::docs/consumer/tutorials/authoring-a-method-script",
+    "hash": "13d90e300f92"
   },
   "tutorials/getting-started.md": {
-    "doc_id": "pm_mvp::docs.consumer.tutorials.getting-started",
-    "hash": "24a12dc2f117"
+    "doc_id": "pm_mvp::docs/consumer/tutorials/getting-started",
+    "hash": "a3dfad67bdf7"
   },
   "tutorials/registering-an-environment.md": {
-    "doc_id": "pm_mvp::docs.consumer.tutorials.registering-an-environment",
-    "hash": "eceeb6e5726e"
+    "doc_id": "pm_mvp::docs/consumer/tutorials/registering-an-environment",
+    "hash": "4a1e9e61c491"
   },
   "tutorials/wfc-demo.md": {
-    "doc_id": "pm_mvp::docs.consumer.tutorials.wfc-demo",
-    "hash": "e14d95af87ba"
+    "doc_id": "pm_mvp::docs/consumer/tutorials/wfc-demo",
+    "hash": "42c6b5136637"
   },
   "tutorials/writing-contracts.md": {
-    "doc_id": "pm_mvp::docs.consumer.tutorials.writing-contracts",
-    "hash": "d549a21f3d7a"
+    "doc_id": "pm_mvp::docs/consumer/tutorials/writing-contracts",
+    "hash": "e61071483827"
   }
 }

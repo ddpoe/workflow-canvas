@@ -1,0 +1,37 @@
+# tests/fixtures/methods/echo_params/method.yaml
+# Writes the params it was run with (WFC_PARAMS) to a JSON output.
+inputs:
+  data:
+    type: .csv
+    required: true
+    description: "Any input CSV; only its presence is checked"
+
+outputs:
+  output:
+    type: .json
+    required: true
+    description: "The WFC_PARAMS the method read, as JSON"
+
+params:
+  count:
+    type: int
+    required: true
+    description: "Required, no default: every node writes it"
+  sigma:
+    type: float
+    required: false
+    default: 1.5
+    description: "Optional, with a default"
+  label:
+    type: str
+    required: false
+    default: "base"
+    description: "Optional, with a default"
+  tags:
+    type: list
+    required: false
+    default: ["a", "b"]
+    description: "Optional list, with a default"
+
+executor: python
+env: fixture-env

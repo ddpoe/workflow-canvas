@@ -2,8 +2,9 @@
 
 ``compose_record`` is the pure kernel: given how the step ended, exactly
 which rows and sidecar files to write. ``run_record`` carries the plan out
-in one fixed order (run-row flip, sentinel + run-id sidecar, push enqueue,
-outcome sidecar, console line) — each ending simply switches the relevant
+in one fixed order (one transaction for the run-row flip, the push enqueue
+and the release of the run's in-use records; then the sentinel + run-id
+sidecar, the outcome sidecar, the console line) — each ending simply switches the relevant
 writes on or off:
 
 - ``cached`` never flips the run row (the audit row was inserted completed
@@ -26,19 +27,22 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from axiom_annotations import Step, task
-from sqlmodel import select
+from sqlalchemy import update
+from sqlmodel import col, select
 
 from ..contracts import COLLAPSED_SAMPLE
-from ..persistence import Run, RunOutput, get_session
+from ..persistence import Run, RunOutput, write_transaction
 from ..persistence import project_root as get_project_root
+from ..storage import release_run
 
 #: Endings that write a failed run row + outcome sidecar.
 FAILURE_ENDINGS = ("materialize-failed", "no-container", "script-missing",
-                   "launch-failure", "method-failed", "missing-slot",
-                   "duplicate-output", "refused-output")
+                   "changed-since-claim", "launch-failure", "method-failed", "missing-slot",
+                   "duplicate-output", "refused-output", "unrecorded-output")
 
 
-def compose_record(ending: str, error_message: str | None = None) -> dict:
+def compose_record(ending: str, error_message: str | None = None, *,
+                   launch_attempted: bool = True) -> dict:
     """Compose the record writes for a step ending.
 
     Pure function: given how the step ended (and the error to surface, for
@@ -48,11 +52,16 @@ def compose_record(ending: str, error_message: str | None = None) -> dict:
     Args:
         ending: One of ``"cached"``, ``"completed"``, ``"slurm"``, or a
             failure ending (``"materialize-failed"``, ``"no-container"``,
-            ``"script-missing"``, ``"launch-failure"``, ``"method-failed"``,
+            ``"script-missing"``, ``"changed-since-claim"``,
+            ``"launch-failure"``, ``"method-failed"``,
             ``"missing-slot"``, ``"duplicate-output"``,
-            ``"refused-output"``).
+            ``"refused-output"``, ``"unrecorded-output"``).
         error_message: The error to surface on the console line for failure
             endings (ignored for ``cached`` / ``completed``).
+        launch_attempted: For ``launch-failure``, whether the method's
+            launch was tried. False when the step failed before any
+            launch (its step log could not be started): the console line
+            is then the message alone, without "method execution failed".
 
     Returns:
         A plan dict with keys:
@@ -84,7 +93,7 @@ def compose_record(ending: str, error_message: str | None = None) -> dict:
                 "console": f"ERROR: {error_message}", "rc": 1}
     if ending not in FAILURE_ENDINGS:
         raise ValueError(f"unknown step ending: {ending!r}")
-    if ending == "launch-failure":
+    if ending == "launch-failure" and launch_attempted:
         console = f"ERROR: method execution failed: {error_message}"
     else:
         console = f"ERROR: {error_message}"
@@ -109,6 +118,7 @@ def run_record(
     error_traceback: str | None = None,
     output_files: list[str] | None = None,
     metrics: dict | None = None,
+    launch_attempted: bool = True,
 ) -> int:
     """Write the run records for a step ending and return the exit code.
 
@@ -126,6 +136,8 @@ def run_record(
         output_files: Collected output paths (success only; drives the
             push enqueue).
         metrics: Collected metrics (success only; stored on the run row).
+        launch_attempted: For ``launch-failure``, whether the method's
+            launch was tried (see :func:`compose_record`).
 
     Returns:
         0 for ``cached`` / ``completed``, 1 for every failure ending.
@@ -135,26 +147,52 @@ def run_record(
     口 = Step(step_num=1, name="Compose record writes",
              purpose="Derive exactly which rows and sidecars to write from how "
                      "the step ended (pure composition)")
-    plan = compose_record(ending, error_message)
+    plan = compose_record(ending, error_message, launch_attempted=launch_attempted)
 
-    口 = Step(step_num=2, name="Flip run row",
-             purpose="Mark the run completed (with metrics) or failed (with error "
-                     "fields, best-effort); cache hits and the SLURM carve-out "
-                     "leave the row untouched")
+    口 = Step(step_num=2, name="Flip the run row, enqueue its outputs, release its holds",
+             purpose="In one write transaction: mark the run completed (with "
+                     "metrics) or failed (with error fields, best-effort); on "
+                     "success mark its RunOutput rows with Storage's first-push "
+                     "state (first_push_status, read before the transaction: "
+                     "pending when a remote is configured, deferred otherwise; "
+                     "an error there is a warning and enqueues nothing); and "
+                     "release the run's in-use records. Cache hits and the "
+                     "SLURM carve-out leave the row untouched",
+             critical="The flip, the enqueue and the release land together or "
+                      "not at all. mark_changed never runs inside this "
+                      "transaction")
     if plan["run_status"] == "completed":
-        # Output rows were already written by the collect phase — the sole
+        push_state = None
+        if plan["enqueue_push"]:
+            try:
+                from ..storage import first_push_status
+                push_state = first_push_status(Path(get_project_root()))
+            except Exception as exc:
+                print(f"WARNING: push enqueue failed: {exc}", file=sys.stderr)
+        # Output rows were already written by the collect phase -- the sole
         # RunOutput writer. complete_run is passed no output_files, so it
         # only flips the row and stores metrics.
-        complete_run(
-            run_id=run_id,
-            status="completed",
-            metrics=metrics,
-        )
+        with write_transaction() as session:
+            flipped = complete_run(run_id=run_id, status="completed",
+                                   metrics=metrics, session=session)
+            if flipped and push_state is not None:
+                _enqueue_push(session, run_id, output_files or [], push_state)
+            release_run(session, run_id)
+        if not flipped:
+            # The claim was taken over: its run is another claim's failed
+            # row, so no sentinel or run-id sidecar names it, and the step
+            # ends failed.
+            error_message = (f"run {run_id}'s claim was taken over by another "
+                             f"claim of the same result")
+            plan = {**compose_record("changed-since-claim", error_message),
+                    "console": None}
     elif plan["run_status"] == "failed":
         try:
-            complete_run(run_id=run_id, status="failed",
-                         error_message=error_message,
-                         error_traceback=error_traceback)
+            with write_transaction() as session:
+                complete_run(run_id=run_id, status="failed",
+                             error_message=error_message,
+                             error_traceback=error_traceback, session=session)
+                release_run(session, run_id)
         except Exception:
             pass
 
@@ -178,39 +216,7 @@ def run_record(
             # sidecar walk over sentinels/{pipeline}/{node}/{sample}/{variant}).
             (sentinel_path.parent / "run_id.txt").write_text(str(run_id))
 
-    # A plain Step that names its delegate: first_push_status runs inside the
-    # try, so an AutoStep cannot bind to it without changing the error handling.
-    口 = Step(step_num=4, name="Enqueue outputs for async DVC push",
-             purpose="Mark RunOutput rows with Storage's first-push state "
-                     "(first_push_status: pending when a remote is configured, "
-                     "deferred otherwise) so the push worker picks them up; "
-                     "non-fatal on error")
-    if plan["enqueue_push"]:
-        # Outputs live in the run-staging dir (and the deferred
-        # archive pass will move them into the DVC cache). Mark rows for
-        # the push worker; if no remote is configured, leave them deferred.
-        try:
-            from ..storage import first_push_status
-            target_state = first_push_status(Path(get_project_root()))
-            from sqlmodel import select
-
-            from ..persistence import RunOutput
-            with get_session() as session:
-                for archive_entry_str in output_files or []:
-                    # By path: two slots' files may share a base name.
-                    row = session.exec(
-                        select(RunOutput).where(
-                            RunOutput.run_id == run_id,
-                            RunOutput.artifact_path == archive_entry_str,
-                        )
-                    ).first()
-                    if row is not None:
-                        row.push_status = target_state
-                session.commit()
-        except Exception as exc:
-            print(f"WARNING: push enqueue failed: {exc}", file=sys.stderr)
-
-    口 = Step(step_num=5, name="Write outcome sidecar and report",
+    口 = Step(step_num=4, name="Write outcome sidecar and report",
              purpose="Write the per-target outcome sidecar for pipeline-summary "
                      "aggregation, print the composed console line, and return "
                      "the exit code")
@@ -235,8 +241,15 @@ def complete_run(
     metrics: dict | None = None,
     error_message: str | None = None,
     error_traceback: str | None = None,
-) -> None:
-    """Mark a run as finished and record output rows.
+    session=None,
+) -> bool:
+    """Mark a run as finished and check its output rows.
+
+    The flip is a compare-and-set on the run still being ``running``. A
+    run that left ``running`` meanwhile -- a claim another claim took over
+    once its heartbeat stood still, which closed it as failed -- keeps what
+    that left on it: nothing is written, and the lost claim is named on
+    stderr.
 
     The DVC cache is the authoritative storage for outputs.  Snakemake-visible
     completion is signaled via a zero-byte sentinel touched by
@@ -252,59 +265,89 @@ def complete_run(
         metrics: Optional dict of metrics to store.
         error_message: Error message for failed runs.
         error_traceback: Error traceback for failed runs.
+        session: The record phase's write transaction, which also enqueues
+            the push and releases the run's in-use records. ``None`` (the
+            standalone ``complete_run`` verb): the flip and the release of
+            the run's in-use records are one write transaction of its own.
+
+    Returns:
+        True when the run was flipped; False when it was no longer
+        ``running`` and nothing was written for it.
     """
-    with get_session() as session:
-        run = session.get(Run, run_id)
-        if run is None:
-            print(f"ERROR: run {run_id} not found", file=sys.stderr)
+    if session is None:
+        with write_transaction() as own:
+            flipped = complete_run(run_id=run_id, status=status,
+                                   output_files=output_files, metrics=metrics,
+                                   error_message=error_message,
+                                   error_traceback=error_traceback, session=own)
+            release_run(own, run_id)
+        return flipped
+    run = session.get(Run, run_id)
+    if run is None:
+        print(f"ERROR: run {run_id} not found", file=sys.stderr)
+        sys.exit(1)
+
+    口 = Step(step_num=1, name="Mark run finished",
+             purpose="Set status, finished_at, metrics, and (on failure) "
+                     "error_message/error_traceback on the Run row, by one "
+                     "compare-and-set on the row still being running",
+             critical="A run another claim took over (closed as failed when "
+                      "its heartbeat stood still) is never flipped back: the "
+                      "flip writes nothing and names the lost claim")
+    values: dict = {"status": status, "finished_at": datetime.now(UTC)}
+    if metrics:
+        values["metrics"] = metrics
+    # Persist error information on failed runs
+    if error_message is not None:
+        values["error_message"] = error_message
+    if error_traceback is not None:
+        values["error_traceback"] = error_traceback
+    flipped = session.execute(
+        update(Run)
+        .where(col(Run.id) == run_id)
+        .where(col(Run.status) == "running")
+        .values(**values)
+    ).rowcount
+    if not flipped:
+        session.refresh(run)
+        print(f"ERROR: run {run_id} is no longer running (it is {run.status}): "
+              f"its claim was taken over or ended elsewhere, so this record "
+              f"phase writes nothing for it. {run.error_message or ''}".rstrip(),
+              file=sys.stderr)
+        return False
+
+    口 = Step(step_num=2, name="Check the collected output rows",
+             purpose="For each output file, require the RunOutput row the "
+                     "collect phase wrote for that path; a file with no row "
+                     "is an error, never a new row without a slot; "
+                     "content_hash stays NULL (deferred archiving)",
+             critical="The row's stat record is collect's alone: a second "
+                      "write here would move the baseline Storage's check "
+                      "compares against")
+    for fpath in output_files or []:
+        src = Path(fpath)
+        if not src.exists():
+            print(f"ERROR: output file not found: {fpath}", file=sys.stderr)
             sys.exit(1)
 
-        口 = Step(step_num=1, name="Mark run finished",
-                 purpose="Set status, finished_at, metrics, and (on failure) "
-                         "error_message/error_traceback on the Run row")
-        run.status = status
-        run.finished_at = datetime.now(UTC)
-        if metrics:
-            run.metrics = metrics
-        # Persist error information on failed runs
-        if error_message is not None:
-            run.error_message = error_message
-        if error_traceback is not None:
-            run.error_traceback = error_traceback
-
-        口 = Step(step_num=2, name="Update the collected output rows",
-                 purpose="For each output file, refresh the size and mtime on the "
-                         "RunOutput row the collect phase wrote for that path; a "
-                         "file with no row is an error, never a new row without a "
-                         "slot; content_hash stays NULL (deferred archiving)")
-        for fpath in output_files or []:
-            src = Path(fpath)
-            if not src.exists():
-                print(f"ERROR: output file not found: {fpath}", file=sys.stderr)
-                sys.exit(1)
-
-            # Matched by path, not base name: two slots' files may share a
-            # name. The collect phase is the only writer that knows a file's
-            # slot, so a file it did not record is refused here.
-            existing_ro = session.exec(
-                select(RunOutput).where(
-                    RunOutput.run_id == run_id,
-                    RunOutput.artifact_path == str(src),
-                )
-            ).first()
-            if existing_ro is None:
-                print(
-                    f"ERROR: run {run_id} has no output record for {fpath}; "
-                    f"outputs are recorded when a step's outputs are collected",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-            if src.is_file():
-                stat = src.stat()
-                existing_ro.file_size = stat.st_size
-                existing_ro.file_mtime = stat.st_mtime
-
-        session.commit()
+        # Matched by path, not base name: two slots' files may share a
+        # name. The collect phase is the only writer that knows a file's
+        # slot, so a file it did not record is refused here.
+        existing_ro = session.exec(
+            select(RunOutput).where(
+                RunOutput.run_id == run_id,
+                RunOutput.artifact_path == str(src),
+            )
+        ).first()
+        if existing_ro is None:
+            print(
+                f"ERROR: run {run_id} has no output record for {fpath}; "
+                f"outputs are recorded when a step's outputs are collected",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    session.flush()
+    return True
 
 
 def outcome_path(outcomes_dir: Path, node_id: str, sample: str, variant: str) -> Path:
@@ -381,3 +424,25 @@ def read_claim_refusal(outcomes_dir: Path, node_id: str, sample: str,
     if outcome.get("phase") != CLAIM_REFUSAL_PHASE or outcome.get("status") != "failed":
         return None
     return str(outcome.get("error") or "Refused at claim")
+
+
+def _enqueue_push(session, run_id: int, output_files: list[str], state) -> None:
+    """Mark a run's output rows with their first-push state, inside the record transaction.
+
+    Args:
+        session: The record phase's write transaction.
+        run_id: The run.
+        output_files: The collected output paths (rows are matched by path:
+            two slots' files may share a base name).
+        state: Storage's first-push state.
+    """
+    for archive_entry_str in output_files:
+        row = session.exec(
+            select(RunOutput).where(
+                RunOutput.run_id == run_id,
+                RunOutput.artifact_path == archive_entry_str,
+            )
+        ).first()
+        if row is not None:
+            row.push_status = state
+            session.add(row)

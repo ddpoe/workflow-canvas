@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.explanation.how-the-pieces-fit-together @ de5860292c04; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/explanation/how-the-pieces-fit-together @ a8feeb1c4eb4; do not edit -->
 
 # The Tools Behind Workflow Canvas
 
@@ -26,10 +26,12 @@ Each of these has a well-established open-source tool. Workflow Canvas brings th
 
 ## The run database: the record
 
-Workflow Canvas keeps a database of every sample, method and run in your project (a [SQLite](https://sqlite.org/) file). Each run records what it ran: the method and its code, its inputs, its parameters and its environment, and which outputs it produced. This is what the History tab in the Canvas shows, and it is what lets you follow a result back through every step that led to it.
+Workflow Canvas keeps a database of every sample, method and run in your project (a [SQLite](https://sqlite.org/) file). Each run records what it ran: the method and its code, its inputs, its parameters and its environment, how its step was launched (the command, the mounts and the values it was given), and which outputs it produced. This is what the History tab in the Canvas shows, and it is what lets you follow a result back through every step that led to it.
 
 ## How they combine
 
 Together, these pin down everything that goes into a result. Snakemake fixes the steps and their order. git fixes the code. DVC fixes the data, by content. The container image fixes the software and dependencies. The run database ties the four together for every run.
 
 That gives you two things. You can trace any result: open it in the History tab and see the code, data, parameters and dependencies behind each step that produced it. And you can rerun it: because each piece is pinned, running the same pipeline again reproduces the same work. When nothing that a step depends on has changed, Workflow Canvas reuses the earlier result, and when one thing changes, only the steps it affects run again. See [Caching & Reproducibility](caching-and-reproducibility.md).
+
+Because the run database records how each step was launched, a run can also leave your machine. `wfc export-run` writes a run, and every run above it, as a zip that holds the recorded launches, and anyone with Python and Docker can rerun it with `python rerun.py` and see which outputs come out the same. See [Share runs as a bundle anyone can rerun](../how-to/run-and-inspect-results.md#share-runs-as-a-bundle-anyone-can-rerun).

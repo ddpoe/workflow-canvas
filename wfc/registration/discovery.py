@@ -1,7 +1,8 @@
 """Script discovery for method registration.
 
-Locates a method's script, resolves its declared helpers, and refuses
-recognized scripts that are neither.
+Refuses a folder that does not clearly hold one method, locates a method's
+script, resolves its declared helpers, and refuses recognized scripts that
+are neither.
 """
 
 from __future__ import annotations
@@ -10,6 +11,56 @@ from pathlib import Path
 
 from ..identity import RECOGNIZED_SCRIPT_EXTENSIONS, collect_method_scripts
 from .snapshot import HELPER_SNAPSHOT_DIR
+
+
+def _folder_scripts(method_dir: Path) -> list[str]:
+    """The recognized scripts in a method folder, folder-relative, sorted."""
+    return [
+        p.relative_to(method_dir).as_posix()
+        for p in collect_method_scripts(method_dir)
+        if HELPER_SNAPSHOT_DIR not in p.relative_to(method_dir).parts
+    ]
+
+
+def check_method_folder(method_dir: Path, method_name: str, script_named: bool) -> None:
+    """Refuse a folder that does not clearly hold one method.
+
+    A method folder holds one ``method.yaml``: a second one anywhere in its
+    tree is another method's, and is refused naming both. A folder holding
+    more than one recognized script, at any depth, must name the main one
+    (``script:`` in ``method.yaml``, or the CLI's ``--script``); every other
+    script is then a helper.
+
+    Args:
+        method_dir: The source directory, resolved.
+        method_name: The method's name, the stem the line to add suggests.
+        script_named: True when the main script is named explicitly.
+
+    Raises:
+        ValueError: Naming the ``method.yaml`` files, or listing the scripts
+            and the ``script:`` line to add.
+    """
+    yamls = sorted(p.relative_to(method_dir).as_posix()
+                   for p in method_dir.rglob("method.yaml") if p.is_file())
+    if len(yamls) > 1:
+        raise ValueError(
+            f"Cannot register from {method_dir}: it holds more than one "
+            f"method.yaml ({', '.join(yamls)}). A method folder holds one "
+            f"method: move the other method into its own folder, or remove "
+            f"its method.yaml."
+        )
+    scripts = _folder_scripts(method_dir)
+    if len(scripts) > 1 and not script_named:
+        main = next((s for s in scripts if Path(s).stem == method_name
+                     and "/" not in s), scripts[0])
+        raise ValueError(
+            f"Cannot register from {method_dir}: it holds more than one script "
+            f"({', '.join(scripts)}) and method.yaml does not say which is the "
+            f"main one. Add `script: {main}` to method.yaml (naming the main "
+            f"script); every other script is then registered as a helper. "
+            f"The `script:` line is part of the method's contract, so for a "
+            f"method already registered the next registration adds a version."
+        )
 
 
 def _locate_method_script(
@@ -103,6 +154,35 @@ def _locate_method_script(
     return method_dir / candidates[0]
 
 
+def snapshot_selected_script(snapshot_dir: Path, method_name: str) -> Path | None:
+    """Return the script a method directory selects on its own, resolved.
+
+    The same selection registration makes, with no explicit ``--script``:
+    the ``script:`` key of the directory's ``method.yaml``, else the probe
+    for ``{method_name}.<ext>``. Over a registered copy this answers which
+    script the copy itself names, so registration can record the chosen
+    script in the copy and the verify rule can check the record against it.
+
+    Args:
+        snapshot_dir: The directory to select in (a registered copy).
+        method_name: The method's name (the probe stem).
+
+    Returns:
+        The selected script, resolved; ``None`` when the selection fails (an
+        unparsable ``method.yaml``, a missing or ambiguous script, a script
+        outside the directory).
+    """
+    from ..contracts import parse_method_yaml
+
+    try:
+        contract = parse_method_yaml(snapshot_dir)
+        script_name = contract.get("script") if contract is not None else None
+        return _locate_method_script(
+            snapshot_dir, method_name, script_name).resolve()
+    except (ValueError, TypeError, OSError):
+        return None
+
+
 def _resolve_declared_helpers(
     method_dir: Path,
     project_dir: Path,
@@ -111,14 +191,19 @@ def _resolve_declared_helpers(
 ) -> list[Path]:
     """Validate and resolve the method.yaml ``helpers:`` declarations.
 
-    Rules: paths are method-dir-relative; ``../`` is allowed but the
-    resolved (symlink-free) path must stay inside *project_dir*; absolute
-    paths are rejected; each helper must exist, carry a recognized script
-    extension, and not duplicate the main script.
+    Rules: paths are method-dir-relative; absolute paths are rejected. A
+    helper whose resolved (symlink-free) path lies inside the method's own
+    directory is accepted wherever that directory is, inside the project or
+    not. A helper outside the method's directory (``../shared/x.py``) must
+    resolve inside *project_dir*: its snapshot location mirrors its
+    project-relative path, and that path is part of the code fingerprint.
+    Each helper must exist, carry a recognized script extension, and not
+    duplicate the main script.
 
     Args:
         method_dir: Resolved method directory.
-        project_dir: Project root the helpers must stay inside.
+        project_dir: Project root an out-of-directory helper must stay
+            inside.
         helpers: Declared helper path strings.
         script_path: The method's main script (duplicate guard).
 
@@ -126,11 +211,12 @@ def _resolve_declared_helpers(
         Resolved absolute helper paths, in declaration order.
 
     Raises:
-        ValueError: Absolute path, project escape (incl. symlink escape),
-            unrecognized extension, or duplicate of the main script.
+        ValueError: Absolute path, an out-of-directory helper outside the
+            project (incl. symlink escape), not a file, or duplicate of
+            the main script. A helper may be of any file type.
         FileNotFoundError: Declared helper does not exist.
     """
-    recognized = "/".join(RECOGNIZED_SCRIPT_EXTENSIONS)
+    method_root = method_dir.resolve()
     project_dir = project_dir.resolve()
     script_resolved = script_path.resolve()
     resolved: list[Path] = []
@@ -138,26 +224,29 @@ def _resolve_declared_helpers(
         if Path(decl).is_absolute():
             raise ValueError(
                 f"method.yaml `helpers:` entry {decl!r} is an absolute path — "
-                f"helpers must be method-dir-relative paths inside the project."
+                f"helpers must be paths relative to the method's directory."
             )
-        helper = (method_dir / decl).resolve()
-        try:
-            helper.relative_to(project_dir)
-        except ValueError:
+        helper = (method_root / decl).resolve()
+        if not (helper.is_relative_to(method_root)
+                or helper.is_relative_to(project_dir)):
             raise ValueError(
                 f"method.yaml `helpers:` entry {decl!r} resolves to "
-                f"{helper}, outside the project root {project_dir} — "
-                f"helpers must stay inside the project."
-            ) from None
+                f"{helper}, outside both the method's directory "
+                f"{method_root} and the project root {project_dir}. Move the "
+                f"helper into the method's directory, or keep the method's "
+                f"source inside the project."
+            )
         if not helper.exists():
             raise FileNotFoundError(
                 f"method.yaml `helpers:` entry {decl!r} not found "
                 f"(resolved to {helper})."
             )
-        if helper.suffix not in RECOGNIZED_SCRIPT_EXTENSIONS:
+        # A helper may be any file (a lookup table, a config): the code
+        # fingerprint covers every file of the registered copy.
+        if not helper.is_file():
             raise ValueError(
-                f"method.yaml `helpers:` entry {decl!r} has an unrecognized "
-                f"extension. Recognized extensions: {recognized}."
+                f"method.yaml `helpers:` entry {decl!r} is not a file "
+                f"(resolved to {helper}). List each helper file by its path."
             )
         if helper == script_resolved:
             raise ValueError(

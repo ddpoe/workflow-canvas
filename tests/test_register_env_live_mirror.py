@@ -17,6 +17,7 @@ Scope:
 All tests are pure-python and do not need docker / pixi / conda installed.
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from axiom_annotations import workflow
 from tests.fixtures.fakes import (
     fake_pip_freeze,
     stub_docker_build,
+    stub_docker_image_content,
     stub_docker_image_inspect,
     stub_readiness_probes,
 )
@@ -144,7 +146,7 @@ def test_stage_from_path_rejects_byo_and_inherit(tmp_path):
     from wfc.environments.verbs import _stage_from_path
     f = tmp_path / "x.txt"
     f.write_text("noop", encoding="utf-8")
-    with pytest.raises(ValueError, match="pixi or conda"):
+    with pytest.raises(ValueError, match="pixi, conda or uv, not 'byo'"):
         _stage_from_path(backend="byo", from_path=f)
 
 
@@ -222,35 +224,92 @@ packages:
      "@EXPLICIT\nhttps://conda.anaconda.org/conda-forge/linux-64/python-3.11.0-h.conda#0a\n"),
 ])
 def test_register_from_records_source_fingerprint_that_round_trips(
-    tmp_path, monkeypatch, backend, source_key, lock_text
+    tmp_project, monkeypatch, backend, source_key, lock_text
 ):
-    """A --from pixi/conda registration (no live env, empty pip-freeze) records
-    a non-null source_fingerprint whose cached blob round-trips through
-    parse_packages — the file-mode capture path."""
+    """A --from pixi/conda registration (no live env, empty pip-freeze) writes
+    the image's captures folder, whose packages.lock md5 is the recorded
+    source_fingerprint and parses back through parse_packages; the package
+    list is not put in the DVC cache — the file-mode capture path."""
+    import hashlib
+
     from wfc import environments as envs_mod
     from wfc.environments.packages import parse_packages
 
-    (tmp_path / ".wfc").mkdir()
     stub_docker_build(monkeypatch, None)
+    stub_docker_image_content(monkeypatch)
     stub_docker_image_inspect(monkeypatch, "sha256:" + "c" * 64)
 
     # Shape mirrors wfc.environments.verbs._stage_from_path: full lock/explicit-list content
     # plus an empty pip-freeze section.
     source = {source_key: lock_text, "pip_freeze_content": ""}
     record = envs_mod.register(
-        name="demo", backend=backend, source=source, project_dir=tmp_path,
+        name="demo", backend=backend, source=source, project_dir=tmp_project,
     )
 
     assert record.source_fingerprint is not None
     assert len(record.source_fingerprint) == 32
 
     md5 = record.source_fingerprint
-    blob_path = tmp_path / ".dvc" / "cache" / "files" / "md5" / md5[:2] / md5[2:]
-    blob = blob_path.read_text(encoding="utf-8")
+    folder = tmp_project / ".wfc" / "captures" / "demo" / record.env_fingerprint
+    lock_bytes = (folder / "packages.lock").read_bytes()
+    assert hashlib.md5(lock_bytes).hexdigest() == md5
+    assert b"\r\n" not in lock_bytes
+    assert lock_bytes.decode("utf-8").startswith(lock_text)
+    assert (folder / "Dockerfile").is_file()
+    image = json.loads((folder / "image.json").read_text(encoding="utf-8"))
+    assert image["backend"] == backend
+    assert image["interpreter"] == record.python
+    assert image["image"] == record.container
+    assert image["base_image"]
+    assert (folder / "pixi.toml").exists() is False  # no toml was staged
+    assert not (tmp_project / ".dvc" / "cache" / "files" / "md5" / md5[:2]
+                / md5[2:]).exists()
+    blob = envs_mod.verified_package_list("demo", tmp_project)
+    assert blob == lock_bytes.decode("utf-8")
     pkgs = parse_packages(blob, backend)
     names = {p["name"] for p in pkgs}
     assert "python" in names
     assert all(p["source"] == backend for p in pkgs)
+
+
+@workflow(
+    purpose="A byo registration with an --interpreter override writes a "
+            "captures folder holding only image.json: backend byo, the "
+            "override as interpreter, the record's image ref, no base image "
+            "and empty groups and extras; the record has no package list"
+)
+def test_register_byo_captures_only_image_json(tmp_project, monkeypatch):
+    from wfc import environments as envs_mod
+    from tests.fixtures.fakes import stub_docker_pull, stub_docker_repo_digest
+
+    stub_docker_image_inspect(monkeypatch, "sha256:" + "f" * 64)
+    stub_docker_repo_digest(
+        monkeypatch, lambda ref, repository: "sha256:" + "a" * 64)
+    stub_docker_pull(monkeypatch)
+    stub_docker_image_content(monkeypatch)
+
+    record = envs_mod.register(
+        name="tools", backend="byo",
+        source={"image": "docker://ghcr.io/lab/tools:1.0"},
+        project_dir=tmp_project, python_override="/usr/local/bin/python3",
+    )
+
+    folder = tmp_project / ".wfc" / "captures" / "tools" / record.env_fingerprint
+    assert sorted(p.name for p in folder.iterdir()) == ["image.json"]
+    image = json.loads((folder / "image.json").read_text(encoding="utf-8"))
+    assert image == {
+        "backend": "byo",
+        "interpreter": "/usr/local/bin/python3",
+        "image": record.container,
+        "base_image": None,
+        "groups": [],
+        "extras": [],
+    }
+    assert record.source_fingerprint is None
+    assert envs_mod.verified_package_list("tools", tmp_project) is None
+    info = envs_mod.image_info("tools", record.env_fingerprint, tmp_project)
+    assert info.interpreter == "/usr/local/bin/python3"
+    assert info.backend == "byo"
 
 
 # =============================================================================

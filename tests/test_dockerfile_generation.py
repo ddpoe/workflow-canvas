@@ -25,6 +25,7 @@ from axiom_annotations import workflow, Step
 
 from tests.fixtures.fakes import (
     fake_subprocess_run,
+    stub_docker_image_content,
     stub_docker_image_inspect,
     stub_docker_pull,
     stub_interactive_prompt,
@@ -226,6 +227,23 @@ def test_validate_explicit_list_rejects_non_linux_capture(platform, header):
     assert "--from-history" in msg
     assert "conda-lock -f environment.yml -p linux-64 --kind explicit" in msg
     assert "wfc register-env my-env --backend conda --from conda-linux-64.lock" in msg
+    # Live capture solves for linux-64 from Windows and macOS too.
+    assert "wfc register-env my-env conda:<env>" in msg
+
+
+@pytest.mark.parametrize("recipe", ["generate", "generate_solve"])
+def test_conda_recipes_activate_the_env_before_the_pip_step(recipe):
+    """With a pip set, both conda recipes declare
+    ``ARG MAMBA_DOCKERFILE_ACTIVATE=1`` before the pip install, so pip runs
+    in the micromamba env, not the base image's system Python."""
+    from wfc.environments.dockerfiles import conda
+
+    text = getattr(conda, recipe)("my-env", "requests==2.31.0\n")
+
+    lines = text.splitlines()
+    activate = lines.index("ARG MAMBA_DOCKERFILE_ACTIVATE=1")
+    pip = next(i for i, line in enumerate(lines) if "pip install" in line)
+    assert activate < pip
 
 
 def test_validate_explicit_list_accepts_linux_and_unrecognized_urls():
@@ -356,6 +374,7 @@ def test_register_env_genuine_build_error_surfaces_raw_not_reframed(
     def _pull_boom(*args, **kwargs):
         raise RuntimeError(raw_error)
 
+    stub_docker_image_content(monkeypatch)
     stub_docker_image_inspect(monkeypatch, _inspect_miss)
     stub_docker_pull(monkeypatch, _pull_boom)
 

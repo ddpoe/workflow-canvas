@@ -15,6 +15,14 @@
   --color-completed: #50C878;
   --color-failed: #E74C3C;
   --color-system: #1ABC9C;
+  --color-cancelled: #7f8ea3;
+  --color-cached: #E9A847;
+  --color-mixed: #D89E2E;
+  --color-version-newest: #7CFC9A;
+  /* Running and still-to-come in the History Pipelines view; the rest of
+     the app still draws running in --color-running. */
+  --color-history-running: #5DA9D9;
+  --color-history-pending: #4a4a4f;
   --node-bg: #353535;
 
   /* SvelteFlow dark mode overrides */
@@ -78,3 +86,61 @@ html, body, #app {
 .svelte-flow__panel {
   margin: 8px;
 }
+
+/* History Pipelines view: one set of column tracks per level, shared by
+   the level's header row and every row under it, so the columns line up. */
+.pipeline-grid {
+  display: grid;
+  grid-template-columns: 96px minmax(140px, 1fr) minmax(220px, 340px) 64px 76px 170px;
+  gap: 10px;
+  align-items: center;
+}
+.child-grid {
+  display: grid;
+  grid-template-columns: 96px minmax(110px, 1.2fr) 64px minmax(90px, 1fr) minmax(44px, 0.6fr) 64px 92px;
+  gap: 10px;
+  align-items: center;
+}
+.pipeline-grid > *, .child-grid > * {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* A cell whose content floats out of it (the cancelled run's reason). */
+.child-grid > .cell-overflow-visible { overflow: visible; }
+
+/* The Pipelines view's status pill: the dot and the word in one pill, the
+   run detail's hero pill at list size. The kind class sets its colour. */
+.hist-pill {
+  --pill: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  padding: 1px 7px;
+  border: 1px solid color-mix(in oklab, var(--pill) 45%, transparent);
+  background: color-mix(in oklab, var(--pill) 15%, transparent);
+  color: var(--pill);
+  border-radius: 3px;
+  white-space: nowrap;
+  line-height: 15px;
+}
+.hist-pill.succeeded { --pill: var(--color-completed); }
+.hist-pill.cached { --pill: var(--color-cached); }
+.hist-pill.failed { --pill: var(--color-failed); }
+.hist-pill.cancelled { --pill: var(--color-cancelled); }
+.hist-pill.running { --pill: var(--color-history-running); }
+.hist-pill.mixed { --pill: var(--color-mixed); }
+.hist-pill.running::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--pill);
+  animation: hist-pill-pulse 1.2s infinite;
+}
+@keyframes hist-pill-pulse { 50% { opacity: 0.25; } }

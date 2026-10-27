@@ -1,8 +1,9 @@
 <script lang="ts">
   /**
    * The run detail panel's run actions: the header strip (copy run id, share
-   * link, export JSON, close) and the action row (favorite, rename, archive),
-   * together with the confirm dialogs and the copied-toast they drive.
+   * link, export run, export JSON, close) and the action row (favorite,
+   * rename, archive), together with the confirm dialogs and the copied-toast
+   * they drive. Export run opens the rerun-bundle dialog for this run.
    *
    * `run` is bound because the favorite and archive actions patch it
    * optimistically; load failures are reported back through `onError`.
@@ -20,6 +21,7 @@
   } from './historyStore.js';
   import { fetchRun } from './historyApi.js';
   import type { WfcRun, Artifact } from './historyApi.js';
+  import ExportRunsDialog from './ExportRunsDialog.svelte';
 
   interface Props {
     run: WfcRun;
@@ -34,6 +36,7 @@
   let confirmDelete = $state(false);
   let confirmArchive = $state(false);
   let copiedToast = $state<string | null>(null);
+  let exportingRun = $state(false);
 
   let isArchived = $derived(!!run?.archivedAt);
 
@@ -185,6 +188,11 @@
   </div>
   <div class="header-actions">
     <button class="icon-btn" onclick={shareLink} title="Copy share link">⎘</button>
+    <button
+      class="text-btn"
+      onclick={() => { exportingRun = true; }}
+      title="Export this run and every run above it as a bundle anyone can rerun"
+    >Export run</button>
     <button class="icon-btn" onclick={exportJson} title="Export JSON">⤓</button>
     <button class="icon-btn" onclick={() => selectRun(null)} title="Close">×</button>
   </div>
@@ -267,6 +275,10 @@
   </div>
 {/if}
 
+{#if exportingRun}
+  <ExportRunsDialog runIds={[run.id]} onClose={() => { exportingRun = false; }} />
+{/if}
+
 {#if copiedToast}
   <div class="toast" aria-live="polite">{copiedToast}</div>
 {/if}
@@ -318,6 +330,22 @@
     line-height: 1;
   }
   .icon-btn:hover { color: var(--text-primary, #ccc); }
+  .text-btn {
+    height: 24px;
+    padding: 0 8px;
+    background: none;
+    border: 1px solid var(--border, #3e3e42);
+    border-radius: 3px;
+    color: var(--text-secondary, #888);
+    font-size: 11px;
+    font-family: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .text-btn:hover {
+    color: var(--accent, #4A90D9);
+    border-color: var(--accent, #4A90D9);
+  }
 
   /* Action row */
   .action-row {

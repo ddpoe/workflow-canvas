@@ -1,10 +1,10 @@
-"""ensure_runnable: a runnable daemon ref for an env, rebuilding a missing one.
+"""The run-time rule: an image on this machine runs; else pulled and checked; else refused.
 
-Envs are registered through production ``register`` with the Docker boundary
-stubbed. The daemon's contents are simulated at ``image_inspect``: a probe of
-the recorded image ID misses when the image is "gone", and the rebuild's own
-inspect of the build tag returns the new image ID. ``pull`` is armed to fail
-the test everywhere: wfc never pulls a ``local/`` image.
+Envs are registered through production ``register`` (and pushed through
+production ``push_image``) with the Docker boundary stubbed. The daemon's
+contents are simulated at ``image_inspect`` and ``image_content``; ``pull``
+records. ``build`` is armed to fail the test everywhere: nothing is ever
+built at run time.
 """
 
 from __future__ import annotations
@@ -17,20 +17,26 @@ import pytest
 from axiom_annotations import Step, workflow
 
 from tests.fixtures.fakes import (
+    FAKE_PUSHED_DIGEST,
     canned_process,
     fake_subprocess_run,
-    refuse_docker,
     stub_docker_build,
+    stub_docker_image_content,
     stub_docker_image_inspect,
     stub_docker_pull,
+    stub_docker_push,
+    stub_docker_repo_digest,
+    stub_docker_tag,
 )
 from tests.fixtures.routes import init_test_project
 from wfc.environments.docker import ImageNotFoundError
+from wfc.reserved import DEMO_ENV_NAME
 
 OLD_DIGEST = "a" * 64
-NEW_DIGEST = "b" * 64
+PULLED_ID = "f" * 64
 ENV = "image-io"
-BUILD_TAG = f"local/{ENV}:_wfc-build"
+BASE = "ghcr.io/owner/repo"
+REGISTRY_REF = f"{BASE}/{ENV}@{FAKE_PUSHED_DIGEST}"
 
 PIXI_LOCK = "version: 6\nenvironments:\n  image-io:\n    packages: {}\n"
 PIXI_TOML = ('[project]\nname = "image-io"\n'
@@ -43,32 +49,79 @@ def _git(root: Path, *args: str) -> str:
                           capture_output=True, text=True).stdout
 
 
-def _register_pixi(project: Path, monkeypatch, **kwargs):
-    """Register the pixi env through production, its image built as OLD_DIGEST."""
+def _content_of(ref: str) -> dict:
+    """The content the daemon reports for *ref*: a layer named after it."""
+    return {"layers": [f"sha256:layer-of-{ref}"], "env": ["PATH=/opt/env/bin"],
+            "user": "", "workdir": "/"}
+
+
+REGISTERED_CONTENT = _content_of(f"sha256:{OLD_DIGEST}")
+
+
+def _register_pixi(project: Path, monkeypatch, *, push: bool):
+    """Register the pixi env through production, built as OLD_DIGEST.
+
+    With *push*, the project's base is set and the image is pushed through
+    production ``push_image`` (``pushed.json`` written).
+    """
     from wfc import environments as envs_mod
 
     stub_docker_build(monkeypatch, None)
+    stub_docker_image_content(monkeypatch, _content_of)
     stub_docker_image_inspect(monkeypatch, f"sha256:{OLD_DIGEST}")
-    return envs_mod.register(
+    record = envs_mod.register(
         name=ENV, backend="pixi",
         source={"pixi_lock_content": PIXI_LOCK,
                 "pixi_toml_content": PIXI_TOML,
                 "pip_freeze_content": PIP_FREEZE},
-        project_dir=project, **kwargs,
+        project_dir=project, push=False,
     )
+    if push:
+        from wfc.persistence import set_registry_url
+
+        set_registry_url(project, BASE)
+        stub_docker_tag(monkeypatch, None)
+        stub_docker_push(monkeypatch, None)
+        envs_mod.push_image(project, ENV, record.env_fingerprint,
+                            record.container, BASE)
+    return record
 
 
-def _image_gone(monkeypatch, *, builds: list, pulls: list) -> None:
-    """The daemon lost the registered image; a build produces NEW_DIGEST."""
+def _image_gone(monkeypatch, *, pulls: list, pulled_content=None,
+                pull_error: Exception | None = None,
+                content_reads: list | None = None) -> set:
+    """The daemon lost the registered image; a pull of a ref makes it held.
+
+    A pulled image answers inspect with PULLED_ID, a different ID than the
+    record's (the other image store's), and *pulled_content* as its content
+    (default: the registered image's content). Each ref whose content is
+    read is appended to *content_reads*.
+    """
+    held: set = set()
+
     def inspect(ref):
-        if ref == BUILD_TAG and builds:
-            return f"sha256:{NEW_DIGEST}"
+        if ref in held:
+            return f"sha256:{PULLED_ID}"
+        raise ImageNotFoundError(f"Error: No such image: {ref}")
+
+    def pull(ref):
+        pulls.append(ref)
+        if pull_error is not None:
+            raise pull_error
+        held.add(ref)
+
+    def content(ref):
+        if content_reads is not None:
+            content_reads.append(ref)
+        if ref in held:
+            return pulled_content or REGISTERED_CONTENT
         raise ImageNotFoundError(f"Error: No such image: {ref}")
 
     stub_docker_image_inspect(monkeypatch, inspect)
-    stub_docker_build(monkeypatch,
-                      lambda build_dir, tag: builds.append((Path(build_dir), tag)))
-    stub_docker_pull(monkeypatch, lambda ref: pulls.append(ref))
+    stub_docker_image_content(monkeypatch, content)
+    stub_docker_pull(monkeypatch, pull)
+    stub_docker_build(monkeypatch, AssertionError("built at run time"))
+    return held
 
 
 def _manifest(project: Path) -> dict:
@@ -90,200 +143,273 @@ def git_wfc_project(git_project, monkeypatch):
     reset_engine()
 
 
-@workflow(purpose="A registered pixi env whose image the Docker daemon no "
-                  "longer holds is rebuilt by ensure_runnable from its staged "
-                  "build context: the record takes the new digest with its "
-                  "python kept, .wfc/envs.json alone is committed by pathspec, "
-                  "the new ref is printed, and nothing is pulled")
-def test_missing_local_env_is_rebuilt_from_its_build_context(
-    git_wfc_project, monkeypatch, capsys,
+@workflow(purpose="An image the daemon lacks whose captures folder "
+                  "records a push is pulled by <base>/<env>@<digest>, its "
+                  "content checked against the recorded env fingerprint, and "
+                  "run by the registry ref; nothing is built, the record and "
+                  "HEAD are unchanged, and a second ask pulls nothing")
+def test_missing_pushed_image_is_pulled_checked_and_run_by_its_registry_ref(
+    git_wfc_project, monkeypatch,
 ):
-    from wfc.environments import ensure_runnable, get
+    from wfc.environments import ensure_version_runnable, get
 
     project = git_wfc_project
-    口 = Step(step_num=1, name="Register a pixi env",
-             purpose="register-env builds the image, stages the build "
-                     "context and commits the record")
-    registered = _register_pixi(project, monkeypatch,
-                                python_override="/opt/env/bin/python")
-    assert _git(project, "status", "--porcelain").strip() == ""
+    口 = Step(step_num=1, name="Register and push",
+             purpose="register-env records the image; push_image writes "
+                     "pushed.json under the project's base")
+    record = _register_pixi(project, monkeypatch, push=True)
+    before, head = _manifest(project), _git(project, "rev-parse", "HEAD")
 
-    口 = Step(step_num=2, name="Lose the image and stage an unrelated file",
-             purpose="The daemon no longer holds the image (a fresh daemon, "
-                     "a prune); the user has their own change staged")
-    builds: list = []
+    口 = Step(step_num=2, name="Lose the image and ask for it",
+             purpose="The daemon no longer holds the image; the rule pulls")
     pulls: list = []
-    _image_gone(monkeypatch, builds=builds, pulls=pulls)
-    (project / "notes.txt").write_text("mine\n", encoding="utf-8")
-    _git(project, "add", "notes.txt")
-    head_before = _git(project, "rev-parse", "HEAD").strip()
-    capsys.readouterr()
+    reads: list = []
+    _image_gone(monkeypatch, pulls=pulls, content_reads=reads)
+    ref = ensure_version_runnable(ENV, record.env_fingerprint, project)
 
-    口 = Step(step_num=3, name="Ask for a runnable ref",
-             purpose="ensure_runnable probes, finds the image missing and "
-                     "rebuilds it from .wfc/build/<name>/")
-    ref = ensure_runnable(ENV, get(ENV, project), project)
+    口 = Step(step_num=3, name="Check the pull",
+             purpose="One pull of the digest-pinned registry ref, whose "
+                     "content is read after the pull and fingerprinted, then "
+                     "returned; nothing recorded or committed")
+    assert ref == REGISTRY_REF
+    assert pulls == [REGISTRY_REF]
+    assert reads == [REGISTRY_REF]
+    assert _manifest(project) == before
+    assert _git(project, "rev-parse", "HEAD") == head
+    assert get(ENV, project).container == record.container
 
-    口 = Step(step_num=4, name="Check the rebuild",
-             purpose="New ref returned and recorded, python and "
-                     "source_fingerprint kept, one pathspec commit, the "
-                     "user's staged file untouched, no pull")
-    assert ref == f"sha256:{NEW_DIGEST}"
-    assert builds == [(project / ".wfc" / "build" / ENV, BUILD_TAG)]
-    assert pulls == []
-
-    rebuilt = get(ENV, project)
-    assert rebuilt.container == f"docker://local/{ENV}@sha256:{NEW_DIGEST}"
-    assert rebuilt.python == "/opt/env/bin/python"
-    assert rebuilt.source_fingerprint == registered.source_fingerprint
-    assert rebuilt.env_fingerprint != registered.env_fingerprint
-    assert rebuilt.built_from_lock == registered.built_from_lock
-
-    assert _git(project, "rev-parse", "HEAD~1").strip() == head_before
-    committed = _git(project, "show", "--name-only", "--pretty=format:", "HEAD")
-    assert committed.split() == [".wfc/envs.json"]
-    assert _git(project, "status", "--porcelain").splitlines() == ["A  notes.txt"]
-
-    assert rebuilt.container in capsys.readouterr().out
+    # Pulled already: the content is checked again, nothing is pulled.
+    assert ensure_version_runnable(ENV, record.env_fingerprint, project) == REGISTRY_REF
+    assert pulls == [REGISTRY_REF]
 
 
-@pytest.mark.parametrize("damage", ["missing", "mismatched"])
-@workflow(purpose="A missing pixi image whose build context is gone, or no "
-                  "longer reproduces the record's source_fingerprint (a failed "
-                  "register-env --force overwrote it), is refused naming "
-                  "`wfc register-env <name> --force`; nothing is built or "
-                  "pulled and the record is unchanged")
-def test_missing_env_with_unusable_context_is_refused(
-    tmp_path, monkeypatch, damage,
+@workflow(purpose="Locked decision 11: a method version that records an older "
+                  "image than the env's current one runs that older image: "
+                  "with the daemon holding neither, the older image's own "
+                  "push is pulled by <base>/<env>@<its digest> and checked "
+                  "against the older fingerprint; the current image is not "
+                  "pulled")
+def test_an_older_versions_pushed_image_is_pulled_not_the_current_one(
+    git_wfc_project, monkeypatch,
 ):
-    from wfc.environments import EnvNotRunnableError, ensure_runnable, get
+    from wfc import environments as envs_mod
+    from wfc.environments import ensure_version_runnable
 
-    (tmp_path / ".wfc").mkdir()
-    _register_pixi(tmp_path, monkeypatch)
-    build_dir = tmp_path / ".wfc" / "build" / ENV
-    if damage == "missing":
-        for f in build_dir.iterdir():
-            f.unlink()
-        build_dir.rmdir()
-    else:
-        (build_dir / "pip-freeze.txt").write_text("numpy==2.0.0\n",
-                                                   encoding="utf-8")
-    before = _manifest(tmp_path)
+    project = git_wfc_project
+    口 = Step(step_num=1, name="Register and push the older image",
+             purpose="The first image is pushed; pushed.json records its digest")
+    older = _register_pixi(project, monkeypatch, push=True)
 
-    builds: list = []
+    口 = Step(step_num=2, name="Register a newer image, not pushed",
+             purpose="The env's current record moves to another fingerprint")
+    newer_id = "9" * 64
+    stub_docker_image_inspect(monkeypatch, f"sha256:{newer_id}")
+    stub_docker_image_content(monkeypatch, _content_of)
+    current = envs_mod.register(
+        name=ENV, backend="pixi", force=True, push=False, project_dir=project,
+        source={"pixi_lock_content": PIXI_LOCK, "pixi_toml_content": PIXI_TOML,
+                "pip_freeze_content": "numpy==2.0.0\n"})
+    assert current.env_fingerprint != older.env_fingerprint
+
+    口 = Step(step_num=3, name="Ask for the older version's image",
+             purpose="Neither image is on this machine: the older push is "
+                     "pulled and its content checked against the older "
+                     "fingerprint")
     pulls: list = []
-    _image_gone(monkeypatch, builds=builds, pulls=pulls)
+    reads: list = []
+    _image_gone(monkeypatch, pulls=pulls, content_reads=reads)
+    ref = ensure_version_runnable(ENV, older.env_fingerprint, project)
+    assert ref == pulls[0] == reads[0] == REGISTRY_REF
+    assert len(pulls) == 1
+    assert envs_mod.get(ENV, project).env_fingerprint == current.env_fingerprint
+
+
+@pytest.mark.parametrize("case", ["never-pushed", "pull-fails", "content-differs"])
+@workflow(purpose="An image the daemon lacks is refused when it "
+                  "was never pushed, when its pull fails (Docker's cause "
+                  "named), or when the pulled content renders another env "
+                  "fingerprint; each refusal names `wfc register-env <env> "
+                  "--force` then `wfc register-method` and that the steps run "
+                  "again, and nothing is built or recorded")
+def test_a_missing_image_that_cannot_be_pulled_and_checked_is_refused(
+    git_wfc_project, monkeypatch, case,
+):
+    from wfc.environments import EnvNotRunnableError, ensure_version_runnable
+
+    project = git_wfc_project
+    record = _register_pixi(project, monkeypatch, push=case != "never-pushed")
+    before = _manifest(project)
+    pulls: list = []
+    cause = "unauthorized: authentication required"
+    _image_gone(
+        monkeypatch, pulls=pulls,
+        pull_error=RuntimeError(cause) if case == "pull-fails" else None,
+        pulled_content=(_content_of("something-else")
+                        if case == "content-differs" else None))
+
     with pytest.raises(EnvNotRunnableError) as exc:
-        ensure_runnable(ENV, get(ENV, tmp_path), tmp_path)
+        ensure_version_runnable(ENV, record.env_fingerprint, project)
 
     message = str(exc.value)
-    assert ENV in message
     assert f"wfc register-env {ENV} --force" in message
-    assert builds == [] and pulls == []
-    assert _manifest(tmp_path) == before
+    assert message.index("--force") < message.index("wfc register-method")
+    assert "run again rather than reuse cached results" in message
+    assert _manifest(project) == before
+    if case == "never-pushed":
+        assert pulls == []
+        assert "never pushed" in message
+        assert f"wfc push-env {ENV}" in message
+    else:
+        assert pulls == [REGISTRY_REF]
+        # The image already has pushed.json: push-env would be a no-op.
+        assert "push-env" not in message
+    if case == "pull-fails":
+        assert cause in message
+        assert "`docker login ghcr.io`" in message
+        assert "Otherwise recreate it with" in message
+    if case == "content-differs":
+        assert record.env_fingerprint in message
 
 
 @pytest.mark.parametrize(("name", "command"), [
-    ("__demo__env", "wfc demo --force"),
+    (DEMO_ENV_NAME, "wfc demo --force"),
     ("my-local", "wfc register-env my-local --force"),
 ])
-@workflow(purpose="A byo env on a local/ image the daemon lacks is refused, "
-                  "never pulled or built: the reserved demo env names "
-                  "`wfc demo --force`, any other names "
-                  "`wfc register-env <name> --force`")
-def test_missing_local_byo_image_is_refused(tmp_path, monkeypatch, name, command):
+def test_missing_unpushed_local_byo_image_is_refused(git_wfc_project, monkeypatch,
+                                                     name, command):
+    """A byo env on a local/ image the daemon lacks, never pushed, is refused
+    naming the reserved demo env's `wfc demo --force` or `wfc register-env
+    <name> --force`; nothing is pulled or built."""
     from wfc import environments as envs_mod
     from wfc.environments import EnvNotRunnableError, ensure_runnable, get
 
-    (tmp_path / ".wfc").mkdir()
+    stub_docker_image_content(monkeypatch)
     stub_docker_image_inspect(monkeypatch, f"sha256:{OLD_DIGEST}")
     envs_mod.register(name=name, backend="byo",
                       source={"image": "docker://local/wfc-demo-env:latest"},
-                      project_dir=tmp_path,
-                      allow_reserved=name.startswith("__demo__"))
-
-    builds: list = []
+                      project_dir=git_wfc_project,
+                      allow_reserved=name == DEMO_ENV_NAME)
     pulls: list = []
-    _image_gone(monkeypatch, builds=builds, pulls=pulls)
+    _image_gone(monkeypatch, pulls=pulls)
     with pytest.raises(EnvNotRunnableError) as exc:
-        ensure_runnable(name, get(name, tmp_path), tmp_path)
+        ensure_runnable(name, get(name, git_wfc_project), git_wfc_project)
 
     assert name in str(exc.value)
     assert command in str(exc.value)
-    assert builds == [] and pulls == []
+    assert pulls == []
+
+
+def test_missing_byo_registry_image_is_pulled_by_its_recorded_ref(
+    git_wfc_project, monkeypatch,
+):
+    """A byo image recorded by its own registry's digest, absent from
+    the daemon, is pulled by that recorded ref and checked; never refused
+    for want of a push."""
+    from wfc import environments as envs_mod
+    from wfc.environments import ensure_runnable, get
+
+    ref = f"ghcr.io/org/tool@sha256:{OLD_DIGEST}"
+    stub_docker_image_content(monkeypatch, REGISTERED_CONTENT)
+    stub_docker_image_inspect(monkeypatch, f"sha256:{PULLED_ID}")
+    stub_docker_repo_digest(monkeypatch, f"sha256:{OLD_DIGEST}")
+    envs_mod.register(name="reg", backend="byo", source={"image": f"docker://{ref}"},
+                      project_dir=git_wfc_project, push=False)
+    pulls: list = []
+    _image_gone(monkeypatch, pulls=pulls)
+
+    assert ensure_runnable("reg", get("reg", git_wfc_project), git_wfc_project) == ref
+    assert pulls == [ref]
+
+
+@workflow(purpose="After a pull, the daemon answers a different image "
+                  "ID than the record names (the other image store): the "
+                  "dispatch half of the rule hands Docker the registry ref "
+                  "the pre-flight returned, never a recomputed ID, without "
+                  "pulling, and the docker run argv carries --pull never")
+def test_dispatch_runs_the_registry_ref_never_a_recomputed_id(
+    git_wfc_project, monkeypatch,
+):
+    from wfc.environments import (
+        build_docker_command,
+        ensure_version_runnable,
+        version_run_ref,
+    )
+
+    project = git_wfc_project
+    record = _register_pixi(project, monkeypatch, push=True)
+    pulls: list = []
+    _image_gone(monkeypatch, pulls=pulls)
+    preflight = ensure_version_runnable(ENV, record.env_fingerprint, project)
+
+    ref = version_run_ref(ENV, record.env_fingerprint, project)
+    argv = build_docker_command(ref, project, project / ".dvc" / "cache",
+                                ["python", "m.py"], uid=0, gid=0)
+
+    assert ref == preflight == REGISTRY_REF
+    assert pulls == [REGISTRY_REF]
+    assert argv[:5] == ["docker", "run", "--rm", "--pull", "never"]
+    assert REGISTRY_REF in argv
+    assert not any(PULLED_ID in a for a in argv)
 
 
 @pytest.mark.parametrize("backend", ["pixi", "byo"])
-@workflow(purpose="When Docker cannot be asked about a local/ image (the "
-                  "daemon is not running), ensure_runnable refuses naming "
-                  "Docker: it does not rebuild, pull, or advise recreating "
-                  "the env, whose image may well still be there")
-def test_unreachable_docker_is_not_a_missing_image(tmp_path, monkeypatch,
+@workflow(purpose="When Docker cannot be asked about an image (the daemon is "
+                  "not running), the rule refuses naming Docker: it does not "
+                  "pull, build, or advise recreating the env, whose image "
+                  "may well still be there")
+def test_unreachable_docker_is_not_a_missing_image(git_wfc_project, monkeypatch,
                                                     backend):
     from wfc import environments as envs_mod
     from wfc.environments import EnvNotRunnableError, ensure_runnable, get
 
-    (tmp_path / ".wfc").mkdir()
     if backend == "pixi":
-        _register_pixi(tmp_path, monkeypatch)
+        _register_pixi(git_wfc_project, monkeypatch, push=False)
         name = ENV
     else:
-        name = "__demo__env"
+        name = DEMO_ENV_NAME
+        stub_docker_image_content(monkeypatch)
         stub_docker_image_inspect(monkeypatch, f"sha256:{OLD_DIGEST}")
         envs_mod.register(name=name, backend="byo",
                           source={"image": "docker://local/wfc-demo-env:latest"},
-                          project_dir=tmp_path, allow_reserved=True)
-    before = _manifest(tmp_path)
+                          project_dir=git_wfc_project, allow_reserved=True)
+    before = _manifest(git_wfc_project)
 
     daemon_down = ("failed to connect to the docker API at "
                    "unix:///var/run/docker.sock; is the docker daemon running?")
+    stub_docker_image_content(monkeypatch)
     stub_docker_image_inspect(monkeypatch, RuntimeError(daemon_down))
-    stub_docker_build(monkeypatch, AssertionError("rebuilt while Docker was down"))
+    stub_docker_build(monkeypatch, AssertionError("built while Docker was down"))
     stub_docker_pull(monkeypatch, AssertionError("pulled while Docker was down"))
 
     with pytest.raises(EnvNotRunnableError) as exc:
-        ensure_runnable(name, get(name, tmp_path), tmp_path)
+        ensure_runnable(name, get(name, git_wfc_project), git_wfc_project)
 
     message = str(exc.value)
     assert name in message
     assert "Docker is running" in message
     assert daemon_down in message
     assert "--force" not in message
-    assert _manifest(tmp_path) == before
+    assert _manifest(git_wfc_project) == before
 
 
-def test_present_local_image_is_returned_without_a_build(tmp_path, monkeypatch):
+def test_present_local_image_is_returned_without_a_pull(git_wfc_project, monkeypatch):
     from wfc.environments import ensure_runnable, get
 
-    (tmp_path / ".wfc").mkdir()
-    _register_pixi(tmp_path, monkeypatch)
+    _register_pixi(git_wfc_project, monkeypatch, push=True)
     probes: list = []
 
     def inspect(ref):
         probes.append(ref)
         return f"sha256:{OLD_DIGEST}"
 
+    stub_docker_image_content(monkeypatch)
     stub_docker_image_inspect(monkeypatch, inspect)
-    stub_docker_build(monkeypatch, AssertionError("present image rebuilt"))
-    stub_docker_pull(monkeypatch, AssertionError("local image pulled"))
+    stub_docker_build(monkeypatch, AssertionError("present image built"))
+    stub_docker_pull(monkeypatch, AssertionError("present image pulled"))
 
-    assert ensure_runnable(ENV, get(ENV, tmp_path), tmp_path) \
+    assert ensure_runnable(ENV, get(ENV, git_wfc_project), git_wfc_project) \
         == f"sha256:{OLD_DIGEST}"
     assert probes == [f"sha256:{OLD_DIGEST}"]
-
-
-def test_registry_image_passes_through_without_touching_docker(
-    tmp_path, monkeypatch,
-):
-    from tests.fixtures.routes.registration import write_env_record
-    from wfc.environments import ensure_runnable, get
-
-    write_env_record(tmp_path, "reg", image="ghcr.io/org/tool",
-                     digest=OLD_DIGEST)
-    refuse_docker(monkeypatch)
-
-    assert ensure_runnable("reg", get("reg", tmp_path), tmp_path) \
-        == f"ghcr.io/org/tool@sha256:{OLD_DIGEST}"
 
 
 @pytest.mark.parametrize(("stderr", "missing"), [

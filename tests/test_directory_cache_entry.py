@@ -17,12 +17,15 @@ from axiom_annotations import workflow
 
 from wfc import layout
 from wfc.identity import directory_manifest, hash_file, hash_path
+from wfc.storage import links
 from wfc.storage.cache import (
+    ChangedEntryError,
     MalformedEntryError,
     cache_file,
     checkout,
     entry_is_complete,
     local_path,
+    open_dirs,
     restore_from_cache,
 )
 
@@ -45,6 +48,54 @@ def _force_remove(p: Path) -> None:
     import os
     os.chmod(p, 0o644)
     p.unlink()
+
+
+def _replace_view(p: Path, data: bytes, *, keep_mtime: bool = False) -> None:
+    """Save other bytes at a view's path as a new file, as an editor that saves by rename does.
+
+    A view may share its inode with the cache object, so the edit never
+    writes into it or chmods it: the cache object stays intact. With
+    ``keep_mtime`` the new file is given the old one's mtime.
+    """
+    before = p.stat()
+    open_dirs(p.parent)
+    tmp = p.with_name(p.name + ".edited")
+    tmp.write_bytes(data)
+    if keep_mtime:
+        os.utime(tmp, ns=(before.st_atime_ns, before.st_mtime_ns))
+    links.replace_over(tmp, p)
+
+
+def _assert_view(path: Path, project: Path, md5: str) -> None:
+    """``path`` is a read-only view of its cache object, the same inode where links work."""
+    obj = layout.dvc_cache_entry(project, md5)
+    assert path.read_bytes() == obj.read_bytes()
+    assert not os.access(path, os.W_OK), f"{path} is read-only"
+    assert not os.access(obj, os.W_OK), "the cache object stays read-only"
+    # The view's own folder is read-only; the tier is probed beside it.
+    beside = next(d for d in path.parents if os.access(d, os.W_OK))
+    if links.probe_pair(obj.parent, beside).tier == links.TIER_HARDLINK:
+        assert os.path.samefile(path, obj), f"{path} is a hardlink of its cache object"
+
+
+def test_an_edit_the_moment_a_directory_is_cached_matches_no_member_stamp(tmp_path):
+    """A directory's member stamps go in together, once the clock is past every member's record."""
+    from wfc.storage.integrity import entry_record, read_stamp
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    src = _source(tmp_path, "src", {"a.csv": b"1\n", "sub/b.txt": b"bb", "c.txt": b"ccc"})
+    cache_file(src, hash_path(src), project, move=False)
+
+    for rel, md5 in directory_manifest(src).entries:
+        obj = layout.dvc_cache_entry(project, md5)
+        stamped = read_stamp(layout.cache_object_stamp(project, md5), md5)
+        assert stamped is not None, f"{rel}'s object is stamped"
+        st = obj.stat()
+        os.chmod(obj, 0o644)
+        obj.write_bytes(bytes(b ^ 0x01 for b in obj.read_bytes()))
+        os.utime(obj, ns=(st.st_atime_ns, st.st_mtime_ns))
+        assert entry_record(obj) != stamped, f"an edit of {rel}'s object right after is seen"
 
 
 @workflow(
@@ -74,9 +125,13 @@ def test_directory_entry_is_members_plus_manifest(tmp_path):
     assert _tree_bytes(out) == _tree_bytes(src)
     # Idempotent over a verified destination; replaces a stale one.
     assert restore_from_cache(h, out, project)
-    (out / "a.csv").write_bytes(b"stale")
+    members = dict(directory_manifest(src).entries)
+    for rel, md5 in members.items():
+        _assert_view(out / rel, project, md5)
+    _replace_view(out / "a.csv", b"stale")
     assert restore_from_cache(h, out, project)
     assert _tree_bytes(out) == _tree_bytes(src)
+    _assert_view(out / "a.csv", project, members["a.csv"])
 
 
 @workflow(
@@ -162,24 +217,38 @@ def _files_stat(d: Path) -> dict[str, tuple[int, int]]:
 
 
 def _same_size_tamper_keeping_mtime(p: Path, data: bytes) -> None:
+    """Replace a checkout member with other bytes of its length, its mtime put back."""
     before = p.stat()
     assert len(data) == before.st_size
-    os.chmod(p, 0o644)
-    p.write_bytes(data)
-    os.utime(p, ns=(before.st_atime_ns, before.st_mtime_ns))
+    _replace_view(p, data, keep_mtime=True)
+    after = p.stat()
+    assert (after.st_size, after.st_mtime_ns) == (before.st_size, before.st_mtime_ns)
 
 
-def test_a_second_read_of_an_intact_checkout_trusts_its_stamp(tmp_path):
-    """The hot path: ``local_path`` on an intact checkout checks names, sizes
-    and mtimes against the stamp and reads no member's bytes.
+def _append_config(root: Path, text: str) -> None:
+    """Append a section to the project's wf-canvas.toml, as a user does."""
+    marker = layout.marker_path(root)
+    marker.write_text(marker.read_text(encoding="utf-8") + "\n" + text, encoding="utf-8")
 
-    The trade-off, recorded as a decision: an edit that keeps a member's size
-    and restores its mtime (a deliberate act on a read-only checkout) is not
-    seen by the cheap check. Deleting the stamp forces a full re-verify.
-    """
-    project = tmp_path / "proj"
-    project.mkdir()
-    src = _source(tmp_path, "src", {"a.csv": b"1\n", "nested/b.txt": b"bb"})
+
+@pytest.mark.parametrize("setting", ["stat-then-hash", "hash"])
+@workflow(
+    purpose="a same-size edit of a checkout member with its mtime restored is "
+            "caught and the checkout rebuilt: by the stat fields' change time "
+            "under the default (ctime on Linux and macOS, NTFS's ChangeTime "
+            "on Windows), by the re-hash under hash",
+    inputs="a cached directory, its stamped checkout, one member replaced at "
+           "its path by bytes of the same length with its mtime set back (the "
+           "cache entry intact)",
+    outputs="the next read serves the genuine bytes, the member a read-only "
+            "view again, and the checkout is stamped again",
+)
+def test_a_same_size_checkout_edit_with_the_mtime_restored_is_caught(tmp_project, setting):
+    """Flips adversarial B3d: the stamp no longer vouches for size and mtime alone."""
+    project = tmp_project
+    if setting == "hash":
+        _append_config(project, '[integrity]\ninputs = "hash"\n')
+    src = _source(project.parent, "src", {"a.csv": b"1\n", "nested/b.txt": b"bb"})
     h = hash_path(src)
     cache_file(src, h, project, move=False)
 
@@ -187,25 +256,73 @@ def test_a_second_read_of_an_intact_checkout_trusts_its_stamp(tmp_path):
     stamp = layout.checkout_stamp(project, h)
     assert stamp.is_file(), "a built checkout is stamped"
     assert not (p / stamp.name).exists(), "the stamp is beside the checkout, not in it"
-    before = _files_stat(p)
-    stamp_before = stamp.stat().st_mtime_ns
-
     assert local_path(project, h) == p
-    assert _files_stat(p) == before, "an intact checkout is not rebuilt"
-    assert stamp.stat().st_mtime_ns == stamp_before
 
     _same_size_tamper_keeping_mtime(p / "a.csv", b"X\n")
     assert local_path(project, h) == p
-    assert (p / "a.csv").read_bytes() == b"X\n", (
-        "the stamped read did not re-read member contents"
-    )
-
-    stamp.unlink()
-    assert local_path(project, h) == p
-    assert _tree_bytes(p) == _tree_bytes(src), (
-        "without a stamp the checkout is fully verified"
-    )
+    assert _tree_bytes(p) == _tree_bytes(src), "the edited checkout was rebuilt"
+    _assert_view(p / "a.csv", project, hash_file(src / "a.csv"))
     assert stamp.is_file()
+
+
+@workflow(
+    purpose="a checkout is built only from member objects whose copied bytes "
+            "match their manifest entries: a changed member object is refused, "
+            "nothing is placed or stamped, and the next read refuses again",
+    inputs="a cached directory whose member object is rewritten in the cache",
+    outputs="ChangedEntryError naming the member; no checkout, no stamp",
+)
+def test_a_checkout_over_a_changed_member_object_is_refused_and_not_stamped(tmp_path):
+    project = tmp_path / "proj"
+    project.mkdir()
+    src = _source(tmp_path, "src", {"a.csv": b"1\n", "b.txt": b"bb"})
+    h = hash_path(src)
+    cache_file(src, h, project, move=False)
+    member = hash_file(src / "a.csv")
+    obj = layout.dvc_cache_entry(project, member)
+    os.chmod(obj, 0o644)
+    obj.write_bytes(b"9\n")
+
+    for _attempt in range(2):
+        with pytest.raises(ChangedEntryError) as refusal:
+            local_path(project, h)
+        assert refusal.value.objects == [member]
+        assert member in str(refusal.value)
+        assert not layout.checkout_dir(project, h).exists()
+        assert not layout.checkout_stamp(project, h).exists()
+
+
+def test_the_hashing_copy_refuses_bytes_that_are_not_the_callers_hash(tmp_path):
+    """A caller's known md5 must be the md5 of the bytes copied; nothing is stored."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    src = tmp_path / "f.csv"
+    src.write_bytes(b"now\n")
+    stale = hash_file(src)
+    src.write_bytes(b"changed after hashing\n")
+
+    with pytest.raises(ValueError, match="changed while it was being cached"):
+        cache_file(src, stale, project, move=False)
+    assert not layout.dvc_cache_entry(project, stale).exists()
+    assert src.read_bytes() == b"changed after hashing\n"
+    leftovers = [p for p in layout.dvc_cache_files_dir(project).rglob("*") if p.is_file()]
+    assert leftovers == [], "no tmp file is left in the cache"
+
+
+def test_a_changed_object_at_the_address_is_replaced_by_the_verified_copy(tmp_path):
+    """An existing address is checked: changed bytes are replaced, then stamped."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    src = tmp_path / "f.csv"
+    src.write_bytes(b"genuine\n")
+    md5 = hash_file(src)
+    dest = cache_file(src, md5, project, move=False)
+    os.chmod(dest, 0o644)
+    dest.write_bytes(b"edited!\n")
+
+    assert cache_file(src, md5, project, move=False) == dest
+    assert dest.read_bytes() == b"genuine\n"
+    assert layout.cache_object_stamp(project, md5).is_file()
 
 
 @pytest.mark.parametrize("damage", ["missing", "extra", "size", "mtime"])
@@ -217,20 +334,23 @@ def test_a_damaged_stamped_checkout_is_rebuilt(tmp_path, damage):
     cache_file(src, h, project, move=False)
     p = local_path(project, h)
 
+    # Damage the checkout, never its cache objects: a member is removed or
+    # replaced at its path, never written through (a write through a
+    # hardlinked view changes the cache entry itself).
     target = p / "nested" / "b.txt"
-    os.chmod(target.parent, 0o755)
-    os.chmod(target, 0o644)
+    open_dirs(target.parent)
     if damage == "missing":
-        target.unlink()
+        links.delete_file(target)
     elif damage == "extra":
         (p / "nested" / "stray.txt").write_bytes(b"s")
     elif damage == "size":
-        target.write_bytes(b"longer")
+        _replace_view(target, b"longer")
     else:
         # Same size, new mtime: an ordinary edit.
-        target.write_bytes(b"XX")
+        _replace_view(target, b"XX")
         st = target.stat()
         os.utime(target, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
 
     assert local_path(project, h) == p
     assert _tree_bytes(p) == _tree_bytes(src)
+    _assert_view(target, project, hash_file(src / "nested" / "b.txt"))

@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.reference.wf-canvas-toml @ b451fb3ebc1e; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/reference/wf-canvas-toml @ 2c5972cde74d; do not edit -->
 
 # Reference: wf-canvas.toml
 
@@ -6,10 +6,12 @@
 
 Every project keeps its configuration in `.wfc/wf-canvas.toml`, a TOML file. `wfc init` creates it, and it is committed to git with the rest of the project. The file also marks the project: wfc commands find the project by looking for it (see [CLI Reference](cli-reference.md)).
 
-The file has three sections:
+The file has these sections:
 
 - `[dvc]` sets the archive where run outputs and samples are kept. `wfc init` writes it.
+- `[integrity]` sets how wfc checks what a step reads against what it recorded. It is optional.
 - `[pixi]` and `[conda]` tell `wfc register-env` where to find local environments to capture. Both are optional.
+- `[registry]` sets the registry base that environment images are pushed to. `wfc push-env` writes it on its first run. It is optional.
 
 For where the file sits among the project's other folders, see [Project Anatomy](../explanation/project-anatomy.md).
 
@@ -27,9 +29,15 @@ root = ".pixi"                      # Where pixi environments live (default .pix
 
 [conda]
 root = "/path/to/conda"             # Conda installation to capture envs from (default: detected)
+
+[registry]
+url = "ghcr.io/my-org/my-project"   # Where environment images are pushed: a registry host and path
+
+[integrity]
+inputs = "stat-then-hash"           # How a step's inputs are checked: "stat-then-hash" (default) or "hash"
 ```
 
-A new file from `wfc init` holds only the `[dvc]` section, with `url` set to the location you chose (default `~/.wfc/archives/<project>`). Add `[pixi]` or `[conda]` by hand when you need them.
+A new file from `wfc init` holds only the `[dvc]` section, with `url` set to the location you chose (default `~/.wfc/archives/<project>`). `wfc push-env` adds `[registry]` on its first run. Add `[pixi]`, `[conda]` or `[integrity]` by hand when you need them.
 
 ## [dvc]
 
@@ -67,6 +75,31 @@ root = "/path/to/conda"
 - **`root`**: the conda installation whose environments `wfc register-env <name> conda:<env>` captures. wfc looks for the env at `<root>/envs/<env>`. A relative path is relative to the project directory. Default: the installation reported by `conda info --base`.
 
 Like `[pixi]`, this is only used when capturing an env into an image.
+
+## [registry]
+
+Where environment images are pushed to and pulled from.
+
+```toml
+[registry]
+url = "ghcr.io/my-org/my-project"
+```
+
+`url` is the registry host and path that image names are built under. `wfc push-env` writes it on its first run: with a GitHub remote it proposes `ghcr.io/<owner>/<repo>`, and `--registry <url>` sets another. After that, `wfc register-env` pushes each image it builds to this registry. The file holds the address only, never a login; Docker keeps that. See [Share a Project](../how-to/sharing-a-project.md).
+
+## [integrity]
+
+How wfc checks a file against what it recorded before a step reads it.
+
+```toml
+[integrity]
+inputs = "stat-then-hash"
+```
+
+- `"stat-then-hash"` (the default): wfc compares a file's size and timestamps with what it recorded, and re-hashes the file only when they differ. It catches an edit that keeps the file's size and puts its modification time back.
+- `"hash"`: wfc re-hashes every file it has a recorded hash for on every read. Use it on a FAT32 or exFAT drive, which keeps no change time, or when you want no trust in timestamps at all.
+
+Any other value is refused. The setting changes no cache key, so switching it reuses cached results as before. A file that is not what wfc recorded is repaired from the cache when it can be (a sample's copy, a pushed cache entry) and otherwise refused with the command that fixes it. `wfc verify` checks everything at once; see [CLI Reference](cli-reference.md).
 
 ## Next steps
 

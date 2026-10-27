@@ -24,6 +24,7 @@ inputs); this test exercises the WFC_INPUT_PATHS host->/work translation.
 """
 from __future__ import annotations
 
+from wfc import layout
 import json
 import os
 import shutil
@@ -103,7 +104,7 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
     # must declare at least one input" invariant; the pipeline JSON below
     # links nothing to `trigger`, so WFC_INPUT_PATHS for the producer is "{}"
     # at run time.
-    producer_dir = proj / "methods" / "producer"
+    producer_dir = sample_source_dir(proj) / "_methods" / "producer"
     producer_dir.mkdir(parents=True)
     (producer_dir / "producer.py").write_text(
         "import os\n"
@@ -132,7 +133,7 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
 
     # Consumer: reads WFC_INPUT_PATHS["data"], asserts it exists inside the
     # container, writes derived payload to WFC_RUN_DIR/transformed.txt.
-    consumer_dir = proj / "methods" / "consumer"
+    consumer_dir = sample_source_dir(proj) / "_methods" / "consumer"
     consumer_dir.mkdir(parents=True)
     (consumer_dir / "consumer.py").write_text(
         "import json\n"
@@ -184,7 +185,7 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
         method_name="consumer",
     )
 
-    # Sample data: a placeholder file under data/samples/s1/. Producer is a
+    # Sample data: a placeholder file under .wfc/workspace/samples/s1/. Producer is a
     # method-node root, so run-step's root-input-required invariant requires an upstream
     # input_selector with sample data on disk. The producer itself doesn't
     # read this file (its WFC_INPUT_PATHS["trigger"] is unused).
@@ -193,7 +194,7 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
     (source_dir / "trigger.txt").write_text("trigger")
     register_sample_row(proj, "s1", source_dir / "trigger.txt")
     # No restore here on purpose: this runs a real pipeline, whose
-    # restore_sample rule is what materializes data/samples/s1/trigger.txt.
+    # restore_sample rule is what materializes .wfc/workspace/samples/s1/trigger.txt.
 
     # Pipeline: input_selector -> producer (p1) -> consumer (c1).
     # Route the canvas-shaped PipelineInput through the SERVER ``_enrich_pipeline``
@@ -272,10 +273,10 @@ def test_two_node_container_pipeline_propagates_input_paths(
         f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
 
-    # Producer's output.txt should materialize under .runs/.
-    producer_outputs = list((proj / ".runs").rglob("output.txt"))
+    # Producer's output.txt should materialize under .wfc/runs/.
+    producer_outputs = list((layout.artifact_store(proj)).rglob("output.txt"))
     assert producer_outputs, (
-        f"output.txt not found under {proj / '.runs'}\n"
+        f"output.txt not found under {layout.artifact_store(proj)}\n"
         f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
     assert producer_outputs[0].read_text() == "payload-v1", (
@@ -286,9 +287,9 @@ def test_two_node_container_pipeline_propagates_input_paths(
     # Consumer's transformed.txt should materialize and carry the derived
     # payload — proves WFC_INPUT_PATHS was translated correctly and the
     # consumer container could read the producer's output via the bind mount.
-    consumer_outputs = list((proj / ".runs").rglob("transformed.txt"))
+    consumer_outputs = list((layout.artifact_store(proj)).rglob("transformed.txt"))
     assert consumer_outputs, (
-        f"transformed.txt not found under {proj / '.runs'}\n"
+        f"transformed.txt not found under {layout.artifact_store(proj)}\n"
         f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
     assert consumer_outputs[0].read_text() == "payload-v1-consumed", (

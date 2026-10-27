@@ -12,7 +12,7 @@ extension set (`.py`/`.R`/`.r`/`.sh`):
   - an explicit `script:` value resolving OUTSIDE the method dir is rejected
     (the snapshot/fingerprint could never cover it; `helpers:` is the fix)
   - re-registration purges ghost scripts an earlier registration left in
-    the methods/<name>/ snapshot (both permissive and strict modes)
+    the module-qualified snapshot (both permissive and strict modes)
   - the register-method CLI prints a clean ERROR line (no traceback) for
     script-discovery misses
   - `wfc register-env` rejects passing both --interpreter and --python
@@ -33,6 +33,7 @@ from sqlmodel import select
 
 from axiom_annotations import workflow
 
+from wfc import layout
 from wfc.persistence import get_session, reset_engine
 from wfc.init import init_project
 from wfc.persistence import Method, TrackedFunction
@@ -107,7 +108,8 @@ def _get_method(name: str) -> Method | None:
 @workflow(
     purpose="A bash method registers through the extension probe: the .sh "
             "script is discovered without an AST scan, its real path is "
-            "recorded, the snapshot copies it to methods/<name>/, and the "
+            "recorded, the snapshot copies it to the module-qualified "
+            "snapshot, and the "
             "code fingerprint covers the registered copy"
 )
 def test_bash_method_registers_without_ast_scan(multilang_project):
@@ -115,16 +117,17 @@ def test_bash_method_registers_without_ast_scan(multilang_project):
     proj = multilang_project
     src = proj / "src" / "greet"
     src.mkdir(parents=True)
+    # LF bytes on every platform: a shell script with CRLF is refused.
     (src / "greet.sh").write_text(
-        'printf "%s" "hello" > "$WFC_RUN_DIR/output.txt"\n'
+        'printf "%s" "hello" > "$WFC_RUN_DIR/output.txt"\n', newline="\n"
     )
     (src / "method.yaml").write_text(_method_yaml())
 
-    method_id = register_method(method_dir=src, module_name="multilang")
+    method_id = register_method(method_dir=src, module_name="multilang", assume_yes=True).method_id
 
     method = _get_method("greet")
     assert method is not None and method.id == method_id
-    assert method.script_path.replace("\\", "/").endswith("src/greet/greet.sh")
+    assert method.script_path == "greet.sh"
 
     # No Python AST scan -> no tracked-function metadata.
     with get_session() as session:
@@ -133,20 +136,26 @@ def test_bash_method_registers_without_ast_scan(multilang_project):
         ).all()
     assert tfs == []
 
-    # Snapshot copied the script + contract into methods/greet/ (the exact
-    # set the fingerprint hashes), and the registered copy fingerprints.
-    registered = proj / "methods" / "greet"
+    # Snapshot copied the script + contract into the module-qualified
+    # snapshot (the exact set the fingerprint hashes), and the registered
+    # copy fingerprints.
+    registered = layout.method_dir(proj, "multilang", "greet")
     assert (registered / "greet.sh").exists()
     assert (registered / "method.yaml").exists()
     assert len(build_code_fingerprint(registered, _projection_of(registered))) == 64
 
-    # Ghost purge (permissive mode): a recognized script left in the
-    # snapshot by an earlier registration is dropped on re-registration, so
-    # the fingerprint covers exactly the registered set.
+    # Ghost purge (permissive mode): a recognized script an earlier
+    # registration copied, since removed from the source, is dropped on
+    # re-registration, so the fingerprint covers exactly the registered set.
+    # With a second script in the folder, method.yaml names the main one.
+    (src / "method.yaml").write_text(_method_yaml("script: greet.sh\n"))
+    (src / "ghost.sh").write_text("echo stale\n", newline="\n")
+    register_method(method_dir=src, module_name="multilang", assume_yes=True)
     ghost = registered / "ghost.sh"
-    ghost.write_text("echo stale\n")
+    assert ghost.exists()
     fp_with_ghost = build_code_fingerprint(registered, _projection_of(registered))
-    register_method(method_dir=src, module_name="multilang")
+    (src / "ghost.sh").unlink()
+    register_method(method_dir=src, module_name="multilang", assume_yes=True)
     assert not ghost.exists(), "stale snapshot script survived re-registration"
     assert (registered / "greet.sh").exists()
     assert (registered / "method.yaml").exists()
@@ -169,7 +178,7 @@ def test_ambiguous_scripts_error_then_script_key_selects(multilang_project):
     (src / "method.yaml").write_text(_method_yaml())
 
     with pytest.raises(ValueError) as excinfo:
-        register_method(method_dir=src, module_name="multilang")
+        register_method(method_dir=src, module_name="multilang", assume_yes=True)
     msg = str(excinfo.value)
     assert "dual.py" in msg and "dual.R" in msg
     assert "script:" in msg
@@ -178,10 +187,10 @@ def test_ambiguous_scripts_error_then_script_key_selects(multilang_project):
 
     # Explicit script: selects the R file.
     (src / "method.yaml").write_text(_method_yaml("script: dual.R\n"))
-    method_id = register_method(method_dir=src, module_name="multilang")
+    method_id = register_method(method_dir=src, module_name="multilang", assume_yes=True).method_id
     method = _get_method("dual")
     assert method is not None and method.id == method_id
-    assert method.script_path.replace("\\", "/").endswith("src/dual/dual.R")
+    assert method.script_path == "dual.R"
 
 
 def test_script_key_unrecognized_extension_rejected(multilang_project):
@@ -193,7 +202,7 @@ def test_script_key_unrecognized_extension_rejected(multilang_project):
     (src / "method.yaml").write_text(_method_yaml("script: oddball.txt\n"))
 
     with pytest.raises(ValueError, match="unrecognized extension"):
-        register_method(method_dir=src, module_name="multilang")
+        register_method(method_dir=src, module_name="multilang", assume_yes=True)
     assert _get_method("oddball") is None
 
 
@@ -211,7 +220,7 @@ def test_script_outside_method_dir_rejected(multilang_project):
     (src / "method.yaml").write_text(_method_yaml("script: ../../shared/main.R\n"))
 
     with pytest.raises(ValueError, match="outside the method directory") as excinfo:
-        register_method(method_dir=src, module_name="multilang")
+        register_method(method_dir=src, module_name="multilang", assume_yes=True)
     msg = str(excinfo.value)
     assert "helpers:" in msg
     assert _get_method("escapist") is None
@@ -221,6 +230,7 @@ def test_script_outside_method_dir_rejected(multilang_project):
         register_method(
             method_dir=src, module_name="multilang",
             script_name="../../shared/main.R",
+            assume_yes=True,
         )
     assert _get_method("escapist") is None
 
@@ -259,7 +269,7 @@ def test_register_method_cli_reports_discovery_errors_cleanly(
         (src / fname).write_text(content)
     (src / "method.yaml").write_text(_method_yaml(yaml_extra))
 
-    rc = cli_main(["register-method", str(src), "--module", "multilang"])
+    rc = cli_main(["register-method", "--yes", str(src), "--module", "multilang"])
     assert rc == 1
     err = capsys.readouterr().err
     assert err.startswith("ERROR:")
@@ -289,11 +299,11 @@ def test_strict_helpers_mode(multilang_project):
     src.mkdir(parents=True)
     (src / "strict.R").write_text("x <- 1\n")
     (src / "method.yaml").write_text(
-        _method_yaml("helpers:\n  - ../../shared/util.R\n")
+        _method_yaml("script: strict.R\nhelpers:\n  - ../../shared/util.R\n")
     )
 
-    register_method(method_dir=src, module_name="multilang")
-    registered = proj / "methods" / "strict"
+    register_method(method_dir=src, module_name="multilang", assume_yes=True)
+    registered = layout.method_dir(proj, "multilang", "strict")
     snapshot_helper = registered / "_wfc_helpers" / "shared" / "util.R"
     assert (registered / "strict.R").exists()
     assert snapshot_helper.exists(), "out-of-dir helper missing from snapshot"
@@ -303,25 +313,14 @@ def test_strict_helpers_mode(multilang_project):
     # Editing the declared helper changes the fingerprint (cache key axis)
     # after re-registration refreshes the snapshot.
     helper.write_text("u <- 2\n")
-    register_method(method_dir=src, module_name="multilang")
+    register_method(method_dir=src, module_name="multilang", assume_yes=True)
     fp2 = build_code_fingerprint(registered, _projection_of(registered))
     assert fp2 != fp1, "edited helper did not change the code fingerprint"
-
-    # Ghost purge (strict mode): a recognized script an earlier registration
-    # left in the snapshot root is dropped on re-registration — the
-    # fingerprint never covers scripts outside the declared set.
-    ghost = registered / "old_main.R"
-    ghost.write_text("old <- 1\n")
-    register_method(method_dir=src, module_name="multilang")
-    assert not ghost.exists(), "stale snapshot script survived re-registration"
-    assert (registered / "strict.R").exists()
-    assert snapshot_helper.exists()
-    assert (registered / "method.yaml").exists()
 
     # Undeclared recognized script in the method dir -> loud strict error.
     (src / "sneaky.R").write_text("s <- 1\n")
     with pytest.raises(ValueError, match="helpers:") as excinfo:
-        register_method(method_dir=src, module_name="multilang")
+        register_method(method_dir=src, module_name="multilang", assume_yes=True)
     assert "sneaky.R" in str(excinfo.value)
     (src / "sneaky.R").unlink()
 
@@ -332,9 +331,71 @@ def test_strict_helpers_mode(multilang_project):
     (esc / "method.yaml").write_text(
         _method_yaml("helpers:\n  - ../../../outside.R\n")
     )
-    with pytest.raises(ValueError, match="outside the project root"):
-        register_method(method_dir=esc, module_name="multilang")
+    with pytest.raises(ValueError, match="Move the helper into the method's directory"):
+        register_method(method_dir=esc, module_name="multilang", assume_yes=True)
     assert _get_method("escape") is None
+
+
+@workflow(
+    purpose="Strict helpers from a source outside the project: helpers in "
+            "the method's own directory register, sit in the snapshot and "
+            "enter the code fingerprint; a helper removed from method.yaml "
+            "and the source leaves the snapshot on re-registration; a helper "
+            "outside the method's directory is refused with the move-it "
+            "advice and leaves no row and no snapshot"
+)
+def test_strict_helpers_from_a_source_outside_the_project(multilang_project):
+    """In-directory strict helpers register from any directory."""
+    proj = multilang_project
+    elsewhere = proj.parent / "elsewhere"
+
+    src = elsewhere / "outer"
+    (src / "lib").mkdir(parents=True)
+    (src / "outer.R").write_text("o <- 1\n")
+    (src / "lib" / "util.R").write_text("u <- 1\n")
+    (src / "lib" / "extra.R").write_text("e <- 1\n")
+    (src / "method.yaml").write_text(
+        _method_yaml("script: outer.R\nhelpers:\n  - lib/util.R\n  - lib/extra.R\n")
+    )
+
+    register_method(method_dir=src, module_name="multilang", assume_yes=True)
+    registered = layout.method_dir(proj, "multilang", "outer")
+    assert (registered / "outer.R").exists()
+    assert (registered / "lib" / "util.R").exists()
+    assert (registered / "lib" / "extra.R").exists()
+    fp1 = build_code_fingerprint(registered, _projection_of(registered))
+
+    # The helper is part of the fingerprint: editing it and re-registering
+    # changes the digest.
+    (src / "lib" / "util.R").write_text("u <- 2\n")
+    register_method(method_dir=src, module_name="multilang", assume_yes=True)
+    fp2 = build_code_fingerprint(registered, _projection_of(registered))
+    assert fp2 != fp1, "an in-directory helper is not in the code fingerprint"
+
+    # A helper dropped from method.yaml and the source is purged from the
+    # snapshot on re-registration (the snapshot holds exactly the declared
+    # set).
+    (src / "lib" / "extra.R").unlink()
+    (src / "method.yaml").write_text(_method_yaml("script: outer.R\nhelpers:\n  - lib/util.R\n"))
+    register_method(method_dir=src, module_name="multilang", assume_yes=True)
+    assert not (registered / "lib" / "extra.R").exists(), (
+        "a removed helper survived re-registration in the snapshot")
+    assert (registered / "lib" / "util.R").exists()
+
+    # A helper outside the method's directory, from a source outside the
+    # project: refused, naming the fix, before anything is written.
+    (elsewhere / "shared.R").write_text("s <- 1\n")
+    far = elsewhere / "far"
+    far.mkdir()
+    (far / "far.R").write_text("f <- 1\n")
+    (far / "method.yaml").write_text(_method_yaml("helpers:\n  - ../shared.R\n"))
+    with pytest.raises(ValueError) as refused:
+        register_method(method_dir=far, module_name="multilang", assume_yes=True)
+    message = str(refused.value)
+    assert "Move the helper into the method's directory" in message
+    assert "inside the project" in message
+    assert _get_method("far") is None
+    assert not layout.method_dir(proj, "multilang", "far").exists()
 
 
 def test_register_env_rejects_both_interpreter_and_python(

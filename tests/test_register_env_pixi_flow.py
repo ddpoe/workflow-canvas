@@ -16,7 +16,7 @@ import pytest
 
 from axiom_annotations import workflow
 
-from tests.fixtures.fakes import stub_docker_build, stub_docker_image_inspect
+from tests.fixtures.fakes import stub_docker_build, stub_docker_image_content, stub_docker_image_inspect
 
 
 @workflow(
@@ -26,10 +26,8 @@ from tests.fixtures.fakes import stub_docker_build, stub_docker_image_inspect
             "('docker://local/<name>@sha256:<hex>'), and persists the "
             "manifest entry with env_fingerprint + built_from_lock populated"
 )
-def test_register_env_pixi_e2e_mocked(tmp_path, monkeypatch):
+def test_register_env_pixi_e2e_mocked(tmp_project, monkeypatch):
     from wfc import environments as envs_mod
-
-    (tmp_path / ".wfc").mkdir()
 
     digest_hex = "c" * 64
 
@@ -42,6 +40,7 @@ def test_register_env_pixi_e2e_mocked(tmp_path, monkeypatch):
         return f"sha256:{digest_hex}"
 
     stub_docker_build(monkeypatch, fake_build)
+    stub_docker_image_content(monkeypatch)
     stub_docker_image_inspect(monkeypatch, fake_inspect)
 
     # Source payload: verbatim lock/toml/freeze content that register()
@@ -62,11 +61,11 @@ def test_register_env_pixi_e2e_mocked(tmp_path, monkeypatch):
             "pixi_toml_content": pixi_toml,
             "pip_freeze_content": pip_freeze,
         },
-        project_dir=tmp_path,
+        project_dir=tmp_project,
     )
 
     # Manifest entry on disk
-    manifest = json.loads((tmp_path / ".wfc" / "envs.json").read_text(encoding="utf-8"))
+    manifest = json.loads((tmp_project / ".wfc" / "envs.json").read_text(encoding="utf-8"))
     assert "image-io" in manifest["envs"]
     entry = manifest["envs"]["image-io"]
 
@@ -85,7 +84,7 @@ def test_register_env_pixi_e2e_mocked(tmp_path, monkeypatch):
     assert entry["backend"] == "pixi"
 
     # Dockerfile was written
-    dockerfile_path = tmp_path / ".wfc" / "build" / "image-io" / "Dockerfile"
+    dockerfile_path = tmp_project / ".wfc" / "build" / "image-io" / "Dockerfile"
     assert dockerfile_path.exists()
     text = dockerfile_path.read_text(encoding="utf-8")
     assert "# syntax=docker/dockerfile:1.4" in text
@@ -93,8 +92,8 @@ def test_register_env_pixi_e2e_mocked(tmp_path, monkeypatch):
     # docker build was called once
     assert len(build_calls) == 1
     called_dir, called_tag = build_calls[0]
-    assert called_dir == (tmp_path / ".wfc" / "build" / "image-io").resolve() \
-        or called_dir == tmp_path / ".wfc" / "build" / "image-io"
+    assert called_dir == (tmp_project / ".wfc" / "build" / "image-io").resolve() \
+        or called_dir == tmp_project / ".wfc" / "build" / "image-io"
     assert called_tag == "local/image-io:_wfc-build"
 
     # The returned record matches what was persisted.
@@ -104,7 +103,7 @@ def test_register_env_pixi_e2e_mocked(tmp_path, monkeypatch):
     # Build context was staged on disk with the submitted bytes — the mocked
     # docker build cannot see a build context missing pixi.toml, so assert
     # each staged source file exists and carries exactly what was passed in.
-    build_dir = tmp_path / ".wfc" / "build" / "image-io"
+    build_dir = tmp_project / ".wfc" / "build" / "image-io"
     assert (build_dir / "pixi.lock").read_text(encoding="utf-8") == pixi_lock
     assert (build_dir / "pixi.toml").read_text(encoding="utf-8") == pixi_toml
     assert (build_dir / "pip-freeze.txt").read_text(encoding="utf-8") == pip_freeze
@@ -113,7 +112,7 @@ def test_register_env_pixi_e2e_mocked(tmp_path, monkeypatch):
     # through the production attach gate that method registration runs, which
     # rejects an env whose ref shape does not match what register() writes.
     from wfc.environments import check_method_env
-    assert check_method_env("image-io", tmp_path) == "image-io"
+    assert check_method_env("image-io", tmp_project) == "image-io"
 
 
 @workflow(
@@ -132,6 +131,7 @@ def test_register_env_rejects_env_name_missing_from_lock_before_docker(
     build_calls = []
     stub_docker_build(monkeypatch,
                       lambda dockerfile_dir, tag: build_calls.append(tag))
+    stub_docker_image_content(monkeypatch)
     stub_docker_image_inspect(monkeypatch, "sha256:" + "c" * 64)
 
     lock = "version: 6\nenvironments:\n  default:\n    packages: {}\n"

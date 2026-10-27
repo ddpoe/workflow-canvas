@@ -4,9 +4,9 @@ One project, two method nodes bound to one registered env. Node ``a`` is
 the modern shape: a ``.csv`` output beside a ``.tar.gz`` output and a
 directory output, an input ``columns`` block naming a strict column and a
 parameter-derived one, and the bare env name in ``method.yaml``. Node
-``b`` is the legacy shape: its stored ``Method.env`` row and its frozen
-pipeline document both carry ``container:<name>``, the spelling
-registration refuses. Both register, enrich, claim and dispatch
+``b`` is the legacy shape: its stored ``Method.env`` row carries
+``container:<name>``, the spelling registration refuses, and dispatch
+reads that row (a step runs in its method's registered env). Both register, enrich, claim and dispatch
 through the one grammar -- the same image, the same env fingerprint -- and
 the legacy value is never rewritten where it is stored.
 
@@ -15,8 +15,6 @@ Also the ``testing.requirements`` diverse end-to-end path. Stub rung,
 unmarked: no container daemon.
 """
 from __future__ import annotations
-
-import json
 
 from axiom_annotations import Step, workflow
 
@@ -34,9 +32,8 @@ from tests.harness import (
     wire,
 )
 from wfc.contracts import enrich_pipeline, is_directory_slot, resolve_columns
-from wfc.persistence import get_session
 from wfc.environments import get as env_record
-from wfc.persistence import Method
+from wfc.persistence import Method, get_session
 from wfc.registration import load_contract_map
 
 ENV = DEFAULT_ENV_NAME
@@ -59,9 +56,11 @@ def _stored_env(project: Project, name: str) -> str:
 
 def _stored_input_columns(project: Project, name: str, slot: str) -> dict:
     """Read the ``columns`` block registration stored for one input slot."""
+    from wfc.registration import method_contract
     with get_session() as session:
         row = session.get(Method, project.method_ids[name])
-        return row.contract.input_slots[slot]["columns"]
+        module = row.module.name
+    return method_contract(module, name).input_slots[slot]["columns"]
 
 
 def _seed_legacy_env(project: Project, name: str, value: str) -> None:
@@ -84,15 +83,15 @@ def _seed_legacy_env(project: Project, name: str, value: str) -> None:
 
 @workflow(purpose="One env, two nodes -- a modern declaration with a directory, "
                   "a .tar.gz and a column block, and a legacy node whose stored "
-                  "row and frozen document still say container:<name> -- "
+                  "row still says container:<name> -- "
                   "register, enrich, claim and dispatch through the one grammar "
                   "to the same image and the same env fingerprint, with the "
                   "legacy value never rewritten",
           inputs="A selector feeding nodes a and b; b's Method.env row seeded "
                  "to the legacy spelling after registration",
           outputs="Both dispatch argvs name the manifest's image; both run rows "
-                  "carry the manifest's env_fingerprint; b's document and row "
-                  "keep the prefix",
+                  "carry the manifest's env_fingerprint; b's row keeps the "
+                  "prefix",
           critical="Stub rung, stopped after dispatch: the method process is "
                    "the harness's local stand-in and no container starts")
 def test_modern_and_legacy_nodes_dispatch_to_one_image_with_one_fingerprint(
@@ -100,8 +99,7 @@ def test_modern_and_legacy_nodes_dispatch_to_one_image_with_one_fingerprint(
     口 = Step(step_num=1, name="Declare the two nodes and register the project",
              purpose="a: .csv, .tar.gz and directory outputs, a strict plus "
                      "parameter-derived column block, the bare env name; b: "
-                     "the same env spelled container:<name> in its pipeline "
-                     "document. build_project writes both declarations, "
+                     "the same env. build_project writes both declarations, "
                      "registers them and freezes the document",
              outputs="A built project with both methods registered")
     scn = Scenario(
@@ -111,7 +109,7 @@ def test_modern_and_legacy_nodes_dispatch_to_one_image_with_one_fingerprint(
                              "figs": "directory"},
                     input_columns={"data": COLUMNS},
                     params={"marker": "cd3"}),
-               node("b", inputs=[wire("sel")], document_env=LEGACY_ENV)],
+               node("b", inputs=[wire("sel")])],
         samples=["s1"],
     )
     project = build_project(scn, root=git_project, monkeypatch=monkeypatch)
@@ -157,10 +155,9 @@ def test_modern_and_legacy_nodes_dispatch_to_one_image_with_one_fingerprint(
                            {"marker": "cd3"}) == {"cell_id", "cd3_mean"}
 
     口 = Step(step_num=4, name="Drive both nodes through the dispatch phase",
-             purpose="Claim resolves each node's env fingerprint from its "
-                     "stored row; dispatch resolves the image from the frozen "
-                     "document's value -- the bare name for a, the legacy "
-                     "spelling for b",
+             purpose="Claim resolves each node's env fingerprint, and "
+                     "dispatch its image, from the stored row -- the bare "
+                     "name for a, the legacy spelling for b",
              outputs="One observation bundle per node, each with its "
                      "dispatch argv")
     obs_a = drive_target(project, "a", monkeypatch=monkeypatch,
@@ -175,8 +172,8 @@ def test_modern_and_legacy_nodes_dispatch_to_one_image_with_one_fingerprint(
 
     口 = Step(step_num=5, name="Same image, same fingerprint, legacy value intact",
              purpose="Both argvs name the manifest's image; both run rows carry "
-                     "the manifest's env_fingerprint; b's frozen document and "
-                     "stored row still hold container:<name> -- the read side "
+                     "the manifest's env_fingerprint; b's stored row still "
+                     "holds container:<name> -- the read side "
                      "strips the prefix and never writes the bare name back")
     assert IMAGE_REF in obs_a.dispatch_cmd(A)
     assert IMAGE_REF in obs_b.dispatch_cmd(B)
@@ -185,6 +182,4 @@ def test_modern_and_legacy_nodes_dispatch_to_one_image_with_one_fingerprint(
     assert obs_a.run_row(A)["env_fingerprint"] == manifest_fingerprint
     assert obs_b.run_row(B)["env_fingerprint"] == manifest_fingerprint
 
-    document = json.loads(project.pipeline_json.read_text())
-    assert next(n for n in document["nodes"] if n["id"] == "b")["env"] == LEGACY_ENV
     assert _stored_env(project, "b") == LEGACY_ENV

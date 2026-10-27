@@ -25,7 +25,11 @@ from sqlmodel import select
 from axiom_annotations import workflow, Step
 
 from tests.conftest import pin_project_root, requires_docker
-from tests.fixtures.conftest import create_sample_csv, register_test_method
+from tests.fixtures.conftest import (
+    create_sample_csv,
+    register_test_method,
+    sample_source_dir,
+)
 
 pytestmark = [pytest.mark.integration, requires_docker]
 
@@ -79,12 +83,12 @@ _GATE_METHOD_SCRIPT = textwrap.dedent('''\
 
 
 def _register_gate_method(project_dir) -> None:
-    """Write the sample-gate method into the project and register it.
+    """Write the sample-gate method's source beside the project and register it.
 
     Args:
         project_dir: The project, with the fixture env record already written.
     """
-    method_dir = project_dir / "methods" / "sample_gate"
+    method_dir = sample_source_dir(project_dir) / "_methods" / "sample_gate"
     method_dir.mkdir(parents=True, exist_ok=True)
     (method_dir / "method.yaml").write_text(_GATE_METHOD_YAML, encoding="utf-8")
     (method_dir / "sample_gate.py").write_text(_GATE_METHOD_SCRIPT, encoding="utf-8")

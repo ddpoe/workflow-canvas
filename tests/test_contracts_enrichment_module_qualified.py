@@ -27,7 +27,6 @@ from pathlib import Path
 from axiom_annotations import workflow
 
 from tests.fixtures.conftest import write_env_record
-from tests.fixtures.fakes import suspend_name_conflict_check
 from wfc.init import init_project
 from wfc.registration import register_method, register_module
 
@@ -37,9 +36,8 @@ METHOD = "shared_method"
 def _author_method(root: Path, module: str, *, env: str, outputs: dict) -> Path:
     """Write one method's source and contract under an authoring dir.
 
-    Sources live outside ``methods/`` so the two same-named methods do not
-    share an authoring directory; registration snapshots each into the
-    registered location on its own. The script saves every declared output
+    Each module's source has its own authoring directory; registration
+    snapshots each into its module's own registered location. The script saves every declared output
     slot, which registration's AST scan requires of a required output.
     """
     method_dir = root / "authoring" / module / METHOD
@@ -88,22 +86,9 @@ def test_enrichment_attaches_each_modules_own_contract(tmp_project, monkeypatch)
     dir_b = _author_method(tmp_project, "mod_b", env="env-b",
                            outputs={"matrix": ".h5ad", "figures": "dir"})
     register_module(name="mod_a", contracts=[], description="first owner")
-    register_method(method_dir=dir_a, module_name="mod_a")
+    register_method(method_dir=dir_a, module_name="mod_a", assume_yes=True)
     register_module(name="mod_b", contracts=[], description="second owner")
-
-    # Registration refuses a method name a different module already holds:
-    # both would share the one ``methods/<name>/`` snapshot, which cache-key
-    # composition reads back. That interlock is temporary — it stands until
-    # the snapshot layout carries the module — and it guards the snapshot,
-    # not the rows. This test is about the rows: enrichment reads contracts
-    # out of the database and must key them on module and method together,
-    # which stays true whichever way the second module's rows got there, and
-    # stays the behaviour the layout fix will make reachable again. So the
-    # interlock is suspended for the second registration, and everything
-    # else about it is the production path the file's contract depends on.
-    suspend_name_conflict_check(monkeypatch)
-    register_method(method_dir=dir_b, module_name="mod_b")
-    monkeypatch.undo()
+    register_method(method_dir=dir_b, module_name="mod_b", assume_yes=True)
 
     document = PipelineInput(nodes=[
         PipelineNode(id="a1", type="method", method=METHOD, module="mod_a"),

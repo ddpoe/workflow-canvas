@@ -87,11 +87,14 @@ class TestReadConfigDvc:
         assert cfg["dvc"]["remote_path"] == "/tmp/dvc-storage"
         assert cfg["dvc"]["auto_init"] is True
 
-    def test_returns_only_the_environment_roots_and_dvc(self, tmp_project):
-        """One call answers the environment roots and the [dvc] entry only.
+    def test_returns_only_the_environment_roots_dvc_integrity_and_registry(
+            self, tmp_project):
+        """One call answers five keys: the environment roots, [dvc], [integrity]
+        and [registry].
 
         The file carries a ``[database]`` table and a project name; neither
-        a database URL nor the name comes back.
+        a database URL nor the name comes back. ``registry`` is ``None``
+        until ``[registry] url`` is set, then ``{"url": ...}``.
         """
         _write_config(tmp_project, textwrap.dedent("""
             [dvc]
@@ -101,7 +104,21 @@ class TestReadConfigDvc:
         from wfc.persistence import read_config
         cfg = read_config(tmp_project)
 
-        assert set(cfg) == {"pixi_root", "conda_root", "dvc"}
+        assert set(cfg) == {"pixi_root", "conda_root", "dvc", "integrity", "registry"}
+        assert cfg["registry"] is None
+
+        _write_config(tmp_project, textwrap.dedent("""
+            [dvc]
+            url = "file:///tmp/storage"
+
+            [registry]
+            url = "ghcr.io/lab/project"
+        """))
+        cfg = read_config(tmp_project)
+
+        assert set(cfg) == {"pixi_root", "conda_root", "dvc", "integrity", "registry"}
+        assert cfg["registry"] == {"url": "ghcr.io/lab/project"}
+
     def test_dvc_section_absent(self, tmp_project):
         """When [dvc] is missing, read_config returns dvc=None."""
         _write_config(tmp_project)

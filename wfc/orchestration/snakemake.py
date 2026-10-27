@@ -64,11 +64,11 @@ def _output_path(node_id: str, step_map: dict[str, StepDef], pipeline_id: str | 
 
     Unified path scheme -- every node, regardless of slot count or slot type::
 
-        .runs/sentinels/{pipeline_id}/{node_id}/{sample}/{variant}/.complete
+        .wfc/runs/sentinels/{pipeline_id}/{node_id}/{sample}/{variant}/.complete
 
     The sentinel is touched by ``wfc run-step``'s record phase when the step
     completes or hits the cache, signalling to Snakemake that the rule completed.  Actual method outputs
-    live in ``.runs/<run_id>/<slot>/`` (staging) and are content-addressed
+    live in ``.wfc/runs/<run_id>/<slot>/`` (staging) and are content-addressed
     via the DVC cache -- Snakemake never sees them.  Slot-agnostic: every
     slot of a node collapses to one sentinel under the unified contract.
 
@@ -245,7 +245,7 @@ def _generate_rule(
     # -- output: declaration --
     # Snakemake-visible output is a single zero-byte sentinel per
     # (pipeline, node, sample, variant). Real method outputs stay in
-    # .runs/<run_id>/<slot>/ (staging) and are content-addressed via the
+    # .wfc/runs/<run_id>/<slot>/ (staging) and are content-addressed via the
     # DVC cache. `wfc run-step` touches the sentinel when the step completes
     # or hits the cache. The sentinel is uniform, so the Snakefile needs no
     # directory-slot or multi-slot detection.
@@ -273,7 +273,7 @@ def _generate_rule(
     # input: block only gate dependency ordering -- they aren't data paths.
     # Emit one --collapsed-sample <s> per bundled sample. The materialize
     # phase (wfc.execution.materialize) iterates each named sample's
-    # data/samples/<s>/ directory at execution time (after restore_sample
+    # .wfc/workspace/samples/<s>/ directory at execution time (after restore_sample
     # has populated it) and accumulates the per-sample data files into the
     # fan-in slot. Filesystem inspection deliberately stays out of the
     # generator -- restore_sample is itself a Snakemake rule whose outputs
@@ -324,7 +324,7 @@ def generate_snakefile(
 
     Unified path scheme (sentinel-only)::
 
-        .runs/sentinels/{pipeline_id}/{node_id}/{sample}/{variant}/.complete
+        .wfc/runs/sentinels/{pipeline_id}/{node_id}/{sample}/{variant}/.complete
 
     Every node uses the same sentinel pattern. Actual method outputs
     live in the run-archive directory and are content-addressed via
@@ -440,7 +440,7 @@ def generate_snakefile(
         # Pipeline logger — writes to pipeline.log + stderr
         PIPELINE_LOG_DIR = os.environ.get(
             "WFC_PIPELINE_LOG_DIR",
-            os.path.join("__ARTIFACT_STORE__", "__PIPELINES_DIR__", PIPELINE_ID),
+            os.path.join("__PIPELINES_RELPATH__", PIPELINE_ID),
         )
         os.makedirs(PIPELINE_LOG_DIR, exist_ok=True)
         os.makedirs(os.path.join(PIPELINE_LOG_DIR, "__RUN_LOGS_DIR__"), exist_ok=True)
@@ -459,8 +459,7 @@ def generate_snakefile(
         _pipeline_logger.addHandler(_stream_handler)
 
         # Run outcomes are tracked via sidecar JSONs (written by run-step)
-    ''').replace("__ARTIFACT_STORE__", layout.ARTIFACT_STORE_NAME)
-       .replace("__PIPELINES_DIR__", layout.PIPELINES_DIR_NAME)
+    ''').replace("__PIPELINES_RELPATH__", layout.pipelines_relpath())
        .replace("__RUN_LOGS_DIR__", layout.PIPELINE_RUN_LOGS_DIR_NAME))
 
     # ── Pipeline JSON + env vars for run-step ───────────────────────────────
@@ -565,7 +564,7 @@ def generate_snakefile(
                 'if SAMPLE_HASHES.get(wildcards.sample) else ""'
             )
             # wfc restore-sample itself creates the Snakemake sentinel marker
-            # at <project_root>/data/samples/<name>/.sample_ready (mkparents,
+            # at <project_root>/.wfc/workspace/samples/<name>/.sample_ready (mkparents,
             # absolute path via get_project_root()), so the shell rule is
             # a single cwd-independent wfc invocation.
             lines.append("    shell:")

@@ -1,11 +1,9 @@
 {
-  "_comment": "Minimal 2-node pipeline to validate multi-output method (train_classifier) feeding a multi-input method (plot_decision_boundary) via named source_slot/target_slot links.",
   "nodes": [
     {
       "id": "classifier",
       "method": "train_classifier",
       "module": "binary_label_classification",
-      "script": "modules/binary_label_classification/train_classifier/train_classifier.py",
       "output_ext": ".csv",
       "slot_outputs": {
         "predictions": "predictions.csv",
@@ -35,7 +33,6 @@
       "id": "plotter",
       "method": "plot_decision_boundary",
       "module": "data_visualization",
-      "script": "modules/data_visualization/plot_decision_boundary/plot_decision_boundary.py",
       "output_ext": ".png",
       "params": {
         "feature_pairs": [

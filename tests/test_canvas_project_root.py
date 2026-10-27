@@ -106,7 +106,7 @@ def test_canvas_serves_the_launched_project(tmp_path, monkeypatch):
             pass
     unstarted = TestClient(canvas_server.app, raise_server_exceptions=False)
     assert unstarted.get("/api/fs/browse").status_code == 500
-    assert not (elsewhere / ".wfc").exists() and not (elsewhere / ".runs").exists()
+    assert not (elsewhere / ".wfc").exists()
 
 
 def _nid_in(root: Path):

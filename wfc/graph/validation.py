@@ -14,6 +14,8 @@ from typing import Any
 
 from axiom_annotations import task
 
+from ..contracts import version_entry
+
 
 def _node_type(node: dict) -> str:
     return node.get("type") or "method"
@@ -61,9 +63,8 @@ def fan_in_upstream_errors(
     shapes have no meaning yet and are refused:
 
     * more than one fan-in selector wired into the same method node --
-      whichever arrived second used to silently replace the first, so two
-      documents with different first-selector bundles computed the same
-      cache key;
+      the engine would keep only one, so two documents with different
+      first-selector bundles would compute the same cache key;
     * a fan-in selector beside any other upstream on the same consumer.
 
     Structural validation (the canvas's preview) and the load's legality
@@ -146,6 +147,10 @@ def validate_structure(document: dict, contract_map: dict) -> dict[str, Any]:
         if info is None:
             errors.append(f"Unknown method: {mod_name}.{method!r}")
             continue
+        # The node's version's slots (its pin, else the newest); a pin
+        # naming no version is the validator's refusal, so the newest's
+        # slots stand in here.
+        info = version_entry(info, node.get("version")) or info
         input_slots = info.get("input_slots") or {}
         for slot_name, slot_spec in input_slots.items():
             if slot_spec.get("required", True):

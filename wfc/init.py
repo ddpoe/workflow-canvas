@@ -1,8 +1,9 @@
 """Project initializer — scaffold a new wfc project directory.
 
-Creates the `.wfc/` config directory, `modules/` and `methods/` directories,
-`.runs/` artifact store, `.gitignore`, and initializes the SQLite database
-with the full schema.
+Creates the `.wfc/` state directory (config, database), `.gitignore` and the
+DVC files, and nothing else: every other directory in the project is the
+user's. wfc's own trees under `.wfc/` (the registry, the restore workspace,
+the run archive) are made by the verbs that write them.
 
 Usage:
     from wfc.init import init_project
@@ -13,13 +14,15 @@ Usage:
 
 from __future__ import annotations
 
-import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
 from axiom_annotations import Step, workflow
 
+from . import confirm as _prompt
 from . import layout
+from .confirm import ConfirmationRequired
 from .execution.pipeline import ENGINE_STATE_DIR_NAME
 
 # Default config template (TOML). It holds only keys wfc reads: the [dvc]
@@ -50,17 +53,20 @@ _DVC_SECTION = textwrap.dedent("""
 # creates is either committed or listed here.
 _GITIGNORE_LINES = [
     layout.db_relpath(),
+    # SQLite's sidecar files beside the database (the rollback journal that
+    # exists while any write is open, e.g. the push worker's during a run).
+    f"{layout.db_relpath()}-*",
     f"{layout.STATE_DIR_NAME}/cache/",
     f"{layout.STATE_DIR_NAME}/{layout.BUILD_DIR_NAME}/",
-    f"{layout.ARTIFACT_STORE_NAME}/",
-    f"{layout.DATA_DIR_NAME}/",
+    f"{layout.artifact_store_relpath()}/",
+    f"{layout.restore_workspace_relpath()}/",
     f"{layout.DVC_DIR_NAME}/cache/",
     f"{ENGINE_STATE_DIR_NAME}/",
     "__pycache__/",
 ]
 
 
-class InitConfirmationRequired(RuntimeError):
+class InitConfirmationRequired(ConfirmationRequired):
     """Raised when ``init`` would change an existing project and cannot ask.
 
     Nothing has been changed when this is raised. Pass ``--yes``
@@ -70,13 +76,8 @@ class InitConfirmationRequired(RuntimeError):
 
 def _is_git_repo(directory: Path) -> bool:
     """Return True if *directory* is inside a git working tree."""
-    result = subprocess.run(
-        ["git", "rev-parse", "--is-inside-work-tree"],
-        cwd=str(directory),
-        capture_output=True,
-        text=True,
-    )
-    return result.returncode == 0
+    from .version import in_work_tree
+    return in_work_tree(directory)
 
 
 def _initial_commit(project_dir: Path, files: list[str]) -> str | None:
@@ -99,24 +100,14 @@ def _initial_commit(project_dir: Path, files: list[str]) -> str | None:
 
 def _has_head_commit(directory: Path) -> bool:
     """Return True if the repo at *directory* has at least one commit (HEAD)."""
-    result = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=str(directory), capture_output=True, text=True,
-    )
-    return result.returncode == 0
+    from .version import has_head_commit
+    return has_head_commit(directory)
 
 
 def _has_global_git_identity() -> bool:
     """Return True if both global user.name and user.email are configured."""
-    name = subprocess.run(
-        ["git", "config", "--global", "user.name"],
-        capture_output=True, text=True,
-    )
-    email = subprocess.run(
-        ["git", "config", "--global", "user.email"],
-        capture_output=True, text=True,
-    )
-    return bool(name.stdout.strip()) and bool(email.stdout.strip())
+    from .version import global_identity_configured
+    return global_identity_configured()
 
 
 # DVC-native remote schemes _normalize_archive recognizes, mapped to the
@@ -196,7 +187,7 @@ def _resolve_archive_url(
     if archive:
         return _normalize_archive(archive, project_dir)
 
-    if assume_yes or not _stdin_is_interactive():
+    if assume_yes or not _prompt.stdin_is_interactive():
         return default
 
     print(
@@ -275,15 +266,6 @@ def _normalize_archive(value: str, project_dir: Path) -> str:
     return path.as_posix()
 
 
-def _stdin_is_interactive() -> bool:
-    """Return True if stdin is an interactive TTY (safe to prompt)."""
-    import sys
-    try:
-        return sys.stdin is not None and sys.stdin.isatty()
-    except (ValueError, AttributeError):
-        return False
-
-
 class _InitPlan:
     """What ``init`` would change in a project, listed before it changes it.
 
@@ -294,8 +276,12 @@ class _InitPlan:
             adds, for the listing.
         new_config: True when the config file does not exist yet.
         ignore_lines: ``.gitignore`` lines to append.
+        attributes_lines: ``.gitattributes`` lines to append (the captures
+            line, which keeps env captures byte-exact in git).
         dvc_setup: True when DVC is to be set up.
         dvc_config: The ``[dvc]`` settings DVC is set up from.
+        git_init: True when init will make the directory a git repository
+            (git is installed and the directory is not in one yet).
     """
 
     def __init__(self) -> None:
@@ -303,18 +289,23 @@ class _InitPlan:
         self.config_sections: list[tuple[str, dict[str, str]]] = []
         self.new_config = False
         self.ignore_lines: list[str] = []
+        self.attributes_lines: list[str] = []
         self.dvc_setup = False
         self.dvc_config: dict | None = None
+        self.git_init = False
 
     def is_empty(self) -> bool:
         """Return True when the project is already current."""
-        return not (self.config_text or self.ignore_lines or self.dvc_setup)
+        return not (self.config_text or self.ignore_lines
+                    or self.attributes_lines or self.dvc_setup or self.git_init)
 
     def files(self) -> list[str]:
         """Return the project-relative files applying this plan writes."""
         out: list[str] = []
         if self.ignore_lines:
             out.append(".gitignore")
+        if self.attributes_lines:
+            out.append(layout.GITATTRIBUTES_FILENAME)
         if self.config_text:
             out.append(layout.marker_relpath())
         if self.dvc_setup:
@@ -335,11 +326,17 @@ class _InitPlan:
             lines.append("    (none)")
         lines.append("  Lines to append to .gitignore:")
         lines += [f"    {ln}" for ln in self.ignore_lines] or ["    (none)"]
+        lines.append(f"  Lines to append to {layout.GITATTRIBUTES_FILENAME}:")
+        lines += [f"    {ln}" for ln in self.attributes_lines] or ["    (none)"]
         lines.append(
             f"  DVC: set up ({layout.DVC_DIR_NAME}/config, "
             f"{layout.DVC_DIR_NAME}/.gitignore)" if self.dvc_setup
             else "  DVC: already set up"
         )
+        if self.git_init:
+            lines.append("  git: initialize a repository here"
+                         + (" (with core.longpaths on)" if sys.platform == "win32"
+                            else ""))
         lines.append("  Files it would commit: " + ", ".join(self.files()))
         return "\n".join(lines)
 
@@ -408,12 +405,21 @@ def _plan_changes(
     present = {ln.strip() for ln in existing_ignore.splitlines()}
     plan.ignore_lines = [line for line in _GITIGNORE_LINES if line not in present]
 
+    from .version import missing_gitattributes_lines
+    plan.attributes_lines = missing_gitattributes_lines(
+        project_dir,
+        [layout.CAPTURES_GITATTRIBUTES_LINE, layout.REGISTRY_GITATTRIBUTES_LINE],
+    )
+
     if dvc_config is not None and dvc_config.get("auto_init", True):
         dvc_dir = layout.dvc_dir(project_dir)
         if not ((dvc_dir / "config").exists()
                 and (dvc_dir / ".gitignore").exists()):
             plan.dvc_setup = True
             plan.dvc_config = dvc_config
+
+    from .version import git_installed
+    plan.git_init = git_installed() and not _is_git_repo(project_dir)
     return plan
 
 
@@ -431,22 +437,18 @@ def _confirm(plan: _InitPlan, assume_yes: bool) -> bool:
         InitConfirmationRequired: With no TTY and no ``--yes``.
     """
     print(plan.render())
-    if assume_yes:
-        return True
-    if not _stdin_is_interactive():
-        raise InitConfirmationRequired(
+    return _prompt.confirm(
+        "Apply these changes?", assume_yes=assume_yes,
+        refusal=InitConfirmationRequired(
             "wfc init: this is an existing project and init cannot ask for "
             "confirmation without a terminal. Nothing was changed. Re-run "
             "with --yes to apply the changes listed above."
-        )
-    try:
-        answer = input("Apply these changes? [y/N]: ").strip().lower()
-    except EOFError:
-        answer = ""
-    return answer in ("y", "yes")
+        ),
+    )
 
 
-@workflow(purpose="Scaffold a new wfc project directory with database, config, and artifact store")
+@workflow(purpose="Scaffold a new wfc project: the .wfc/ state directory with "
+                  "config and database, .gitignore and DVC, and nothing else")
 def init_project(
     project_dir: Path,
     init_git: bool = False,
@@ -462,17 +464,20 @@ def init_project(
     In a fresh directory (no config, no git history) it applies everything
     without asking. In an existing project (a config already there, or a git
     repository with commits) it first lists what it would change -- config
-    sections to add, ``.gitignore`` lines to append, whether DVC is set up,
-    and the files it would commit -- and asks once. On no it changes
+    sections to add, ``.gitignore`` and ``.gitattributes`` lines to append,
+    whether DVC is set up, and the files it would commit -- and asks once. On no it changes
     nothing. ``assume_yes`` answers yes. With no terminal and no
     ``assume_yes`` it changes nothing and raises
     :class:`InitConfirmationRequired`. A project with nothing to add is
     already current: nothing is asked and nothing is committed.
 
     DVC is set up before the commit, and the commit names exactly the files
-    init wrote (``.gitignore``, ``.wfc/wf-canvas.toml``, ``.dvc/config``,
-    ``.dvc/.gitignore``), so nothing else the user staged is swept in and
-    the tree is clean afterwards.
+    init wrote (``.gitignore``, ``.gitattributes``, ``.wfc/wf-canvas.toml``,
+    ``.dvc/config``, ``.dvc/.gitignore``), so nothing else the user staged
+    is swept in and the tree is clean afterwards. ``.gitattributes`` gets
+    ``.wfc/captures/** -text`` and ``.wfc/registry/** -text``, so env
+    captures and registered method code are stored and checked out byte
+    for byte on any platform.
 
     git and Docker are hard run-requirements that init detects and surfaces
     but never installs. A missing or failing git or Docker does NOT abort
@@ -527,19 +532,14 @@ def init_project(
             print("wfc init: nothing was changed.")
             return {}
 
-    口 = Step(step_num=2, name="Create project directories",
-             purpose="Make .wfc/, modules/, methods/, data/samples/ and .runs/ "
-                     "without overwriting existing content")
-    for key, path in (
-        (f"{layout.STATE_DIR_NAME}/", layout.state_dir(project_dir)),
-        (f"{layout.MODULES_DIR_NAME}/", layout.modules_dir(project_dir)),
-        (f"{layout.METHODS_DIR_NAME}/", layout.methods_dir(project_dir)),
-        (f"{layout.DATA_DIR_NAME}/{layout.SAMPLES_DIR_NAME}/",
-         layout.samples_dir(project_dir)),
-        (f"{layout.ARTIFACT_STORE_NAME}/", layout.artifact_store(project_dir)),
-    ):
-        created[key] = not path.exists()
-        path.mkdir(parents=True, exist_ok=True)
+    口 = Step(step_num=2, name="Create the state directory",
+             purpose="Make .wfc/ and nothing else: every directory outside it "
+                     "is the user's, and wfc's own trees under it (registry, "
+                     "workspace, run archive) are made by the verbs that write "
+                     "them")
+    state = layout.state_dir(project_dir)
+    created[f"{layout.STATE_DIR_NAME}/"] = not state.exists()
+    state.mkdir(parents=True, exist_ok=True)
 
     口 = Step(step_num=3, name="Write config file",
              purpose="Write wf-canvas.toml (only [dvc]) when missing, or append "
@@ -561,9 +561,14 @@ def init_project(
     from .persistence import bootstrap_engine
     bootstrap_engine(layout.database_url(project_dir)).dispose()
 
-    口 = Step(step_num=5, name="Update .gitignore",
-             purpose="Append wfc-specific ignore rules without overwriting "
-                     "existing entries")
+    口 = Step(step_num=5, name="Update .gitignore and .gitattributes",
+             purpose="Append wfc-specific ignore rules, and the attributes that "
+                     "keep env captures and the registry byte-exact in git, "
+                     "without overwriting existing entries")
+    if plan.attributes_lines:
+        from .version import add_gitattributes_lines
+        add_gitattributes_lines(project_dir, plan.attributes_lines)
+    created[layout.GITATTRIBUTES_FILENAME] = bool(plan.attributes_lines)
     gitignore_path = project_dir / ".gitignore"
     existing_ignore = gitignore_path.read_text() if gitignore_path.exists() else ""
     if plan.ignore_lines:
@@ -600,13 +605,11 @@ def init_project(
                      "continue-on-fail (never abort init)")
     created[".git/"] = False
     try:
-        if not _is_git_repo(project_dir):
-            init_res = subprocess.run(
-                ["git", "init", str(project_dir)],
-                capture_output=True, text=True,
-            )
-            if init_res.returncode != 0:
-                raise RuntimeError(init_res.stderr.strip() or "git init failed")
+        from .version import git_installed, init_repository
+        if not git_installed():
+            raise FileNotFoundError("git")
+        if plan.git_init:
+            init_repository(project_dir)
             created[".git/"] = True
             print("  + Initialized git repository.")
         sha = _initial_commit(project_dir, plan.files())

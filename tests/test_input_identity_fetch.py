@@ -101,6 +101,9 @@ def test_fetch_reads_run_rows(tmp_project):
             "is refused naming the run and its outputs"
 )
 def test_unnamed_source_slot_resolves_to_the_one_recorded_output(tmp_project):
+    # Pre-archive records lie where collect writes them: the run archive.
+    from wfc.layout import run_archive_dir
+
     method_id = _seed_method()
     key = "abc" * 21 + "d"
     with get_session() as session:
@@ -114,13 +117,16 @@ def test_unnamed_source_slot_resolves_to_the_one_recorded_output(tmp_project):
         single_id, several_id, bare_id = single.id, several.id, bare.id
         session.add(RunOutput(
             run_id=single_id, output_name="merged.csv", slot="merged",
-            artifact_path="/fake/merged.csv", artifact_type="module_file",
+            artifact_path=str(run_archive_dir(tmp_project, single_id) / "merged.csv"),
+            artifact_type="module_file",
         ))
         session.add_all([
             RunOutput(run_id=several_id, output_name="merged.csv", slot="merged",
-                      artifact_path="/fake/merged.csv", artifact_type="module_file"),
+                      artifact_path=str(run_archive_dir(tmp_project, several_id) / "merged.csv"),
+                      artifact_type="module_file"),
             RunOutput(run_id=several_id, output_name="qc.csv", slot="qc",
-                      artifact_path="/fake/qc.csv", artifact_type="module_file"),
+                      artifact_path=str(run_archive_dir(tmp_project, several_id) / "qc.csv"),
+                      artifact_type="module_file"),
         ])
         session.commit()
 
@@ -149,12 +155,12 @@ def test_fetch_reads_sample_rows(tmp_project):
     with get_session() as session:
         hashed = Sample(
             name="hashed", source_path="/x.csv",
-            registered_path="data/samples/hashed/x.csv", file_type="csv",
+            registered_path="x.csv", file_type="csv",
             file_size=100, file_mtime=1.0, content_hash="a" * 32,
         )
         malformed = Sample(
             name="malformed", source_path="/malformed.csv",
-            registered_path="data/samples/malformed/malformed.csv",
+            registered_path="malformed.csv",
             file_type="csv", file_size=500, file_mtime=42.0, content_hash=None,
         )
         session.add_all([hashed, malformed])

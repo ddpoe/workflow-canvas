@@ -33,6 +33,7 @@ import pytest
 from axiom_annotations import workflow
 
 from wfc.graph import load_pipeline
+from wfc.layout import artifact_store_relpath
 from wfc.orchestration import generate_snakefile
 
 GOLDEN_DIR = Path(__file__).parent / "fixtures" / "snakefiles"
@@ -42,8 +43,8 @@ PIPELINE_JSON_LITERAL = "<PIPELINE_JSON>"
 #: Replaces the resolved project root in the emitted text.
 PROJECT_ROOT_TOKEN = "<PROJECT_ROOT>"
 
-TABLE_PATH = ".runs/run-r/table/table.parquet"
-PLOT_PATH = ".runs/run-r/plot/plot.png"
+TABLE_PATH = f"{artifact_store_relpath()}/run-r/table/table.parquet"
+PLOT_PATH = f"{artifact_store_relpath()}/run-r/plot/plot.png"
 
 #: The collapsed fan-in shape hands the emitter hashes for two of its three
 #: samples, so its file carries the restore rule and the hashless sample
@@ -52,7 +53,7 @@ COLLAPSED_SAMPLE_HASHES = {"s1": "a" * 32, "s2": "b" * 32}
 
 #: The three-input shape reads both of its samples, so each has a hash.
 PER_SAMPLE_HASHES = {"s1": "c" * 32, "s2": "d" * 32}
-MODEL_PATH = ".runs/run-m/model/model.pkl"
+MODEL_PATH = f"{artifact_store_relpath()}/run-m/model/model.pkl"
 
 
 def _method(node_id: str, method: str, params: dict | None = None) -> dict:

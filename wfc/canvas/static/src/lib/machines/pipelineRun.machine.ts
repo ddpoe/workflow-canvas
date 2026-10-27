@@ -2,6 +2,7 @@
  * Top-level pipeline run machine.
  *
  *   idle → preflight → submitting → polling → done
+ *   idle | done | polling → polling            (ATTACH: watch a running pipeline)
  *
  * Owns the Run button, spawns one `nodeRunActor` per canvas node, and
  * dispatches typed events received from the polling service into the
@@ -10,6 +11,14 @@
  * click is silently dropped — visible in the Stately Inspector as a
  * rejected event).
  *
+ * `ATTACH` puts the canvas on a pipeline that is already running (History's
+ * "Watch in canvas"): it spawns the node actors as preflight does, moves
+ * them to `queued` with the pipeline's id, and goes straight to `polling`,
+ * skipping preflight and submit. The poller's first tick then drives each
+ * node to the state the status route reports. From `polling` it is a
+ * switch: the current run's node actors and poller are stopped (the run
+ * itself keeps running; nothing is cancelled) and the new one is watched.
+ *
  * Backend integration lives in `services.ts`:
  *   - `submitPipeline` (fromPromise: validate + run)
  *   - `pollNodeStatus` (fromCallback: emits typed NODE_* events)
@@ -17,6 +26,7 @@
 import {
   setup,
   assign,
+  enqueueActions,
   fromCallback,
   fromPromise,
   type ActorRefFrom,
@@ -69,6 +79,9 @@ export interface PipelineRunContext {
 
 export type PipelineRunEvent =
   | { type: 'RUN_CLICKED'; pipeline?: PipelinePayload }
+  // Watch a pipeline that is already running: `jobId` is its pipeline id,
+  // `pipeline` the document loaded onto the canvas for it.
+  | { type: 'ATTACH'; jobId: string; pipeline: PipelinePayload }
   | { type: 'USER_STOP' }
   | { type: 'RESET' }
   | { type: 'PIPELINE_ERROR'; error: PipelineError }
@@ -142,6 +155,17 @@ const awaitAllCommittedSlot = fromPromise<void, unknown>(async () => {});
 
 // ── Machine ────────────────────────────────────────────────────────────
 
+// ATTACH's actions, in order: stop the current children, take on the
+// watched pipeline's id and document, spawn its node actors as preflight
+// does, and queue them under its id. No preflight, no submit.
+const ATTACH_ACTIONS = [
+  { type: 'detachNodeActors' },
+  { type: 'adoptAttachedPipeline' },
+  { type: 'bumpRunCount' },
+  { type: 'spawnNodeActors' },
+  { type: 'queueNodeActors' },
+] as const;
+
 export function makePipelineRunMachine() {
   return setup({
     types: {} as {
@@ -159,6 +183,62 @@ export function makePipelineRunMachine() {
       awaitAllCommitted: awaitAllCommittedSlot,
     },
     actions: {
+      bumpRunCount: assign({
+        runCount: ({ context }) => context.runCount + 1,
+      }),
+      // Spawn a per-node actor for every canvas node of `context.pipeline`.
+      // Used by preflight (a new run) and by ATTACH (watching a running
+      // one), so both start from the same children.
+      spawnNodeActors: assign({
+        nodeRefs: ({ context, spawn }) => {
+          // Drop the prior-run refs — xstate v5 auto-stops spawned
+          // children once they're no longer referenced in context.
+          // Calling `.stop()` on a non-root spawned actor throws
+          // ("A non-root actor cannot be stopped directly") and
+          // would abort this entry action mid-flight, leaving the
+          // machine wedged in `done` and the RUN_CLICKED transition
+          // visibly dropped (no preflight snapshot in the inspector).
+          const next: Record<string, NodeRunActor> = {};
+          for (const n of context.pipeline.nodes) {
+            // System nodes (input_selector, run_reference) get no
+            // lifecycle actor — they have no backend run, so the
+            // actor would never leave `queued`.
+            if (n.type !== undefined && n.type !== 'method') continue;
+            const child = spawn('nodeRunActor', {
+              id: `node:${n.id}#${context.runCount}`,
+              input: { nodeId: n.id },
+            }) as unknown as NodeRunActor;
+            next[n.id] = child;
+          }
+          return next;
+        },
+      }),
+      // Move every spawned child out of `idle` into `queued` with the
+      // pipeline's id, so the poller's HEARTBEAT/RUN_OK/RUN_FAILED land.
+      queueNodeActors: ({ context }) => {
+        const jobId = context.jobId;
+        if (!jobId) return;
+        for (const ref of Object.values(context.nodeRefs)) {
+          ref.send({ type: 'RUN', jobId });
+        }
+      },
+      // Stop the current run's node actors (and so their log streams)
+      // through the parent. The pipeline itself is not cancelled: no
+      // request is sent, and it stays reachable from History.
+      detachNodeActors: enqueueActions(({ context, enqueue }) => {
+        for (const ref of Object.values(context.nodeRefs)) {
+          enqueue.stopChild(ref);
+        }
+      }),
+      adoptAttachedPipeline: assign(({ event }) => {
+        const e = event as Extract<PipelineRunEvent, { type: 'ATTACH' }>;
+        return {
+          pipeline: e.pipeline,
+          jobId: e.jobId,
+          pipelineError: null,
+          nodeRefs: {},
+        };
+      }),
       forwardToNode: ({ context, event }) => {
         // Pure dispatch helper — translates polling events into the
         // child's event shape and sends. Children that have already
@@ -236,16 +316,18 @@ export function makePipelineRunMachine() {
       // user clicks Clear or imports a new pipeline.
       RESET: {
         target: '.idle',
-        actions: assign({
-          jobId: () => null,
-          pipelineError: () => null,
-          // Drop references — xstate v5 auto-stops orphaned spawned
-          // children when they fall out of context. Calling `.stop()`
-          // on a non-root spawned actor throws ("A non-root actor
-          // cannot be stopped directly") which would silently revert
-          // this transition mid-action.
-          nodeRefs: () => ({}),
-        }),
+        actions: [
+          // Stop the node actors (and so their log streams) through the
+          // parent: dropping a spawned child from context does not stop
+          // it, and `.stop()` on a non-root actor throws. No cancel
+          // request is sent; a running pipeline stays reachable.
+          { type: 'detachNodeActors' },
+          assign({
+            jobId: () => null,
+            pipelineError: () => null,
+            nodeRefs: () => ({}),
+          }),
+        ],
       },
       // Top-level USER_STOP so a click during preflight/submitting (the
       // sub-second window before polling starts) reaches `done` instead
@@ -271,6 +353,7 @@ export function makePipelineRunMachine() {
                 event.pipeline ?? context.pipeline,
             }),
           },
+          ATTACH: { target: 'polling', actions: [...ATTACH_ACTIONS] },
         },
       },
 
@@ -279,36 +362,7 @@ export function makePipelineRunMachine() {
         // param-editor aggregator's `allCommitted` transition: the
         // pipelineRunActor stays in `preflight` until every editing
         // paramEditor / variant child has reached a settled state.
-        entry: [
-          assign({
-            runCount: ({ context }) => context.runCount + 1,
-          }),
-          assign({
-            nodeRefs: ({ context, spawn }) => {
-              // Drop the prior-run refs — xstate v5 auto-stops spawned
-              // children once they're no longer referenced in context.
-              // Calling `.stop()` on a non-root spawned actor throws
-              // ("A non-root actor cannot be stopped directly") and
-              // would abort this entry action mid-flight, leaving the
-              // machine wedged in `done` and the RUN_CLICKED transition
-              // visibly dropped (no preflight snapshot in the inspector).
-              void context;
-              const next: Record<string, NodeRunActor> = {};
-              for (const n of context.pipeline.nodes) {
-                // System nodes (input_selector, run_reference) get no
-                // lifecycle actor — they have no backend run, so the
-                // actor would never leave `queued`.
-                if (n.type !== undefined && n.type !== 'method') continue;
-                const child = spawn('nodeRunActor', {
-                  id: `node:${n.id}#${context.runCount}`,
-                  input: { nodeId: n.id },
-                }) as unknown as NodeRunActor;
-                next[n.id] = child;
-              }
-              return next;
-            },
-          }),
-        ],
+        entry: [{ type: 'bumpRunCount' }, { type: 'spawnNodeActors' }],
         invoke: {
           id: 'awaitCommit',
           src: 'awaitAllCommitted',
@@ -355,12 +409,7 @@ export function makePipelineRunMachine() {
               // moving children to `queued` is what makes the bridge
               // surface real lifecycle states (pending/running/etc.)
               // instead of a permanent `idle`.
-              ({ context, event }) => {
-                const jobId = event.output.jobId;
-                for (const ref of Object.values(context.nodeRefs)) {
-                  ref.send({ type: 'RUN', jobId });
-                }
-              },
+              { type: 'queueNodeActors' },
             ],
           },
           onError: {
@@ -417,6 +466,11 @@ export function makePipelineRunMachine() {
           },
           PIPELINE_DONE: { target: 'done' },
           // USER_STOP is handled at top-level — see machine-level `on:`.
+          // A switch to another running pipeline: re-entering `polling`
+          // stops the current poller and starts one for the new id. The
+          // caller has already asked the user; the current pipeline keeps
+          // running.
+          ATTACH: { target: 'polling', reenter: true, actions: [...ATTACH_ACTIONS] },
         },
       },
 
@@ -429,6 +483,7 @@ export function makePipelineRunMachine() {
                 event.pipeline ?? context.pipeline,
             }),
           },
+          ATTACH: { target: 'polling', actions: [...ATTACH_ACTIONS] },
         },
       },
     },

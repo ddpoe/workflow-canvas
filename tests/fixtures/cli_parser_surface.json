@@ -101,6 +101,49 @@
       "required": false
     }
   ],
+  "wfc cache push": [
+    {
+      "choices": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false
+    }
+  ],
+  "wfc cancel": [
+    {
+      "choices": null,
+      "default": null,
+      "dest": "pipeline_id",
+      "nargs": null,
+      "option_strings": []
+    },
+    {
+      "choices": null,
+      "default": false,
+      "dest": "assume_yes",
+      "nargs": 0,
+      "option_strings": [
+        "--yes"
+      ],
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false
+    }
+  ],
   "wfc canvas": [
     {
       "choices": null,
@@ -447,23 +490,12 @@
     {
       "choices": null,
       "default": null,
-      "dest": "run_id",
-      "nargs": null,
-      "option_strings": []
-    },
-    {
-      "choices": null,
-      "default": null,
-      "dest": "slot",
-      "nargs": "?",
-      "option_strings": []
-    },
-    {
-      "choices": null,
-      "default": null,
       "dest": "dest",
-      "nargs": "?",
-      "option_strings": []
+      "nargs": null,
+      "option_strings": [
+        "--dest"
+      ],
+      "required": false
     },
     {
       "choices": null,
@@ -503,6 +535,89 @@
       "nargs": 0,
       "option_strings": [
         "--path"
+      ],
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": null,
+      "dest": "run_id",
+      "nargs": null,
+      "option_strings": [
+        "--run"
+      ],
+      "required": true
+    },
+    {
+      "choices": null,
+      "default": null,
+      "dest": "slot",
+      "nargs": null,
+      "option_strings": [
+        "--slot"
+      ],
+      "required": false
+    }
+  ],
+  "wfc export-run": [
+    {
+      "choices": null,
+      "default": false,
+      "dest": "assume_yes",
+      "nargs": 0,
+      "option_strings": [
+        "--yes"
+      ],
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": null,
+      "dest": "out",
+      "nargs": null,
+      "option_strings": [
+        "--out"
+      ],
+      "required": true
+    },
+    {
+      "choices": null,
+      "default": null,
+      "dest": "run_ids",
+      "nargs": null,
+      "option_strings": [
+        "--run"
+      ],
+      "required": true
+    },
+    {
+      "choices": null,
+      "default": false,
+      "dest": "with_image",
+      "nargs": 0,
+      "option_strings": [
+        "--with-image"
+      ],
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": false,
+      "dest": "with_outputs",
+      "nargs": 0,
+      "option_strings": [
+        "--with-outputs"
       ],
       "required": false
     }
@@ -674,6 +789,16 @@
     {
       "choices": null,
       "default": null,
+      "dest": "module",
+      "nargs": null,
+      "option_strings": [
+        "--module"
+      ],
+      "required": true
+    },
+    {
+      "choices": null,
+      "default": null,
       "dest": "nf_process_name",
       "nargs": null,
       "option_strings": [
@@ -808,6 +933,56 @@
       "required": true
     }
   ],
+  "wfc push-env": [
+    {
+      "choices": null,
+      "default": null,
+      "dest": "name",
+      "nargs": "?",
+      "option_strings": []
+    },
+    {
+      "choices": null,
+      "default": false,
+      "dest": "all_envs",
+      "nargs": 0,
+      "option_strings": [
+        "--all"
+      ],
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": false,
+      "dest": "assume_yes",
+      "nargs": 0,
+      "option_strings": [
+        "--yes"
+      ],
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": null,
+      "dest": "registry",
+      "nargs": null,
+      "option_strings": [
+        "--registry"
+      ],
+      "required": false
+    }
+  ],
   "wfc register-env": [
     {
       "choices": null,
@@ -827,6 +1002,7 @@
       "choices": [
         "pixi",
         "conda",
+        "uv",
         "byo"
       ],
       "default": null,
@@ -859,6 +1035,16 @@
     },
     {
       "choices": null,
+      "default": null,
+      "dest": "extras",
+      "nargs": null,
+      "option_strings": [
+        "--extra"
+      ],
+      "required": false
+    },
+    {
+      "choices": null,
       "default": false,
       "dest": "force",
       "nargs": 0,
@@ -874,6 +1060,16 @@
       "nargs": null,
       "option_strings": [
         "--from"
+      ],
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": null,
+      "dest": "groups",
+      "nargs": null,
+      "option_strings": [
+        "--group"
       ],
       "required": false
     },
@@ -910,6 +1106,16 @@
     },
     {
       "choices": null,
+      "default": false,
+      "dest": "no_push",
+      "nargs": 0,
+      "option_strings": [
+        "--no-push"
+      ],
+      "required": false
+    },
+    {
+      "choices": null,
       "default": null,
       "dest": "python_path",
       "nargs": null,
@@ -926,6 +1132,16 @@
       "dest": "method_dir",
       "nargs": null,
       "option_strings": []
+    },
+    {
+      "choices": null,
+      "default": false,
+      "dest": "assume_yes",
+      "nargs": 0,
+      "option_strings": [
+        "--yes"
+      ],
+      "required": false
     },
     {
       "choices": null,
@@ -1421,16 +1637,6 @@
     },
     {
       "choices": null,
-      "default": null,
-      "dest": "script",
-      "nargs": null,
-      "option_strings": [
-        "--script"
-      ],
-      "required": false
-    },
-    {
-      "choices": null,
       "default": "default",
       "dest": "variant",
       "nargs": null,
@@ -1440,7 +1646,53 @@
       "required": false
     }
   ],
+  "wfc runs": [
+    {
+      "choices": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": null,
+      "dest": "method",
+      "nargs": null,
+      "option_strings": [
+        "--method"
+      ],
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": null,
+      "dest": "pipeline_id",
+      "nargs": null,
+      "option_strings": [
+        "--pipeline"
+      ],
+      "required": false
+    }
+  ],
   "wfc seed": [
+    {
+      "choices": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false
+    }
+  ],
+  "wfc share": [
     {
       "choices": null,
       "default": "==SUPPRESS==",
@@ -1489,6 +1741,39 @@
       "option_strings": [
         "-h",
         "--help"
+      ],
+      "required": false
+    }
+  ],
+  "wfc verify": [
+    {
+      "choices": null,
+      "default": false,
+      "dest": "as_json",
+      "nargs": 0,
+      "option_strings": [
+        "--json"
+      ],
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": false,
+      "dest": "repair",
+      "nargs": 0,
+      "option_strings": [
+        "--repair"
       ],
       "required": false
     }

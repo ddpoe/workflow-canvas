@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.how-to.registration @ a17f4f921d1b; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/how-to/registration @ 77f88bbfc730; do not edit -->
 
 # Registering Modules, Methods, and Samples
 
@@ -20,7 +20,7 @@ wfc_project_root/
         method.yaml
 ```
 
-wfc keeps its own registered copy of each method in `methods/<name>/`; don't author there.
+wfc keeps its own registered copy of each method in `.wfc/registry/methods/<module>/<name>/`; don't author there.
 
 ### Command
 
@@ -77,22 +77,45 @@ wfc register-method src/my_analysis/preprocess --module my_analysis
 
 wfc finds the script by `--script <file>`, then the `script:` key in `method.yaml`, then a single file named `<name>.py`, `<name>.R`, `<name>.r` or `<name>.sh`. If it finds more than one candidate, registration stops and asks you to set `script:`.
 
+### What registration tells you first
+
+Before it writes anything, `wfc register-method` says which of three things will happen:
+
+- **New method:** `<module>/<method> is not registered yet; this registers it as v1.`
+- **Changed since the newest version:** `<module>/<method> is already registered (newest v1); this adds v2.` It names the code files that changed and what changed in the params or contract.
+- **Same as the newest version:** `<module>/<method> matches its newest version v2; no version is added.`
+
+When a version would be added, the command then asks `Proceed? [y/N]`. Answer `y` to register. Any other answer, or just Enter, prints `Nothing was registered.`, exits with an error and changes nothing. Add `--yes` to skip the question; the message is still printed. With no terminal (a script or CI job) and no `--yes`, a command that would add a version refuses and tells you to pass `--yes`; one that adds nothing still runs.
+
+If you only changed descriptions or formatting in `method.yaml`, the command says the edit changes nothing a run uses, that it is not kept, and adds no version.
+
 ### What registration does
 
 - Records the method, its contract from `method.yaml`, and its env.
 - For a Python script, scans its public functions and their parameters.
-- Commits the method directory to git.
-- Copies the method's scripts and `method.yaml` into `methods/<name>/`. wfc fingerprints this copy to decide whether a step's earlier result can be reused.
+- Copies the method's scripts and `method.yaml` into `.wfc/registry/methods/<module>/<name>/` and keeps a read-only copy of that version's code for runs. wfc fingerprints the code to decide whether a step's earlier result can be reused.
+- Does not copy other files in the source directory. It prints a "Not registered" list naming them. If your method reads one of these files at run time, register it as a sample and wire it as an input.
+- Commits that copy, and only that copy, to git. Your source directory is not committed.
+- Adds a version (`v1`, `v2`, ...) when the code, parameters, contract or env changed. Registering content that matches an earlier version again adds nothing.
 
-If any check fails, the command prints the reason and exits with an error.
+If any check fails, the command prints the reason and exits with an error, and nothing is registered.
 
-To change a method, edit its script or `method.yaml` in `src/<module>/<method>/`, then run `wfc register-method` again.
+Two modules can each register a method of the same name; each has its own copy and versions.
+
+### Versions stay runnable
+
+Registering a change never removes an earlier version. Every version stays registered and runnable, and a pipeline node can pin the version it runs; a node that does not pin follows the newest. A pinned node keeps its cached results when a newer version is registered. `wfc run-pipeline` prints a line for each unpinned node naming the version it ran on. See [Building a Pipeline in the Canvas](canvas.md) for choosing a version on a node.
+
+Each version records the image of its env. If Docker no longer has that image, wfc pulls it from the registry when it was pushed (see [Share a Project](sharing-a-project.md)); an image that was never pushed, and is gone, leaves a run on that version refused until you register the method again. If a version's env is a container image you build yourself, give each rebuild its own image tag: when a rebuild reuses a tag, the older version's image is gone.
+
+To change a method, edit its script or `method.yaml` in `src/<module>/<method>/`, then run `wfc register-method` again. Edits to the registered copy by hand never reach a run.
 
 ### Checking `save_artifact` names
 
 For a script that uses the `@wfc.method` decorator, registration also checks each `ctx.save_artifact("<name>", ...)` call against the outputs in `method.yaml`. A saved name that `method.yaml` does not declare, or a required output that is never saved, stops registration, so a typo in an output name shows up now instead of at run time.
 
-The `@wfc.method` decorator is optional. Plain scripts that read the `WFC_*` environment variables register the same way; see [Authoring a Method Script](../tutorials/authoring-a-method-script.md).
+The `@wfc.method` decorator is optional. Plain scripts that read the `WFC_*` environment variables register the same way; see the [Method Script Contract](../reference/method-script-contract.md).
+
 
 ## Registering a Sample
 
@@ -124,7 +147,7 @@ The description is shown when you pick samples in the canvas. It does not change
 
 ### Restoring samples
 
-Pipelines copy each sample they need from the cache into `data/samples/` when they run, so you do not copy data there yourself. To restore one by hand:
+Pipelines copy each sample they need from the cache into `.wfc/workspace/samples/<name>/` when they run, so you do not copy data there yourself. To restore one by hand:
 
 ```bash
 wfc restore-sample --name CFPAC_ERKi
@@ -137,10 +160,24 @@ wfc takes the sample from the local cache, or pulls it from the archive if the c
 You can also register modules, methods and samples in the canvas. Open the **Registry** tab, choose the **Modules**, **Methods** or **Samples** list, and click **+ Register**. The dialog has a switch for module, method or sample.
 
 - **Module:** enter a name and an optional description. The module is registered with no contract; to add one, write a `module.yaml` and run `wfc register-module` again.
-- **Method:** enter the method directory, or click **Browse…** to pick it from the project, and choose the module. The method name is optional and defaults to the directory name.
 - **Sample:** enter a name and the absolute path to the source file.
 
-Click **Dry run** to run the same checks as registration without saving anything. Each check is listed as passed, warning or failed. Click **Register** to save. If the server refuses, the error appears in the dialog and nothing is saved.
+For a module or a sample, click **Dry run** to run the same checks as registration without saving anything; each check is listed as passed, warning or failed. Click **Register** to save it. If the server refuses, the error appears in the dialog and nothing is saved.
+
+### A method
+
+The Method form starts with a choice: **New method** or **New method version**.
+
+- **New method:** enter the method's folder, or click **Browse…** to pick it from the project, and choose the module. The method name is optional and defaults to the folder's name. If the module already has a method of that name, the form says so and offers **Register a new version instead**.
+- **New method version:** choose the module, then the method, then the folder. Once the method is chosen the form shows its current version and the one this registration adds. **Register a new version…** in a method's **⋯** menu opens this form with the module and method already chosen.
+
+Click **Register method** (or **Register version**) to check the folder. The check runs the same rules as `wfc register-method` and saves nothing:
+
+- If the folder cannot be registered, each problem is shown in red with what wfc expects, for example the `script:` line to add to `method.yaml`. Fix the folder and click **Check again**.
+- If it can, the dialog shows what the new version holds: what changed since the newest version (code files, inputs and outputs, parameters, env), each with its count and a before-and-after table, then the version's main script, its helpers and the files it leaves out. A new method lists everything it registers. Click **Confirm: register vN** to save exactly what was checked. If the folder changed in between, nothing is saved and the dialog checks it again.
+- If the folder holds the same content as the newest version, the dialog says **nothing to register**.
+
+**← Back** returns to the form with your choices kept. **×**, **Cancel** and Escape close the dialog without saving anything.
 
 Envs are registered from the command line with `wfc register-env`.
 
@@ -150,3 +187,7 @@ Envs are registered from the command line with `wfc register-env`.
 - **[Build, Run and Inspect in the Canvas](canvas.md)**: build a pipeline from your registered methods and samples, run it, and look at its results and History.
 - **[Run and Inspect from the Command Line](run-and-inspect-results.md)**: run, inspect and export results from the command line.
 
+
+## Methods read their inputs and write only to their output folder
+
+Samples and upstream results reach a method as read-only files, and the folder holding them is read-only. Write results to the step's output folder and open input files in read mode. A method that saves over its input, or writes an index, lock or memo file beside it, fails at that write. See [Tutorial: Writing a Method in Python](../tutorials/authoring-a-method-script.md) for the cases that need a change (SQLite in WAL mode, HDF5 and zarr opened for update, readers that write memo files).

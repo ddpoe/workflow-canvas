@@ -1,0 +1,10 @@
+# This file may be used to create an environment using:
+# $ conda create --name <env> --file <this file>
+# platform: win-64
+@EXPLICIT
+https://repo.anaconda.com/pkgs/main/win-64/vc14_runtime-14.44.35208-h4927774_12.conda#0f4f6b1f4e5c2d8a9b7c6d5e4f3a2b1c
+https://repo.anaconda.com/pkgs/main/win-64/python-3.11.16-hb00fc5c_0.conda#1a2b3c4d5e6f708192a3b4c5d6e7f809
+https://repo.anaconda.com/pkgs/main/win-64/numpy-base-2.4.6-py311h89dd80d_0.conda#2b3c4d5e6f708192a3b4c5d6e7f8091a
+https://repo.anaconda.com/pkgs/main/win-64/numpy-2.4.6-py311h9606935_0.conda#3c4d5e6f708192a3b4c5d6e7f8091a2b
+https://repo.anaconda.com/pkgs/main/noarch/pip-26.2.1-pyhc872135_0.conda#4d5e6f708192a3b4c5d6e7f8091a2b3c
+https://conda.anaconda.org/conda-forge/win-64/scipy-1.13.1-py311hd4686c6_0.conda#5e6f708192a3b4c5d6e7f8091a2b3c4d

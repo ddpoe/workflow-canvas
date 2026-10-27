@@ -43,7 +43,7 @@ def test_get_all_runs_surfaces_none_for_pipeline_without_sidecar(tmp_project):
         s.add(Run(method_id=meth.id, sample="S1", pipeline_id=unnamed_pid, status="completed"))
         s.commit()
 
-    # No .runs/pipelines/<pid>/ record on disk for this pipeline (legacy shape).
+    # No .wfc/runs/pipelines/<pid>/ record on disk for this pipeline (legacy shape).
     prov = WfcProvider(str(tmp_project))
     prov.load()
     by_pid = {r["pipelineId"]: r for r in prov.get_all_runs()}

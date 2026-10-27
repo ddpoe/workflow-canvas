@@ -15,8 +15,12 @@
  *     OS temp dir, on port 8501; the dir must be outside this repo), run
  *     the demo pipeline twice, and capture
  *     the Lineages view after each run: first run (everything executes,
- *     no CACHED pills) and second run (every step cache-hits).  Leaves
- *     any canvas on other ports untouched.
+ *     no CACHED pills) and second run (its upstream steps cache-hit; the
+ *     plot step executes again).  Then open and crop the run detail's
+ *     Cache-key inputs card for the plot run the second run re-executed
+ *     (the newest non-cached plot run, slots and params tables open) and
+ *     for a preprocess run it reused (slots table open).
+ *     Leaves any canvas on other ports untouched.
  *
  * Overview shots are full-viewport; detail shots (inspector, variables
  * panel, run detail panel on its Artifacts and Overview tabs) are element crops so they stay readable at
@@ -122,12 +126,13 @@ async function captureMain(base: string): Promise<void> {
     console.warn('  ! bind button not visible — skipping builder-bound-param.png');
   }
 
-  // ---- Registry: methods with an expanded contract row ----------
+  // ---- Registry: methods with an open method, its contract tables ---
   console.log('Registry…');
   await page.locator('.tabs button.tab', { hasText: 'Registry' }).click();
   await page.locator('.sub-tab', { hasText: 'Methods' }).click();
-  await page.waitForSelector('.method-row', { timeout: 15_000 });
-  await page.locator('.method-row').first().click();
+  await page.waitForSelector('[data-testid="method-row"]', { timeout: 15_000 });
+  await page.getByTestId('method-row').first().click();
+  await page.getByTestId('contract-tables').waitFor({ timeout: 15_000 });
   await settle(page);
   await shot(page, 'registry-methods.png');
 
@@ -247,6 +252,55 @@ async function runPipelineAndWait(
   }
 }
 
+/**
+ * Open a Lineages card's run in the detail panel, on its Overview tab.
+ *
+ * With a run id, clicks the candidates in turn until the panel's Run ID is
+ * that run; without one, opens the first candidate.
+ */
+async function openRunCard(page: Page, cards: Locator, runId: string | null): Promise<void> {
+  const count = await cards.count();
+  if (count === 0) throw new Error('No matching Lineages card');
+  for (let i = 0; i < count; i++) {
+    await cards.nth(i).click();
+    await page.waitForSelector('.detail-panel .facts-grid', { timeout: 15_000 });
+    await settle(page, 400);
+    const shown = (await page.locator('.detail-panel .facts-grid .fact-mono').first().innerText()).trim();
+    if (runId === null || shown === runId) {
+      await page.locator('.detail-panel button.tab', { hasText: 'Overview' }).first().click();
+      return;
+    }
+  }
+  throw new Error(`No Lineages card opens run ${runId}`);
+}
+
+/**
+ * Open the Cache-key inputs card (closed by default) and the tables named,
+ * scroll it into view and crop it.
+ */
+async function shotKeyInputs(
+  page: Page, name: string, open: { params?: boolean; slots?: boolean } = {},
+): Promise<void> {
+  const card = page.getByTestId('cache-key-inputs');
+  await card.waitFor({ timeout: 15_000 });
+  if ((await card.getAttribute('data-open')) !== 'true') {
+    await card.getByTestId('cache-key-toggle').click();
+  }
+  for (const [table, wanted] of [['params', open.params], ['slots', open.slots]] as const) {
+    const toggle = card.getByTestId(`cache-key-${table}-toggle`);
+    if (wanted && (await toggle.count()) > 0 && (await toggle.getAttribute('aria-expanded')) !== 'true') {
+      await toggle.click();
+    }
+  }
+  // The opened card is taller than the panel's body at the usual height: a
+  // tall viewport for the crop keeps the panel's footer off it.
+  await page.setViewportSize({ width: VIEWPORT.width, height: 2400 });
+  await card.scrollIntoViewIfNeeded();
+  await settle(page, 300);
+  await shot(card, name);
+  await page.setViewportSize(VIEWPORT);
+}
+
 async function captureCacheSequence(dir: string, port: number): Promise<void> {
   const base = `http://localhost:${port}`;
   fs.mkdirSync(dir, { recursive: true });
@@ -303,6 +357,25 @@ async function captureCacheSequence(dir: string, port: number): Promise<void> {
     });
     await openHistoryLineages(page);
     await shot(page, 'history-lineages-cached.png');
+
+    // The run detail's Cache-key inputs section, for a plot run the second
+    // run executed afresh and for a step it reused from cache.
+    console.log('Cache-key inputs (fresh plot, cached preprocess)…');
+    const runs: Array<{ id: string; method: string; timestamp: number; cacheSourceRunId?: string | null }> =
+      await (await fetch(`${base}/api/wfc/runs`)).json();
+    const freshPlot = runs
+      // The demo's method names carry more than the step label (the cards
+      // match on substring too), so match the same way.
+      .filter(r => r.method.includes('plot') && !r.cacheSourceRunId)
+      .sort((a, b) => b.timestamp - a.timestamp)[0];
+    if (!freshPlot) throw new Error('No freshly executed plot run in History');
+    await openRunCard(page, page.locator('.path-node:not(.cached)', { hasText: 'plot' }), freshPlot.id);
+    await shotKeyInputs(page, 'run-detail-cache-key-inputs.png', { params: true, slots: true });
+    await openRunCard(page, page.locator('.path-node.cached', { hasText: 'preprocess' }), null);
+    await shotKeyInputs(page, 'run-detail-cache-key-inputs-cached.png', { slots: true });
+    if ((await page.getByTestId('cache-key-inputs').locator('[data-testid="slot-row"][data-kind="sample"]').count()) === 0) {
+      console.warn('  ! the cached run shows no sample read');
+    }
 
     await browser.close();
   } finally {

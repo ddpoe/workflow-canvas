@@ -23,6 +23,7 @@ discipline, bind-mount semantics against real Docker.
 """
 from __future__ import annotations
 
+from wfc import layout
 import json
 import os
 import shutil
@@ -56,7 +57,7 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
     proj.mkdir()
 
     # Initialize as a git repo so wfc internals that probe git don't blow up.
-    # Must happen BEFORE register_method, which calls _git_commit_registration.
+    # Must happen BEFORE register_method, which commits the registration.
     subprocess.run(["git", "init"], cwd=proj, check=True, capture_output=True)
     subprocess.run(
         ["git", "config", "user.email", "wfc@wfc"],
@@ -106,7 +107,7 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
     # input slot"). The pipeline JSON below provides no upstream link to
     # trigger, so WFC_INPUT_PATHS will be "{}" at run time — preserving the
     # single-node-no-real-inputs intent.
-    method_dir = proj / "methods" / "smoke"
+    method_dir = sample_source_dir(proj) / "_methods" / "smoke"
     method_dir.mkdir(parents=True)
     (method_dir / "smoke.py").write_text(
         "import os\n"
@@ -146,7 +147,7 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
     # root-input-required invariant: the method node needs either --ref-input
     # or an upstream input_selector with sample data. The method itself
     # doesn't read the file (WFC_INPUT_PATHS["trigger"] is unused by
-    # smoke.py) — it just has to be under data/samples/ for the runtime to
+    # smoke.py) — it just has to be under .wfc/workspace/samples/ for the runtime to
     # accept the method node as a valid root.
     source = sample_source_dir(proj) / "s1" / "trigger.txt"
     source.parent.mkdir(parents=True, exist_ok=True)
@@ -154,7 +155,7 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
     register_sample_row(proj, "s1", source)
     # This drives run-step directly, so there is no Snakemake restore_sample
     # rule to materialize the bytes — call the production restore, which is
-    # the only sanctioned writer under data/samples/.
+    # the only sanctioned writer under .wfc/workspace/samples/.
     restore_sample("s1", project_root=proj)
 
     # Pipeline: input_selector -> method. The input_selector is a system
@@ -175,7 +176,6 @@ def _materialize_project(tmp_path: Path, image_digest: str, monkeypatch) -> Path
                 "method": "smoke",
                 "module": "smoke",
                 "env": "smoke-env",
-                "script": "methods/smoke/smoke.py",
                 "slot_outputs": {"output": "output.txt"},
             },
         ],
@@ -245,11 +245,11 @@ def test_run_step_in_container_writes_output_to_host(
     )
 
     # Find output.txt under the run dir. The run-dir layout is
-    # .runs/<run_id>/<node>/<sample>/<variant>/output.txt but we don't
+    # .wfc/runs/<run_id>/<node>/<sample>/<variant>/output.txt but we don't
     # need to know run_id ahead of time — glob for the file.
-    matches = list((proj / ".runs").rglob("output.txt"))
+    matches = list((layout.artifact_store(proj)).rglob("output.txt"))
     assert matches, (
-        f"output.txt not found under {proj / '.runs'}\n"
+        f"output.txt not found under {layout.artifact_store(proj)}\n"
         f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
     # If multiple matches (e.g. lineage subdirs), pick the deepest path

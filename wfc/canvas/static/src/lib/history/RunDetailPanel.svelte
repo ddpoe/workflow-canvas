@@ -6,7 +6,8 @@
    * The run actions, the canvas actions and the artifact list are children;
    * the formatting helpers live in runDetailFormat.ts.
    */
-  import { selectRun, jumpToPipelineRun } from './historyStore.js';
+  import { selectRun, jumpToPipelineRun, takePendingSection } from './historyStore.js';
+  import type { RunDetailSection } from './historyStore.js';
   import {
     fetchRun,
     fetchCancelledDescendants,
@@ -20,13 +21,16 @@
     formatDuration,
     formatRelativeTime,
     statusColor,
+    cancelReasonText,
   } from './historyUtils.js';
   import {
+    changedOutputs,
     formatMetric,
     formatParamValue,
     formatSampleReads,
     pickHighlights,
   } from './runDetailFormat.js';
+  import CacheKeyInputsCard from './CacheKeyInputsCard.svelte';
   import RunActions from './RunActions.svelte';
   import CanvasActions from './CanvasActions.svelte';
   import ArtifactList from './ArtifactList.svelte';
@@ -37,7 +41,7 @@
 
   let { runId }: Props = $props();
 
-  type Section = 'overview' | 'params' | 'metrics' | 'artifacts' | 'output';
+  type Section = RunDetailSection;
 
   let run = $state<WfcRun | null>(null);
   let artifacts = $state<Artifact[]>([]);
@@ -74,7 +78,9 @@
       artifacts = [];
       artifactState = 'idle';
       artifactError = null;
-      activeSection = 'overview';
+      // Overview, unless the run was opened on another tab (a link to a
+      // run's output opens it on Artifacts).
+      activeSection = takePendingSection(runId);
       // The action row, its dialogs and the artifact list are children that
       // unmount while `run` is null, so their local state (renaming, the
       // confirms, the expanded directories, the lightbox) resets with them.
@@ -218,6 +224,9 @@
         <div class="hero-method">{displayName(run)}</div>
         <div class="hero-sub">
           in <span class="hero-module">{run.module}</span>
+          {#if run.version != null}
+            · <span class="hero-version" data-testid="run-version">v{run.version}</span>
+          {/if}
           {#if run.dataSource === COLLAPSED_SAMPLE && run.bundledSamples && run.bundledSamples.length > 0}
             · on <span class="hero-source" title={run.bundledSamples.join(', ')}>
               {run.bundledSamples.length} samples ({run.bundledSamples.join(', ')})
@@ -271,6 +280,10 @@
               <span class="fact-mono">{run.id}</span>
               <span class="fact-label">NID</span>
               <span class="fact-mono strong">{run.nid}</span>
+              {#if run.version != null}
+                <span class="fact-label">Method version</span>
+                <span class="fact-mono">v{run.version}</span>
+              {/if}
               <span class="fact-label">Started</span>
               <span class="fact-value">{formatTimestamp(run.timestamp)}</span>
               {#if run.cacheSourceRunId}
@@ -328,16 +341,17 @@
             </div>
           {/if}
 
-          {#if run.status === 'cancelled' && run.cancelledDueToRunId != null}
-            {@const cancelledDueId = run.cancelledDueToRunId}
-            <div class="cancel-banner">
-              Cancelled because run
-              <button
-                type="button"
-                class="fact-link"
-                onclick={() => selectRun(cancelledDueId)}
-              >#{cancelledDueId}</button>
-              failed.
+          {#if run.status === 'cancelled'}
+            {@const why = cancelReasonText(run)}
+            <!-- The step and sample of a failed run come before its id;
+                 the id is never shown on its own. -->
+            <div class="cancel-banner" data-testid="cancel-reason">
+              {why.text}{#if why.cause}{#if why.cause.method}{': '}<code>{why.cause.method}</code>{#if why.cause.sample}{' on '}<code>{why.cause.sample}</code>{/if}{/if}
+                <button
+                  type="button"
+                  class="fact-link"
+                  onclick={() => why.cause && selectRun(why.cause.runId)}
+                >r_{why.cause.runId}</button>{/if}
             </div>
           {/if}
 
@@ -369,6 +383,9 @@
               </div>
             </div>
           {/if}
+
+          <!-- Cache-key inputs: always the last block of Overview. -->
+          <CacheKeyInputsCard {run} />
         </div>
 
       {:else if activeSection === 'params'}
@@ -403,7 +420,12 @@
         {#if artifactError}
           <div class="detail-error">{artifactError}</div>
         {:else}
-          <ArtifactList runId={run.id} {artifacts} {artifactState} />
+          <ArtifactList
+            runId={run.id}
+            {artifacts}
+            {artifactState}
+            changedOutputs={changedOutputs(run.outputAvailability)}
+          />
         {/if}
 
       {:else if activeSection === 'output'}

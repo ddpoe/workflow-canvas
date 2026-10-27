@@ -15,6 +15,8 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -32,7 +34,7 @@ VALID_REF = f"docker://ghcr.io/dante/image-io@sha256:{VALID_DIGEST}"
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _write_manifest(project_dir: Path, envs: dict, schema_version: int = 1) -> None:
+def _write_manifest(project_dir: Path, envs: dict, schema_version: int = 3) -> None:
     """Write a manifest dict to ``<project>/.wfc/envs.json``."""
     (project_dir / ".wfc").mkdir(parents=True, exist_ok=True)
     payload = {"schema_version": schema_version, "envs": envs}
@@ -97,7 +99,7 @@ def test_load_manifest_missing_file_returns_empty(tmp_path):
     (tmp_path / ".wfc").mkdir()
     from wfc.environments import load_manifest
     manifest = load_manifest(tmp_path)
-    assert manifest == {"schema_version": 1, "envs": {}}
+    assert manifest == {"schema_version": 3, "envs": {}}
 
 
 def test_load_manifest_unknown_schema_version_raises(tmp_path):
@@ -170,7 +172,7 @@ def test_save_manifest_is_atomic(tmp_path):
     from wfc.environments import save_manifest, load_manifest
     (tmp_path / ".wfc").mkdir()
 
-    payload = {"schema_version": 1, "envs": {"image-io": _sample_record()}}
+    payload = {"schema_version": 3, "envs": {"image-io": _sample_record()}}
     save_manifest(tmp_path, payload)
 
     # No leftover temp files in .wfc/
@@ -182,44 +184,84 @@ def test_save_manifest_is_atomic(tmp_path):
     assert load_manifest(tmp_path)["envs"]["image-io"]["container"] == VALID_REF
 
 
+@workflow(purpose="save_manifest while another handle holds .wfc/envs.json "
+                  "open, released about 100 ms later (the Windows sharing "
+                  "violation of a concurrent reader), succeeds: the record is "
+                  "written and no temp file is left")
+def test_save_manifest_waits_out_a_briefly_held_manifest(tmp_project):
+    import threading
+
+    from wfc.environments import load_manifest, save_manifest
+
+    manifest = tmp_project / ".wfc" / "envs.json"
+    save_manifest(tmp_project, {"schema_version": 3, "envs": {}})
+    holder = open(manifest, "rb")  # noqa: SIM115 -- closed by the timer
+    release = threading.Timer(0.1, holder.close)
+    release.start()
+    try:
+        save_manifest(tmp_project, {"schema_version": 3,
+                                    "envs": {"image-io": _sample_record()}})
+    finally:
+        release.join()
+        holder.close()
+
+    assert load_manifest(tmp_project)["envs"]["image-io"]["container"] == VALID_REF
+    assert [p.name for p in manifest.parent.iterdir()
+            if p.name.startswith(".envs.")] == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="only Windows refuses to replace "
+                                             "a file another handle holds open")
+def test_save_manifest_gives_up_on_a_manifest_held_throughout(tmp_project):
+    """A handle held past every retry: PermissionError, the old bytes kept and
+    the temp file removed."""
+    from wfc.environments import save_manifest
+
+    manifest = tmp_project / ".wfc" / "envs.json"
+    save_manifest(tmp_project, {"schema_version": 3, "envs": {}})
+    before = manifest.read_bytes()
+    with open(manifest, "rb"):
+        with pytest.raises(PermissionError):
+            save_manifest(tmp_project, {"schema_version": 3,
+                                        "envs": {"image-io": _sample_record()}})
+
+    assert manifest.read_bytes() == before
+    assert [p.name for p in manifest.parent.iterdir()
+            if p.name.startswith(".envs.")] == []
+
+
 # ---------------------------------------------------------------------------
-# Tier 2: resolve_env_python — interpreter fallback chain
+# Tier 2: version_interpreter — the interpreter of one recorded image
 # ---------------------------------------------------------------------------
 
-@workflow(purpose="resolve_env_python implements the three-step interpreter "
-                  "fallback: recorded field wins; else per-backend default "
-                  "(pixi env path / conda base-env python / byo 'python'); "
-                  "else bare 'python' for unknown or missing records")
-@pytest.mark.parametrize(
-    "backend,recorded_python,expected",
-    [
-        # Arm 1: recorded field wins, whatever the backend says.
-        ("pixi", "/custom/bin/python3.12", "/custom/bin/python3.12"),
-        ("byo", "/usr/bin/python3", "/usr/bin/python3"),
-        # Arm 2: per-backend defaults for pre-field records (python=None).
-        ("pixi", None, "/opt/.pixi/envs/image-io/bin/python"),
-        ("conda", None, "/opt/conda/bin/python"),
-        ("byo", None, "python"),
-        # Arm 3: unknown backend -> bare "python".
-        ("something-else", None, "python"),
-    ],
-)
-def test_resolve_env_python_fallback_chain(backend, recorded_python, expected):
-    from wfc.environments import EnvRecord, resolve_env_python
+@workflow(purpose="version_interpreter answers by (env, fingerprint) from "
+                  "that image's captures: the --python override register "
+                  "recorded, else the backend's default; an image with no "
+                  "captures folder is refused with CaptureMissingError, "
+                  "never answered with a bare 'python'")
+@pytest.mark.parametrize("override,expected", [
+    ("/usr/bin/python3", "/usr/bin/python3"),
+    (None, "python"),
+])
+def test_version_interpreter_reads_the_images_own_capture(
+    tmp_project, monkeypatch, override, expected,
+):
+    from tests.fixtures.fakes import stub_docker_image_content, stub_docker_image_inspect
+    from wfc import environments as envs_mod
+    from wfc.environments import CaptureMissingError, version_interpreter
 
-    data = _sample_record()
-    data["backend"] = backend
-    if recorded_python is not None:
-        data["python"] = recorded_python
-    record = EnvRecord.from_dict(data)
-    assert resolve_env_python("image-io", record) == expected
+    stub_docker_image_content(monkeypatch)
+    stub_docker_image_inspect(monkeypatch, f"sha256:{VALID_DIGEST}")
+    record = envs_mod.register(
+        name="tools", backend="byo",
+        source={"image": "docker://local/tools:latest"},
+        project_dir=tmp_project, python_override=override,
+    )
 
-
-def test_resolve_env_python_no_record_is_bare_python():
-    """A missing record (env not in the manifest, or escape-hatch direct
-    image ref) resolves to bare ``python``."""
-    from wfc.environments import resolve_env_python
-    assert resolve_env_python("image-io", None) == "python"
+    assert version_interpreter("tools", record.env_fingerprint,
+                               tmp_project) == expected
+    with pytest.raises(CaptureMissingError):
+        version_interpreter("tools", "f" * 32, tmp_project)
 
 
 def test_env_record_python_field_round_trips_and_old_records_load():
@@ -301,65 +343,279 @@ def test_cli_show_env_prints_record_then_refuses_unknown_name(cli, tmp_project):
     assert "no-such-env" in missing.stderr
 
 
+def _git(root: Path, *args: str) -> str:
+    return subprocess.run(["git", *args], cwd=root, check=True,
+                          capture_output=True, text=True).stdout
+
+
+def _tree_bytes(root: Path) -> dict[str, bytes]:
+    """Every file under *root* by relative path, with its bytes."""
+    if not root.exists():
+        return {}
+    return {p.relative_to(root).as_posix(): p.read_bytes()
+            for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def _register_env(project: Path, name: str, monkeypatch, layer: str = "1"):
+    """Register *name* as a pixi env through production, Docker faked."""
+    from tests.fixtures.fakes import (
+        stub_docker_build,
+        stub_docker_image_content,
+        stub_docker_image_inspect,
+    )
+    from wfc import environments as envs_mod
+
+    stub_docker_build(monkeypatch, None)
+    stub_docker_image_inspect(monkeypatch, "sha256:" + layer * 64)
+    stub_docker_image_content(monkeypatch, {
+        "layers": ["sha256:" + layer * 64], "env": ["PATH=/usr/bin"],
+        "user": "", "workdir": "/"})
+    return envs_mod.register(
+        name=name, backend="pixi",
+        source={"pixi_lock_content": "version: 6\nenvironments: {}\n",
+                "pixi_toml_content": f'[project]\nname = "{name}"\n',
+                "pip_freeze_content": "numpy==1.26.4\n"},
+        project_dir=project)
+
+
 @workflow(
-    purpose="wfc delete-env warns when methods reference the env, declines "
-            "to delete on 'N', and removes the entry on --force without "
-            "touching method rows",
+    purpose="wfc delete-env refuses, --force or not, while an older (not "
+            "the newest) version of a method records the env, naming that "
+            "version; the record and its captures stay",
+    inputs="method transform v1 on image-io and v2 on fixture-env, read "
+           "from its committed version list",
+    outputs="exit 1 naming data_transform/transform v1; image-io kept",
 )
-def test_cli_delete_env_warns_and_preserves_method_rows(
+def test_cli_delete_env_refuses_while_an_older_version_records_it(
     cli, tmp_project, monkeypatch,
 ):
-    from wfc.init import init_project
-    from wfc.registration import register_module, register_method
-    from wfc.persistence import get_session, Method
-    from sqlmodel import select
+    from wfc.environments import get as env_get
+    from wfc.registration import register_method, register_module, version_entry
 
-    口 = Step(step_num=1, name="Initialise project + register a method",
-             purpose="Set up DB rows so the warn-on-reference path has data")
-    init_project(tmp_project)
+    口 = Step(step_num=1, name="Register image-io, then transform v1 on it",
+             purpose="The method's first version records image-io")
     register_module(name="data_transform",
                     contracts=[{"type": "output", "name": "output",
                                 "value_type": "csv", "required": True}],
                     description="Test")
-
-    # Write a manifest with image-io, then register a method whose
-    # method.yaml declares env: image-io.
-    _write_manifest(tmp_project, envs={"image-io": _sample_record()})
-
+    record = _register_env(tmp_project, "image-io", monkeypatch)
     method_dir = tmp_project / "methods" / "transform"
-    # The transform method exists from fixture copy in conftest; add an
-    # env field to its method.yaml.
     yaml_path = method_dir / "method.yaml"
-    assert yaml_path.exists()
     original_yaml = yaml_path.read_text()
-    yaml_path.write_text(original_yaml + "\nenv: image-io\n")
+    yaml_path.write_text(original_yaml.replace("env: fixture-env", "env: image-io"))
+    register_method(method_dir=method_dir, module_name="data_transform",
+                    assume_yes=True)
 
-    register_method(method_dir=method_dir, module_name="data_transform")
+    口 = Step(step_num=2, name="Move transform to fixture-env (v2)",
+             purpose="The newest version no longer records image-io; v1 still does")
+    yaml_path.write_text(original_yaml)
+    register_method(method_dir=method_dir, module_name="data_transform",
+                    assume_yes=True)
+    newest = version_entry("data_transform", "transform")
+    assert (newest.label, newest.env_name) == (2, "fixture-env")
 
-    # Verify DB has Method.env == 'image-io'
-    with get_session() as session:
-        m = session.exec(select(Method).where(Method.name == "transform")).one()
-        assert m.env == "image-io"
-
-    口 = Step(step_num=2, name="Decline the prompt",
-             purpose="Answer 'N' -> entry stays in manifest")
-    stub_interactive_prompt(monkeypatch, "N")
-    result = cli("delete-env", "image-io")
-    assert result.returncode == 1
-    assert "WARNING" in result.stdout
-    assert "data_transform/transform" in result.stdout
-    # Manifest still has the env
-    from wfc.environments import get as env_get
-    assert env_get("image-io", tmp_project) is not None
-
-    口 = Step(step_num=3, name="Force-delete",
-             purpose="--force skips the prompt; entry removed; method row stays")
+    口 = Step(step_num=3, name="delete-env image-io refuses",
+             purpose="v1 still records it, so removing it would strand v1")
     result = cli("delete-env", "image-io", "--force")
-    assert result.returncode == 0
-    assert env_get("image-io", tmp_project) is None
+    assert result.returncode == 1
+    assert "data_transform/transform v1" in result.stderr
+    assert "transform v2" not in result.stderr
+    assert env_get("image-io", tmp_project) is not None
+    assert (tmp_project / ".wfc" / "captures" / "image-io"
+            / record.env_fingerprint).is_dir()
 
-    with get_session() as session:
-        rows = session.exec(select(Method).where(Method.name == "transform")).all()
-        assert len(rows) == 1
-        assert rows[0].env == "image-io"  # untouched
+
+@workflow(
+    purpose="wfc delete-env removes an env no version records with its "
+            "captures folder in one commit; the tree is as clean as before",
+    inputs="an env registered (and committed) through production",
+    outputs="one commit holding envs.json and the folder's deletions",
+)
+def test_cli_delete_env_commits_the_record_and_captures_removal(
+    cli, tmp_project, monkeypatch,
+):
+    from wfc.environments import get as env_get
+
+    record = _register_env(tmp_project, "spare", monkeypatch)
+    folder = f".wfc/captures/spare/{record.env_fingerprint}"
+    files = {f"{folder}/{n}" for n in _tree_bytes(tmp_project / folder)}
+    assert files
+    # Every untracked file listed: git folds an all-untracked dir into one line.
+    status_before = _git(tmp_project, "status", "--porcelain", "-uall")
+
+    stub_interactive_prompt(monkeypatch, "y")
+    result = cli("delete-env", "spare")
+
+    assert result.returncode == 0, result.stderr
+    assert env_get("spare", tmp_project) is None
+    assert not (tmp_project / ".wfc" / "captures" / "spare").exists()
+    committed = set(_git(tmp_project, "show", "--name-only", "--format=",
+                         "HEAD").split())
+    assert committed == {".wfc/envs.json", *files}
+    assert _git(tmp_project, "status", "--porcelain", "-uall") == status_before
+
+
+@workflow(
+    purpose="wfc delete-env refuses when a method's version list cannot be "
+            "read, naming the file: an unreadable record is no permission",
+    inputs="a registered env and a version list that is not JSON",
+    outputs="exit 1 naming the list; the env and its captures kept",
+)
+def test_cli_delete_env_refuses_on_an_unreadable_version_list(
+    cli, tmp_project, monkeypatch,
+):
+    from wfc.environments import get as env_get
+
+    _register_env(tmp_project, "spare", monkeypatch)
+    broken = (tmp_project / ".wfc" / "registry" / "methods" / "data_transform"
+              / "broken.versions.json")
+    broken.parent.mkdir(parents=True, exist_ok=True)
+    broken.write_text("{not json", encoding="utf-8")
+
+    result = cli("delete-env", "spare", "--force")
+
+    assert result.returncode == 1
+    assert "broken.versions.json" in result.stderr
+    assert env_get("spare", tmp_project) is not None
+    assert (tmp_project / ".wfc" / "captures" / "spare").is_dir()
+
+
+def test_cli_delete_env_refuses_on_a_version_entry_whose_env_does_not_parse(
+    cli, tmp_project, monkeypatch,
+):
+    """A version list that reads as JSON but records an env value that is not
+    an env name is unreadable too: delete-env refuses naming the file rather
+    than counting the entry as naming no env."""
+    from wfc.environments import get as env_get
+
+    _register_env(tmp_project, "spare", monkeypatch)
+    # A hand-damaged list, like the unreadable one above: valid JSON whose
+    # one entry records a value that is not an env name.
+    path = (tmp_project / ".wfc" / "registry" / "methods" / "data_transform"
+            / "odd.versions.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"format": 1, "versions": [{
+        "label": 1, "code_fingerprint": "c" * 32,
+        "env_name": "container:container:spare", "env_fingerprint": "d" * 32,
+        "image_ref": "wfc-local/spare:1",
+        "registered_at": "2026-01-01T00:00:00+00:00", "tree_hash": "e" * 40,
+    }]}), encoding="utf-8")
+
+    result = cli("delete-env", "spare", "--force")
+
+    assert result.returncode == 1
+    assert path.name in result.stderr
+    assert "container:container:spare" in result.stderr
+    assert env_get("spare", tmp_project) is not None
+    assert (tmp_project / ".wfc" / "captures" / "spare").is_dir()
+
+
+@workflow(
+    purpose="wfc delete-env asks before removing an env no version records; "
+            "answering N aborts and keeps the record and its captures",
+    inputs="an env registered (and committed) through production; the answer n",
+    outputs="exit 1 'Aborted.'; the record, the captures folder and HEAD kept",
+)
+def test_cli_delete_env_declined_keeps_the_record_and_captures(
+    cli, tmp_project, monkeypatch,
+):
+    from wfc.environments import get as env_get
+
+    record = _register_env(tmp_project, "spare", monkeypatch)
+    manifest = tmp_project / ".wfc" / "envs.json"
+    captures = tmp_project / ".wfc" / "captures" / "spare"
+    before = (manifest.read_bytes(), _tree_bytes(captures),
+              _git(tmp_project, "rev-parse", "HEAD"))
+
+    stub_interactive_prompt(monkeypatch, "n")
+    result = cli("delete-env", "spare")
+
+    assert result.returncode == 1
+    assert "Aborted." in result.stdout + result.stderr
+    assert env_get("spare", tmp_project) is not None
+    assert (captures / record.env_fingerprint).is_dir()
+    assert (manifest.read_bytes(), _tree_bytes(captures),
+            _git(tmp_project, "rev-parse", "HEAD")) == before
+
+
+def test_cli_delete_env_refused_commit_leaves_the_tree_as_it_was(
+    cli, tmp_project, monkeypatch,
+):
+    """A delete-env whose commit git refuses (a pre-commit hook) puts the
+    record and the captures folder back and leaves nothing staged."""
+    _register_env(tmp_project, "spare", monkeypatch)
+    manifest = tmp_project / ".wfc" / "envs.json"
+    captures = tmp_project / ".wfc" / "captures" / "spare"
+    before = (manifest.read_bytes(), _tree_bytes(captures))
+    hook = tmp_project / ".git" / "hooks" / "pre-commit"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8", newline="\n")
+    os.chmod(hook, 0o755)
+
+    result = cli("delete-env", "spare", "--force")
+
+    assert result.returncode == 1
+    assert "was not deleted" in result.stderr
+    assert (manifest.read_bytes(), _tree_bytes(captures)) == before
+    assert _git(tmp_project, "diff", "--cached", "--name-only").strip() == ""
+
+
+@workflow(
+    purpose="wfc delete-env whose record deletion fails to write envs.json "
+            "refuses and puts the manifest and the captures folder back byte "
+            "for byte, leaving no moved-aside folder under .wfc/captures/",
+    inputs="an env registered (and committed) through production; the "
+           "manifest's atomic landing (os.replace onto envs.json) writing the "
+           "record deletion, then failing",
+    outputs="exit 1 'was not deleted'; envs.json, the captures and HEAD as "
+            "they were; no .delete-env-* folder",
+)
+def test_cli_delete_env_failed_record_deletion_restores_the_tree(
+    cli, tmp_project, monkeypatch,
+):
+    from tests.fixtures.fakes import fake_os_replace
+
+    _register_env(tmp_project, "spare", monkeypatch)
+    manifest = tmp_project / ".wfc" / "envs.json"
+    captures_root = tmp_project / ".wfc" / "captures"
+    captures = captures_root / "spare"
+    before = (manifest.read_bytes(), _tree_bytes(captures),
+              _git(tmp_project, "rev-parse", "HEAD"))
+    real_replace = os.replace
+
+    def land_then_fail(src, dst, *args, **kwargs):
+        # The record deletion lands on disk, then the write reports failure:
+        # only the restore puts envs.json's bytes back.
+        real_replace(src, dst, *args, **kwargs)
+        if Path(dst).name == "envs.json":
+            raise PermissionError(13, "Permission denied", str(dst))
+
+    fake_os_replace(monkeypatch, land_then_fail)
+    result = cli("delete-env", "spare", "--force")
+
+    assert result.returncode == 1
+    assert "was not deleted" in result.stderr
+    assert (manifest.read_bytes(), _tree_bytes(captures),
+            _git(tmp_project, "rev-parse", "HEAD")) == before
+    assert not list(captures_root.glob(".delete-env-*"))
+    assert _git(tmp_project, "diff", "--cached", "--name-only").strip() == ""
+
+
+def test_delete_env_outside_git_removes_without_committing(tmp_path, monkeypatch):
+    """Outside a git repository delete-env removes the record and the
+    captures folder and commits nothing."""
+    from tests.conftest import pin_project_root
+    from wfc.environments import get as env_get
+    from wfc.environments.verbs import delete_env
+
+    pin_project_root(monkeypatch, tmp_path)
+    _write_manifest(tmp_path, envs={"image-io": _sample_record()})
+    folder = tmp_path / ".wfc" / "captures" / "image-io" / ("d" * 32)
+    folder.mkdir(parents=True)
+    (folder / "packages.lock").write_text("x\n", encoding="utf-8")
+
+    assert delete_env("image-io", references=[], force=True) == 0
+    assert env_get("image-io", tmp_path) is None
+    assert not folder.parent.exists()
+    assert not (tmp_path / ".git").exists()
 

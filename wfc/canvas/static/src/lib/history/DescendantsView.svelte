@@ -109,7 +109,10 @@
         <div class="card-line1">
           <span class="status-dot" style="color: {statusColor(run.status)}">{'●'}</span>
           <span class="card-method">{run.method}</span>
-          <span class="card-version">{run.nid || `v${run.version}`}</span>
+          {#if run.nid}<span class="card-nid">{run.nid}</span>{/if}
+          {#if run.version != null}
+            <span class="card-version" title="Method version">v{run.version}</span>
+          {/if}
           {#if parentCount > 1}
             <span class="parents-pill" title="This run appears under each of its parents">{parentCount} parents</span>
           {/if}
@@ -281,7 +284,7 @@
     font-weight: 600;
     font-size: 13px;
   }
-  .card-version {
+  .card-nid, .card-version {
     color: var(--text-secondary, #888);
     font-size: 11px;
   }

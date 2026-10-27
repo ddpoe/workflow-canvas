@@ -55,13 +55,7 @@ def test_is_image_truth_table(tmp_path, monkeypatch):
     renderable = ["png", "jpg", "jpeg", "gif", "svg", "webp"]
     non_renderable = ["pdf", "tif", "tiff", "csv"]
 
-    staging = project_root / "staging"
-    dir_art = staging / "figdir"
-    dir_art.mkdir(parents=True)
-    (dir_art / "inner.png").write_bytes(b"\x89PNGxxxx")
-    for ext in renderable + non_renderable:
-        (staging / f"art.{ext}").write_bytes(b"content-" + ext.encode())
-
+    from wfc.layout import run_archive_dir
     from wfc.persistence import Method, Module, Run, RunOutput
     with Session(engine) as session:
         module = Module(name="m", description="x")
@@ -70,6 +64,13 @@ def test_is_image_truth_table(tmp_path, monkeypatch):
         session.add(method); session.commit(); session.refresh(method)
         run = Run(method_id=method.id, status="completed")
         session.add(run); session.commit(); session.refresh(run)
+        # Where collect writes a run's outputs: its run archive.
+        staging = run_archive_dir(project_root, run.id)
+        dir_art = staging / "figdir"
+        dir_art.mkdir(parents=True)
+        (dir_art / "inner.png").write_bytes(b"\x89PNGxxxx")
+        for ext in renderable + non_renderable:
+            (staging / f"art.{ext}").write_bytes(b"content-" + ext.encode())
         for ext in renderable + non_renderable:
             session.add(RunOutput(
                 run_id=run.id, slot=f"art_{ext}", output_name=f"art_{ext}",

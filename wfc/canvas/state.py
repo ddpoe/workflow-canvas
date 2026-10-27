@@ -36,6 +36,16 @@ _wfc_provider: WfcProvider | None = None
 _active_jobs: dict[str, dict[str, Any]] = {}
 
 # ---------------------------------------------------------------------------
+# Reached pipelines: ones another process (or this server before a restart)
+# runs, which the status or cancel route answered from their pipeline record.
+# Each entry holds the step map and log directory the status route reads, so
+# the route keeps answering from the rows once the record is gone (the
+# pipeline ended or was closed out), as it does for an ended in-memory job.
+# ---------------------------------------------------------------------------
+
+_reached_pipelines: dict[str, dict[str, Any]] = {}
+
+# ---------------------------------------------------------------------------
 # Archive job tracking (single archive pass at a time)
 # ---------------------------------------------------------------------------
 

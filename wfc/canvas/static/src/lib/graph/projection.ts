@@ -115,7 +115,7 @@ export function collapsedBundledSamples(doc: ProjectionDocument): string[] {
 /**
  * Resolve the variant model the engine schedules from (the package's
  * `resolve_variant_model`): each method node's table is its `param_sets`
- * entry by node id, else by method name, else `{default: params}`; the axis
+ * entry by node id, else `{default: params}`; the axis
  * is the sorted union of every table's names (`['default']` when no node
  * declares any — `default` is on the axis only through a node with no
  * table, so a pipeline where every node is swept has no box run); every
@@ -127,9 +127,7 @@ function resolveVariantModel(doc: ProjectionDocument): VariantModel {
   const methods = doc.nodes.filter(isMethodNode);
   const tables: VariantModel['tables'] = {};
   for (const node of methods) {
-    const declared = paramSets[node.id]
-      ?? (node.method ? paramSets[node.method] : undefined)
-      ?? { default: node.params ?? {} };
+    const declared = paramSets[node.id] ?? { default: node.params ?? {} };
     tables[node.id] = { ...declared };
   }
 

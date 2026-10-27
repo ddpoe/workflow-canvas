@@ -16,6 +16,8 @@ from sqlmodel import Session
 from tests.fixtures.fakes import stub_registry_seam
 from wfc.canvas.routes import registry as registry_routes
 from wfc.persistence import Method, Module, Run, Sample
+from wfc.registration import MethodRegistration
+from wfc.registration.advice import not_copied_message
 
 MODULE = "demo"
 
@@ -26,7 +28,8 @@ def registration_calls(canvas_db, tmp_project, monkeypatch):
 
     Lays out ``good/`` (a folder with ``method.yaml``), ``no_yaml/`` (a folder
     without one) and ``a_file.txt`` under the project root, and replaces
-    ``_register_method_fn`` with a recorder.
+    ``_register_method_fn`` with a recorder whose registration reports
+    ``notes.md`` as not copied.
 
     Returns:
         The list each registration call's keyword arguments are appended to.
@@ -49,6 +52,7 @@ def registration_calls(canvas_db, tmp_project, monkeypatch):
         calls.append(kwargs)
         if calls.raises is not None:
             raise calls.raises
+        return MethodRegistration(method_id=1, not_copied=("notes.md",))
 
     stub_registry_seam(monkeypatch, "_register_method_fn", fake_register_method)
     return calls
@@ -93,10 +97,10 @@ PASSING_CHECKS = [
 @pytest.mark.parametrize(
     "query, raises, expected_status, expected_body, registers",
     [
-        pytest.param("?dryRun=true", None, 200,
-                     {"ok": True, "preChecks": PASSING_CHECKS}, False, id="dry-run"),
         pytest.param("", None, 200,
-                     {"ok": True, "preChecks": PASSING_CHECKS, "method": {"name": "good"}},
+                     {"ok": True, "preChecks": PASSING_CHECKS, "method": {"name": "good"},
+                      "notCopied": ["notes.md"], "advice": not_copied_message(["notes.md"]),
+                      "message": ""},
                      True, id="write"),
         pytest.param("", FileNotFoundError("no script"), 404, {"detail": "no script"},
                      True, id="registration-not-found"),
@@ -105,9 +109,11 @@ PASSING_CHECKS = [
     ],
 )
 @workflow(
-    purpose="A method registration that passes its pre-checks returns them without "
-            "writing on a dry run, otherwise calls registration and names the "
-            "method, and maps registration's FileNotFoundError to 404 and "
+    purpose="A method registration that passes its pre-checks calls registration "
+            "with its explicit confirmation (the Register click) and the dry "
+            "run's plan token it confirmed, and names the "
+            "method and the files registration did not copy with its advice, "
+            "and maps registration's FileNotFoundError to 404 and "
             "ValueError to 400",
 )
 def test_method_registration_dry_runs_or_writes_after_passing_pre_checks(
@@ -117,12 +123,14 @@ def test_method_registration_dry_runs_or_writes_after_passing_pre_checks(
     registration_calls.raises = raises
 
     resp = canvas_client.post(f"/api/registry/methods{query}",
-                              json={"directory": "good", "module": MODULE})
+                              json={"directory": "good", "module": MODULE,
+                                    "plan_token": "t0"})
 
     assert resp.status_code == expected_status, resp.text
     assert resp.json() == expected_body
     expected_calls = (
-        [{"method_dir": Path("good"), "module_name": MODULE, "method_name": None}]
+        [{"method_dir": Path("good"), "module_name": MODULE, "method_name": None,
+          "assume_yes": True, "planned": "t0"}]
         if registers else []
     )
     assert registration_calls == expected_calls
@@ -146,10 +154,10 @@ def test_registry_sample_list_is_sorted_with_run_counts_and_push_state(
         session.flush()
         session.add_all([
             Sample(name="beta", source_path="/raw/beta.csv",
-                   registered_path="data/samples/beta/beta.csv", file_type="csv",
+                   registered_path="beta.csv", file_type="csv",
                    file_size=20, content_hash="0" * 32, registered_at=registered),
             Sample(name="alpha", source_path="/raw/alpha.tif",
-                   registered_path="data/samples/alpha/alpha.tif", file_type="tif",
+                   registered_path="alpha.tif", file_type="tif",
                    file_size=10, registered_at=registered),
             Run(method_id=meth.id, sample="alpha", status="completed"),
             Run(method_id=meth.id, sample="alpha", status="failed"),
@@ -168,3 +176,25 @@ def test_registry_sample_list_is_sorted_with_run_counts_and_push_state(
          "pushed": True, "runCount": 1, "registered_at": "2026-01-02T03:04:05",
          "file_type": "csv"},
     ]}
+
+
+@workflow(
+    purpose="A dry run whose registration plan refuses (a folder with a method.yaml "
+            "but no script) answers 200 with ok false and the plan's refusal as a "
+            "failed pre-check, and registers nothing",
+)
+def test_method_registration_dry_run_reports_the_plans_refusal(
+    canvas_client, registration_calls
+):
+    resp = canvas_client.post("/api/registry/methods?dryRun=true",
+                              json={"directory": "good", "module": MODULE})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is False
+    assert body["preChecks"][:3] == PASSING_CHECKS
+    (plan_check,) = body["preChecks"][3:]
+    assert (plan_check["status"], plan_check["label"]) == ("fail", "registration plan")
+    assert plan_check["detail"]
+    assert "plan" not in body
+    assert registration_calls == []

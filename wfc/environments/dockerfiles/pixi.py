@@ -18,6 +18,7 @@ Recipe:
   RUN --mount=type=cache,target=/root/.cache/pip \
       /opt/.pixi/envs/<env>/bin/python -m pip install --no-deps -r /opt/pip-freeze.txt
   RUN chmod -R a+rX /opt/.pixi/envs/<env>         # pair w/ --user
+  <the shared tail>                               # dockerfiles.tail
 
 The `--no-deps` pip layer runs AFTER `pixi install --locked` so the
 locked env establishes the dep graph; the freeze layer reconstructs the
@@ -33,6 +34,7 @@ builds (BuildKit-only — :func:`wfc.environments.docker.build` sets
 from __future__ import annotations
 
 from .bases import PIXI_BASE, PIXI_LOCK_MAX_VERSION
+from .tail import finish_recipe
 
 
 def validate_lock_for_env(lock_text: str, env_name: str) -> None:
@@ -208,4 +210,4 @@ def generate(
         f"RUN chmod -R a+rX {env_dir}",
         "",
     ]
-    return "\n".join(lines)
+    return finish_recipe(lines)

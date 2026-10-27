@@ -34,10 +34,21 @@ ENV_NAME = "oracle-env"
 # =============================================================================
 
 def _s1_marker(root: Path) -> None:
-    """A real project: ``.wfc/`` holding the config file, plus one env record."""
+    """A real project: ``.wfc/`` holding the config file, plus one env record.
+
+    Registering the env enters its blob row on the active project's
+    database, so the project is bound for that one write through
+    ``use_project``. The block puts back the engine and the resolver's
+    cached root it found and sets no environment variable, so the oracle
+    still resolves from an empty cache with no override in play.
+    """
+    from wfc.persistence import use_project
+
     (root / ".wfc").mkdir(parents=True)
     (root / ".wfc" / "wf-canvas.toml").write_text('[project]\nname = "oracle"\n')
-    write_env_record(root, ENV_NAME, image="ghcr.io/oracle/env", digest="a" * 64)
+    with use_project(root):
+        write_env_record(root, ENV_NAME, image="ghcr.io/oracle/env",
+                         digest="a" * 64)
 
 
 def _s2_bare_state_dir(root: Path) -> None:
@@ -144,6 +155,10 @@ def canonical(request, tmp_path, monkeypatch) -> tuple:
     nested_cwd = root / "a" / "b"
     nested_cwd.mkdir(parents=True)
     SHAPES[shape_name](root)
+    # The S1 env's image is on this machine: dev-loop's run-time rule runs
+    # it as it is, so the cell measures root resolution, not a docker pull.
+    from tests.fixtures.fakes import stub_docker_image_inspect
+    stub_docker_image_inspect(monkeypatch, "sha256:" + "a" * 64)
 
     monkeypatch.delenv("WFC_PROJECT_ROOT", raising=False)
     monkeypatch.chdir(nested_cwd)

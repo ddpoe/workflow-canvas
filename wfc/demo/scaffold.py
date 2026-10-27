@@ -5,41 +5,60 @@ first state change, so a failed ``wfc demo`` leaves the
 project byte-for-byte unchanged. All registration goes through the genuine
 production paths (``envs.register``, ``register_module``,
 ``register_method``, ``register_sample``) with the explicit
-``allow_reserved=True`` opt-in — the ``__demo__`` prefix is refused
-everywhere else, which is what makes teardown-by-tag safe.
+``allow_reserved=True`` opt-in — the ``__demo__`` prefix and the demo env's
+name are refused everywhere else, which is what makes teardown by tag and
+module cascade safe.
+
+The demo env is registered with no push, whether or not the project has a
+registry base: rebuilding the demo never needs the network, and pushing its
+image is a step the user takes (``wfc push-env wfc-demo-env``). The demo
+schema stamp (``.wfc/demo.json``) records which version of the demo built
+the project's demo; ``wfc demo`` and ``wfc doctor`` read it.
 """
 from __future__ import annotations
 
 import contextlib
 import importlib.metadata
+import json
 import os
 import shutil
-import subprocess
 import threading
 import webbrowser
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .. import layout
 from ..execution.readiness import check_docker
+from ..reserved import DEMO_ENV_NAME
 from ..storage import DvcNotConfiguredError, ensure_dvc_ready
 
+if TYPE_CHECKING:
+    from ..execution.readiness import CheckResult
+
 DEMO_MODULE = "__demo__"
-DEMO_ENV = "__demo__env"
+DEMO_ENV = DEMO_ENV_NAME
 DEMO_IMAGE_TAG = "local/wfc-demo-env:latest"
+#: The demo schema: what ``wfc demo`` creates, as a number. Bump it when a
+#: release changes what ``wfc demo`` creates in a way an existing demo
+#: project does not have (a renamed entity, a changed asset contract), so
+#: ``wfc demo`` and ``wfc doctor`` send that project to ``wfc demo --force``.
+#: A project with no stamp counts as 1; the env rename to ``wfc-demo-env``
+#: is the first bump.
+DEMO_SCHEMA = 2
+#: The schema a demo with no stamp, or an unreadable one, counts as.
+_UNSTAMPED_SCHEMA = 1
+#: The demo's pipeline document, at the project root.
+DEMO_PIPELINE_FILENAME = "demo-pipeline.json"
 #: Asset directory names under ``assets/methods/`` — the names the demo's
 #: source is authored and shipped under. Each holds ``<name>.py``.
 DEMO_METHOD_SOURCES = ("preprocess", "filter_cells", "label", "summarize", "plot")
-#: The names the demo's methods are REGISTERED under, and the names of the
-#: directories it stages under the project's ``methods/``.
+#: The names the demo's methods are REGISTERED under.
 #:
-#: They carry the reserved prefix because ``register_method`` snapshots every
-#: method into ``methods/<method_name>/``, a single flat namespace shared by
-#: every module, and refuses a name another module already holds. Unprefixed,
-#: the demo would consume ``preprocess`` — so the first thing a new user runs
-#: would stop them registering a method of their own by that name.
-#:
-#: This is a workaround for the flat snapshot namespace, not a design. Remove
-#: the prefix (and this indirection) when per-module snapshot directories land.
+#: They carry the reserved demo prefix. ``register_method`` snapshots each
+#: method into the module-qualified ``.wfc/registry/methods/<module>/<name>/``,
+#: so a user's method of the same name in another module does not collide with
+#: a demo method; the prefix only marks the names as the demo's. Dropping it
+#: renames the demo's methods.
 DEMO_METHODS = tuple(f"{DEMO_MODULE}{n}" for n in DEMO_METHOD_SOURCES)
 DEMO_SAMPLES = ("ctrl_01", "treat_01", "treat_02")
 ASSETS_DIR = Path(__file__).parent / "assets"
@@ -146,7 +165,7 @@ def _existing_demo_entities(target: Path) -> list[str]:
     """
     from sqlmodel import col, select
 
-    from ..environments import load_manifest
+    from ..environments import load_manifest_for_register
     from ..persistence import Module, Sample, get_session
 
     found: list[str] = []
@@ -165,71 +184,151 @@ def _existing_demo_entities(target: Path) -> list[str]:
         ).all()
         found.extend(f"sample {s.name}" for s in samples)
     try:
-        manifest = load_manifest(target)
+        # The register path's read: the demo's own register converts an
+        # older (version 1 or 2) manifest, so its demo env must still be
+        # seen here.
+        manifest = load_manifest_for_register(target)
     except Exception:
         manifest = {}
-    if DEMO_ENV in manifest.get("envs", {}):
-        found.append(f"env {DEMO_ENV}")
-    if (target / "demo-pipeline.json").exists():
-        found.append("demo-pipeline.json")
+    for env in demo_owned_envs(target):
+        if env in manifest.get("envs", {}):
+            found.append(f"env {env}")
+    if (target / DEMO_PIPELINE_FILENAME).exists():
+        found.append(DEMO_PIPELINE_FILENAME)
+    stamp = layout.demo_stamp_path(target)
+    if stamp.exists():
+        found.append(stamp.relative_to(target).as_posix())
     return found
 
 
-def _method_name_collisions(target: Path) -> list[str]:
-    """Detect user-owned claims on the demo's method names.
+def demo_owned_envs(target: Path) -> list[str]:
+    """Return the envs the demo owns: :data:`DEMO_ENV` and every env its methods name.
 
-    ``register_method`` snapshots every method's code into
-    ``methods/<method_name>/`` keyed by method name alone, so two methods
-    sharing a name share that directory and copying demo code there would
-    silently clobber the other one's registered snapshot. Refuse up front
-    instead. Must be called inside :func:`_project_env`.
-
-    Since the demo's method names carry the reserved ``__demo__`` prefix, the
-    DB arm can no longer fire: ``check_reserved_name`` refuses a ``__demo__*``
-    method name to every caller but ``wfc demo`` itself. It is kept because it
-    is the arm that becomes live again the day the prefix is removed. The
-    on-disk arm below is still reachable today — an aborted scaffold or a
-    reset database can leave a ``methods/__demo__<name>/`` directory with no
-    demo module to own it.
+    Read before anything is deleted: each demo Method row's ``env`` and every
+    entry of every version list under the demo module's snapshot directory.
+    Demo methods are registered only from the bundled assets with the
+    opt-in, so every env they name is the demo's, including an older wfc's
+    demo env. Values that are not env names are skipped. Must be called
+    inside :func:`_project_env`.
 
     Args:
         target: Resolved project root directory.
 
     Returns:
-        Human-readable collision descriptions (empty when safe to proceed).
+        The env names, sorted.
     """
-    from sqlmodel import col, select
+    from sqlmodel import select
 
+    from ..contracts import parse_env_spec
     from ..persistence import Method, Module, get_session
+    from ..registration import read_version_list
 
-    collisions: list[str] = []
+    named: list[str | None] = []
     with get_session() as session:
-        rows = session.exec(
-            select(Method, Module)
-            .join(Module, col(Method.module_id) == col(Module.id))
-            .where(col(Method.name).in_(DEMO_METHODS))
-            .where(Module.name != DEMO_MODULE)
-        ).all()
-        for method, module in rows:
-            collisions.append(
-                f"method '{module.name}/{method.name}' already uses "
-                f"methods/{method.name}/"
-            )
-        demo_registered = session.exec(
+        module = session.exec(
             select(Module).where(Module.name == DEMO_MODULE)
-        ).first() is not None
-    if not demo_registered:
-        # A methods/<m>/ dir with no demo module in the DB (and no DB claim
-        # above) is unattributable — residue from an aborted scaffold or a
-        # reset database, or hand-authored work. Refuse rather than guess;
-        # the scaffold's copy step deletes whatever it lands on.
-        claimed = {c.split("methods/")[-1].rstrip("/") for c in collisions}
-        for m in DEMO_METHODS:
-            if m not in claimed and layout.method_dir(target, m).exists():
-                collisions.append(
-                    f"directory methods/{m}/ exists but is not demo-owned"
-                )
-    return collisions
+        ).first()
+        if module is not None:
+            named.extend(m.env for m in session.exec(
+                select(Method).where(Method.module_id == module.id)
+            ).all())
+    snapshot_dir = layout.module_methods_dir(target, DEMO_MODULE)
+    suffix = layout.METHOD_VERSIONS_SUFFIX
+    for path in sorted(snapshot_dir.glob(f"*{suffix}")):
+        try:
+            entries = read_version_list(
+                target, DEMO_MODULE, path.name[: -len(suffix)]) or []
+        except (OSError, ValueError):
+            continue
+        named.extend(e.env_name for e in entries)
+    envs = {DEMO_ENV}
+    for value in named:
+        if not value:
+            continue
+        try:
+            envs.add(parse_env_spec(value))
+        except ValueError:
+            continue
+    return sorted(envs)
+
+
+def demo_schema_of(target: Path) -> int:
+    """Return the demo schema *target*'s stamp records.
+
+    Args:
+        target: The project root.
+
+    Returns:
+        The stamp's ``demo_schema``; 1 when there is no stamp or it cannot
+        be read.
+    """
+    try:
+        data = json.loads(layout.demo_stamp_path(target).read_text("utf-8"))
+        return int(data["demo_schema"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return _UNSTAMPED_SCHEMA
+
+
+def write_demo_stamp(target: Path) -> Path:
+    """Write the current demo schema stamp and commit it with the pipeline document.
+
+    Both files are committed by pathspec, so the tree is clean after
+    ``wfc demo``: every path wfc creates is committed or ignored.
+
+    Args:
+        target: The project root.
+
+    Returns:
+        The stamp's path.
+    """
+    from ..version import commit_paths
+
+    stamp = layout.demo_stamp_path(target)
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_bytes(
+        (json.dumps({"demo_schema": DEMO_SCHEMA}) + "\n").encode("utf-8"))
+    commit_paths(target, [target / DEMO_PIPELINE_FILENAME, stamp],
+                 "Record the wfc demo pipeline and schema stamp",
+                 require_repo=False)
+    return stamp
+
+
+def demo_schema_check(project_dir: Path | str) -> CheckResult | None:
+    """Return ``wfc doctor``'s demo row: a warn for a demo an older wfc made.
+
+    A demo is present when the project has the ``__demo__`` module or a
+    stamp. The row appears only when one is present and its stamp is
+    missing or records another schema.
+
+    Args:
+        project_dir: The project root.
+
+    Returns:
+        A warn :class:`~wfc.execution.readiness.CheckResult` naming
+        ``wfc demo --force``, or ``None`` (no demo, or a current one).
+    """
+    from sqlmodel import select
+
+    from ..execution.readiness import CheckResult
+    from ..persistence import Module, get_session, use_project
+
+    target = Path(project_dir)
+    present = layout.demo_stamp_path(target).exists()
+    if not present:
+        try:
+            with use_project(target), get_session() as session:
+                present = session.exec(
+                    select(Module).where(Module.name == DEMO_MODULE)
+                ).first() is not None
+        except Exception:
+            present = False
+    if not present or demo_schema_of(target) == DEMO_SCHEMA:
+        return None
+    return CheckResult(
+        name="demo", status="warn",
+        message="This project's demo was made by an older wfc.",
+        fix_hint="Run `wfc demo --force` to rebuild it for this version.",
+    )
 
 
 def _build_demo_image(target: Path) -> str:
@@ -305,17 +404,15 @@ def run_demo(
     _refuse_a_foreign_database(target)
 
     # git repo required: registration commits method code for cache keys.
+    from ..version import GitTimeoutError, in_work_tree
     try:
-        probe = subprocess.run(
-            ["git", "rev-parse", "--git-dir"],
-            cwd=target, capture_output=True, text=True, timeout=10,
-        )
-    except subprocess.TimeoutExpired as exc:
+        is_repo = in_work_tree(target, timeout=10)
+    except GitTimeoutError as exc:
         raise DemoError(
             f"git did not respond within 10s while probing {target} — "
             f"check your git installation and retry."
         ) from exc
-    if probe.returncode != 0:
+    if not is_repo:
         raise DemoError(
             f"{target} is not a git repository — method registration commits "
             f"code for cache-key computation. Run `git init` (a normal "
@@ -338,11 +435,20 @@ def run_demo(
         # ---- Preflight: existing demo / --force ----
         existing = _existing_demo_entities(target)
         if existing and not force:
+            if demo_schema_of(target) != DEMO_SCHEMA:
+                advice = (
+                    "this demo project was made by an older wfc; run "
+                    "`wfc demo --force` to rebuild it for this version"
+                )
+            else:
+                advice = (
+                    "`wfc demo --force` removes the demo and builds it again "
+                    "for this wfc version; `wfc demo --remove` clears it"
+                )
             raise DemoError(
                 "demo already present in this project ("
                 + ", ".join(existing)
-                + ") — re-run with --force to re-register, or "
-                "`wfc demo --remove` to clear it"
+                + ") — " + advice
             )
         if existing and force:
             from .remove import remove_demo
@@ -350,20 +456,12 @@ def run_demo(
             print("--force: removing the existing demo first…")
             remove_demo(target, assume_yes=True)
 
-        # ---- Preflight: user-owned method-name collisions ----
-        collisions = _method_name_collisions(target)
-        if collisions:
-            raise DemoError(
-                "cannot scaffold the demo — its method names would overwrite "
-                "user-owned method snapshots under methods/: "
-                + "; ".join(collisions)
-            )
-
         # ---- Step 4: Dockerfile + image build ----
         image_ref = _build_demo_image(target)
 
         # ---- Step 5: register the env (before methods — method.yaml
-        # `env: __demo__env` is validated at register_method) ----
+        # `env: wfc-demo-env` is validated at register_method). Never
+        # pushed here, base or not: pushing is the user's step. ----
         from ..environments import register as register_env
 
         register_env(
@@ -373,8 +471,10 @@ def run_demo(
             project_dir=target,
             force=True,
             allow_reserved=True,
+            push=False,
         )
-        print(f"Registered env {DEMO_ENV}")
+        print(f"Registered env {DEMO_ENV}; its image stays on this machine. "
+              f"`wfc push-env {DEMO_ENV}` pushes it to the project's registry.")
 
         # ---- Step 6: module + methods ----
         from ..registration import register_method, register_module
@@ -388,53 +488,52 @@ def run_demo(
             ),
             allow_reserved=True,
         )
-        # The assets keep their bare names; the prefix is applied on the way
-        # in, so the staged directory — which IS the snapshot directory, since
-        # the demo registers in place — is methods/__demo__<name>/ and no demo
-        # method ever claims a bare name a user might want.
+        # Registered straight from the bundled assets: registration copies
+        # them into the demo module's snapshots. The assets keep their bare
+        # names; the prefix is applied on the way in, so no demo method ever
+        # claims a bare name a user might want.
         for src_name, m in zip(DEMO_METHOD_SOURCES, DEMO_METHODS):
-            dest = layout.method_dir(target, m)
-            if dest.exists():
-                shutil.rmtree(dest)
-            shutil.copytree(ASSETS_DIR / layout.METHODS_DIR_NAME / src_name, dest)
             register_method(
-                method_dir=dest,
+                method_dir=ASSETS_DIR / layout.METHODS_DIR_NAME / src_name,
                 module_name=DEMO_MODULE,
                 method_name=m,
                 # The script keeps its authored name, so the
                 # `{method_name}.py` probe would miss it — name it outright.
                 script_name=f"{src_name}.py",
                 allow_reserved=True,
+                assume_yes=True,
             )
 
-        # ---- Step 7: samples (tagged directory names, clean filenames) ----
+        # ---- Step 7: samples (tagged names, clean filenames) ----
+        # Registered straight from the bundled assets: registration caches
+        # the bytes wherever the source is, and the sample workspace holds
+        # only what a run's restore writes there.
         from ..registration import register_sample
 
         for s in DEMO_SAMPLES:
             src = ASSETS_DIR / layout.SAMPLES_DIR_NAME / f"{s}.csv"
             tagged = f"{DEMO_MODULE}{s}"
-            sample_dir = layout.sample_dir(target, tagged)
-            sample_dir.mkdir(parents=True, exist_ok=True)
-            copied = sample_dir / src.name
-            shutil.copy2(src, copied)
             register_sample(
                 name=tagged,
-                source_path=copied,
+                source_path=src,
                 project_root=target,
                 allow_reserved=True,
             )
             print(f"Registered sample {tagged}")
 
         # ---- Step 8: pipeline document ----
-        shutil.copy2(ASSETS_DIR / "pipeline.json", target / "demo-pipeline.json")
-        print("Wrote demo-pipeline.json")
+        shutil.copy2(ASSETS_DIR / "pipeline.json", target / DEMO_PIPELINE_FILENAME)
+        print(f"Wrote {DEMO_PIPELINE_FILENAME}")
+
+        # ---- Step 8b: the demo schema stamp, last; committed with the
+        # pipeline document so the tree is clean ----
+        write_demo_stamp(target)
 
     print(
-        "\nDemo scaffolded: module __demo__ (5 methods), 3 samples, env "
-        "__demo__env. Every demo entity carries the __demo__ prefix — "
-        "including the method names — so the demo never takes a name you "
-        "want for your own work. Remove everything later with "
-        "`wfc demo --remove`."
+        f"\nDemo scaffolded: module {DEMO_MODULE} (5 methods), 3 samples, env "
+        f"{DEMO_ENV}. The module, its methods and the samples carry the "
+        f"{DEMO_MODULE} prefix, so the demo never takes a name you want for "
+        f"your own work. Remove everything later with `wfc demo --remove`."
     )
 
     # ---- Step 9: serve the Canvas ----

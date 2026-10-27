@@ -4,7 +4,7 @@
    * run, load its lineage into the canvas, or graft a reference to it.
    */
   import { scopeDescendantsTo } from './historyStore.js';
-  import { fetchLineagePipeline } from './historyApi.js';
+  import { fetchLineagePipeline, lineageFailureMessage } from './historyApi.js';
   import type { WfcRun } from './historyApi.js';
   import {
     confirmReplaceIfDirty,
@@ -47,17 +47,8 @@
       canvasPipelineId.set(null);
       showFlash(`Loaded lineage for run ${run.id} into canvas`, 'success');
     } catch (err) {
-      const code = err instanceof Error ? err.message : String(err);
-      if (code === 'LINEAGE_SYNTHESIS_FAILED') {
-        showFlash(
-          "Couldn't reconstruct lineage — the run's ancestor chain is malformed or too long.",
-          'error',
-        );
-      } else if (code === 'LINEAGE_RUN_NOT_FOUND') {
-        showFlash('Run not found.', 'error');
-      } else {
-        showFlash(`Failed to load lineage: ${code}`, 'error');
-      }
+      // A server refusal (422) shows the server's own words.
+      showFlash(lineageFailureMessage(err), 'error');
     }
   }
 

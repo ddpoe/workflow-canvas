@@ -16,7 +16,11 @@ its directory branch on a ``.dir`` value.
 This module also decides what counts as a directory's content, and refuses
 what it cannot store faithfully (:class:`DirectoryContentError`): a symlink
 anywhere inside, two names differing only by case, and a directory with no
-files.  Dotfiles count; empty subdirectories and file modes do not.
+files.  Dotfiles count; empty subdirectories and file modes do not.  One
+walk owns those rules, shared by the manifest and by the stat-only listing
+(:func:`directory_listing`), which reads no byte.  :func:`content_hasher`
+is the incremental form of the file hash, for a copy that hashes the bytes
+it writes.
 """
 
 from __future__ import annotations
@@ -87,6 +91,20 @@ class DirectoryManifest:
     newest_mtime: float
 
 
+def content_hasher() -> hashlib._Hash:
+    """Return a fresh incremental hasher of file content.
+
+    Feed it a file's bytes in order with ``update`` and read
+    ``hexdigest()``: the result equals :func:`hash_file` of the same bytes.
+    A copy that hashes the bytes it writes uses it, so the copy and the
+    file hash are one algorithm.
+
+    Returns:
+        A new MD5 hash object.
+    """
+    return hashlib.md5()
+
+
 def hash_file(path: Path | str) -> str:
     """Compute the MD5 hex digest of a file's content.
 
@@ -103,7 +121,7 @@ def hash_file(path: Path | str) -> str:
         IsADirectoryError: If path is a directory (use hash_directory instead).
     """
     path = Path(path)
-    h = hashlib.md5()
+    h = content_hasher()
     with open(path, "rb") as f:
         while True:
             chunk = f.read(_CHUNK_SIZE)
@@ -215,19 +233,22 @@ def _is_link(path: str) -> bool:
     return bool(isjunction and isjunction(path))
 
 
-def directory_manifest(path: Path | str) -> DirectoryManifest:
-    """Walk a directory into its DVC ``.dir`` manifest, refusing unstorable content.
+def _walk_directory(path: Path) -> list[tuple[str, Path]]:
+    """The one walk of a directory's members, refusing unstorable content.
 
-    Every file counts, dotfiles included; empty subdirectories and file
-    modes do not.  A symlink (or junction) anywhere inside, two names in
-    one directory that differ only by case, and a directory with no files
-    are refused by path before anything is hashed.
+    Owns what counts as a directory's content for both
+    :func:`directory_manifest` and :func:`directory_listing`, so the two
+    never disagree on which members a directory has.  Every file counts,
+    dotfiles included; empty subdirectories do not.  A symlink (or
+    junction) anywhere inside, two names in one directory that differ only
+    by case, and a directory with no files are refused by path.
 
     Args:
         path: The directory.
 
     Returns:
-        The directory's :class:`DirectoryManifest`.
+        ``(relpath, path)`` per member file, in walk order; relpaths use
+        ``/`` separators.
 
     Raises:
         NotADirectoryError: ``path`` is not a directory, including when it
@@ -235,7 +256,6 @@ def directory_manifest(path: Path | str) -> DirectoryManifest:
         DirectoryContentError: The directory holds a symlink, a case-only
             name collision, or no files.
     """
-    path = Path(path)
     if not path.is_dir():
         raise NotADirectoryError(f"Not a directory: {path}")
     if _is_link(str(path)):
@@ -258,6 +278,88 @@ def directory_manifest(path: Path | str) -> DirectoryManifest:
             path, "the directory holds no files (an empty directory has no "
                   "content to store)"
         )
+    return files
+
+
+@dataclass(frozen=True)
+class DirectoryListing:
+    """A directory's members and their stat results, with no byte read.
+
+    Attributes:
+        members: ``(relpath, os.stat_result)`` per file, sorted by relpath;
+            relpaths use ``/`` separators.
+        total_size: Sum of the files' sizes in bytes.
+        file_count: Number of files.
+        newest_mtime: The newest file's modification time (``st_mtime``).
+        newest_mtime_ns: The newest file's ``st_mtime_ns``.
+    """
+
+    members: tuple[tuple[str, os.stat_result], ...]
+    total_size: int
+    file_count: int
+    newest_mtime: float
+    newest_mtime_ns: int
+
+
+def directory_listing(path: Path | str) -> DirectoryListing:
+    """List a directory's members with their stat results, without reading a byte.
+
+    The stat-only twin of :func:`directory_manifest`: the same walk, so the
+    same refusals and the same member set, but no member is hashed.
+
+    Args:
+        path: The directory.
+
+    Returns:
+        The directory's :class:`DirectoryListing`.
+
+    Raises:
+        NotADirectoryError: ``path`` is not a directory, including when it
+            does not exist.
+        DirectoryContentError: The directory holds a symlink, a case-only
+            name collision, or no files.
+    """
+    files = _walk_directory(Path(path))
+    members: list[tuple[str, os.stat_result]] = []
+    total_size = 0
+    newest = 0.0
+    newest_ns = 0
+    for rel, fpath in files:
+        st = fpath.stat()
+        total_size += st.st_size
+        newest = max(newest, st.st_mtime)
+        newest_ns = max(newest_ns, st.st_mtime_ns)
+        members.append((rel, st))
+    return DirectoryListing(
+        members=tuple(sorted(members, key=lambda m: m[0])),
+        total_size=total_size,
+        file_count=len(members),
+        newest_mtime=newest,
+        newest_mtime_ns=newest_ns,
+    )
+
+
+def directory_manifest(path: Path | str) -> DirectoryManifest:
+    """Walk a directory into its DVC ``.dir`` manifest, refusing unstorable content.
+
+    Every file counts, dotfiles included; empty subdirectories and file
+    modes do not.  A symlink (or junction) anywhere inside, two names in
+    one directory that differ only by case, and a directory with no files
+    are refused by path before anything is hashed.
+
+    Args:
+        path: The directory.
+
+    Returns:
+        The directory's :class:`DirectoryManifest`.
+
+    Raises:
+        NotADirectoryError: ``path`` is not a directory, including when it
+            does not exist.
+        DirectoryContentError: The directory holds a symlink, a case-only
+            name collision, or no files.
+    """
+    files = _walk_directory(Path(path))
 
     entries: list[tuple[str, str]] = []
     total_size = 0

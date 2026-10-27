@@ -40,7 +40,7 @@ from axiom_annotations import workflow, Step
 from wfc.execution import run_pipeline
 from wfc.persistence import get_session, Method, Run, RunOutput
 from wfc.identity import hash_path
-from wfc.storage import archive_outputs
+from wfc.storage import archive_outputs, resolve_input
 from wfc.storage.cache import _cache_path
 from tests.fixtures.conftest import create_sample_csv as _create_sample_csv
 from tests.conftest import requires_docker
@@ -137,9 +137,9 @@ def test_imaging_skip_link_provenance(imaging_pipeline_factory, register_imaging
 
     s = Step(step_num=3, name="Archive then verify byte integrity",
              purpose="content_hash == md5(staging bytes) == md5(cache file) for every output")
-    # NULL content_hash is the live deferred-archiving state; run the archive
-    # pass BEFORE asserting integrity.
-    archive_outputs(project_dir)
+    # NULL content_hash is the live deferred-archiving state: hash every
+    # staging output now, while it is in the run archive, then run the
+    # archive pass, which moves each output out of the run archive.
     with get_session() as session:
         outputs = session.exec(
             select(RunOutput)
@@ -147,14 +147,30 @@ def test_imaging_skip_link_provenance(imaging_pipeline_factory, register_imaging
             .where(Run.status == "completed")
         ).all()
         # Snapshot the fields we need while the session is open.
-        snap = [(ro.output_name, ro.artifact_path, ro.content_hash) for ro in outputs]
-    assert snap, "no completed RunOutput rows after archive"
-    for output_name, artifact_path, content_hash in snap:
-        assert content_hash, f"{output_name}: content_hash not populated after archive"
+        staged = {ro.id: (ro.output_name, ro.artifact_path) for ro in outputs}
+    assert staged, "no completed RunOutput rows before archive"
+    staging_md5 = {}
+    for row_id, (output_name, artifact_path) in staged.items():
         staging = Path(artifact_path)
         assert staging.exists(), f"{output_name}: staging artifact missing at {staging}"
-        assert hash_path(staging) == content_hash, (
+        staging_md5[row_id] = hash_path(staging)
+
+    archive_outputs(project_dir)
+    with get_session() as session:
+        outputs = session.exec(
+            select(RunOutput).where(RunOutput.id.in_(list(staged)))
+        ).all()
+        snap = [(ro.id, ro.output_name, ro.artifact_path, ro.content_hash) for ro in outputs]
+    assert len(snap) == len(staged), "RunOutput rows changed across the archive pass"
+    for row_id, output_name, artifact_path, content_hash in snap:
+        assert content_hash, f"{output_name}: content_hash not populated after archive"
+        assert staging_md5[row_id] == content_hash, (
             f"{output_name}: md5(staging) != RunOutput.content_hash"
+        )
+        # Archived, the output has left the run archive: its one local
+        # copy is the cache entry.
+        assert not Path(artifact_path).exists(), (
+            f"{output_name}: run-archive copy still present at {artifact_path}"
         )
         cache_file = _cache_path(project_dir, content_hash)
         assert cache_file.exists(), f"{output_name}: cache file missing at {cache_file}"
@@ -165,7 +181,7 @@ def test_imaging_skip_link_provenance(imaging_pipeline_factory, register_imaging
     s = Step(step_num=4, name="export_final attributes every wired slot correctly",
              purpose="all 3 slots present; the two skip-link sources carry distinguishable lineage")
     final_ro = _node_run_output("export_final")
-    final_path = Path(final_ro.artifact_path)
+    final_path = Path(resolve_input(final_ro.run_id, final_ro.slot))
     with final_path.open(newline="") as f:
         rows = list(csv.DictReader(f))
     assert rows, "export_final produced no rows"

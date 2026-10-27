@@ -9,6 +9,7 @@ about it is the caller's.
 """
 from __future__ import annotations
 
+from wfc import layout
 import sys
 
 from axiom_annotations import workflow
@@ -25,7 +26,7 @@ ENGINE_STDERR = "MissingInputException in rule all\n"
 def _launch_dir(tmp_path):
     """An empty pipeline, its log directory and a frozen document to point at."""
     pipeline = load_pipeline(EMPTY_DOCUMENT, contract_map={}, reference_outputs={})
-    log_dir = tmp_path / ".runs" / "pipelines" / "pipe-handoff"
+    log_dir = layout.artifact_store(tmp_path) / "pipelines" / "pipe-handoff"
     log_dir.mkdir(parents=True)
     frozen = log_dir / "pipeline.json"
     frozen.write_text("{}", encoding="utf-8")

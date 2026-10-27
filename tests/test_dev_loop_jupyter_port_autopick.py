@@ -13,7 +13,11 @@ from unittest.mock import patch
 
 import pytest
 
-from tests.fixtures.fakes import always_busy_socket, fake_subprocess_run
+from tests.fixtures.fakes import (
+    always_busy_socket,
+    fake_subprocess_run,
+    stub_docker_image_inspect,
+)
 
 from axiom_annotations import workflow
 
@@ -37,25 +41,29 @@ def _fresh_resolver():
     reset_engine()
 
 
-def _setup_project(tmp_path: Path) -> Path:
-    (tmp_path / ".wfc").mkdir()
-    (tmp_path / ".wfc" / "wf-canvas.toml").write_text(
-        '[project]\nname="t"\n[database]\nurl="sqlite:///:memory:"\n'
-    )
+def _setup_project(project: Path) -> Path:
+    """Register the test's registry-image env in a ``tmp_project``.
+
+    Args:
+        project: The ``tmp_project`` fixture's root (``wfc init``'s project,
+            already active).
+
+    Returns:
+        The project root.
+    """
     # byo record: a registry image attached by digest is what production
     # writes for a docker-registry ref like this one.
     from tests.fixtures.conftest import write_env_record
-    write_env_record(tmp_path, "image-io", image="ghcr.io/dante/image-io",
+    write_env_record(project, "image-io", image="ghcr.io/dante/image-io",
                      digest=VALID_DIGEST)
-    return tmp_path
+    return project
 
 
 @workflow(purpose="When port 8888 is occupied, wfc jupyter picks a different "
                   "free port, skips 8000 unconditionally, and forwards the "
                   "resolved port via `-p <resolved>:8888`")
-def test_jupyter_port_autopicks_when_default_occupied(tmp_path, monkeypatch):
-    proj = _setup_project(tmp_path)
-    monkeypatch.chdir(proj)
+def test_jupyter_port_autopicks_when_default_occupied(tmp_project, monkeypatch):
+    _setup_project(tmp_project)
 
     # Hold 8888 with a real socket bind so the helper sees it as occupied.
     holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -76,6 +84,9 @@ def test_jupyter_port_autopicks_when_default_occupied(tmp_path, monkeypatch):
             captured_argv.append(list(argv))
             return _FakeResult()
 
+        # The daemon holds the image, so the run-time rule runs it as it is
+        # and the only subprocess left is the docker run launch.
+        stub_docker_image_inspect(monkeypatch, f"sha256:{VALID_DIGEST}")
         fake_subprocess_run(monkeypatch, _fake_run)
         from wfc.environments import dev_loop
         rc = dev_loop.jupyter("image-io")

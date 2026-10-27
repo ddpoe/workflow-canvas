@@ -26,4 +26,4 @@ params:
     description: "Optionally drop cells with area above this value"
 
 executor: local
-env: __demo__env
+env: wfc-demo-env

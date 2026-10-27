@@ -9,29 +9,43 @@
    *   GET  /api/registry/methods
    *   GET  /api/registry/samples
    *   GET  /api/registry/methods/:module/:method/detail
-   *   POST /api/registry/methods/validate
+   *   GET  /api/registry/methods/:module/:method/export (a version's zip)
+   *
+   * Methods are grouped under collapsible module headings, open by default.
+   * A row reads its method, newest version and env as labelled tags, with a
+   * ⋯ menu; an open method's row holds its version picker, and the method
+   * shows that version's contract and code (`RegistryMethodPanel.svelte`). Version details float over the row
+   * (`VersionDetailsCard.svelte`). Refresh reloads the lists and drops every
+   * cached detail, so open rows fetch theirs again.
    *
    * The Envs sub-tab (`EnvsSubTab.svelte`) fetches its own env list and
    * package manifests.
    */
 
-  import { highlight } from './shikiHighlight.js';
-  import { displaySlotType } from '../shared/slotColor.js';
   import RegisterModal from './RegisterModal.svelte';
   import EnvsSubTab from './EnvsSubTab.svelte';
+  import MethodListRow from './MethodListRow.svelte';
+  import RegistryMethodPanel from './RegistryMethodPanel.svelte';
+  import VersionDetailsCard from './VersionDetailsCard.svelte';
+  import PopMenu from './PopMenu.svelte';
+  import type { MenuItem } from './PopMenu.svelte';
+  import LabelTag from '../shared/LabelTag.svelte';
+  import { getModuleColor } from '../history/historyUtils.js';
+  import { tick } from 'svelte';
+  import { registryFocus } from './registryFocus.js';
+  import type { RegistryFocus } from './registryFocus.js';
   import {
     fetchMethodDetail,
     fetchRegistryModules,
     fetchRegistryMethods,
     fetchRegistrySamples,
-    validateRegisteredMethod,
+    methodExportUrl,
   } from './api.js';
   import type {
-    FileEntry,
-    SlotSpec,
     MethodDetail,
     ModuleRow,
     MethodRow,
+    MethodVersionRow,
     SampleRow,
     RegisterKind,
   } from './api.js';
@@ -42,19 +56,44 @@
   let sub = $state<SubTab>('modules');
   let query = $state('');
 
-  // Method-row expansion state. The response shapes are `api.ts`'s.
+  // Method-row expansion state. The response shapes are `api.ts`'s. A row
+  // shows one version at a time: the detail and error maps are keyed per
+  // version (`detailKey`), so switching versions never shows one version's
+  // files under another.
   let expandedMethods = $state<Set<string>>(new Set());
+  let selectedVersion = $state<Record<string, string>>({}); // key: methodKey -> identity
   let methodDetails = $state<Record<string, MethodDetail>>({});
-  let activeFileName = $state<Record<string, string>>({});
-  let highlightedHtml = $state<Record<string, string>>({}); // key: `${module}::${method}::${fileName}`
   let detailError = $state<Record<string, string>>({});
+  // Module headings collapsed on this page load; every module starts open.
+  let collapsedModules = $state<Set<string>>(new Set());
 
   function methodKey(mod: string, meth: string): string {
     return `${mod}::${meth}`;
   }
 
-  async function toggleExpand(mod: string, meth: string) {
-    const key = methodKey(mod, meth);
+  /** The newest version, or `undefined` for a row listing no versions. */
+  function newestVersion(m: MethodRow): MethodVersionRow | undefined {
+    const versions = m.versions ?? [];
+    return versions.find(v => v.newest) ?? versions[versions.length - 1];
+  }
+
+  /** The newest version's identity, or `''` for a row listing no versions. */
+  function newestIdentity(m: MethodRow): string {
+    return newestVersion(m)?.identity ?? '';
+  }
+
+  /** The identity of the version a row shows: the chosen one, else the newest. */
+  function shownVersion(m: MethodRow): string {
+    return selectedVersion[methodKey(m.module, m.name)] ?? newestIdentity(m);
+  }
+
+  /** The per-version cache key of a row's detail. */
+  function detailKey(key: string, identity: string): string {
+    return identity ? `${key}@${identity}` : key;
+  }
+
+  async function toggleExpand(m: MethodRow) {
+    const key = methodKey(m.module, m.name);
     const next = new Set(expandedMethods);
     if (next.has(key)) {
       next.delete(key);
@@ -63,65 +102,115 @@
     }
     next.add(key);
     expandedMethods = next;
+    await loadDetail(m, shownVersion(m));
+  }
 
-    if (methodDetails[key]) {
-      // Already cached — nothing to fetch, but re-trigger highlight for active file.
-      const active = activeFileName[key];
-      if (active) void renderFile(key, methodDetails[key].files.find(f => f.name === active));
-      return;
-    }
+  /** Show another version in an expanded row: its files, contract and env. */
+  async function selectVersion(m: MethodRow, identity: string) {
+    selectedVersion = { ...selectedVersion, [methodKey(m.module, m.name)]: identity };
+    await loadDetail(m, identity);
+  }
 
+  async function loadDetail(m: MethodRow, identity: string) {
+    const dkey = detailKey(methodKey(m.module, m.name), identity);
+    if (methodDetails[dkey]) return;
     try {
-      const res = await fetchMethodDetail(mod, meth);
+      // The newest version is the detail route's default; an older one is
+      // named by its content identity.
+      const res = await fetchMethodDetail(
+        m.module, m.name, identity && identity !== newestIdentity(m) ? identity : undefined
+      );
       if (!res.ok) {
-        detailError = { ...detailError, [key]: res.error };
+        detailError = { ...detailError, [dkey]: res.error };
         return;
       }
-      const body: MethodDetail = res.detail;
-      methodDetails = { ...methodDetails, [key]: body };
-      // Pre-select the first file (or the one matching the method's script).
-      const preferred =
-        body.files.find(f => f.name === `${meth}.py`) ??
-        body.files.find(f => f.language === 'python') ??
-        body.files[0];
-      if (preferred) {
-        activeFileName = { ...activeFileName, [key]: preferred.name };
-        void renderFile(key, preferred);
-      }
+      methodDetails = { ...methodDetails, [dkey]: res.detail };
     } catch (err) {
-      detailError = { ...detailError, [key]: String(err) };
+      detailError = { ...detailError, [dkey]: String(err) };
     }
   }
 
-  async function selectFile(mod: string, meth: string, file: FileEntry) {
-    const key = methodKey(mod, meth);
-    activeFileName = { ...activeFileName, [key]: file.name };
-    await renderFile(key, file);
+  // ---- Menus and the details card ----
+
+  type Menu = { key: string; title: string; items: MenuItem[]; anchor: HTMLElement;
+                align: 'right' | 'side'; testid: string };
+  let menu = $state<Menu | null>(null);
+  let details = $state<{ method: MethodRow; version: MethodVersionRow; anchor: HTMLElement } | null>(null);
+
+  function closeMenus() {
+    menu = null;
   }
 
-  async function renderFile(methodKey_: string, file: FileEntry | undefined) {
-    if (!file) return;
-    const htmlKey = `${methodKey_}::${file.name}`;
-    if (highlightedHtml[htmlKey]) return; // cached
-    try {
-      const html = await highlight(file.content, file.language);
-      highlightedHtml = { ...highlightedHtml, [htmlKey]: html };
-    } catch (err) {
-      // Fall back to plain escaped text.
-      const escaped = file.content
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
-      highlightedHtml = { ...highlightedHtml, [htmlKey]: `<pre class="shiki"><code>${escaped}</code></pre>` };
-    }
+  function rowElement(m: MethodRow): HTMLElement | null {
+    return bodyEl?.querySelector(
+      `[data-method-key="${CSS.escape(methodKey(m.module, m.name))}"]`) ?? null;
   }
 
-  function slotEntries(slots: Record<string, SlotSpec>): Array<[string, SlotSpec]> {
-    return Object.entries(slots ?? {});
+  function openDetails(m: MethodRow, v: MethodVersionRow, fallback: HTMLElement) {
+    // The card floats over the method's row; the anchor that opened the
+    // menu may be gone (a picker entry closes with its list).
+    details = { method: m, version: v, anchor: rowElement(m) ?? fallback };
   }
 
-  // Register modal state.
+  function copyText(text: string) {
+    void navigator.clipboard?.writeText(text).catch(() => {});
+  }
+
+  /** Download a version's script and contract as its zip. */
+  function exportVersion(m: MethodRow, v: MethodVersionRow) {
+    const a = document.createElement('a');
+    a.href = methodExportUrl(m.module, m.name, v.identity);
+    a.download = `${m.name}_v${v.label}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  function methodMenu(m: MethodRow, anchor: HTMLElement) {
+    const key = `method:${methodKey(m.module, m.name)}`;
+    if (menu?.key === key) { closeMenus(); return; }
+    const v = newestVersion(m);
+    const items: MenuItem[] = v ? [
+      { label: 'Version details…', icon: 'ⓘ', testid: 'menu-details',
+        run: () => openDetails(m, v, anchor) },
+      { label: 'Copy version identity', icon: '⧉', hint: `${v.identity.slice(0, 8)}…`,
+        testid: 'menu-copy-identity', separated: true, run: () => copyText(v.identity) },
+      { label: 'Export script and contract', icon: '⤓', testid: 'menu-export',
+        run: () => exportVersion(m, v) },
+      { label: 'Register a new version…', icon: '+', testid: 'menu-register-version',
+        separated: true, run: () => openRegisterVersion(m) },
+    ] : [
+      { label: 'Register a new version…', icon: '+', testid: 'menu-register-version',
+        run: () => openRegisterVersion(m) },
+    ];
+    menu = { key, title: v ? `${m.name} · latest v${v.label}` : m.name, items, anchor,
+             align: 'right', testid: 'method-menu' };
+  }
+
+  function versionMenu(m: MethodRow, v: MethodVersionRow, anchor: HTMLElement) {
+    const key = `version:${methodKey(m.module, m.name)}:${v.label}`;
+    if (menu?.key === key) { closeMenus(); return; }
+    menu = {
+      key, title: `${m.name} · v${v.label}`, anchor, align: 'side', testid: 'version-menu',
+      items: [
+        { label: 'Version details…', icon: 'ⓘ', testid: 'menu-details',
+          run: () => openDetails(m, v, anchor) },
+        { label: 'Copy version identity', icon: '⧉', hint: `${v.identity.slice(0, 8)}…`,
+          testid: 'menu-copy-identity', separated: true, run: () => copyText(v.identity) },
+        { label: 'Copy commit', icon: '⧉', hint: v.commit ? v.commit.slice(0, 7) : 'not recorded',
+          testid: 'menu-copy-commit', disabled: !v.commit,
+          run: () => { if (v.commit) copyText(v.commit); } },
+        { label: 'Export script and contract', icon: '⤓', testid: 'menu-export',
+          separated: true, run: () => exportVersion(m, v) },
+      ],
+    };
+  }
+
+  // ---- Register modal ----
+
   let registerKind = $state<RegisterKind | null>(null);
+  // Set when the modal opens on New method version with a method chosen.
+  let registerTarget = $state<{ module: string; method: string } | null>(null);
 
   // Map plural sub-tab name -> singular register kind.
   const SUB_TO_KIND: Record<SubTab, RegisterKind | null> = {
@@ -132,7 +221,13 @@
   };
 
   function openRegister() {
+    registerTarget = null;
     registerKind = SUB_TO_KIND[sub] ?? 'module';
+  }
+
+  function openRegisterVersion(m: MethodRow) {
+    registerTarget = { module: m.module, method: m.name };
+    registerKind = 'method';
   }
 
   function onRegistered(_kind: RegisterKind) {
@@ -140,15 +235,22 @@
     void refresh();
   }
 
+  // ---- Lists ----
+
   let modules = $state<ModuleRow[]>([]);
   let methods = $state<MethodRow[]>([]);
   let samples = $state<SampleRow[]>([]);
   let loading = $state(false);
   let loadError = $state<string | null>(null);
+  // Set once a Refresh the user asked for has finished.
+  let refreshedByUser = $state(false);
 
-  async function refresh() {
+  async function refresh(byUser = false) {
     loading = true;
     loadError = null;
+    if (byUser) refreshedByUser = false;
+    closeMenus();
+    details = null;
     try {
       const [mods, meths, sams] = await Promise.all([
         fetchRegistryModules(),
@@ -163,6 +265,19 @@
     } finally {
       loading = false;
     }
+    // Every cached detail may be stale: drop them, and open rows fetch theirs again.
+    methodDetails = {};
+    detailError = {};
+    await Promise.all(methods
+      .filter(m => expandedMethods.has(methodKey(m.module, m.name)))
+      .map(m => loadDetail(m, shownVersion(m))));
+    if (byUser) refreshedByUser = true;
+    // A link from another view waits for the rows it names.
+    if (pendingFocus) {
+      const focus = pendingFocus;
+      pendingFocus = null;
+      await applyFocus(focus);
+    }
   }
 
   // Reload when the tab becomes visible.
@@ -170,31 +285,67 @@
     if (visible) refresh();
   });
 
-  // Per-method Validate state so a failed check surfaces inline on the
-  // method's own row. ``validateInFlight`` gates the button + acts as a spinner.
-  let validateInFlight = $state<Set<string>>(new Set());
-  let validateError = $state<Record<string, string>>({});
+  // A link from another view (the run detail's Cache-key inputs card): taken
+  // once, after the next load, so the rows it names are there. App switches
+  // to this tab, which reloads; a request arriving while the tab is already
+  // shown reloads here.
+  let pendingFocus: RegistryFocus | null = null;
+  let bodyEl = $state<HTMLDivElement | undefined>();
+  // A method row opened on a version it no longer lists says so, by row.
+  let versionNote = $state<Record<string, string>>({});
 
-  async function validateMethod(mod: string, method: string) {
-    const key = methodKey(mod, method);
-    validateInFlight = new Set(validateInFlight).add(key);
-    const nextErr = { ...validateError };
-    delete nextErr[key];
-    validateError = nextErr;
+  $effect(() => registryFocus.subscribe(focus => {
+    if (!focus) return;
+    pendingFocus = focus;
+    registryFocus.set(null);
+    if (visible && !loading) void refresh();
+  }));
 
-    try {
-      const body = await validateRegisteredMethod(mod, method);
-      // Update just that row's `validated` field.
-      methods = methods.map(m =>
-        m.module === mod && m.name === method ? { ...m, validated: body.validated } : m
-      );
-    } catch (err) {
-      validateError = { ...validateError, [key]: String(err) };
-    } finally {
-      const next = new Set(validateInFlight);
-      next.delete(key);
-      validateInFlight = next;
+  async function applyFocus(focus: RegistryFocus) {
+    query = '';
+    sub = focus.sub;
+    versionNote = {};
+    if (focus.sub === 'samples') {
+      await tick();
+      bodyEl?.scrollTo({ top: 0 });
+      return;
     }
+    const m = methods.find(r => r.module === focus.module && r.name === focus.method);
+    if (!m) return;
+    const key = methodKey(m.module, m.name);
+    const versions = m.versions ?? [];
+    const listed = focus.versionIdentity !== null
+      && versions.some(v => v.identity === focus.versionIdentity);
+    const identity = listed ? focus.versionIdentity! : newestIdentity(m);
+    if (!listed && versions.length > 0) {
+      const newest = versions.find(v => v.identity === identity);
+      const ran = focus.versionLabel ? `version ${focus.versionLabel}` : 'version';
+      versionNote = {
+        ...versionNote,
+        [key]: `The run's ${ran} is not listed; showing v${newest?.label ?? '?'}.`,
+      };
+    }
+    // The link opens the module it lands in.
+    if (collapsedModules.has(m.module)) {
+      const next = new Set(collapsedModules);
+      next.delete(m.module);
+      collapsedModules = next;
+    }
+    selectedVersion = { ...selectedVersion, [key]: identity };
+    expandedMethods = new Set(expandedMethods).add(key);
+    await loadDetail(m, identity);
+    await tick();
+    rowElement(m)?.scrollIntoView?.({ block: 'start' });
+  }
+
+  function toggleModule(name: string) {
+    const next = new Set(collapsedModules);
+    if (next.has(name)) next.delete(name); else next.add(name);
+    collapsedModules = next;
+  }
+
+  function setAllModules(collapsed: boolean) {
+    collapsedModules = collapsed ? new Set(methods.map(m => m.module)) : new Set();
   }
 
   function fmtSize(n: number | null): string {
@@ -230,6 +381,11 @@
     }
     return groups;
   });
+
+  /** A module shows its methods unless collapsed; a filter match always opens it. */
+  function moduleOpen(name: string): boolean {
+    return q !== '' || !collapsedModules.has(name);
+  }
 </script>
 
 <div class="registry" style:display={visible ? 'flex' : 'none'}>
@@ -241,7 +397,18 @@
       <button class="sub-tab" class:active={sub === 'samples'}  onclick={() => (sub = 'samples')}>Samples <span class="count">{samples.length}</span></button>
     </div>
     <input class="search" type="search" placeholder="Filter {sub}…" bind:value={query} />
-    <button class="btn-ghost" onclick={refresh} title="Reload">↻</button>
+    <button class="btn-ghost refresh" data-testid="registry-refresh" disabled={loading}
+            title="Reload the lists and every open method" onclick={() => refresh(true)}>
+      <span class="spin" class:on={loading}>↻</span> Refresh
+    </button>
+    <span class="refresh-note" data-testid="refresh-note" aria-live="polite">
+      {loading ? 'Reloading…' : refreshedByUser ? 'Updated just now' : ''}
+    </span>
+    {#if sub === 'methods'}
+      <button class="btn-ghost" data-testid="collapse-all" onclick={() => setAllModules(true)}>Collapse all</button>
+      <button class="btn-ghost" data-testid="expand-all" onclick={() => setAllModules(false)}>Expand all</button>
+    {/if}
+    <span class="spacer"></span>
     {#if sub !== 'envs'}
       <button class="btn-primary" onclick={openRegister}>+ Register {sub.slice(0, -1)}</button>
     {/if}
@@ -251,8 +418,10 @@
     <RegisterModal
       initialKind={registerKind}
       moduleNames={modules.map(m => m.name)}
+      {methods}
+      initialTarget={registerTarget}
       registeredMethodDirs={methods.map(m => `methods/${m.name}`)}
-      onClose={() => (registerKind = null)}
+      onClose={() => { registerKind = null; registerTarget = null; }}
       onRegistered={onRegistered}
     />
   {/if}
@@ -262,7 +431,7 @@
   {:else if loading && modules.length + methods.length + samples.length === 0}
     <div class="empty">Loading…</div>
   {:else}
-    <div class="body">
+    <div class="body" bind:this={bodyEl}>
       {#if sub === 'modules'}
         {#if filteredModules.length === 0}
           <div class="empty">No modules registered.</div>
@@ -307,125 +476,45 @@
         {#if filteredMethods.length === 0}
           <div class="empty">No methods registered.</div>
         {:else}
-          {#each Object.entries(methodsByModule) as [modName, rows]}
-            <div class="group-header mono">{modName} <span class="dim">({rows.length})</span></div>
-            <table class="reg-table nested">
-              <!-- Shared fixed column widths: without these each per-module
-                   table auto-sizes from its own content and the env /
-                   validated / runs columns drift between groups. -->
-              <colgroup>
-                <col />
-                <col class="col-env" />
-                <col class="col-validated" />
-                <col class="col-runs" />
-              </colgroup>
-              <tbody>
-                {#each rows as m}
-                  {@const key = methodKey(m.module, m.name)}
-                  {@const expanded = expandedMethods.has(key)}
-                  {@const inFlight = validateInFlight.has(key)}
-                  {@const vErr = validateError[key]}
-                  <tr class="method-row" class:expanded onclick={() => toggleExpand(m.module, m.name)}>
-                    <td class="mono expand-cell">
-                      <span class="chevron">{expanded ? '▼' : '▶'}</span>
-                      {m.name}
-                    </td>
-                    <td><span class="chip chip-env">{m.env}</span></td>
-                    <td onclick={(e) => e.stopPropagation()}>
-                      {#if m.validated === true}
-                        <span class="chip chip-ok">valid</span>
-                      {:else if m.validated === false}
-                        <span class="chip chip-fail">invalid</span>
-                      {:else if vErr}
-                        <span class="chip chip-fail" title={vErr}>check failed</span>
-                        <button class="btn-ghost validate-retry"
-                                disabled={inFlight}
-                                onclick={() => validateMethod(m.module, m.name)}>retry</button>
-                        <div class="validate-err-detail mono" title={vErr}>{vErr}</div>
-                      {:else}
-                        <button class="btn-ghost"
-                                disabled={inFlight}
-                                onclick={() => validateMethod(m.module, m.name)}>
-                          {inFlight ? '…' : 'check'}
-                        </button>
-                      {/if}
-                    </td>
-                    <td class="mono dim">{m.runCount} runs</td>
-                  </tr>
-                  {#if expanded}
-                    <tr class="method-detail-row">
-                      <td colspan="4">
-                        {#if detailError[key]}
-                          <div class="error">Failed to load: {detailError[key]}</div>
-                        {:else if !methodDetails[key]}
-                          <div class="dim">Loading…</div>
-                        {:else}
-                          {@const detail = methodDetails[key]}
-                          <div class="detail-grid">
-                            <div class="detail-contract">
-                              <div class="section-label">Contract</div>
-                              <div class="slot-grid">
-                                {#if slotEntries(detail.contract.input_slots).length > 0}
-                                  <div class="slot-group-label">Inputs</div>
-                                  {#each slotEntries(detail.contract.input_slots) as [name, spec]}
-                                    <div class="slot-name mono">{name}</div>
-                                    <div><span class="chip chip-input">{displaySlotType(spec.type) || '—'}</span></div>
-                                    <div class="slot-info dim">{spec.required === false ? 'optional' : 'required'}{spec.multiple ? ' · multi' : ''}</div>
-                                  {/each}
-                                {/if}
-                                {#if slotEntries(detail.contract.output_slots).length > 0}
-                                  <div class="slot-group-label">Outputs</div>
-                                  {#each slotEntries(detail.contract.output_slots) as [name, spec]}
-                                    <div class="slot-name mono">{name}</div>
-                                    <div><span class="chip chip-output">{displaySlotType(spec.type) || '—'}</span></div>
-                                    <div class="slot-info dim">{spec.required === false ? 'optional' : 'required'}</div>
-                                  {/each}
-                                {/if}
-                                {#if Object.keys(detail.contract.params_schema ?? {}).length > 0}
-                                  <div class="slot-group-label">Params</div>
-                                  {#each Object.entries(detail.contract.params_schema) as [name, spec]}
-                                    {@const s = spec as SlotSpec & { default?: any }}
-                                    <div class="slot-name mono">{name}</div>
-                                    <div><span class="chip chip-param">{s.type ?? '—'}</span></div>
-                                    <div class="slot-info dim">
-                                      {s.required === false ? 'optional' : 'required'}{#if s.default !== undefined} · default <span class="mono">{JSON.stringify(s.default)}</span>{/if}
-                                    </div>
-                                  {/each}
-                                {/if}
-                              </div>
-                            </div>
-
-                            <div class="detail-files">
-                              <div class="section-label">Files</div>
-                              <div class="file-tabs">
-                                {#each detail.files as f}
-                                  <button
-                                    class="file-tab"
-                                    class:active={activeFileName[key] === f.name}
-                                    onclick={() => selectFile(m.module, m.name, f)}
-                                  >{f.name}</button>
-                                {/each}
-                              </div>
-                              {#if activeFileName[key]}
-                                {@const htmlKey = `${key}::${activeFileName[key]}`}
-                                <div class="code-block">
-                                  {#if highlightedHtml[htmlKey]}
-                                    {@html highlightedHtml[htmlKey]}
-                                  {:else}
-                                    <div class="dim">Highlighting…</div>
-                                  {/if}
-                                </div>
-                              {/if}
-                            </div>
-                          </div>
-                        {/if}
-                      </td>
-                    </tr>
-                  {/if}
-                {/each}
-              </tbody>
-            </table>
-          {/each}
+          <div class="methods-list">
+            {#each Object.entries(methodsByModule) as [modName, rows] (modName)}
+              {@const isOpen = moduleOpen(modName)}
+              <section class="module" data-testid="module-group" data-module={modName}
+                       style="--m: {getModuleColor(modName)}">
+                <button type="button" class="mod-row" data-testid="module-heading"
+                        aria-expanded={isOpen} onclick={() => toggleModule(modName)}>
+                  <span class="chev">{isOpen ? '▼' : '▶'}</span>
+                  <LabelTag kind="module" label="MODULE" value={modName} color={getModuleColor(modName)} />
+                  <span class="mod-count" data-testid="module-count">{rows.length} {rows.length === 1 ? 'method' : 'methods'}</span>
+                </button>
+                {#if isOpen}
+                  {#each rows as m (m.name)}
+                    {@const key = methodKey(m.module, m.name)}
+                    {@const vid = shownVersion(m)}
+                    {@const dkey = detailKey(key, vid)}
+                    {@const expanded = expandedMethods.has(key)}
+                    <MethodListRow method={m} {expanded} shown={vid}
+                                   menuOpen={menu?.key === `method:${key}`}
+                                   onToggle={() => toggleExpand(m)}
+                                   onMenu={(anchor) => methodMenu(m, anchor)}
+                                   onSelect={(identity) => selectVersion(m, identity)}
+                                   onVersionMenu={(v, anchor) => versionMenu(m, v, anchor)} />
+                    {#if expanded}
+                      <div class="panel">
+                        <div class="inner">
+                          <RegistryMethodPanel
+                            detail={methodDetails[dkey] ?? null}
+                            error={detailError[dkey] ?? null}
+                            note={versionNote[key] ?? null}
+                          />
+                        </div>
+                      </div>
+                    {/if}
+                  {/each}
+                {/if}
+              </section>
+            {/each}
+          </div>
         {/if}
       {:else if sub === 'envs'}
         <EnvsSubTab visible={sub === 'envs'} filter={query} />
@@ -462,34 +551,44 @@
   {/if}
 </div>
 
+{#if menu}
+  <PopMenu anchor={menu.anchor} items={menu.items} title={menu.title} align={menu.align}
+           testid={menu.testid} onClose={closeMenus} />
+{/if}
+{#if details}
+  <VersionDetailsCard method={details.method} version={details.version}
+                      anchor={details.anchor} onClose={() => (details = null)} />
+{/if}
+
 <style>
   .registry {
     flex: 1;
     display: flex;
     flex-direction: column;
-    background: #1a1a1a;
-    color: #ccc;
+    background: var(--bg-canvas);
+    color: var(--text-primary);
     overflow: hidden;
   }
   .sub-tabs {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 12px;
     padding: 10px 14px;
-    background: #252526;
+    background: var(--bg-panel);
     border-bottom: 1px solid var(--border);
     flex-shrink: 0;
   }
   .sub-tab-group {
     display: flex;
     gap: 2px;
-    background: #1e1e1e;
+    background: var(--bg-input);
     padding: 4px;
     border-radius: 6px;
   }
   .sub-tab {
     padding: 5px 12px;
-    color: #888;
+    color: var(--text-secondary);
     font-size: 12.5px;
     background: none;
     border: none;
@@ -508,9 +607,9 @@
   }
 
   .search {
-    background: #1e1e1e;
+    background: var(--bg-input);
     border: 1px solid var(--border);
-    color: #ccc;
+    color: var(--text-primary);
     font-size: 12.5px;
     padding: 5px 10px;
     border-radius: 4px;
@@ -521,24 +620,19 @@
   .btn-ghost {
     background: transparent;
     border: 1px solid var(--border);
-    color: #ccc;
+    color: var(--text-primary);
     font-size: 12px;
     padding: 4px 10px;
     border-radius: 3px;
     cursor: pointer;
   }
-  .btn-ghost:hover { background: #2d2d30; }
-  .btn-ghost:disabled { opacity: 0.5; cursor: not-allowed; }
-  .validate-retry { margin-left: 4px; }
-  .validate-err-detail {
-    margin-top: 3px;
-    color: #e89090;
-    font-size: 10.5px;
-    max-width: 320px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
+  .btn-ghost:hover { background: var(--bg-header); }
+  .btn-ghost:disabled { opacity: 0.6; cursor: default; }
+  .spin { display: inline-block; }
+  .spin.on { animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .refresh-note { color: var(--text-secondary); font-size: 11px; min-width: 90px; }
+  .spacer { flex: 1; }
 
   .btn-primary {
     background: var(--accent);
@@ -560,10 +654,10 @@
 
   .empty, .error {
     padding: 28px 14px;
-    color: #888;
+    color: var(--text-secondary);
     font-size: 12.5px;
   }
-  .error { color: #E74C3C; }
+  .error { color: var(--color-failed); }
 
   .reg-table {
     width: 100%;
@@ -572,7 +666,7 @@
   }
   .reg-table thead th {
     text-align: left;
-    color: #888;
+    color: var(--text-secondary);
     font-weight: 600;
     text-transform: uppercase;
     font-size: 10px;
@@ -585,29 +679,37 @@
     border-bottom: 1px solid rgba(62, 62, 66, 0.5);
     vertical-align: top;
   }
-  .reg-table tbody tr:hover { background: #2d2d30; }
+  .reg-table tbody tr:hover { background: var(--bg-header); }
 
-  .reg-table.nested { margin: 2px 0 14px 0; table-layout: fixed; }
-  .reg-table.nested .col-env { width: 150px; }
-  .reg-table.nested .col-validated { width: 170px; }
-  .reg-table.nested .col-runs { width: 90px; }
-  .reg-table.nested .expand-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .group-header {
-    margin-top: 14px;
-    padding: 6px 10px;
-    background: #2d2d30;
-    border-radius: 4px 4px 0 0;
-    color: #e6e6e6;
-    font-size: 11.5px;
-    font-weight: 600;
-    border-bottom: 1px solid var(--border);
+  /* One grid for the method rows and the open panel: the method two shares
+     of the width, version and env one each, so they line up row to row. */
+  .methods-list { --reg-grid: 16px minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) 30px; }
+  .module {
+    margin-top: 10px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    overflow: hidden;
   }
-  .group-header:first-child { margin-top: 0; }
+  .module:first-child { margin-top: 0; }
+  .mod-row {
+    display: flex; align-items: center; gap: 10px; width: 100%;
+    padding: 7px 10px 7px 7px; background: var(--bg-header); border: none;
+    border-left: 3px solid var(--m); color: inherit; font: inherit; cursor: pointer; text-align: left;
+  }
+  .mod-row:hover { background: #333337; }
+  .mod-row .chev { color: var(--text-secondary); font-size: 9px; width: 16px; text-align: center; }
+  .mod-count { color: var(--text-secondary); font-size: 11px; }
+  .panel {
+    display: grid; grid-template-columns: var(--reg-grid); column-gap: 10px;
+    background: var(--bg-input); border-top: 1px solid rgba(62, 62, 66, 0.5);
+    padding: 12px 10px 14px 28px;
+  }
+  .panel > .inner { grid-column: 2 / -1; min-width: 0; }
 
   .mono { font-family: "JetBrains Mono", Consolas, monospace; font-size: 11.5px; }
   .name { color: #e6e6e6; font-weight: 500; }
-  .sub { font-size: 10.5px; color: #888; margin-top: 2px; }
-  .dim { color: #888; }
+  .sub { font-size: 10.5px; color: var(--text-secondary); margin-top: 2px; }
+  .dim { color: var(--text-secondary); }
 
   .contracts-cell {
     display: flex;
@@ -623,62 +725,13 @@
     font-family: "JetBrains Mono", Consolas, monospace;
     border: 1px solid;
   }
-  .chip-output { color: #E9A847; background: rgba(233, 168, 71, 0.14); border-color: rgba(233, 168, 71, 0.35); }
+  .chip-output { color: var(--color-running); background: rgba(233, 168, 71, 0.14); border-color: rgba(233, 168, 71, 0.35); }
   .chip-metric { color: var(--color-system); background: rgba(26, 188, 156, 0.14); border-color: rgba(26, 188, 156, 0.35); }
   .chip-input  { color: var(--color-system); background: rgba(26, 188, 156, 0.14); border-color: rgba(26, 188, 156, 0.35); }
-  .chip-param  { color: #888;    background: #1e1e1e;                  border-color: var(--border); }
-  .chip-more   { color: #888;    background: #1e1e1e;                  border-color: var(--border); }
-  .chip-env    { color: #9b59b6; background: rgba(155, 89, 182, 0.14); border-color: rgba(155, 89, 182, 0.35); }
-  .chip-ok     { color: #50C878; background: rgba(80, 200, 120, 0.14); border-color: rgba(80, 200, 120, 0.35); }
-  .chip-fail   { color: #E74C3C; background: rgba(231, 76, 60, 0.14);  border-color: rgba(231, 76, 60, 0.35); }
-  .chip-warn   { color: #E9A847; background: rgba(233, 168, 71, 0.14); border-color: rgba(233, 168, 71, 0.35); }
-
-  /* Expandable method-row styles */
-  .method-row { cursor: pointer; }
-  .method-row .chevron { color: #888; font-size: 9px; margin-right: 8px; display: inline-block; width: 8px; }
-  .method-row.expanded { background: #2d2d30; }
-  .expand-cell { user-select: none; }
-  .method-detail-row td {
-    background: #1e1e1e;
-    padding: 14px 18px 18px 28px;
-    border-bottom: 1px solid var(--border);
-  }
-  .detail-grid {
-    display: grid;
-    grid-template-columns: 280px 1fr;
-    gap: 18px;
-  }
-  .section-label {
-    text-transform: uppercase;
-    font-size: 10px;
-    letter-spacing: 0.6px;
-    color: #888;
-    font-weight: 600;
-    margin-bottom: 8px;
-  }
-  .slot-grid {
-    display: grid;
-    grid-template-columns: auto auto 1fr;
-    column-gap: 12px;
-    row-gap: 3px;
-    align-items: center;
-    font-size: 11.5px;
-  }
-  .slot-group-label {
-    grid-column: 1 / -1;
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.6px;
-    color: #e6e6e6;
-    font-weight: 600;
-    margin-top: 10px;
-    margin-bottom: 2px;
-    padding-bottom: 2px;
-    border-bottom: 1px solid rgba(62, 62, 66, 0.5);
-  }
-  .slot-group-label:first-child { margin-top: 0; }
-  .slot-name { color: #cccccc; }
-  .slot-info { font-size: 10.5px; white-space: nowrap; }
+  .chip-param  { color: var(--text-secondary); background: var(--bg-input); border-color: var(--border); }
+  .chip-more   { color: var(--text-secondary); background: var(--bg-input); border-color: var(--border); }
+  .chip-ok     { color: var(--color-completed); background: rgba(80, 200, 120, 0.14); border-color: rgba(80, 200, 120, 0.35); }
+  .chip-warn   { color: var(--color-running); background: rgba(233, 168, 71, 0.14); border-color: rgba(233, 168, 71, 0.35); }
 
   .cross-link {
     background: none;
@@ -691,45 +744,4 @@
     border-radius: 3px;
   }
   .cross-link:hover { background: rgba(74, 144, 217, 0.14); }
-  .file-tabs {
-    display: flex;
-    gap: 2px;
-    padding: 3px;
-    background: #252526;
-    border-radius: 4px;
-    margin-bottom: 8px;
-    flex-wrap: wrap;
-  }
-  .file-tab {
-    padding: 4px 10px;
-    font-family: "JetBrains Mono", Consolas, monospace;
-    font-size: 10.5px;
-    color: #888;
-    background: none;
-    border: none;
-    border-radius: 3px;
-    cursor: pointer;
-  }
-  .file-tab.active { background: var(--accent); color: white; }
-  .code-block {
-    background: #1e1e1e;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    overflow: auto;
-    max-height: 420px;
-  }
-  /* Shiki outputs its own <pre class="shiki"> with inline colors.
-     Tighten the spacing to fit our dense UI. */
-  .code-block :global(pre.shiki) {
-    margin: 0;
-    padding: 10px 14px;
-    font-family: "JetBrains Mono", Consolas, monospace;
-    font-size: 11.5px;
-    line-height: 1.5;
-    background: transparent !important;
-  }
-  .code-block :global(pre.shiki code) {
-    font-family: inherit;
-    font-size: inherit;
-  }
 </style>

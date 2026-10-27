@@ -3,7 +3,7 @@ Workflow Test: Unified Path Scheme
 
 Validates the unified path scheme:
 
-    .runs/sentinels/test-pid/{node_id}/{sample}/{variant}/.complete
+    .wfc/runs/sentinels/test-pid/{node_id}/{sample}/{variant}/.complete
 
 All pipelines — linear, fan-in, fan-out, with or without param_sets —
 use the same path pattern. There is no separate flat mode.
@@ -57,9 +57,9 @@ def test_fan_in_no_variants_uses_default(wfc_root):
 
     # Snakemake-visible outputs are sentinels.
     # Real outputs live in DVC cache; sentinels gate the DAG.
-    assert ".runs/sentinels/test-pid/filter_a/{sample}/{variant}/.complete" in snakefile
-    assert ".runs/sentinels/test-pid/filter_b/{sample}/{variant}/.complete" in snakefile
-    assert ".runs/sentinels/test-pid/merge_ab/" in snakefile
+    assert ".wfc/runs/sentinels/test-pid/filter_a/{sample}/{variant}/.complete" in snakefile
+    assert ".wfc/runs/sentinels/test-pid/filter_b/{sample}/{variant}/.complete" in snakefile
+    assert ".wfc/runs/sentinels/test-pid/merge_ab/" in snakefile
 
     # rule all uses expand() with variant=VARIANT_NAMES
     rule_all = snakefile.split("rule all:")[1].split("\nrule ")[0]
@@ -93,12 +93,9 @@ def test_per_node_param_sets(wfc_root):
 
     pipeline = PipelineDef(
         steps=[
-            StepDef("preprocess", "demo", "methods/preprocess/preprocess.py",
-                    {"normalize": True}, depends_on=[]),
-            StepDef("filter_cells", "demo", "methods/filter_cells/filter_cells.py",
-                    {"min_quality": 0.5}, depends_on=["preprocess"]),
-            StepDef("label", "demo", "methods/label/label.py",
-                    {"threshold": 0.5}, depends_on=["filter_cells"]),
+            StepDef("preprocess", "demo", {"normalize": True}, depends_on=[]),
+            StepDef("filter_cells", "demo", {"min_quality": 0.5}, depends_on=["preprocess"]),
+            StepDef("label", "demo", {"threshold": 0.5}, depends_on=["filter_cells"]),
         ],
         samples=["Pa16c"],
         param_sets={
@@ -114,9 +111,9 @@ def test_per_node_param_sets(wfc_root):
     assert "VARIANT_NAMES" in snakefile
 
     # Snakemake-visible outputs are sentinels.
-    assert ".runs/sentinels/test-pid/preprocess/{sample}/{variant}/.complete" in snakefile
-    assert ".runs/sentinels/test-pid/filter_cells/{sample}/{variant}/.complete" in snakefile
-    assert ".runs/sentinels/test-pid/label/{sample}/{variant}/.complete" in snakefile
+    assert ".wfc/runs/sentinels/test-pid/preprocess/{sample}/{variant}/.complete" in snakefile
+    assert ".wfc/runs/sentinels/test-pid/filter_cells/{sample}/{variant}/.complete" in snakefile
+    assert ".wfc/runs/sentinels/test-pid/label/{sample}/{variant}/.complete" in snakefile
 
     # PARAMS for preprocess: both "strict" and "relaxed" map to same default params
     # (padded because preprocess has no param_sets entry)
@@ -171,10 +168,8 @@ def test_explicit_combos_unified(wfc_root):
 
     pipeline = PipelineDef(
         steps=[
-            StepDef("preprocess", "demo", "methods/preprocess/preprocess.py",
-                    {"normalize": True}, depends_on=[]),
-            StepDef("filter_cells", "demo", "methods/filter_cells/filter_cells.py",
-                    {"min_quality": 0.5}, depends_on=["preprocess"]),
+            StepDef("preprocess", "demo", {"normalize": True}, depends_on=[]),
+            StepDef("filter_cells", "demo", {"min_quality": 0.5}, depends_on=["preprocess"]),
         ],
         samples=["Rep2", "Rep3"],
         param_sets={
@@ -202,8 +197,8 @@ def test_explicit_combos_unified(wfc_root):
     assert "r['variant']" in rule_all
 
     # Snakemake-visible outputs are sentinels.
-    assert ".runs/sentinels/test-pid/preprocess/{sample}/{variant}/.complete" in snakefile
-    assert ".runs/sentinels/test-pid/filter_cells/{sample}/{variant}/.complete" in snakefile
+    assert ".wfc/runs/sentinels/test-pid/preprocess/{sample}/{variant}/.complete" in snakefile
+    assert ".wfc/runs/sentinels/test-pid/filter_cells/{sample}/{variant}/.complete" in snakefile
 
     # Python preamble compiles
     python_section = snakefile.split("rule all:")[0]
@@ -227,24 +222,18 @@ def test_differential_qc_scenario(wfc_root):
 
     pipeline = PipelineDef(
         steps=[
-            StepDef("scr50", "csv_tools", "modules/_builtin/csv_filter/csv_filter.py",
-                    {"column": "condition", "values": ["scr_50nM"]},
+            StepDef("scr50", "csv_tools", {"column": "condition", "values": ["scr_50nM"]},
                     depends_on=[], output_ext=".csv", node_id="scr50"),
-            StepDef("cycD1", "csv_tools", "modules/_builtin/csv_filter/csv_filter.py",
-                    {"column": "condition", "values": ["CycD1_50nM"]},
+            StepDef("cycD1", "csv_tools", {"column": "condition", "values": ["CycD1_50nM"]},
                     depends_on=[], output_ext=".csv", node_id="cycD1"),
-            StepDef("fqc_scr50", "data_preprocessing", "methods/feature_qc/feature_qc.py",
-                    {"filters": [{"column": "area", "min": 3.0}]},
+            StepDef("fqc_scr50", "data_preprocessing", {"filters": [{"column": "area", "min": 3.0}]},
                     depends_on=["scr50"], output_ext=".csv", node_id="fqc_scr50"),
-            StepDef("fqc_cycD1", "data_preprocessing", "methods/feature_qc/feature_qc.py",
-                    {"filters": [{"column": "area", "min": 3.0}]},
+            StepDef("fqc_cycD1", "data_preprocessing", {"filters": [{"column": "area", "min": 3.0}]},
                     depends_on=["cycD1"], output_ext=".csv", node_id="fqc_cycD1"),
-            StepDef("merge_cycD1", "csv_tools", "modules/_builtin/csv_merge/csv_merge.py",
-                    {}, depends_on=["fqc_scr50", "fqc_cycD1"],
+            StepDef("merge_cycD1", "csv_tools", {}, depends_on=["fqc_scr50", "fqc_cycD1"],
                     output_ext=".csv", node_id="merge_cycD1",
                     inputs={"sources": ["fqc_scr50", "fqc_cycD1"]}),
-            StepDef("label_cycD1", "data_labeling", "methods/binary_labeling/binary_labeling.py",
-                    {"threshold": 2.95}, depends_on=["merge_cycD1"],
+            StepDef("label_cycD1", "data_labeling", {"threshold": 2.95}, depends_on=["merge_cycD1"],
                     output_ext=".csv", node_id="label_cycD1"),
         ],
         samples=["Rep2_siRNA", "Rep3_siRNA"],
@@ -277,10 +266,10 @@ def test_differential_qc_scenario(wfc_root):
         assert f"rule {nid}:" in snakefile
 
     # Snakemake-visible outputs are sentinels.
-    assert ".runs/sentinels/test-pid/scr50/{sample}/{variant}/.complete" in snakefile
-    assert ".runs/sentinels/test-pid/fqc_scr50/{sample}/{variant}/.complete" in snakefile
-    assert ".runs/sentinels/test-pid/merge_cycD1/" in snakefile
-    assert ".runs/sentinels/test-pid/label_cycD1/" in snakefile
+    assert ".wfc/runs/sentinels/test-pid/scr50/{sample}/{variant}/.complete" in snakefile
+    assert ".wfc/runs/sentinels/test-pid/fqc_scr50/{sample}/{variant}/.complete" in snakefile
+    assert ".wfc/runs/sentinels/test-pid/merge_cycD1/" in snakefile
+    assert ".wfc/runs/sentinels/test-pid/label_cycD1/" in snakefile
 
     # PARAMS for fqc_scr50 has both standard and dim_corrected
     assert '"standard"' in snakefile

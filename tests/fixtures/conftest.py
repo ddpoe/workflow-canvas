@@ -13,6 +13,16 @@ Fixtures:
                    (input_selector, run_reference).
   - register_imaging_methods / imaging_pipeline_factory: the same pair for
                    the imaging fixture methods.
+  - processes:     Starts real sleeping child processes (a live pipeline
+                   owner or engine) and kills any still running at teardown.
+
+Helpers:
+  - fixture_env_blob: The content-blob hash of the fixture env a project
+                   registers (``tmp_project`` does).
+  - ended_process: The identity of a process that ran and was killed (a
+                   gone owner or engine).
+  - wait_until_gone: Wait until psutil no longer lists a killed process
+                   (Windows keeps it listed briefly after ``wait()``).
 
 Fakes:
   - stub_readiness_probes: The one readiness-probe fake, taking a status
@@ -28,10 +38,14 @@ import path keeps working.
 """
 
 import json
-import shutil
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
+
+from wfc import layout
 
 # Re-export the routes so ``from tests.fixtures.conftest import ...`` keeps
 # working at every existing call site.
@@ -85,6 +99,87 @@ SYSTEM_NODE_TYPES = {"input_selector", "run_reference"}
 FIXTURE_ENV_NAME = "fixture-env"
 
 
+def fixture_env_blob(project: Path) -> str:
+    """Return the content-blob hash of the fixture env registered in *project*.
+
+    ``tmp_project`` registers the fixture env with the project, so its
+    content blob is a blob row like any other env's: pending until a push
+    worker tick pushes it. A test that counts or pushes blob rows meets it.
+
+    Args:
+        project: A project whose env manifest holds the fixture env.
+
+    Returns:
+        The env's ``env_fingerprint``, the md5 of its content blob.
+    """
+    from wfc.environments import get
+
+    return get(FIXTURE_ENV_NAME, project).env_fingerprint
+
+
+@pytest.fixture
+def processes():
+    """Start sleeping child processes; every one still running is killed at teardown.
+
+    A real process stands for a live pipeline owner or engine: the pipeline
+    record names processes by pid and creation time, and the cancel kills an
+    engine's process tree only when both match.
+
+    Yields:
+        ``start()`` -> a live ``Popen``.
+    """
+    started: list[subprocess.Popen] = []
+
+    def start() -> subprocess.Popen:
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+        started.append(proc)
+        return proc
+
+    yield start
+    for proc in started:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+
+def ended_process(start):
+    """The identity of a process that ran and has been killed (a gone owner or engine).
+
+    Args:
+        start: The ``processes`` fixture's ``start``.
+
+    Returns:
+        The ``ProcessIdentity`` the process had while it ran.
+    """
+    from wfc.execution.pipeline_record import process_identity
+
+    proc = start()
+    identity = process_identity(proc.pid)
+    proc.kill()
+    proc.wait()
+    wait_until_gone(proc.pid)
+    return identity
+
+
+def wait_until_gone(pid: int, timeout: float = 5.0) -> None:
+    """Wait until psutil no longer sees a killed and waited-on process.
+
+    Windows keeps a pid listed for a few milliseconds after ``wait()``
+    returns, so a probe made at once can still read the process as alive.
+
+    Args:
+        pid: The process id.
+        timeout: Seconds to wait before failing the test.
+    """
+    from wfc.execution.pipeline_record import process_identity
+
+    deadline = time.monotonic() + timeout
+    while process_identity(pid).created is not None:
+        assert time.monotonic() < deadline, (
+            f"process {pid} is still listed {timeout} s after it was killed and waited on")
+        time.sleep(0.01)
+
+
 @pytest.fixture
 def register_fixture_methods(git_project, fixture_container_image, monkeypatch):
     """Register lightweight fixture methods bound to a built container env.
@@ -124,17 +219,14 @@ def register_fixture_methods(git_project, fixture_container_image, monkeypatch):
     write_env_record(tmp_path, FIXTURE_ENV_NAME, digest=fixture_container_image)
     reset_engine()
 
+    # Registration copies each method from its source (the checked-in
+    # fixture directory, outside the project) into the module-qualified
+    # snapshot a run executes.
     for method_name, module_name in FIXTURE_METHODS:
-        src_dir = FIXTURE_METHODS_DIR / method_name
-        dest_dir = tmp_path / "methods" / method_name
-        if dest_dir.exists():
-            shutil.rmtree(dest_dir)
-        shutil.copytree(src_dir, dest_dir)
-
         register_test_method(
             project_dir=tmp_path,
             module_name=module_name,
-            method_dir=dest_dir,
+            method_dir=FIXTURE_METHODS_DIR / method_name,
             method_name=method_name,
         )
 
@@ -161,7 +253,8 @@ def build_pipeline_json(
     their type-specific fields and need no script.
 
     Args:
-        project_dir: Project root holding ``methods/{name}/`` dirs.
+        project_dir: Project root whose registered snapshots
+            (``.wfc/registry/methods/<module>/<method>/``) hold the contracts.
         name: Pipeline name (used for filename).
         nodes: Node dicts. Method nodes require id, method, module.
         links: Link dicts (source, target, optional target_slot/source_slot).
@@ -193,14 +286,14 @@ def build_pipeline_json(
             continue
 
         method_name = node["method"]
-        # A node may name its script explicitly; naming one that is not
-        # there is how the dispatch phase's host-side script pre-flight
-        # is reached with the method directory otherwise intact.
-        script_path = node.get("script") or f"methods/{method_name}/{method_name}.py"
+        module_name = node.get("module", default_module)
+        # A run executes its method version's registered copy; the document
+        # names no script (the validator refuses a node `script`).
+        snapshot = layout.method_dir(Path(project_dir), module_name, method_name)
 
         slot_outputs = {}
         slot_types = {}
-        method_yaml_dir = project_dir / "methods" / method_name
+        method_yaml_dir = snapshot
         if method_yaml_dir.exists():
             from wfc.contracts import parse_method_yaml
             contract = parse_method_yaml(method_yaml_dir)
@@ -221,8 +314,7 @@ def build_pipeline_json(
         enriched = {
             "id": node["id"],
             "method": method_name,
-            "module": node.get("module", default_module),
-            "script": script_path,
+            "module": module_name,
             "params": node.get("params", {}),
             "slot_outputs": slot_outputs,
             "slot_types": slot_types,
@@ -326,18 +418,10 @@ def register_imaging_methods(git_project, fixture_container_image, monkeypatch):
     reset_engine()
 
     for method_name, module_name in IMAGING_METHODS:
-        src_dir = IMAGING_METHODS_DIR / method_name
-        dest_dir = tmp_path / "methods" / method_name
-        if dest_dir.exists():
-            shutil.rmtree(dest_dir)
-        shutil.copytree(
-            src_dir, dest_dir,
-            ignore=shutil.ignore_patterns("__pycache__", "__init__.py"),
-        )
         register_test_method(
             project_dir=tmp_path,
             module_name=module_name,
-            method_dir=dest_dir,
+            method_dir=IMAGING_METHODS_DIR / method_name,
             method_name=method_name,
         )
 

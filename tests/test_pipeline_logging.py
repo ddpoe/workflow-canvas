@@ -88,7 +88,6 @@ class TestPipelineIdPassthrough:
             steps=[StepDef(
                 method_name="preprocess",
                 module_name="demo",
-                script_path="methods/preprocess/preprocess.py",
                 params={"normalize": True},
             )],
             samples=["Pa16c"],
@@ -103,7 +102,6 @@ class TestPipelineIdPassthrough:
             steps=[StepDef(
                 method_name="preprocess",
                 module_name="demo",
-                script_path="methods/preprocess/preprocess.py",
                 params={"normalize": True},
             )],
             samples=["Pa16c"],
@@ -127,7 +125,6 @@ class TestPipelineLoggerSetup:
             steps=[StepDef(
                 method_name="preprocess",
                 module_name="demo",
-                script_path="methods/preprocess/preprocess.py",
                 params={},
             )],
             samples=["Pa16c"],
@@ -143,7 +140,6 @@ class TestPipelineLoggerSetup:
             steps=[StepDef(
                 method_name="preprocess",
                 module_name="demo",
-                script_path="methods/preprocess/preprocess.py",
                 params={},
             )],
             samples=["Pa16c"],
@@ -170,7 +166,6 @@ class TestRuleDelegationAndPipelineLog:
             steps=[StepDef(
                 method_name="preprocess",
                 module_name="demo",
-                script_path="methods/preprocess/preprocess.py",
                 params={},
             )],
             samples=["Pa16c"],
@@ -188,7 +183,6 @@ class TestRuleDelegationAndPipelineLog:
             steps=[StepDef(
                 method_name="preprocess",
                 module_name="demo",
-                script_path="methods/preprocess/preprocess.py",
                 params={},
             )],
             samples=["Pa16c"],
@@ -214,7 +208,7 @@ class TestErrorCapture:
         # Register a module, method, and run first
         cli("register-module", "--name", "test_mod",
             "--contracts", "[]")
-        reg = cli("register-method", "methods/transform",
+        reg = cli("register-method", "--yes", "methods/transform",
                   "--module", "test_mod", "--name", "test_meth",
                   "--script", "transform.py")
         assert reg.returncode == 0, f"register-method failed: {reg.stderr}"
@@ -250,7 +244,6 @@ class TestSummaryBlocks:
             steps=[StepDef(
                 method_name="preprocess",
                 module_name="demo",
-                script_path="methods/preprocess/preprocess.py",
                 params={},
             )],
             samples=["Pa16c"],
@@ -267,7 +260,6 @@ class TestSummaryBlocks:
             steps=[StepDef(
                 method_name="preprocess",
                 module_name="demo",
-                script_path="methods/preprocess/preprocess.py",
                 params={},
             )],
             samples=["Pa16c"],

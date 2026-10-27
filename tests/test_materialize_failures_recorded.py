@@ -2,10 +2,10 @@
 output-collection failure lands on the run row with its message.
 
 Tier 2/3 on the stub rung. Declared fixture deviation: ``_add_sibling``
-writes a file beside a restored sample under ``data/samples/<s>/``, which
+writes a file beside a restored sample under ``.wfc/workspace/samples/<s>/``, which
 no production verb writes; it is the state a user's stray file leaves.
 ``_make_path_absolute`` rewrites one sample row's ``registered_path`` to the
-absolute shape rows had before this cycle, which production no longer writes.
+legacy absolute shape, which production no longer writes.
 ``_lose`` deletes bytes a real run or the real archive pass wrote (a run
 archive file, a cache object): the state a lost disk or a manual clean-up
 leaves, which no production verb produces.
@@ -37,7 +37,10 @@ T0 = ("n0", "s1", "default")
 def _add_sibling(root: Path, sample: str) -> Path:
     """Declared deviation: a stray file that sorts before the recorded one."""
     from wfc import layout
+    from wfc.storage.cache import open_dirs
 
+    # The restored sample's folder is read-only: the user opens it first.
+    open_dirs(layout.sample_dir(root, sample))
     sibling = layout.sample_dir(root, sample) / "0_sorts_first.csv"
     sibling.write_text("not the sample\n")
     return sibling
@@ -129,7 +132,7 @@ def test_an_empty_directory_output_is_refused_at_collection(tmp_path_factory,
 
 
 def _make_path_absolute(root: Path, sample: str) -> None:
-    """Declared deviation: the pre-cycle absolute registered_path shape."""
+    """Declared deviation: the legacy absolute registered_path shape."""
     from sqlmodel import select
 
     from wfc.persistence import Sample, get_session

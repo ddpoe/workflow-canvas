@@ -4,10 +4,11 @@
  * (matches the pattern in stores.ts).
  */
 import { writable, derived, get } from 'svelte/store';
-import type { MethodInfo, WfcRun } from './historyApi.js';
+import type { MethodInfo, PipelineSummary, WfcRun } from './historyApi.js';
 import { COLLAPSED_SAMPLE } from '../shared/types.js';
 import {
   fetchRuns,
+  fetchPipelineSummaries,
   fetchModules,
   fetchMethods,
   favoriteRun as apiFavoriteRun,
@@ -438,12 +439,16 @@ export async function loadRuns(): Promise<void> {
   // Clear the effectiveSample cache on each load
   effectiveSampleCache = new Map();
   try {
-    const [allRuns, mods, meths] = await Promise.all([
+    const [allRuns, mods, meths, summaries] = await Promise.all([
       fetchRuns(),
       fetchModules(),
       fetchMethods(),
+      // The Pipelines view's statuses; the rest of History works without
+      // them, so a failed summary read leaves the list unsummarised.
+      fetchPipelineSummaries().catch(() => [] as PipelineSummary[]),
     ]);
     runs.set(allRuns);
+    pipelineSummaries.set(summaries);
     availableModules.set(mods.sort());
     methodInfos.set(meths);
   } catch (err) {
@@ -455,6 +460,40 @@ export async function loadRuns(): Promise<void> {
 
 export function selectRun(runId: string | null): void {
   selectedRunId.set(runId);
+}
+
+/** A run detail tab another view can ask a run to open on. */
+export type RunDetailSection = 'overview' | 'params' | 'metrics' | 'artifacts' | 'output';
+
+// The tab the next opened run starts on, set by `openRunOn` and taken once
+// by the run detail panel when it loads that run.
+let pendingSection: { runId: string; section: RunDetailSection } | null = null;
+
+/**
+ * Open a run in the detail panel on one of its tabs (e.g. Artifacts).
+ *
+ * Args:
+ *     runId: The run to open.
+ *     section: The tab it opens on.
+ */
+export function openRunOn(runId: string, section: RunDetailSection): void {
+  pendingSection = { runId, section };
+  selectedRunId.set(runId);
+}
+
+/**
+ * Take the tab a run was asked to open on, once.
+ *
+ * Args:
+ *     runId: The run the panel is loading.
+ *
+ * Returns:
+ *     The pending tab when it was set for this run, else `overview`.
+ */
+export function takePendingSection(runId: string): RunDetailSection {
+  const pending = pendingSection;
+  pendingSection = null;
+  return pending && pending.runId === runId ? pending.section : 'overview';
 }
 
 export function toggleRunSelection(runId: string): void {
@@ -634,6 +673,74 @@ export const expandedPipelineIds = writable<Set<string>>(new Set());
  */
 export const highlightedRunId = writable<string | null>(null);
 
+/** Each pipeline's summary from the server: its status and expected run count. */
+export const pipelineSummaries = writable<PipelineSummary[]>([]);
+
+/**
+ * A pipeline's runs counted by how they ended. `ran` is a run that
+ * succeeded without a cache hit and `cached` a cache hit; `pending` is the
+ * runs the pipeline expects that have no record yet.
+ */
+export interface RunBuckets {
+  ran: number;
+  cached: number;
+  failed: number;
+  cancelled: number;
+  running: number;
+  pending: number;
+}
+
+/** The buckets in the order the runs bar and its counts show them. */
+export const RUN_BUCKET_ORDER = ['ran', 'cached', 'failed', 'cancelled', 'running', 'pending'] as const;
+
+/**
+ * Count a pipeline's runs into buckets. Pending is the expected count
+ * minus the runs of every status, never below zero, and zero when the
+ * expected count is unknown (null).
+ */
+export function runBuckets(group: WfcRun[], expected: number | null | undefined): RunBuckets {
+  const buckets: RunBuckets = { ran: 0, cached: 0, failed: 0, cancelled: 0, running: 0, pending: 0 };
+  for (const r of group) {
+    if (r.status === 'success') {
+      if (r.cacheSourceRunId) buckets.cached += 1; else buckets.ran += 1;
+    } else if (r.status === 'failed') buckets.failed += 1;
+    else if (r.status === 'cancelled') buckets.cancelled += 1;
+    else buckets.running += 1;
+  }
+  if (expected != null) buckets.pending = Math.max(expected - group.length, 0);
+  return buckets;
+}
+
+/**
+ * A pipeline's runs in step order: by the node's place in the document
+ * (`nodeOrder`), or, without one, by the node's first run; then by sample,
+ * then start time. A run that recorded no node is grouped by its method.
+ */
+export function sortPipelineRuns(group: WfcRun[], nodeOrder: string[] | null | undefined): WfcRun[] {
+  const nodeOf = (r: WfcRun): string => r.nodeId ?? r.method;
+  const firstStart = new Map<string, number>();
+  for (const r of group) {
+    const node = nodeOf(r);
+    const prior = firstStart.get(node);
+    if (prior === undefined || r.timestamp < prior) firstStart.set(node, r.timestamp);
+  }
+  const ordered = nodeOrder ?? [];
+  const rank = (node: string): [number, number] => {
+    const i = ordered.indexOf(node);
+    return i >= 0 ? [0, i] : [1, firstStart.get(node) ?? 0];
+  };
+  return [...group].sort((a, b) => {
+    const [ga, ka] = rank(nodeOf(a));
+    const [gb, kb] = rank(nodeOf(b));
+    if (ga !== gb) return ga - gb;
+    if (ka !== kb) return ka - kb;
+    if (nodeOf(a) !== nodeOf(b)) return nodeOf(a) < nodeOf(b) ? -1 : 1;
+    const bySample = (a.dataSource || '').localeCompare(b.dataSource || '');
+    if (bySample !== 0) return bySample;
+    return a.timestamp - b.timestamp;
+  });
+}
+
 export interface PipelineRowSummary {
   pipelineId: string;
   /**
@@ -643,37 +750,28 @@ export interface PipelineRowSummary {
    * group of same-shaped pipelines the same first-method label.
    */
   name: string;
-  /** Aggregate status: running > failed > cancelled > success > unknown. */
-  status: string;
-  /** Number of completed child runs. */
-  done: number;
-  /** Total child runs (running + done + failed + cancelled + pending). */
-  total: number;
+  /**
+   * The pipeline's status as the server's summary gives it (`running`,
+   * `succeeded`, `failed`, `cancelled`, `mixed`); null when the server sent
+   * no summary for it. Never derived here.
+   */
+  status: string | null;
+  /** The runs counted by how they ended, pending included. */
+  buckets: RunBuckets;
   /** Distinct sample count across child runs (excluding the collapsed-sample sentinel). */
   sampleCount: number;
   /** Earliest started_at across child runs. */
   started: number;
-  /** Child runs that were cache hits (cacheSourceRunId set). */
-  cachedCount: number;
+  /** The child runs in step order, then sample. */
   runs: WfcRun[];
-}
-
-function rollupStatus(runs: WfcRun[]): string {
-  // Priority: running > pending > failed > cancelled > success > unknown.
-  const statuses = new Set(runs.map(r => r.status));
-  if (statuses.has('running')) return 'running';
-  if (statuses.has('pending')) return 'running';
-  if (statuses.has('failed')) return 'failed';
-  if (statuses.has('cancelled')) return 'cancelled';
-  if (statuses.has('success')) return 'success';
-  return 'unknown';
 }
 
 /**
  * Group runs by pipelineId into one row per pipeline. Used by PipelinesView
  * as the top-level list. Sort: most recent first by ``started``.
  */
-export const pipelineRuns = derived(runs, ($runs): PipelineRowSummary[] => {
+export const pipelineRuns = derived([runs, pipelineSummaries], ([$runs, $summaries]): PipelineRowSummary[] => {
+  const summaries = new Map($summaries.map(s => [s.pipelineId, s]));
   const groups = new Map<string, WfcRun[]>();
   for (const r of $runs) {
     if (!r.pipelineId) continue;
@@ -683,14 +781,12 @@ export const pipelineRuns = derived(runs, ($runs): PipelineRowSummary[] => {
   }
   const rows: PipelineRowSummary[] = [];
   for (const [pid, group] of groups.entries()) {
+    const summary = summaries.get(pid);
     const samples = new Set(
       group
         .map(r => r.dataSource)
         .filter(s => !!s && s !== COLLAPSED_SAMPLE),
     );
-    const done = group.filter(
-      r => r.status === 'success' || r.status === 'failed' || r.status === 'cancelled',
-    ).length;
     const started = group.reduce(
       (min, r) => (r.timestamp && (!min || r.timestamp < min) ? r.timestamp : min),
       0,
@@ -698,13 +794,11 @@ export const pipelineRuns = derived(runs, ($runs): PipelineRowSummary[] => {
     rows.push({
       pipelineId: pid,
       name: group.map(r => r.pipelineName).find(n => !!n) ?? pid.slice(0, 8),
-      status: rollupStatus(group),
-      done,
-      total: group.length,
+      status: summary?.status ?? null,
+      buckets: runBuckets(group, summary?.expected),
       sampleCount: samples.size,
       started,
-      cachedCount: group.filter(r => !!r.cacheSourceRunId).length,
-      runs: group,
+      runs: sortPipelineRuns(group, summary?.nodeOrder),
     });
   }
   rows.sort((a, b) => (b.started || 0) - (a.started || 0));

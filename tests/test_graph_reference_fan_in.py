@@ -11,9 +11,10 @@ from __future__ import annotations
 from axiom_annotations import workflow
 
 from wfc.graph import load_pipeline
+from wfc.layout import artifact_store_relpath
 
-PATH_A = ".runs/run-a/table/table.parquet"
-PATH_B = ".runs/run-b/table/table.parquet"
+PATH_A = f"{artifact_store_relpath()}/run-a/table/table.parquet"
+PATH_B = f"{artifact_store_relpath()}/run-b/table/table.parquet"
 
 
 def _reference(node_id: str, run_id: str) -> dict:

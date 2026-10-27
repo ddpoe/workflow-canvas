@@ -106,7 +106,8 @@ def fixture_env_record(project_dir: Path) -> None:
     end-to-end execution (tests/e2e, tests/integration) overwrites this with
     the session-built image digest via ``register_fixture_methods``.
 
-    Only called from ``tmp_project`` (which copies fixture methods) -- NOT
+    Called from ``tmp_project`` (which copies fixture methods) and from a
+    test that builds its own project through ``init_test_project`` -- NOT
     from ``write_wfc_marker``, so env-listing tests that expect a pristine
     empty manifest are unaffected.
 
@@ -168,7 +169,7 @@ def seed_sample_row(name: str, content_hash: str | None = None) -> None:
         session.add(Sample(
             name=name,
             source_path=f"/src/{name}.csv",
-            registered_path=f"data/samples/{name}/{name}.csv",
+            registered_path=f"{name}.csv",
             file_type="csv",
             file_size=len(name),
             file_mtime=1.0,
@@ -245,6 +246,10 @@ def flip_push_status(run_id: int, status: str) -> None:
 )
 def direct_claim(**pre_run_kwargs):
     """Call the claim phase directly, for a test about the key it composes.
+
+    The method must be registered first (``register_test_method``): the
+    claim verifies the registered snapshot against a registered version and
+    never mints one, so a hand-built ``Method`` row is refused.
 
     Args:
         **pre_run_kwargs: ``pre_run``'s own keyword arguments.

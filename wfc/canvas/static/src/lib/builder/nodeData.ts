@@ -4,7 +4,7 @@
  * Every creation path calls a constructor here — `App.svelte`'s `onDrop`
  * (through `nodeFromDragPayload`), the fixture seeder in `__fixtures__/seed.ts`,
  * `pipeline.ts::loadPipeline` and `pipeline.ts::graftRunReference` — so they
- * all agree about `nodeType`, `version`, the system nodes' labels and which
+ * all agree about `nodeType`, `version` (the pin), the system nodes' labels and which
  * fields each type carries.
  *
  * Each constructor takes only source facts — a `MethodDef`, a run id, the
@@ -18,7 +18,9 @@
  * position, and it remains the only writer of an existing node's data.
  */
 import type { Node } from '@xyflow/svelte';
-import type { CanvasNodeData, MethodDef, NodeType, SlotDef } from '../shared/types.js';
+import type {
+  CanvasNodeData, MethodDef, MethodVersionDef, NodeType, SlotDef,
+} from '../shared/types.js';
 
 /** Every system node wears the same teal. */
 const SYSTEM_COLOR = '#1ABC9C';
@@ -52,22 +54,149 @@ export interface MethodNodeOpts {
   variants?: Record<string, Record<string, unknown>>;
   sampleOverrides?: Record<string, Record<string, unknown>>;
   sampleVariants?: Record<string, Record<string, Record<string, unknown>>>;
+  /** The document's pin: a version's content identity. */
+  version?: string;
 }
 
-/** A method node's data, from the method's contract. */
+/**
+ * The version a pin names: the newest entry carrying that identity (two
+ * labels with one identity run the same code, so either is right; the
+ * newest is the one shown).
+ */
+function versionByIdentity(
+  versions: MethodVersionDef[] | undefined,
+  identity: string | undefined,
+): MethodVersionDef | undefined {
+  if (!identity || !versions) return undefined;
+  return [...versions].reverse().find(v => v.identity === identity);
+}
+
+/**
+ * Which pin a node keeps and which contract it draws.
+ *
+ * A pin whose identity is the newest version's is no pin: the node follows
+ * the newest, so a save writes nothing and a later version moves it. A pin
+ * no listed version carries is kept as written, so the server refuses it by
+ * name; the node draws the method's newest contract meanwhile.
+ */
+function resolvePin(
+  versions: MethodVersionDef[] | undefined,
+  identity: string | undefined,
+): { version: string | undefined; contract: MethodVersionDef | undefined } {
+  if (!identity) return { version: undefined, contract: undefined };
+  const newest = versions?.find(v => v.newest);
+  if (newest && newest.identity === identity) return { version: undefined, contract: newest };
+  const pinned = versionByIdentity(versions, identity);
+  return { version: identity, contract: pinned };
+}
+
+/**
+ * The version a method node runs, for its number and colour: the pinned
+ * version, or the newest when it follows the newest. ``undefined`` when the
+ * method lists no versions (or the pin names none of them).
+ */
+export function nodeVersion(data: CanvasNodeData): MethodVersionDef | undefined {
+  if (data.version) return versionByIdentity(data.versions, data.version);
+  return data.versions?.find(v => v.newest);
+}
+
+/**
+ * The hover text for the version a method node runs: the newest reads as the
+ * latest, an older one names its pin and the newest. A pin naming no listed
+ * version says so; a node of a method with no versions gets none.
+ */
+export function versionTitle(data: CanvasNodeData): string {
+  const running = nodeVersion(data);
+  if (!running) return data.version ? 'Pinned to a version this method does not list' : '';
+  if (running.newest) return `Latest method version (v${running.label})`;
+  // The modules route marks one version of every method the newest.
+  const newest = data.versions?.find(v => v.newest);
+  return `Pinned to method version v${running.label} · latest is v${newest?.label}`;
+}
+
+/**
+ * The fields a version switch writes onto a method node: the pin (none for
+ * the newest) and that version's slots and params. Parameter values stay as
+ * they are; one the new version does not declare is flagged by
+ * `undeclaredParams` until the user removes it.
+ *
+ * Args:
+ *     data: The node's current data.
+ *     identity: The picked version's content identity.
+ */
+export function versionSwitch(data: CanvasNodeData, identity: string): Partial<CanvasNodeData> {
+  const { version, contract } = resolvePin(data.versions, identity);
+  const update: Partial<CanvasNodeData> = { version };
+  if (contract) {
+    update.inputs = contract.inputs;
+    update.outputs = contract.outputs;
+    update.params = contract.params;
+  }
+  return update;
+}
+
+/**
+ * The parameters a method node holds a value, variant or per-sample value
+ * for that its version does not declare, in the order the node holds them.
+ * A node that knows no contract to check against (its method lists no
+ * versions, or its pin names none of them) flags nothing: the server
+ * refuses such a node by name.
+ */
+export function undeclaredParams(data: CanvasNodeData): string[] {
+  if (data.nodeType && data.nodeType !== 'method') return [];
+  if (!nodeVersion(data)) return [];
+  const declared = new Set((data.params ?? []).map(p => p.name));
+  const held = [
+    ...Object.keys(data.paramValues ?? {}),
+    ...Object.keys(data.variants ?? {}),
+    ...Object.values(data.sampleOverrides ?? {}).flatMap(Object.keys),
+    ...Object.values(data.sampleVariants ?? {}).flatMap(Object.keys),
+  ];
+  return [...new Set(held)].filter(name => !declared.has(name));
+}
+
+/**
+ * The fields that remove one parameter from a method node: its value, its
+ * variants and every sample's own value and variants for it.
+ *
+ * Args:
+ *     data: The node's current data.
+ *     name: The parameter to remove.
+ */
+export function withoutParam(data: CanvasNodeData, name: string): Partial<CanvasNodeData> {
+  const drop = <T>(record: Record<string, T> | undefined): Record<string, T> | undefined => {
+    if (!record) return record;
+    const { [name]: _dropped, ...rest } = record;
+    return rest;
+  };
+  const perSample = <T>(
+    bySample: Record<string, Record<string, T>> | undefined,
+  ): Record<string, Record<string, T>> | undefined => bySample && Object.fromEntries(
+    Object.entries(bySample).map(([sample, values]) => [sample, drop(values)!]),
+  );
+  return {
+    paramValues: drop(data.paramValues) ?? {},
+    variants: drop(data.variants),
+    sampleOverrides: perSample(data.sampleOverrides),
+    sampleVariants: perSample(data.sampleVariants),
+  };
+}
+
+/** A method node's data, from the contract of the version it runs. */
 export function methodNodeData(method: MethodDef, opts: MethodNodeOpts = {}): CanvasNodeData {
+  const { version, contract } = resolvePin(method.versions, opts.version);
   return {
     label: opts.label ?? method.name,
     method: method.name,
     module: method.module,
-    // Wherever the method is known, so the chip survives a reload. A
-    // document never carries a version and the compiler never writes one:
-    // the registry is the only source.
-    version: method.version,
+    // The pin is the document's own field: a node that follows the newest
+    // carries none, and the compiler writes one only for an older version.
+    version,
+    versions: method.versions,
     color: method.color ?? DEFAULT_METHOD_COLOR,
-    inputs: method.inputs,
-    outputs: method.outputs,
-    params: method.params,
+    inputs: contract?.inputs ?? method.inputs,
+    outputs: contract?.outputs ?? method.outputs,
+    params: contract?.params ?? method.params,
     paramValues: opts.paramValues ?? {},
     runStatus: 'idle',
     expanded: false,

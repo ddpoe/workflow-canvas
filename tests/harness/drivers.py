@@ -13,6 +13,7 @@ drifted copy makes the harness observe something production never does.
 """
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import subprocess as _sp
 import sys
@@ -102,18 +103,20 @@ def _expansion():
     The load is Execution's composer (``load_pipeline_from_path``:
     references, contract map and sample hashes fetched, then the Graph
     unit's pure load);
-    the sort and the per-step expansion are the Graph unit's. Reaching
-    them through one accessor means a move changes this function and no
-    test.
+    the sort, the variant model and the per-step expansion are the Graph
+    unit's. Reaching them through one accessor means a move changes this
+    function and no test.
 
     Returns:
-        ``(load_pipeline_from_path, topo_sort_steps, expand_step_combos)``.
+        ``(load_pipeline_from_path, topo_sort_steps, expand_step_combos,
+        resolve_variant_model)``.
     """
     from wfc import execution, graph
 
     return (execution.load_pipeline_from_path,
             graph.topo_sort_steps,
-            graph.expand_step_combos)
+            graph.expand_step_combos,
+            graph.resolve_variant_model)
 
 
 def _orchestrator():
@@ -168,7 +171,7 @@ def expand_targets_unbound(project: Project) -> list[tuple[object, Target]]:
     from wfc.registration import load_contract_map
     from wfc.storage import resolve_run_reference_outputs
 
-    _, topo_sort_steps, expand_step_combos = _expansion()
+    _, topo_sort_steps, expand_step_combos, resolve_variant_model = _expansion()
     document = json.loads(Path(project.pipeline_json).read_text())
     with get_session() as session:
         refs = resolve_run_reference_outputs(
@@ -193,7 +196,8 @@ def expand_targets_unbound(project: Project) -> list[tuple[object, Target]]:
     return [
         (step, (step.node_id, combo["sample"], combo["variant"]))
         for step, combo in expand_step_combos(
-            steps, pdef.samples, pdef.param_sets, pdef.explicit_combos
+            steps, pdef.samples, resolve_variant_model(pdef).tables,
+            pdef.explicit_combos
         )
     ]
 
@@ -213,7 +217,10 @@ def expand_targets(project: Project) -> list[tuple[object, Target]]:
     the collapsed sample, one per variant, and a per-sample step's are
     samples x variants. The harness takes that answer as given -- it does
     not expand the collapsed and per-sample subsets itself, so there is
-    no second source of truth for a mixed pipeline to disagree with.
+    no second source of truth for a mixed pipeline to disagree with. The
+    variant axis is the one variant model's (``resolve_variant_model``),
+    as the Snakefile's: a node that sweeps only some names, or none, is
+    scheduled under every name.
 
     Args:
         project: The built project.
@@ -222,14 +229,16 @@ def expand_targets(project: Project) -> list[tuple[object, Target]]:
         ``[(step_def, (node_id, sample, variant)), ...]`` in execution
         order.
     """
-    load_pipeline, topo_sort_steps, expand_step_combos = _expansion()
+    load_pipeline, topo_sort_steps, expand_step_combos, resolve_variant_model = \
+        _expansion()
     pdef = load_pipeline(project.pipeline_json)
     steps = topo_sort_steps(pdef.steps)
 
     return [
         (step, (step.node_id, combo["sample"], combo["variant"]))
         for step, combo in expand_step_combos(
-            steps, pdef.samples, pdef.param_sets, pdef.explicit_combos
+            steps, pdef.samples, resolve_variant_model(pdef).tables,
+            pdef.explicit_combos
         )
     ]
 
@@ -409,6 +418,12 @@ def run_scenario(
     Returns:
         The observation bundle.
     """
+    if fidelity == ENGINE and image_digest and image_digest != scn.image_digest:
+        # The env record names the built image before any method registers,
+        # as in production: each method version records the image its env
+        # ran at registration, and a run launches that recorded image.
+        scn = dataclasses.replace(scn, image_digest=image_digest)
+
     口 = AutoStep(step_num=1, name="Build project")
     project = build_project(scn, root=root, monkeypatch=monkeypatch)
 
@@ -465,12 +480,12 @@ def run_scenario(
               "in for the engine's launch so the cancelled-rows walk and the "
               "canvas history readers have the frozen document they resolve",
       inputs="The built project",
-      outputs=".runs/pipelines/<pid>/pipeline.json")
+      outputs=".wfc/runs/pipelines/<pid>/pipeline.json")
 def _freeze_pipeline_doc(project) -> None:
     """Copy the pipeline document into the pipeline run dir, as launch does.
 
     ``run_pipeline`` freezes the executed document at
-    ``.runs/pipelines/<pid>/pipeline.json`` before scheduling anything; the
+    ``.wfc/runs/pipelines/<pid>/pipeline.json`` before scheduling anything; the
     pipeline-end cancelled-rows walk and the canvas history readers resolve
     that path. The stub rung stands in for the engine's launch, so it
     performs the same freeze rather than leaving the walk with nothing to
@@ -934,9 +949,12 @@ def _snapshot_output_writers(record: TargetRun, monkeypatch):
         if kwargs.get("status") != "completed":
             return real(**kwargs)
         record.completion_writes += 1
-        before = read_output_rows(kwargs["run_id"])
+        # Read through the record transaction when there is one: its writes
+        # are not committed until the record phase's transaction ends.
+        session = kwargs.get("session")
+        before = read_output_rows(kwargs["run_id"], session)
         result = real(**kwargs)
-        after = read_output_rows(kwargs["run_id"])
+        after = read_output_rows(kwargs["run_id"], session)
         if before:
             record.output_rows_before = before
             record.output_rows_after = after
@@ -1055,6 +1073,8 @@ def _seed_prior_runs(project, monkeypatch) -> None:
                 from wfc import layout
                 archive = layout.run_archive_dir(
                     get_project_root(), int(sidecar.read_text().strip()))
+                from wfc.storage.cache import _make_writable
+                _make_writable(archive)  # collect leaves outputs read-only
                 shutil.rmtree(archive, ignore_errors=True)
         if seed.sentinel_deleted:
             shutil.rmtree(
@@ -1183,23 +1203,19 @@ def _run_engine(project, monkeypatch, *, image_digest, waive, reason):
     Returns:
         The observation bundle — the same shape the stub rung returns.
     """
-    from tests.fixtures.conftest import write_env_record
-
-    from .project import commit_everything
-
-    口 = Step(step_num=1, name="Resolve and re-pin the fixture image digest",
+    口 = Step(step_num=1, name="Require the fixture image digest",
              purpose="The engine runs the methods inside the real fixture "
                      "image, so the env record must name the digest that was "
                      "actually built",
-             critical=".wfc/envs.json is tracked, so re-pinning it dirties the "
-                      "working tree and the claim phase's clean-tree check "
-                      "would fail every target — hence the commit")
+             critical="run_scenario wrote that digest into the env record "
+                      "before any method registered: each method version "
+                      "records its env's image at registration and a run "
+                      "launches the recorded image, so re-pinning the record "
+                      "here would leave every version naming the stub image")
     digest = image_digest or project.scenario.image_digest
-    if digest is None:
-        raise ValueError("the engine rung needs the built fixture image digest")
-    if digest != project.scenario.image_digest:
-        write_env_record(project.root, project.env_name, digest=digest)
-        commit_everything(project.root)
+    if digest is None or digest != project.scenario.image_digest:
+        raise ValueError("the engine rung needs the built fixture image digest "
+                         "declared before the project is built")
 
     from wfc.execution import run_pipeline
 

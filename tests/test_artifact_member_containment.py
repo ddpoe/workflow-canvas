@@ -9,6 +9,11 @@ Declared fixture deviation: ``test_a_symlink_out_of_a_checkout_is_refused``
 plants a symlink in a checkout, to a file in one case and to a directory in
 the other, which neither collection (it refuses symlinks) nor checkout
 writes; it is the state a hand edit leaves.
+
+The directory output's members are ``.tif``: an on-access scanner can write
+an extended attribute on a fresh ``.png`` between collect and the archive
+pass, and the pass then refuses the output as changed; these tests are
+about the member route, not that race.
 """
 from __future__ import annotations
 
@@ -24,12 +29,12 @@ from tests.harness.scenario import Behavior
 TRAVERSALS = [
     ("tiles/../report.csv", "'..'"),
     ("tiles/sub/../../report.csv", "'..'"),
-    ("/tiles/t0.png", "absolute"),
+    ("/tiles/t0.tif", "absolute"),
     ("C:/Windows/win.ini", "drive"),
-    ("tiles\\t0.png", "backslash"),
+    ("tiles\\t0.tif", "backslash"),
     ("tiles/..\\..\\report.csv", "backslash"),
     ("tiles/%2e%2e/report.csv", "percent-escape"),
-    ("tiles%2ft0.png", "percent-escape"),
+    ("tiles%2ft0.tif", "percent-escape"),
 ]
 
 
@@ -44,7 +49,7 @@ def _archived_run(root, monkeypatch):
         output_files={"report": "report.csv", "tiles": "tiles"},
         behavior=Behavior(outputs={
             "report": "x,y\n1,2\n",
-            "tiles": {"t0.png": "PNG-a", "t1.png": "PNG-b"},
+            "tiles": {"t0.tif": "TIF-a", "t1.tif": "TIF-b"},
         }),
     )
     archive_outputs(root, run_id=run.run_id)
@@ -60,17 +65,17 @@ def test_member_route_serves_members_and_refuses_traversal(tmp_project,
 
     rid, provider = _archived_run(tmp_project, monkeypatch)
 
-    assert provider.get_artifact_path(rid, "tiles/t0.png").read_bytes() == b"PNG-a"
-    assert provider.get_artifact_path(rid, "tiles/t1.png").read_bytes() == b"PNG-b"
+    assert provider.get_artifact_path(rid, "tiles/t0.tif").read_bytes() == b"TIF-a"
+    assert provider.get_artifact_path(rid, "tiles/t1.tif").read_bytes() == b"TIF-b"
     for name, reason in TRAVERSALS:
         with pytest.raises(ArtifactPathRefusedError, match=reason):
             provider.get_artifact_path(rid, name)
 
     client = canvas_client(tmp_project, monkeypatch)
     bind_provider(monkeypatch, provider)
-    ok = client.get(f"/api/wfc/run/{rid}/artifact/tiles/t0.png")
-    assert ok.status_code == 200 and ok.content == b"PNG-a"
-    refused = client.get(f"/api/wfc/run/{rid}/artifact/tiles%5Ct0.png")
+    ok = client.get(f"/api/wfc/run/{rid}/artifact/tiles/t0.tif")
+    assert ok.status_code == 200 and ok.content == b"TIF-a"
+    refused = client.get(f"/api/wfc/run/{rid}/artifact/tiles%5Ct0.tif")
     assert refused.status_code == 400
     assert "backslash" in refused.json()["detail"]
 
@@ -96,7 +101,7 @@ def _checkout_tree(checkout):
 def test_a_symlink_out_of_a_checkout_is_refused(tmp_project, monkeypatch, kind):
     rid, provider = _archived_run(tmp_project, monkeypatch)
     checkout = provider.get_artifact_path(rid, "tiles")
-    assert _checkout_tree(checkout) == (["t0.png", "t1.png"], [])
+    assert _checkout_tree(checkout) == (["t0.tif", "t1.tif"], [])
 
     outside_dir = tmp_project / "outside"
     outside_dir.mkdir()
@@ -113,6 +118,6 @@ def test_a_symlink_out_of_a_checkout_is_refused(tmp_project, monkeypatch, kind):
 
     assert provider.get_artifact_path(rid, leaked) is None
     rebuilt = provider.get_artifact_path(rid, "tiles")
-    assert _checkout_tree(rebuilt) == (["t0.png", "t1.png"], [])
-    assert (rebuilt / "t0.png").read_bytes() == b"PNG-a"
+    assert _checkout_tree(rebuilt) == (["t0.tif", "t1.tif"], [])
+    assert (rebuilt / "t0.tif").read_bytes() == b"TIF-a"
     assert (outside_dir / "secret.txt").read_text() == "not an output\n"

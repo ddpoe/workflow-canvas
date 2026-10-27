@@ -27,8 +27,7 @@ class StepDef:
     """
     method_name: str
     module_name: str              # owning module (qualifies method lookup)
-    script_path: str          # relative path to method script ({method_name}.py)
-    params: dict              # default params (used if no param_sets entry)
+    params: dict             # default params (used if no param_sets entry)
     depends_on: list[str] = field(default_factory=list)  # upstream node_ids
     output_ext: str = ".parquet"  # output file extension (e.g. .csv, .parquet)
     node_id: str = ""             # unique node identity (defaults to method_name)
@@ -88,7 +87,7 @@ class StepDef:
 
 
 def reads_per_sample(step: StepDef) -> bool:
-    """Whether a step reads its own target's sample from ``data/samples/``.
+    """Whether a step reads its own target's sample from ``.wfc/workspace/samples/``.
 
     A step a per-sample selector feeds reads the sample the target runs
     over, beside whatever upstream outputs and references it also takes, so

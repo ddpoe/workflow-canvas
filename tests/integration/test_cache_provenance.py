@@ -103,7 +103,10 @@ def test_cache_hit_indistinguishable_from_fresh_run(pipeline_factory, register_f
     assert len(first) == 1, f"expected 1 transform output after run 1, got {len(first)}"
     first_run_id, _, first_path, first_hash = first[0]
     assert first_hash, "first run output not archived"
-    first_bytes = Path(first_path).read_bytes()
+    # Archived, the output has left the run archive: its one local copy is
+    # the cache entry, read through the consumer's resolver.
+    assert not Path(first_path).exists()
+    first_bytes = Path(resolve_input(first_run_id)).read_bytes()
 
     s = Step(step_num=2, name="Second (identical) run", purpose="Same code/params/inputs/env -> cache hit")
     _run_linear(pipeline_factory, project_dir, "cache_hit_2",

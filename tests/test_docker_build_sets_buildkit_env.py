@@ -48,9 +48,10 @@ def test_docker_build_sets_buildkit_env(monkeypatch, tmp_path):
 
     docker_runner.build(tmp_path, "myimage:tag")
 
-    assert captured["cmd"][:3] == ["docker", "build", "-t"]
-    assert captured["cmd"][3] == "myimage:tag"
-    assert captured["cmd"][4] == str(tmp_path)
+    cmd = captured["cmd"]
+    assert cmd[:2] == ["docker", "build"]
+    assert cmd[cmd.index("-t") + 1] == "myimage:tag"
+    assert cmd[-1] == str(tmp_path)
 
     env = captured["env"]
     assert env is not None, "env kwarg must be passed, not None"
@@ -58,6 +59,21 @@ def test_docker_build_sets_buildkit_env(monkeypatch, tmp_path):
         "DOCKER_BUILDKIT=1 must be set so the dockerfile:1.4 syntax works"
     assert env.get("WFC_TEST_SENTINEL") == "preserved", \
         "caller's env vars must survive the merge (env={...} alone would strip them)"
+
+
+def test_docker_build_drops_the_provenance_attestation(monkeypatch, tmp_path):
+    """The build passes --provenance=false, so BuildKit writes a single image
+    manifest with no provenance attestation (and no manifest list around it)."""
+    from wfc.environments import docker as docker_runner
+
+    captured = {}
+    fake_docker_build_process(monkeypatch, returncode=0, captured=captured)
+
+    docker_runner.build(tmp_path, "myimage:tag")
+
+    cmd = captured["cmd"]
+    assert "--provenance=false" in cmd
+    assert cmd.index("--provenance=false") < cmd.index(str(tmp_path))
 
 
 def test_docker_build_raises_runtimeerror_on_nonzero(monkeypatch, tmp_path):

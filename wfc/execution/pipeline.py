@@ -3,8 +3,9 @@
 Substitute the document's variables and load it through the composer; refuse
 the whole pipeline, in one message and before any run row, if a named
 sample's content is in neither the local cache nor the archive; make every
-env the nodes run in runnable (a locally built image the Docker daemon lost
-is rebuilt once, or the pipeline is refused, again before any run row);
+image the nodes run runnable (an image the Docker daemon lacks is pulled
+once by its recorded registry digest and checked, or the pipeline is
+refused, again before any run row);
 prepare the launch (the pipeline id, the log directories, the frozen
 documents); start the push worker; hand the loaded pipeline to the engine
 (Orchestration's ``invoke_engine``); then close the run: on a non-zero exit
@@ -18,6 +19,7 @@ this one function. It returns nothing on success and raises
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 from axiom_annotations import AutoStep, Step, workflow
@@ -34,14 +36,55 @@ from ..persistence import project_root as get_project_root
 from ..registration.sample_health import preflight_sample_content
 from .composer import load_pipeline_from_document
 from .lifecycle import (
+    PushWorker,
     finish_failed,
     finish_succeeded,
     pipeline_summary,
     prepare_launch,
     start_push_worker,
+    stop_push_worker,
 )
 from .node_env import preflight_pipeline_envs
-from .prepare import prepare_document
+from .pipeline_record import (
+    ENTRY_POINT_CLI,
+    PipelineRecordError,
+    cancel_requested,
+    record_engine,
+    remove_pipeline_record,
+    write_pipeline_record,
+)
+from .prepare import (
+    FilledDefaults,
+    filled_defaults,
+    prepare_document,
+    unpinned_resolutions,
+)
+
+#: The longest a value is shown in the declared-defaults line before it is cut.
+_DEFAULT_VALUE_WIDTH = 60
+
+
+def _defaults_line(entry: FilledDefaults) -> str:
+    """The run-pipeline line naming the declared defaults one node or variant runs.
+
+    Args:
+        entry: One node's, or one variant's, filled defaults.
+
+    Returns:
+        ``[run_pipeline] node '<id>'[ variant '<v>'] (<module>/<method>) runs
+        declared defaults: name=<value>, ...``, each value as compact JSON
+        cut at 60 characters with an ellipsis.
+    """
+    shown = []
+    for name, value in entry.values.items():
+        text = json.dumps(value, separators=(",", ":"))
+        if len(text) > _DEFAULT_VALUE_WIDTH:
+            text = text[:_DEFAULT_VALUE_WIDTH] + "\u2026"
+        shown.append(f"{name}={text}")
+    variant = f" variant '{entry.variant}'" if entry.variant is not None else ""
+    return (f"[run_pipeline] node '{entry.node_id}'{variant} "
+            f"({entry.module}/{entry.method}) runs declared defaults: "
+            + ", ".join(shown))
 
 
 @workflow(
@@ -67,6 +110,7 @@ def run_pipeline(
     process_registry=None,
     is_cancelled=None,
     archive_progress_fn=None,
+    entry_point: str = ENTRY_POINT_CLI,
 ) -> None:
     """Run a pipeline JSON: load it, run the engine over it, close the run.
 
@@ -88,7 +132,7 @@ def run_pipeline(
         cores: Number of Snakemake cores (default: 4).
         snakefile_path: Where to write the generated Snakefile.  Defaults to
             the pipeline's log directory
-            (``<project_root>/.runs/pipelines/<pipeline_id>/Snakefile``).
+            (``<project_root>/.wfc/runs/pipelines/<pipeline_id>/Snakefile``).
         pipeline_id: Optional caller-provided pipeline ID.  When provided,
             this ID is used instead of generating a new UUID.  This ensures
             the canvas server and run_pipeline share the same ID for status
@@ -115,6 +159,23 @@ def run_pipeline(
             ``wfc.storage.archive_outputs``.  Lets an in-process caller
             (the canvas server) observe auto-archive progress.  When None
             (default, CLI usage), progress is only printed.
+        entry_point: What started the pipeline, kept in its pipeline
+            record: ``cli`` (default; the ``run-pipeline`` verb and any
+            headless caller) or ``canvas``.
+
+    While it runs the pipeline, from the launch until its end steps are
+    done, the pipeline has a record in its run dir naming this process as
+    its owner, the engine once it starts, and a cancel flag another process
+    may set; the flag counts as a cancel exactly as ``is_cancelled``
+    answering True does. The record is removed on every ending except an
+    interrupt (``KeyboardInterrupt``, ``SystemExit``): that leaves it in
+    place, so once this process is gone the recovery judges the pipeline
+    dead and its close-out writes the rows the end steps did not.
+
+    The push worker started for the pipeline is not left running on any
+    ending: one no ending drained (an engine or an archive pass that raised)
+    is drained on the way out, and every one gets a few seconds to finish
+    its last tick.
 
     Returns:
         Nothing.  Returning is the statement that every scheduled job ran
@@ -124,6 +185,9 @@ def run_pipeline(
         RuntimeError: The engine exited non-zero.  The message names the
             engine, the exit code and the log directory, and carries the
             captured stderr when output was captured.
+        PipelineRecordError: The pipeline record could not be written.
+            Raised after ``prepare_launch`` and before the engine starts, so
+            no run row was written.  (A ``RuntimeError``.)
         ValueError: The document uses a variable its ``variables`` block
             does not declare.
         UnreachableSampleError: One or more of the pipeline's samples name
@@ -131,12 +195,12 @@ def run_pipeline(
             Raised before ``prepare_launch``, so no run row was written;
             the message names every offender and its re-registration
             command.  (A ``ValueError``.)
-        EnvNotRunnableError: An env the nodes run in has a locally built
-            image the Docker daemon lacks, and it cannot be rebuilt.  Raised
-            before ``prepare_launch``, so no run row was written; the
-            message names the env and the command that recreates it.  (A
-            ``RuntimeError``; a rebuild whose ``docker build`` fails raises
-            a plain ``RuntimeError`` at the same point.)
+        EnvNotRunnableError: An image the nodes run is not on this machine
+            and cannot be pulled and checked (never pushed, the pull failed,
+            or the pulled content renders another env fingerprint), or
+            Docker does not answer.  Raised before ``prepare_launch``, so no
+            run row was written; the message names the version, the env and
+            the commands that recreate it.  (A ``RuntimeError``.)
         DatabaseUnreachableError: The composer could not reach the project
             database; nothing was launched.
     """
@@ -144,8 +208,13 @@ def run_pipeline(
 
     口 = Step(step_num=1, name="Prepare, then load",
              purpose="Prepare the document as the canvas does -- resolve its "
-                     "{$var} refs to literals and enrich a sparse document "
-                     "against the registered contracts -- first "
+                     "{$var} refs to literals, validate it, enrich a sparse "
+                     "document against the registered contracts and pin every "
+                     "method node to the version it runs, filling every "
+                     "declared default it leaves out -- and print one line "
+                     "per node the document left unpinned, naming the version "
+                     "it resolved, and one per node or param_sets variant that "
+                     "runs declared defaults, naming each and its value; first "
                      "(substitution is the caller's obligation, not a load "
                      "step: an unknown name fails here, before anything is "
                      "scheduled), then load the substituted document through "
@@ -160,6 +229,16 @@ def run_pipeline(
             f"Unknown pipeline variable: '{_unknown.name}' -- the document's "
             f"'variables' block declares no such name"
         ) from _unknown
+    # The version each node the document left unpinned resolved to; the
+    # canvas's frozen copy is pinned throughout, so its path prints none.
+    for _resolved in unpinned_resolutions(_document, _substituted):
+        print(f"[run_pipeline] node '{_resolved.node_id}' "
+              f"({_resolved.module}/{_resolved.method}) is not pinned: "
+              f"runs v{_resolved.label}, the newest version")
+    # The declared defaults preparation filled, where they run; an already
+    # filled document (the canvas's frozen copy) prints none.
+    for _filled in filled_defaults(_document, _substituted):
+        print(_defaults_line(_filled))
     loaded = load_pipeline_from_document(_substituted)
 
     口 = Step(step_num=2, name="Refuse samples whose content is unreachable",
@@ -180,23 +259,23 @@ def run_pipeline(
         )
 
     口 = Step(step_num=3, name="Make every env runnable",
-             purpose="Ask Environments' ensure_runnable once per distinct "
-                     "container env the pipeline's nodes run in (the rule "
-                     "dispatch uses, over the substituted document every "
-                     "node's run-step reads), so a locally built image the "
-                     "Docker daemon lost is rebuilt once, or the pipeline is "
-                     "refused naming the command that recreates it",
-             inputs="The substituted document and the loaded pipeline's "
-                    "node ids",
+             purpose="Ask Environments' run-time rule once per distinct "
+                     "image the pipeline's nodes run (each node's method "
+                     "version's recorded image): present, else pulled once "
+                     "by its recorded digest and its content checked, else "
+                     "the pipeline is refused naming the command that "
+                     "recreates the env and wfc register-method",
+             inputs="The loaded pipeline's steps' modules and methods",
              outputs="Nothing, or EnvNotRunnableError",
-             critical="runs before prepare_launch, so a rebuild's manifest "
-                      "commit lands before the launch records the run's "
-                      "commit and before any node claims (the claim reads "
-                      "the rebuilt env's fingerprint), and a refusal lands "
-                      "before any run row is written; the nodes' own "
-                      "run-step never rebuilds")
+             critical="runs before prepare_launch, so a refusal lands "
+                      "before any run row is written and the pull happens "
+                      "once, before the engine starts; nothing is built, and "
+                      "the nodes' own run-step never pulls")
+    from ..graph import document_node as _document_node
     preflight_pipeline_envs(
-        _substituted, [step.node_id for step in loaded.pipeline.steps],
+        [(step.module_name, step.method_name,
+          (_document_node(_substituted, step.node_id) or {}).get("version") or None)
+         for step in loaded.pipeline.steps],
         _project_root,
     )
 
@@ -205,41 +284,123 @@ def run_pipeline(
         Path(_project_root), Path(pipeline_path), _document, _substituted, pipeline_id,
     )
 
-    口 = AutoStep(step_num=5, name="Start the push worker")
-    _push = start_push_worker(Path(_project_root))
-
-    口 = AutoStep(step_num=6, name="Hand the pipeline to the engine")
-    outcome = invoke_engine(
-        loaded.pipeline, _project_root,
-        pipeline_id=_launch.pipeline_id, log_dir=_launch.log_dir,
-        frozen_doc=_launch.frozen_doc, sample_hashes=loaded.sample_hashes,
-        cores=cores, snakefile_path=snakefile_path, capture_output=capture_output,
-        keep_going=keep_going, process_registry=process_registry,
-    )
-
-    口 = Step(step_num=7, name="Close the run",
-             purpose="On a non-zero exit the failure sequence raises the "
-                     "engine's message (once, with the outcome); otherwise the "
-                     "success sequence writes the cancelled rows, runs the "
-                     "archive pass and drains the push worker",
-             critical="finish_failed never returns, so finish_succeeded is "
-                      "the success path only")
+    口 = Step(step_num=5, name="Record the pipeline",
+             purpose="Write the pipeline record into the pipeline run dir: the "
+                     "pipeline id, the entry point, this process as the owner "
+                     "(pid and creation time), no engine yet, no cancel. When "
+                     "the engine process starts, its pid and creation time go "
+                     "into the record before the caller's registry gets it; "
+                     "the endings read a cancel from the caller's probe or the "
+                     "record's flag; the record is removed after the end "
+                     "steps, on every ending but an interrupt (Ctrl-C, "
+                     "SystemExit), which leaves it for the recovery to close "
+                     "the pipeline out",
+             outputs="The record, or PipelineRecordError",
+             critical="A record that cannot be written refuses the pipeline "
+                      "here, before the push worker and the engine start and "
+                      "before any run row: a pipeline never runs unrecorded")
     try:
-        if outcome.exit_code != 0:
-            finish_failed(_launch.pipeline_id, _project_root, outcome, _push, is_cancelled)
-        finish_succeeded(
-            _launch.pipeline_id, _project_root, _push, is_cancelled,
-            archive=archive, archive_progress_fn=archive_progress_fn,
-        )
-    finally:
-        口 = Step(step_num=8, name="Print the pipeline summary",
-                 purpose="Count the pipeline's run rows and print the summary, "
-                         "on both paths, after the pipeline-end walk has "
-                         "written its failed and cancelled rows -- the same "
-                         "rows the canvas status route reads",
-                 critical="Best-effort: a summary that cannot be read never "
-                          "replaces the pipeline's own failure")
+        write_pipeline_record(_project_root, _launch.pipeline_id, entry_point)
+    except PipelineRecordError as _record_exc:
+        raise PipelineRecordError(
+            f"{_record_exc}; the pipeline was not started") from _record_exc
+
+    def _on_engine_started(proc) -> None:
+        # Name the engine in the record first, so a canceller in another
+        # process can find it, then hand it to the caller's registry.
         try:
-            pipeline_summary(_launch.pipeline_id)
-        except Exception as _summary_exc:
-            print(f"[run_pipeline] pipeline summary failed: {_summary_exc}")
+            record_engine(_project_root, _launch.pipeline_id, int(proc.pid))
+        except Exception as _engine_exc:
+            print(f"[run_pipeline] could not record the engine process in the "
+                  f"pipeline record: {_engine_exc}", file=sys.stderr)
+        if process_registry is not None:
+            process_registry(proc)
+
+    def _cancelled() -> bool:
+        # The caller's probe, or the record's flag a canceller set.
+        if is_cancelled is not None and is_cancelled():
+            return True
+        return cancel_requested(_project_root, _launch.pipeline_id)
+
+    _interrupted = False
+    _push: PushWorker | None = None
+    try:
+        口 = AutoStep(step_num=6, name="Start the push worker")
+        _push = start_push_worker(Path(_project_root))
+
+        口 = AutoStep(step_num=7, name="Hand the pipeline to the engine")
+        outcome = invoke_engine(
+            loaded.pipeline, _project_root,
+            pipeline_id=_launch.pipeline_id, log_dir=_launch.log_dir,
+            frozen_doc=_launch.frozen_doc, sample_hashes=loaded.sample_hashes,
+            cores=cores, snakefile_path=snakefile_path, capture_output=capture_output,
+            keep_going=keep_going, process_registry=_on_engine_started,
+        )
+
+        口 = Step(step_num=8, name="Close the run",
+                 purpose="On a non-zero exit the failure sequence raises the "
+                         "engine's message (once, with the outcome); otherwise the "
+                         "success sequence writes the cancelled rows (both stamp "
+                         "the launch's document hash on them), runs the "
+                         "archive pass and drains the push worker. Both remove "
+                         "the samples the pipeline restored, with their readiness "
+                         "sentinels, unless another pipeline holds them (after "
+                         "the archive pass on success); best-effort, a failure "
+                         "is printed. Both read a cancel from the caller's probe "
+                         "or from the record's flag",
+                 critical="finish_failed never returns, so finish_succeeded is "
+                          "the success path only")
+        try:
+            if outcome.exit_code != 0:
+                finish_failed(_launch.pipeline_id, _project_root, outcome, _push,
+                              _cancelled, pipeline_doc_hash=_launch.pipeline_doc_hash)
+            finish_succeeded(
+                _launch.pipeline_id, _project_root, _push, _cancelled,
+                archive=archive, archive_progress_fn=archive_progress_fn,
+                pipeline_doc_hash=_launch.pipeline_doc_hash,
+            )
+        finally:
+            口 = Step(step_num=9, name="Print the pipeline summary",
+                     purpose="Count the pipeline's run rows and print the summary, "
+                             "on both paths, after the pipeline-end walk has "
+                             "written its failed and cancelled rows -- the same "
+                             "rows the canvas status route reads",
+                     critical="Best-effort: a summary that cannot be read never "
+                              "replaces the pipeline's own failure")
+            try:
+                pipeline_summary(_launch.pipeline_id)
+            except Exception as _summary_exc:
+                print(f"[run_pipeline] pipeline summary failed: {_summary_exc}")
+    except BaseException as _ending:
+        # An interrupt (Ctrl-C, SystemExit) cuts the end steps short: the
+        # record stays, so once this process is gone the recovery judges
+        # the pipeline dead and its close-out writes the missing rows.
+        _interrupted = not isinstance(_ending, Exception)
+        raise
+    finally:
+        if not _interrupted:
+            try:
+                口 = AutoStep(step_num=10, name="Remove the pipeline record, "
+                                               "unless an interrupt cut the end "
+                                               "steps short")
+                remove_pipeline_record(_project_root, _launch.pipeline_id)
+            except Exception as _remove_exc:
+                print(f"[run_pipeline] could not remove the pipeline record: "
+                      f"{_remove_exc}", file=sys.stderr)
+        if _push is not None:
+            口 = Step(step_num=11, name="Stop the push worker the endings did not",
+                     purpose="On every ending, stop a push worker still "
+                             "running: an engine or an archive pass that "
+                             "raised reached no drain, so drain it here (not "
+                             "waiting on the push tail after an interrupt), "
+                             "then give the thread a few seconds to finish its "
+                             "last tick, a cancel's included",
+                     critical="A worker left running ticks on the process "
+                              "engine forever and writes push state into "
+                              "whatever database that engine is rebound to; "
+                              "best-effort, a failure is printed")
+            try:
+                stop_push_worker(_push, cancel=_interrupted)
+            except Exception as _stop_exc:
+                print(f"[run_pipeline] could not stop the push worker: "
+                      f"{_stop_exc}", file=sys.stderr)

@@ -1,6 +1,8 @@
 /**
  * Shared utility functions for the History tab components.
  */
+import type { WfcRun } from './historyApi.js';
+import { COLLAPSED_SAMPLE, type ModuleDef } from '../shared/types.js';
 
 /**
  * Format a Unix-epoch millisecond timestamp into a human-readable string.
@@ -75,6 +77,99 @@ export function statusColor(status: string): string {
     case 'cancelled': return 'var(--color-cancelled, #7f8ea3)';
     default: return 'var(--text-muted, #666)';
   }
+}
+
+/** The kinds of status pill the Pipelines view draws. */
+export type PillKind =
+  | 'succeeded' | 'cached' | 'failed' | 'cancelled' | 'running' | 'mixed' | 'unknown';
+
+/** Each pill's text (the pill's CSS writes it upper case). */
+export const PILL_LABEL: Record<PillKind, string> = {
+  succeeded: '● Succeeded',
+  cached: '⟳ Cached',
+  failed: '● Failed',
+  cancelled: '● Cancelled',
+  running: 'Running',
+  mixed: '◐ Mixed',
+  unknown: '—',
+};
+
+/** The pill a run shows: a cache hit is CACHED, any other success SUCCEEDED. */
+export function runPillKind(run: Pick<WfcRun, 'status' | 'cacheSourceRunId'>): PillKind {
+  switch (run.status) {
+    case 'success': return run.cacheSourceRunId ? 'cached' : 'succeeded';
+    case 'failed': return 'failed';
+    case 'cancelled': return 'cancelled';
+    case 'running':
+    case 'pending': return 'running';
+    default: return 'unknown';
+  }
+}
+
+/** The pill a pipeline shows for the status the server's summary gives it. */
+export function pipelinePillKind(status: string | null): PillKind {
+  switch (status) {
+    case 'succeeded':
+    case 'failed':
+    case 'cancelled':
+    case 'running':
+    case 'mixed':
+      return status;
+    default: return 'unknown';
+  }
+}
+
+/** Why a cancelled run was cancelled, in words, and the failed run it names. */
+export interface CancelReasonText {
+  text: string;
+  /** For an upstream failure: the failed run, its step and its sample. */
+  cause: { runId: string; method: string | null; sample: string | null } | null;
+}
+
+/**
+ * Say why a cancelled run was cancelled, from its recorded reason. An
+ * upstream failure names the failed run's step and sample, and carries its
+ * run id apart, for a link shown after them; a failed run whose step the
+ * payload does not name (no longer in the table) gets no link, since a run
+ * id is never shown on its own. A collapsed run's sample reads "all samples".
+ */
+export function cancelReasonText(
+  run: Pick<WfcRun, 'cancelReason' | 'cancelledDueToRunId' | 'cancelledDueToMethod' | 'cancelledDueToSample'>,
+): CancelReasonText {
+  if (run.cancelReason === 'user') return { text: 'Stopped by you', cause: null };
+  if (run.cancelReason === 'not_run') {
+    return { text: 'Not run: the pipeline ended before it started', cause: null };
+  }
+  if (run.cancelReason === 'interrupted') {
+    return { text: 'Interrupted: the server stopped before it started', cause: null };
+  }
+  if (run.cancelReason === 'engine_failed') {
+    return { text: 'Not run: the engine failed', cause: null };
+  }
+  if (run.cancelReason === 'upstream_failed') {
+    const sample = run.cancelledDueToSample === COLLAPSED_SAMPLE
+      ? 'all samples' : run.cancelledDueToSample ?? null;
+    const cause = run.cancelledDueToRunId && run.cancelledDueToMethod
+      ? { runId: run.cancelledDueToRunId, method: run.cancelledDueToMethod, sample }
+      : null;
+    return { text: 'Upstream step failed', cause };
+  }
+  return { text: 'Cancelled', cause: null };
+}
+
+/**
+ * Whether a run ran its method's newest registered version, by the
+ * builder's modules list. False when the run records no version or the
+ * list does not hold its method.
+ */
+export function ranNewestVersion(
+  run: Pick<WfcRun, 'module' | 'method' | 'versionIdentity'>,
+  modules: ModuleDef[],
+): boolean {
+  if (!run.versionIdentity) return false;
+  const method = modules.find(m => m.name === run.module)
+    ?.methods.find(m => m.name === run.method);
+  return method?.versions?.find(v => v.newest)?.identity === run.versionIdentity;
 }
 
 /**

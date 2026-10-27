@@ -1,11 +1,15 @@
 """Run-readiness probes shared by ``wfc init``, ``wfc doctor``, and the canvas.
 
-Four probe functions — :func:`check_git`, :func:`check_dvc`,
-:func:`check_docker` and :func:`check_samples` — each return a uniform
-:class:`CheckResult` with a ``status`` of ``"ok"``, ``"warn"``, or ``"fail"``
-plus a plain-language ``message`` and an optional ``fix_hint``.  The probes
-never raise on a not-ready environment (a missing binary is a ``fail``
-result, not an exception) and never mutate the project — they only observe.
+Five probe functions — :func:`check_git`, :func:`check_dvc`,
+:func:`check_docker`, :func:`check_samples` and :func:`check_views` — each
+return a uniform :class:`CheckResult` with a ``status`` of ``"ok"``,
+``"warn"``, or ``"fail"`` plus a plain-language ``message`` and an optional
+``fix_hint``.  The probes never raise on a not-ready environment (a missing
+binary is a ``fail`` result, not an exception).  They write no row, config
+or tracked file: :func:`check_views` writes a scratch file into each
+directory it probes and removes it again, :func:`check_samples` reads the
+database only when it already exists (it never creates one), and git and
+DVC keep whatever housekeeping files they write when queried.
 
 The organizing principle: git and Docker are BOTH hard
 run-requirements that the tooling can detect and surface but cannot install.
@@ -16,7 +20,7 @@ the project's data rather than its tooling: it runs Registration's
 reachability table over every ``Sample`` row and is the one surface that
 shows a sample's health at all.
 
-:func:`run_all_checks` runs the four in display order; every caller renders
+:func:`run_all_checks` runs the five in display order; every caller renders
 the results through :func:`wfc.preflight.render_health_table`, so the
 readiness definition lives in exactly one place.
 """
@@ -28,7 +32,10 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from ..environments import GhLogin
 
 Status = Literal["ok", "warn", "fail"]
 
@@ -92,9 +99,11 @@ def check_git(project_dir: Path | str | None = None) -> CheckResult:
     Returns:
         A :class:`CheckResult` named ``"git"``.
     """
-    cwd = str(Path(project_dir).resolve()) if project_dir is not None else None
+    from ..version import GitStatusError, git_installed, has_head_commit, in_work_tree, tracked_changes
 
-    if shutil.which("git") is None:
+    cwd = Path(project_dir).resolve() if project_dir is not None else Path.cwd()
+
+    if not git_installed():
         return CheckResult(
             name="git",
             status="fail",
@@ -103,11 +112,7 @@ def check_git(project_dir: Path | str | None = None) -> CheckResult:
         )
 
     # Inside a work tree?
-    inside = subprocess.run(
-        ["git", "rev-parse", "--is-inside-work-tree"],
-        cwd=cwd, capture_output=True, text=True,
-    )
-    if inside.returncode != 0:
+    if not in_work_tree(cwd):
         return CheckResult(
             name="git",
             status="fail",
@@ -116,11 +121,7 @@ def check_git(project_dir: Path | str | None = None) -> CheckResult:
         )
 
     # Has a HEAD commit?
-    head = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=cwd, capture_output=True, text=True,
-    )
-    if head.returncode != 0:
+    if not has_head_commit(cwd):
         return CheckResult(
             name="git",
             status="fail",
@@ -130,21 +131,15 @@ def check_git(project_dir: Path | str | None = None) -> CheckResult:
 
     # Tracked tree clean?  (untracked files do not block a run, matching
     # get_git_commit's porcelain filtering.)
-    status = subprocess.run(
-        ["git", "status", "--porcelain"],
-        cwd=cwd, capture_output=True, text=True,
-    )
-    if status.returncode != 0:
+    try:
+        tracked_dirty = tracked_changes(cwd)
+    except GitStatusError as exc:
         return CheckResult(
             name="git",
             status="fail",
-            message=f"`git status` failed: {status.stderr.strip()}",
+            message=f"`git status` failed: {exc.stderr}",
             fix_hint="Check the repository is healthy (`git status`).",
         )
-    tracked_dirty = [
-        line for line in status.stdout.strip().splitlines()
-        if line[:2].strip() and not line.startswith("??")
-    ]
     if tracked_dirty:
         return CheckResult(
             name="git",
@@ -514,19 +509,675 @@ def _docker_start_hint() -> str:
     return "Start the Docker daemon (e.g. `sudo systemctl start docker`), then try again."
 
 
-def run_all_checks(project_dir: Path | str | None = None) -> list[CheckResult]:
-    """Run the git, DVC, Docker and sample checks and return them in order.
+# =============================================================================
+# Env images: the registry, and the versions that cannot run
+# =============================================================================
+#
+# Two rows ``wfc doctor`` prints after :func:`run_all_checks`; ``wfc share``
+# prints the second and splits the first into its own rows (see
+# :func:`share_checks`). They are not in :func:`run_all_checks`:
+# the registry row asks the network, and ``wfc init``'s summary and the
+# canvas's run gate share that function. Both rows only warn.
+
+def _no_project(name: str) -> CheckResult:
+    """The warn both env-image rows give outside a wfc project."""
+    return CheckResult(
+        name=name,
+        status="warn",
+        message="No wfc project here (wf-canvas.toml not found).",
+        fix_hint="Run `wfc init` to scaffold the project.",
+    )
+
+
+def _versions_by_env(proj: Path) -> dict[str, list[tuple[str, str]]]:
+    """Return ``env -> [(module/method vN, env_fingerprint)]`` for every env.
+
+    The envs are Environments' (the manifest and the captures folders); the
+    versions recording each are Registration's, read from the committed
+    version lists, as ``wfc push-env --all`` reads them.
+
+    Args:
+        proj: The project root.
+
+    Returns:
+        The versions recording each env.
+
+    Raises:
+        ValueError: The env manifest or a version list cannot be read.
+    """
+    from ..environments import pushable_envs
+    from ..registration import version_fingerprints_recording_env
+
+    return {name: version_fingerprints_recording_env(name, proj)
+            for name in pushable_envs(proj)}
+
+
+def check_registry(project_dir: Path | str | None = None) -> CheckResult:
+    """Report whether the project's env images can be pulled from its registry.
+
+    With no ``[registry] url`` the images stay on this machine and the row
+    is ``ok``. With a base, the registry is asked once through the Docker
+    CLI (Environments' ``probe_registry``, by a pushed image's own ref when
+    there is one) and every env image on this machine that is not recorded
+    as pushed is named. Either problem is a ``warn`` naming its fix:
+    ``docker login <host>``, ``wfc push-env --all``, and ``wfc share`` for
+    the rest of the project's sharing setup. Never ``fail``.
 
     Args:
         project_dir: Root directory of the wfc project.  Defaults to the
             resolved project root (see :func:`default_project_dir`).
 
     Returns:
-        ``[check_git(...), check_dvc(...), check_docker(), check_samples(...)]``.
+        A :class:`CheckResult` named ``"registry"``.
+    """
+    proj = Path(project_dir).resolve() if project_dir is not None else default_project_dir()
+    from ..environments import registry_base
+
+    try:
+        base = registry_base(proj)
+    except FileNotFoundError:
+        return _no_project(name="registry")
+    except ValueError as exc:
+        return CheckResult(name="registry", status="warn",
+                           message=f"Could not read the project's config: {exc}",
+                           fix_hint="Fix .wfc/wf-canvas.toml, then run `wfc doctor` again.")
+    if not base:
+        return CheckResult(
+            name="registry", status="ok",
+            message="No registry set: env images stay on this machine.")
+
+    from ..environments import (
+        IMAGE_LOCAL,
+        IMAGE_PUSHED,
+        CaptureError,
+        plan_push,
+        probe_registry,
+        pullable_ref,
+        registry_host,
+        unpushable_lines,
+    )
+
+    share = "`wfc share` checks the rest of the project's sharing setup."
+    try:
+        plan = plan_push(proj, None, recorded=_versions_by_env(proj))
+        ref = next((pullable_ref(item.env, item.fingerprint, item.image or "", proj)
+                    for item in plan.items if item.state == IMAGE_PUSHED), None)
+    except (ValueError, CaptureError) as exc:
+        return CheckResult(name="registry", status="warn",
+                           message=f"Could not list the env images: {exc}",
+                           fix_hint=share)
+    try:
+        answered, reason = probe_registry(base, ref=ref)
+    except (RuntimeError, OSError) as exc:
+        answered, reason = False, (f"the registry {base} could not be asked: {exc}")
+    if not answered:
+        return CheckResult(
+            name="registry", status="warn", message=reason,
+            fix_hint=f"Run `docker login {registry_host(base)}`, then "
+                     f"`wfc push-env --all` to push what is still local. {share}")
+    # Images on this machine push-env cannot push: a name no registry
+    # accepts, or no captures folder to record the push in.
+    stuck = [item for item in plan.unreachable if item.state == IMAGE_LOCAL]
+    if plan.to_push or stuck:
+        parts, fixes = [], []
+        if plan.to_push:
+            labels = ", ".join(item.label for item in plan.to_push)
+            parts.append(f"{len(plan.to_push)} env image(s) on this machine are "
+                         f"not in the registry {base}: {labels}.")
+            fixes.append("Run `wfc push-env --all` to push them.")
+        if stuck:
+            parts.append(f"{len(stuck)} env image(s) on this machine cannot be "
+                         f"pushed: " + ", ".join(item.label for item in stuck) + ".")
+            fixes.extend(line.removeprefix("ERROR: ")
+                         for line in unpushable_lines(plan, stuck))
+        return CheckResult(name="registry", status="warn", message=" ".join(parts),
+                           fix_hint=" ".join([*fixes, share]))
+    return CheckResult(
+        name="registry", status="ok",
+        message=f"The registry {base} answers, and every env image on this "
+                f"machine is pushed.")
+
+
+def check_runnable_versions(project_dir: Path | str | None = None) -> CheckResult:
+    """List the method versions whose image is neither here nor in the registry.
+
+    For every image a method version records, Environments says where it
+    is: recorded as pushed (``pushed.json``) or a byo registry image counts
+    as in the registry; otherwise the local daemon is asked. No registry is
+    contacted. A version whose image is in neither place cannot run on this
+    machine or any other; the row names each such version with the command
+    that recreates its env and ``wfc register-method``. With Docker not
+    answering the row says it cannot tell; a version whose image record
+    cannot be read is named as such. Only ``ok`` or ``warn``.
+
+    Args:
+        project_dir: Root directory of the wfc project.  Defaults to the
+            resolved project root (see :func:`default_project_dir`).
+
+    Returns:
+        A :class:`CheckResult` named ``"versions"``.
+    """
+    proj = Path(project_dir).resolve() if project_dir is not None else default_project_dir()
+    from ..persistence import read_config
+
+    try:
+        read_config(proj)
+    except FileNotFoundError:
+        return _no_project("versions")
+    except ValueError:
+        pass  # the env and version reads below say what they can
+
+    from ..environments import (
+        IMAGE_MISSING,
+        IMAGE_UNKNOWN,
+        CaptureError,
+        image_state,
+        list_envs,
+        recreate_command,
+    )
+
+    try:
+        records = dict(list_envs(proj))
+        recorded = _versions_by_env(proj)
+    except ValueError as exc:
+        return CheckResult(name="versions", status="warn",
+                           message=f"Could not read the method versions: {exc}",
+                           fix_hint="The message above names the file that "
+                                    "could not be read.")
+
+    gone: dict[str, list[str]] = {}
+    unknown: dict[str, list[str]] = {}
+    unreadable: dict[str, list[str]] = {}
+    unreadable_why: list[str] = []
+    total = 0
+    for env, entries in recorded.items():
+        by_image: dict[str, list[str]] = {}
+        for label, fingerprint in entries:
+            if fingerprint:
+                by_image.setdefault(fingerprint, []).append(label)
+        record = records.get(env)
+        for fingerprint, labels in by_image.items():
+            total += len(labels)
+            current = record is not None and fingerprint == record.env_fingerprint
+            try:
+                state = image_state(env, fingerprint, proj,
+                                    container=(record.container
+                                               if record is not None and current
+                                               else None))
+            except CaptureError as exc:
+                unreadable.setdefault(env, []).extend(labels)
+                unreadable_why.append(str(exc))
+                continue
+            if state.state == IMAGE_MISSING:
+                gone.setdefault(env, []).extend(labels)
+            elif state.state == IMAGE_UNKNOWN:
+                unknown.setdefault(env, []).extend(labels)
+
+    if not gone and not unknown and not unreadable:
+        if not total:
+            return CheckResult(name="versions", status="ok",
+                               message="No method version records an env image.")
+        return CheckResult(
+            name="versions", status="ok",
+            message=f"{total} method version(s): every image is on this "
+                    f"machine or in the registry.")
+
+    parts: list[str] = []
+    hints: list[str] = []
+    if gone:
+        names = ", ".join(label for labels in gone.values() for label in labels)
+        parts.append(f"{sum(map(len, gone.values()))} method version(s) can't run "
+                     f"here or anywhere else, their images neither on this "
+                     f"machine nor in the registry: {names}.")
+        for env, labels in gone.items():
+            hints.append(f"for {', '.join(labels)}: recreate the image with "
+                         f"`{recreate_command(env)}`, then register those "
+                         f"methods again with `wfc register-method`")
+    if unknown:
+        names = ", ".join(label for labels in unknown.values() for label in labels)
+        parts.append(f"Docker did not answer, so wfc cannot tell whether the "
+                     f"images of {names} are on this machine.")
+        hints.append("start Docker and run `wfc doctor` again to tell")
+    if unreadable:
+        names = ", ".join(label for labels in unreadable.values() for label in labels)
+        parts.append(f"The image records of {names} cannot be read, so wfc "
+                     f"cannot tell where their images are: "
+                     f"{'; '.join(unreadable_why)}.")
+        hints.append("fix or remove the broken record the message names, then "
+                     "run `wfc doctor` again")
+    hint = "; ".join(hints)
+    return CheckResult(name="versions", status="warn", message=" ".join(parts),
+                       fix_hint=hint[:1].upper() + hint[1:] + ".")
+
+
+def env_image_checks(project_dir: Path | str | None = None) -> list[CheckResult]:
+    """Run the registry and runnable-versions rows, in display order.
+
+    Not part of :func:`run_all_checks`: ``wfc doctor`` prints these after it.
+
+    Args:
+        project_dir: Root directory of the wfc project.  Defaults to the
+            resolved project root (see :func:`default_project_dir`).
+
+    Returns:
+        ``[check_registry(...), check_runnable_versions(...)]``.
+    """
+    return [check_registry(project_dir), check_runnable_versions(project_dir)]
+
+
+# =============================================================================
+# wfc share: what a collaborator will be missing
+# =============================================================================
+#
+# ``wfc share``'s checklist: each row asks the unit that owns its answer
+# (the git remote: ``wfc.version``; the base: the project's config; the
+# login probe, the images and the package connections: Environments; the
+# versions that cannot run: :func:`check_runnable_versions`). The rows only
+# warn and nothing is written: no commit, no push, no ``docker login``, and
+# ``gh auth token`` is printed for the user to run, never run.
+
+class _ShareFacts:
+    """What the share rows read once and share between them."""
+
+    def __init__(self, proj: Path, base: str | None) -> None:
+        from ..environments import project_github_repository
+
+        self.proj = proj
+        self.base = base
+        self.repository = project_github_repository(proj)
+        # The base `wfc push-env --all` pushes to: the plan's base once
+        # _share_plan has made one (the set base, else its proposal).
+        self.target = base
+        self._gh: GhLogin | None = None
+
+    @property
+    def gh(self) -> GhLogin:
+        """The ``gh`` login, asked once and only when a row needs it."""
+        if self._gh is None:
+            from ..environments import gh_login
+            self._gh = gh_login()
+        return self._gh
+
+    @property
+    def on_ghcr(self) -> bool:
+        """Whether the images go (or would go) to GHCR."""
+        from ..environments import package_name
+        return bool(self.target) and package_name(self.target or "", "x") is not None
+
+
+def _share_remote_row(facts: _ShareFacts) -> CheckResult:
+    """The git remote a collaborator clones from."""
+    from ..version import git_remote_url
+
+    remote = git_remote_url(facts.proj)
+    if remote is None:
+        return CheckResult(
+            name="remote", status="warn",
+            message="The project has no git remote: a collaborator has "
+                    "nothing to clone.",
+            fix_hint=f"Create a private GitHub repository and push to it: "
+                     f"`gh repo create {facts.proj.name} --private --source . "
+                     f"--push`.")
+    where = (facts.repository.source_url if facts.repository is not None
+             else remote)
+    return CheckResult(name="remote", status="ok",
+                       message=f"git remote: {where}.")
+
+
+def _share_login_fix(facts: _ShareFacts, host: str) -> str:
+    """The login line the user runs: through ``gh`` for GHCR, else ``docker login``."""
+    from ..environments.registry import GHCR_HOST
+
+    if host.lower() != GHCR_HOST:
+        return f"Run `docker login {host}`, then `wfc share` again."
+    user = facts.gh.user if facts.gh.ready else "<your GitHub user>"
+    first = "" if facts.gh.ready else "`gh auth login --scopes write:packages`, then "
+    return (f"Log Docker in to {host} with your GitHub login: {first}"
+            f"`gh auth token | docker login {host} -u {user} --password-stdin`, "
+            f"then `wfc share` again.")
+
+
+def _share_login_row(facts: _ShareFacts, ref: str | None) -> CheckResult:
+    """Whether Docker is logged in to the registry (one probe)."""
+    from ..environments import probe_registry, registry_host
+
+    if not facts.target:
+        why = ("the git remote is not on GitHub" if facts.repository is None
+               else "the env images could not be listed to propose one (the "
+                    "images row says why)")
+        return CheckResult(
+            name="login", status="warn",
+            message=f"No registry to ask yet: no base is set and {why}.",
+            fix_hint="Set a registry base first (the base row), then run "
+                     "`wfc share` again.")
+    host = registry_host(facts.target)
+    try:
+        answered, reason = probe_registry(facts.target, ref=ref)
+    except (RuntimeError, OSError) as exc:
+        answered, reason = False, f"the registry {facts.target} could not be asked: {exc}"
+    if answered:
+        return CheckResult(name="login", status="ok",
+                           message=f"Docker is logged in to {host}: the "
+                                   f"registry {facts.target} answers.")
+    return CheckResult(name="login", status="warn", message=reason,
+                       fix_hint=_share_login_fix(facts, host))
+
+
+def _share_base_row(facts: _ShareFacts) -> CheckResult:
+    """Whether ``[registry] url`` is set."""
+    if facts.base:
+        return CheckResult(name="base", status="ok",
+                           message=f"Registry base: {facts.base}.")
+    message = ("No registry base is set ([registry] url): env images stay on "
+               "this machine.")
+    if facts.repository is not None:
+        return CheckResult(
+            name="base", status="warn", message=message,
+            fix_hint=f"Run `wfc push-env --all`: it proposes "
+                     f"{facts.repository.base} from the git remote, sets it "
+                     f"and pushes the images.")
+    return CheckResult(
+        name="base", status="warn", message=message,
+        fix_hint="Run `wfc push-env --all --registry <url>` (the git remote "
+                 "is not on GitHub, so no base can be proposed).")
+
+
+def _share_plan(facts: _ShareFacts):
+    """Plan ``wfc push-env --all`` without applying it, or say why it cannot be planned.
+
+    The plan's base (the one set, else the git remote's proposal) becomes
+    ``facts.target``, so every row names the base push-env would use. With
+    no base and no GitHub remote there is nothing to plan.
+    """
+    from ..environments import PushRefused, plan_push
+
+    if not facts.base and facts.repository is None:
+        return None, None
+    try:
+        plan = plan_push(facts.proj, None, recorded=_versions_by_env(facts.proj))
+    except (PushRefused, ValueError) as exc:
+        return None, str(exc)
+    facts.target = plan.base
+    return plan, None
+
+
+def _share_images_row(facts: _ShareFacts, plan, error: str | None) -> CheckResult:
+    """Whether every env image is in the registry (recorded pushes; no registry call)."""
+    from ..environments import IMAGE_BYO_REGISTRY, IMAGE_PUSHED, unpushable_lines
+    from ..environments.argv import strip_docker_scheme
+
+    if error is not None:
+        return CheckResult(name="images", status="warn",
+                           message=f"Could not list the env images: {error}",
+                           fix_hint="The message above names what could not be "
+                                    "read; fix it, then run `wfc share` again.")
+    if plan is None:
+        return CheckResult(
+            name="images", status="warn",
+            message="No registry base is set, so no env image is pushed.",
+            fix_hint="Run `wfc push-env --all --registry <url>` to set the "
+                     "base and push them.")
+    pushed = [item for item in plan.items if item.state == IMAGE_PUSHED]
+    byo = [item for item in plan.items if item.state == IMAGE_BYO_REGISTRY]
+    parts = []
+    if pushed:
+        parts.append(f"{len(pushed)} pushed to {plan.base}.")
+    if byo:
+        parts.append(f"{len(byo)} byo image(s) pullable from their own "
+                     f"registry: " + ", ".join(
+                         f"{item.label} ({strip_docker_scheme(item.image or '')})"
+                         for item in byo) + ".")
+    # A name no registry accepts: the image runs here, so no version breaks.
+    misnamed = [item for item in plan.unreachable if item.name_problem]
+    gone = [item for item in plan.unreachable if not item.name_problem]
+    if gone:
+        parts.append(f"{len(gone)} cannot be pushed from this machine: "
+                     + ", ".join(item.label for item in gone)
+                     + " (the versions row names what they break).")
+    if misnamed:
+        parts.append(f"{len(misnamed)} cannot be pushed under its env's name: "
+                     + ", ".join(item.label for item in misnamed) + ".")
+    if plan.to_push:
+        labels = ", ".join(item.label for item in plan.to_push)
+        where = plan.base if facts.base else f"a registry (none is set; {plan.base} proposed)"
+        return CheckResult(
+            name="images", status="warn",
+            message=" ".join([f"{len(plan.to_push)} env image(s) on this "
+                              f"machine are not in {where}: {labels}.", *parts]),
+            fix_hint=" ".join(["Run `wfc push-env --all` to push them.",
+                               *(line.removeprefix("ERROR: ")
+                                 for line in unpushable_lines(plan, misnamed))]))
+    if plan.unreachable:
+        return CheckResult(
+            name="images", status="warn", message=" ".join(parts),
+            fix_hint=" ".join(line.removeprefix("ERROR: ")
+                              for line in _unpushable(plan)))
+    if not plan.items:
+        return CheckResult(name="images", status="ok",
+                           message="No env image is recorded.")
+    return CheckResult(name="images", status="ok",
+                       message="Every env image is in a registry: " + " ".join(parts))
+
+
+def _unpushable(plan) -> list[str]:
+    from ..environments import unpushable_lines
+    return unpushable_lines(plan)
+
+
+def _share_packages_row(facts: _ShareFacts, plan) -> CheckResult:
+    """Whether every pushed image's GHCR package is connected to the repository (``gh api``)."""
+    from ..environments import (
+        CONNECT_REPOSITORY_STEPS,
+        IMAGE_PUSHED,
+        PACKAGE_CONNECTED,
+        PACKAGE_NOT_FOUND,
+        PACKAGE_OTHER_REPOSITORY,
+        PACKAGE_UNCONNECTED,
+        PACKAGE_UNKNOWN,
+        PackageConnection,
+        gh_scopes,
+        package_connection,
+        package_name,
+        package_page_url,
+    )
+
+    if not facts.on_ghcr:
+        where = (f"the registry {facts.target} is not GHCR" if facts.target
+                 else "no registry base is set")
+        return CheckResult(name="packages", status="ok",
+                           message=f"No GitHub package to connect: {where}.")
+    envs = sorted({item.env for item in (plan.items if plan else ())
+                   if item.state == IMAGE_PUSHED})
+    if not envs:
+        return CheckResult(name="packages", status="ok",
+                           message="No image is pushed yet, so no GitHub "
+                                   "package to connect.")
+    target = facts.target or ""
+    names = [name for env in envs
+             if (name := package_name(target, env)) is not None]
+    expected = (f"{facts.repository.owner}/{facts.repository.repo}"
+                if facts.repository is not None else None)
+    repo_words = (f"the repository {facts.repository.source_url}"
+                  if facts.repository is not None else "the project's repository")
+    # The Connect Repository pop-up lists every repository the user has, by
+    # owner/repo: name the one to choose.
+    connect = (f"{CONNECT_REPOSITORY_STEPS} at the bottom of the page, and "
+               f"choose {expected} in the list" if expected is not None
+               else f"{CONNECT_REPOSITORY_STEPS} at the bottom of the page")
+    if not facts.gh.ready:
+        why = ("`gh` is not installed" if not facts.gh.installed
+               else "`gh` is not logged in")
+        links = ", ".join(package_page_url(owner, pkg) for owner, pkg in names)
+        return CheckResult(
+            name="packages", status="warn",
+            message=f"wfc cannot tell whether the {len(names)} pushed "
+                    f"package(s) are connected to {repo_words}: {why}.",
+            fix_hint=f"Open each package's page and connect it to "
+                     f"{repo_words} with {connect}: {links}. Or install `gh`, "
+                     f"run `gh auth login`, and run `wfc share` again to check.")
+    bad: list[tuple[PackageConnection, str]] = []
+    for owner, pkg in names:
+        conn = package_connection(owner, pkg, expected)
+        if conn.state == PACKAGE_CONNECTED:
+            continue
+        if conn.state == PACKAGE_UNCONNECTED:
+            why = "not connected to a repository"
+        elif conn.state == PACKAGE_OTHER_REPOSITORY:
+            why = f"connected to {conn.repository}, not {expected}"
+        elif conn.state == PACKAGE_NOT_FOUND:
+            why = "gh cannot see it (not pushed there, or no access)"
+        else:
+            why = f"gh did not answer ({conn.detail})"
+        bad.append((conn, why))
+    if not bad:
+        return CheckResult(name="packages", status="ok",
+                           message=f"{len(names)} pushed package(s), each "
+                                   f"connected to {repo_words}.")
+    unread = [conn for conn, _ in bad
+              if conn.state in (PACKAGE_NOT_FOUND, PACKAGE_UNKNOWN)]
+    if unread:
+        # GitHub answers a login without a packages scope with 404 (or 403):
+        # name that cause, not a package a collaborator cannot pull.
+        scopes = gh_scopes()
+        if scopes.lacks_packages:
+            held = ", ".join(sorted(scopes.scopes or ()))
+            return CheckResult(
+                name="packages", status="warn",
+                message=f"wfc cannot read the {len(unread)} pushed package(s) "
+                        f"on GitHub: gh's login ({facts.gh.user}) has no "
+                        f"packages scope (it holds {held}), so it cannot tell "
+                        f"whether they are connected to {repo_words}: "
+                        + ", ".join(f"{c.owner}/{c.package}" for c in unread) + ".",
+                fix_hint="Add the packages scope to gh's login: `gh auth "
+                         "refresh --hostname github.com --scopes "
+                         "write:packages` (or `--scopes read:packages` if you "
+                         "only pull), then `wfc share` again.")
+    return CheckResult(
+        name="packages", status="warn",
+        message=f"{len(bad)} pushed package(s) not connected to {repo_words}: "
+                + "; ".join(f"{conn.owner}/{conn.package}: {why}" for conn, why in bad)
+                + ". A collaborator cannot pull them.",
+        fix_hint=f"Connect each to {repo_words} on its package page, with "
+                 f"{connect}: "
+                 + ", ".join(conn.page_url for conn, _ in bad) + ".")
+
+
+def share_checks(project_dir: Path | str | None = None) -> list[CheckResult]:
+    """Run ``wfc share``'s checklist: what a collaborator will be missing.
+
+    Rows, in order: ``remote`` (a git remote to clone), ``login`` (Docker
+    logged in to the registry: one probe), ``base`` (``[registry] url``
+    set), ``images`` (every recorded image pushed, from the captures folders
+    and the daemon only; byo registry images listed as pullable from their
+    own registry), ``packages`` (each pushed GHCR package connected to the
+    repository, through ``gh api``; without ``gh`` the row says it cannot
+    tell and prints each package's page link; when ``gh`` cannot read a
+    package and its login holds no packages scope, the row names the
+    ``gh auth refresh`` line that adds it) and ``versions``
+    (:func:`check_runnable_versions`). Every non-ok row is a ``warn`` naming
+    its fix. Nothing is written, committed or pushed.
+
+    Args:
+        project_dir: Root directory of the wfc project.  Defaults to the
+            resolved project root (see :func:`default_project_dir`).
+
+    Returns:
+        The rows; a single ``share`` warn outside a wfc project.
+    """
+    proj = Path(project_dir).resolve() if project_dir is not None else default_project_dir()
+    from ..environments import registry_base
+
+    try:
+        base = registry_base(proj)
+    except FileNotFoundError:
+        return [_no_project("share")]
+    except ValueError as exc:
+        return [CheckResult(name="share", status="warn",
+                            message=f"Could not read the project's config: {exc}",
+                            fix_hint="Fix .wfc/wf-canvas.toml, then run `wfc share` again.")]
+    facts = _ShareFacts(proj, base)
+    plan, error = _share_plan(facts)
+    ref = None
+    if plan is not None and facts.base:
+        from ..environments import IMAGE_PUSHED, CaptureError, pullable_ref
+        try:
+            ref = next((pullable_ref(item.env, item.fingerprint, item.image or "", proj)
+                        for item in plan.items if item.state == IMAGE_PUSHED), None)
+        except (ValueError, CaptureError):
+            ref = None
+    return [
+        _share_remote_row(facts),
+        _share_login_row(facts, ref),
+        _share_base_row(facts),
+        _share_images_row(facts, plan, error),
+        _share_packages_row(facts, plan),
+        check_runnable_versions(proj),
+    ]
+
+
+# =============================================================================
+# views
+# =============================================================================
+
+def check_views(project_dir: Path | str | None = None) -> CheckResult:
+    """Report whether views of cache entries are links or fall back to copies.
+
+    Storage's probe tries each view tier (reflink, hardlink, copy) with a
+    scratch file from the cache into the sample workspace and the
+    checkouts directory, and removes it again. A copy is a ``warn``, never
+    a ``fail``: runs work, but each local sample or result is kept twice.
+
+    Args:
+        project_dir: Root directory of the wfc project.  Defaults to the
+            resolved project root (see :func:`default_project_dir`).
+
+    Returns:
+        A :class:`CheckResult` named ``"views"``.
+    """
+    from ..storage import probe_view_tiers
+
+    proj = Path(project_dir).resolve() if project_dir is not None else default_project_dir()
+    try:
+        probes = probe_view_tiers(proj)
+    except OSError as exc:
+        return CheckResult(
+            name="views",
+            status="warn",
+            message=f"Could not probe how views of cache entries are made: {exc}",
+            fix_hint="Check that the project directory is writable.",
+        )
+    copies = [p for p in probes if p.tier == "copy"]
+    if not copies:
+        tiers = ", ".join(f"{p.target}: {p.tier}" for p in probes)
+        return CheckResult(name="views", status="ok",
+                           message=f"Restored samples and checkouts are links to the "
+                                   f"cache ({tiers}).")
+    where = "; ".join(f"{p.target} ({p.directory}): {p.reason}" for p in copies)
+    return CheckResult(
+        name="views",
+        status="warn",
+        message=(f"Views fall back to copies, so each local item takes twice its "
+                 f"size: the cache cannot be linked into {where}."),
+        fix_hint="Keep .wfc/ and .dvc/cache/ on one filesystem that supports "
+                 "hard links or reflinks.",
+    )
+
+
+def run_all_checks(project_dir: Path | str | None = None) -> list[CheckResult]:
+    """Run the git, DVC, Docker, sample and view checks and return them in order.
+
+    Args:
+        project_dir: Root directory of the wfc project.  Defaults to the
+            resolved project root (see :func:`default_project_dir`).
+
+    Returns:
+        ``[check_git(...), check_dvc(...), check_docker(), check_samples(...),
+        check_views(...)]``.
     """
     return [
         check_git(project_dir),
         check_dvc(project_dir),
         check_docker(),
         check_samples(project_dir),
+        check_views(project_dir),
     ]

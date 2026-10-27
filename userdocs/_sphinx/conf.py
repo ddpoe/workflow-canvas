@@ -24,7 +24,7 @@ sys.path[:0] = [str(_REPO_ROOT), str(_REPO_ROOT / "wfc-client")]
 project = "Workflow Canvas"
 author = "Dante Poe"
 copyright = "2026, Dante Poe"
-release = "0.6.1"
+release = "0.7.0"
 
 REPO_URL = "https://github.com/ddpoe/workflow-canvas"
 PYPI_URL = "https://pypi.org/project/workflow-canvas/"

@@ -19,16 +19,25 @@ const RUN = {
   id: 'r1',
   module: '__demo__',
   method: 'plot',
-  version: '1',
+  version: 1,
   timestamp: 1_700_000_000_000,
   duration: 1.5,
   status: 'success',
   inputs: {},
   outputs: {},
+  outputAvailability: {},
   metrics: {},
   dataSource: '__demo__ctrl_01',
   parentRunIds: [],
   parents: [],
+  versionIdentity: null,
+  codeFingerprint: null,
+  envName: null,
+  envFingerprint: null,
+  gitCommit: null,
+  wfcVersion: null,
+  pipelineDocHash: null,
+  keyedUnderEarlierRule: false,
   experimentId: 'exp1',
   runName: 'pipe_a/plot_1',
   nid: 'v1',
@@ -101,7 +110,7 @@ test.describe('Inline image preview + lightbox (smoke)', () => {
     await expect(row).toBeVisible({ timeout: 5_000 });
     await row.locator('.row-head').click();
     await expect(row.locator('.children')).toBeVisible();
-    await row.locator('.children > *').first().click();
+    await row.locator('.children .child-row').first().click();
     await expect(page.locator('.detail-panel')).toBeVisible({ timeout: 5_000 });
 
     // Switch to the Artifacts tab.

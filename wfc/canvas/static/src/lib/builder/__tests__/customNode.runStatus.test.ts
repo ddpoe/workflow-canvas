@@ -64,9 +64,9 @@ const ROWS: Array<{ status: RunStatus; label: string | null; icon: string | null
   { status: 'pending', label: 'pending...', icon: '●' },
   { status: 'running', label: 'running...', icon: '↻' },
   { status: 'completed', label: 'completed', icon: '✓' },
-  // A cache hit is a success, so it keeps the tick; its label says the run
+  // A cache hit draws the History tab's reuse glyph; its label says the run
   // was reused rather than run.
-  { status: 'cached', label: 'cached', icon: '✓' },
+  { status: 'cached', label: 'cached', icon: '⟳' },
   { status: 'failed', label: 'failed', icon: '✗' },
   // Cancelled draws its label with no glyph.
   { status: 'cancelled', label: 'cancelled', icon: null },

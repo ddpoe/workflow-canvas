@@ -14,11 +14,13 @@ Recipe:
   RUN --mount=type=cache,target=/opt/conda/pkgs \
       micromamba install -y -n base -f /opt/explicit-list.txt
   COPY pip-freeze.txt /opt/
+  ARG MAMBA_DOCKERFILE_ACTIVATE=1                 # base env's pip on PATH
   RUN --mount=type=cache,target=/root/.cache/pip \
       pip install --no-deps -r /opt/pip-freeze.txt
   USER root                                       # /opt/conda is root-owned
   RUN chmod -R a+rX <env_dir>                     # pair w/ --user
   USER $MAMBA_USER                                # restore base default user
+  <the shared tail>                               # dockerfiles.tail
 
 The conda install runs FIRST so the explicit list establishes the
 dep graph; the freeze runs `--no-deps` so the resolver isn't allowed to
@@ -38,12 +40,23 @@ so a pip-freeze-only change reuses the micromamba layer. Cache mounts
 persist conda packages (``/opt/conda/pkgs``) and pip wheels across
 builds (BuildKit-only — :func:`wfc.environments.docker.build` sets
 ``DOCKER_BUILDKIT=1``).
+
+A conda env captured on a host that is not linux-64 is built once by
+:func:`generate_solve` instead: it solves a pinned spec for linux-64 and
+writes the image's own explicit list into the image, which registration
+reads back and records. The build context is then rewritten to the
+explicit-list recipe above, so a build from it never solves again.
+:func:`unsolvable_requests` reads a failed solve's report for the pins with
+no linux-64 build.
 """
 
 from __future__ import annotations
 
+import re
+
 from ..introspect import PIP_MISSING_SENTINEL
 from .bases import MICROMAMBA_BASE
+from .tail import finish_recipe
 
 # Where the micromamba base image keeps its ``base`` env. Verified
 # empirically against mambaorg/micromamba (2026-07-18): ``micromamba env
@@ -88,11 +101,6 @@ def generate(
     env_dir = CONDA_ENV_DIR
     base = base_image if base_image is not None else MICROMAMBA_BASE
 
-    stripped_freeze = (pip_freeze_content or "").strip()
-    needs_pip_layers = bool(stripped_freeze) and (
-        stripped_freeze != PIP_MISSING_SENTINEL.strip()
-    )
-
     lines = [
         "# syntax=docker/dockerfile:1.4",
         f"FROM {base}",
@@ -104,21 +112,158 @@ def generate(
             "micromamba install -y -n base -f /opt/explicit-list.txt"
         ),
         "",
+        *_pip_layers(pip_freeze_content),
+        *_permissions_layers(env_dir),
     ]
-    if needs_pip_layers:
-        lines += [
-            "COPY pip-freeze.txt /opt/",
-            "",
-            (
-                "RUN --mount=type=cache,target=/root/.cache/pip "
-                "pip install --no-deps -r /opt/pip-freeze.txt"
-            ),
-            "",
-        ]
-    lines += [
-        # The base ships /opt/conda root-owned while builds run as its
-        # non-root $MAMBA_USER; chmod requires ownership, so the layer
-        # must run as root, then hand back the base's default user.
+    return finish_recipe(lines)
+
+
+#: The build-context file the solve recipe installs from: the pinned spec as
+#: environment.yml text (channels and ``name=<version>`` dependencies).
+SOLVE_SPEC_FILENAME = "solve-spec.yml"
+
+#: Where the solve recipe writes the image's own linux-64 explicit list, outside
+#: the env tree; registration copies it out of a never-started container.
+IMAGE_EXPLICIT_LIST_PATH = "/opt/wfc/linux-64-explicit-list.txt"
+
+
+def generate_solve(
+    env_name: str,
+    pip_freeze_content: str,
+    base_image: str | None = None,
+) -> str:
+    """Render the Dockerfile that solves a pinned spec for linux-64.
+
+    A conda env from a host that is not linux-64 cannot install its own
+    explicit list, so this recipe installs the pinned spec staged as
+    :data:`SOLVE_SPEC_FILENAME` with micromamba, which solves it for the
+    image's platform from the spec's channels. Right after the solve, before
+    any pip layer, a root ``RUN`` writes ``micromamba env export -n base
+    --explicit`` (a ``# platform: linux-64`` header, ``@EXPLICIT`` and one
+    ``url#md5`` line per package) to :data:`IMAGE_EXPLICIT_LIST_PATH`. The
+    pip set follows with ``--no-deps``, then the permissions pass and the
+    shared tail, as in :func:`generate`.
+
+    The list read back from that path is what the env records; the build
+    context is then rewritten to :func:`generate`'s recipe over that list,
+    so a build from it installs exactly it and never solves again.
+
+    Args:
+        env_name: The env name; the image reuses the base env, so it moves
+            no path (signature parity with :func:`generate`).
+        pip_freeze_content: The pip set, ``name==version`` lines. Empty or
+            the absent-pip sentinel omits the pip layers.
+        base_image: Optional override for the micromamba base image.
+
+    Returns:
+        Dockerfile text ending with a trailing newline.
+    """
+    base = base_image if base_image is not None else MICROMAMBA_BASE
+    list_dir = IMAGE_EXPLICIT_LIST_PATH.rsplit("/", 1)[0]
+    lines = [
+        "# syntax=docker/dockerfile:1.4",
+        f"FROM {base}",
+        "",
+        f"COPY {SOLVE_SPEC_FILENAME} /opt/",
+        "",
+        (
+            "RUN --mount=type=cache,target=/opt/conda/pkgs "
+            f"micromamba install -y -n base -f /opt/{SOLVE_SPEC_FILENAME}"
+        ),
+        "",
+        # /opt is root-owned; the list is written outside the env tree, as
+        # root, before pip can add packages the conda export does not know.
+        "USER root",
+        "",
+        (
+            f"RUN mkdir -p {list_dir} && "
+            f"micromamba env export -n base --explicit > {IMAGE_EXPLICIT_LIST_PATH}"
+        ),
+        "",
+        "USER $MAMBA_USER",
+        "",
+        *_pip_layers(pip_freeze_content),
+        *_permissions_layers(CONDA_ENV_DIR),
+    ]
+    return finish_recipe(lines)
+
+
+#: One unsatisfiable request in micromamba's solver report, e.g.
+#: ``└─ vc14_runtime =14.44.35208 * does not exist (perhaps a typo or a
+#: missing channel).`` The tree glyph is ``└─`` or ``├─``.
+_NO_BUILD_LINE = re.compile(
+    r"[└├]─\s*(?:\S+::)?(?P<name>[A-Za-z0-9_][A-Za-z0-9_.\-]*)"
+    r"\s+(?P<version>[^\s*]+)?[^\n]*?does not exist"
+)
+
+
+def unsolvable_requests(build_output: str) -> list[str]:
+    """Return the pinned requests micromamba reported it has no build for.
+
+    Reads the tail of a failed solve build: each ``<name> =<version> *
+    does not exist`` line of micromamba's solver report. For a pinned spec
+    solved for linux-64 that means no linux-64 (or noarch) build of that
+    version is in the spec's channels.
+
+    Args:
+        build_output: The failed ``docker build``'s output, or its error
+            message.
+
+    Returns:
+        ``name=version`` (or ``name``) per unsatisfiable request, each once,
+        in report order; empty when the build failed for another reason.
+    """
+    found: list[str] = []
+    for match in _NO_BUILD_LINE.finditer(build_output):
+        version = (match["version"] or "").lstrip("=")
+        request = f"{match['name']}={version}" if version else match["name"]
+        if request not in found:
+            found.append(request)
+    return found
+
+
+def _pip_layers(pip_freeze_content: str) -> list[str]:
+    """The pip COPY/RUN pair, or nothing when there is no pip set.
+
+    Args:
+        pip_freeze_content: The pip freeze or pip set; empty or the
+            absent-pip sentinel means nothing to install.
+
+    Returns:
+        The recipe lines, each layer followed by a blank line.
+    """
+    stripped_freeze = (pip_freeze_content or "").strip()
+    if not stripped_freeze or stripped_freeze == PIP_MISSING_SENTINEL.strip():
+        return []
+    return [
+        "COPY pip-freeze.txt /opt/",
+        "",
+        # The micromamba base activates its base env in a RUN only when this
+        # is set; without it the env's pip is not on PATH.
+        "ARG MAMBA_DOCKERFILE_ACTIVATE=1",
+        "",
+        (
+            "RUN --mount=type=cache,target=/root/.cache/pip "
+            "pip install --no-deps -r /opt/pip-freeze.txt"
+        ),
+        "",
+    ]
+
+
+def _permissions_layers(env_dir: str) -> list[str]:
+    """The root-bracketed ``chmod -R a+rX`` over the env tree.
+
+    The base ships /opt/conda root-owned while builds run as its non-root
+    ``$MAMBA_USER``; chmod requires ownership, so the layer runs as root,
+    then hands back the base's default user.
+
+    Args:
+        env_dir: The env tree to open for reading.
+
+    Returns:
+        The recipe lines, ending with a blank line.
+    """
+    return [
         "USER root",
         "",
         f"RUN chmod -R a+rX {env_dir}",
@@ -126,7 +271,6 @@ def generate(
         "USER $MAMBA_USER",
         "",
     ]
-    return "\n".join(lines)
 
 
 # Conda platform directories (the ``<channel>/<platform>/<file>`` segment of a
@@ -139,6 +283,36 @@ _FOREIGN_PLATFORMS = frozenset({
     "linux-32", "linux-aarch64", "linux-armv6l", "linux-armv7l",
     "linux-ppc64le", "linux-s390x", "linux-riscv64",
 })
+
+
+def explicit_list_foreign_platforms(explicit_list: str) -> set[str]:
+    """Return the platforms other than linux-64 an explicit list was captured for.
+
+    The platform is read from the list's ``# platform:`` header, or, without
+    one, from the platform directory in each package URL. Lenient by design:
+    a list that names no known foreign platform answers an empty set.
+
+    Args:
+        explicit_list: Full text of an explicit list.
+
+    Returns:
+        The foreign platforms (``noarch`` is never one); empty for a
+        linux-64 list.
+    """
+    header_platform = None
+    url_platforms: set[str] = set()
+    for raw in explicit_list.splitlines():
+        line = raw.strip()
+        if line.startswith("# platform:"):
+            header_platform = line.split(":", 1)[1].strip()
+        elif "://" in line:
+            parts = line.split("#", 1)[0].rstrip("/").split("/")
+            if len(parts) >= 2 and parts[-2] in _FOREIGN_PLATFORMS:
+                url_platforms.add(parts[-2])
+
+    if header_platform is not None:
+        return {header_platform} - {"linux-64", "noarch"}
+    return url_platforms
 
 
 def validate_explicit_list_platform(explicit_list: str, env_name: str) -> None:
@@ -162,21 +336,7 @@ def validate_explicit_list_platform(explicit_list: str, env_name: str) -> None:
         ValueError: The list targets a platform other than ``linux-64``,
             with the commands that produce a linux-64 list instead.
     """
-    header_platform = None
-    url_platforms: set[str] = set()
-    for raw in explicit_list.splitlines():
-        line = raw.strip()
-        if line.startswith("# platform:"):
-            header_platform = line.split(":", 1)[1].strip()
-        elif "://" in line:
-            parts = line.split("#", 1)[0].rstrip("/").split("/")
-            if len(parts) >= 2 and parts[-2] in _FOREIGN_PLATFORMS:
-                url_platforms.add(parts[-2])
-
-    if header_platform is not None:
-        foreign = {header_platform} - {"linux-64", "noarch"}
-    else:
-        foreign = url_platforms
+    foreign = explicit_list_foreign_platforms(explicit_list)
     if not foreign:
         return
 
@@ -193,6 +353,9 @@ def validate_explicit_list_platform(explicit_list: str, env_name: str) -> None:
         f"    conda env export -n <your-conda-env> --from-history > environment.yml\n"
         f"    conda-lock -f environment.yml -p linux-64 --kind explicit\n"
         f"    wfc register-env {env_name} --backend conda --from conda-linux-64.lock\n"
-        f"Or capture the env on Linux (or WSL), or use a pixi environment, "
-        f"which solves for linux-64 from any machine."
+        f"Or capture the live env, which solves it for linux-64 from Windows "
+        f"and macOS too:\n"
+        f"    wfc register-env {env_name} conda:<env>\n"
+        f"or capture it on Linux (or WSL), or use a pixi environment, which "
+        f"solves for linux-64 from any machine."
     )

@@ -61,7 +61,7 @@ def clean_project(git_project, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{git_project / '.wfc' / 'wfc.db'}")
     init_test_project(git_project)
     write_env_record(git_project, "fixture-env")
-    _git(git_project, "add", ".wfc/envs.json")
+    _git(git_project, "add", ".wfc/envs.json", ".wfc/captures")
     _git(git_project, "commit", "-q", "-m", "user commits the env")
     reset_engine()
     assert _porcelain(git_project) == ""
@@ -77,19 +77,38 @@ def outside_source(tmp_path_factory) -> Path:
     return dest
 
 
-def _register(method_dir: Path, module: str = "mod", contracts=None) -> int:
+def _snapshot(root: Path, module: str = "mod", method: str = "transform") -> Path:
+    """Return the method's snapshot directory, as Layout derives it."""
+    from wfc.layout import tree
+    return tree.method_dir(root, module, method)
+
+
+def _snapshot_rel(root: Path, name: str) -> str:
+    """Return *name* inside the transform snapshot, relative to *root* (posix)."""
+    return (_snapshot(root) / name).relative_to(root).as_posix()
+
+
+def _register(method_dir: Path, module: str = "mod", contracts=None) -> None:
     from wfc.registration import register_method, register_module
     register_module(name=module, contracts=contracts or [])
-    return register_method(method_dir=method_dir, module_name=module)
+    register_method(method_dir=method_dir, module_name=module, assume_yes=True)
 
 
 @workflow(purpose="Registering a method from outside the repository leaves git "
-                  "status empty, and the registration commit holds the snapshot")
+                  "status empty, and the registration commit holds the snapshot "
+                  "and the method's version list, nothing else")
 def test_register_outside_source_leaves_tree_clean(clean_project, outside_source):
+    from wfc.layout import tree
     _register(outside_source)
     assert _porcelain(clean_project) == ""
-    assert "methods/transform/transform.py" in _head_files(clean_project)
-    assert "methods/transform/method.yaml" in _head_files(clean_project)
+    head_files = _head_files(clean_project)
+    list_rel = tree.method_versions_path(clean_project, "mod", "transform") \
+        .relative_to(clean_project).as_posix()
+    assert _snapshot_rel(clean_project, "transform.py") in head_files
+    assert _snapshot_rel(clean_project, "method.yaml") in head_files
+    assert list_rel in head_files
+    assert all(f.startswith(_snapshot_rel(clean_project, "")) or f == list_rel
+               for f in head_files)
 
 
 @workflow(purpose="A file the user staged before registering is still staged, "
@@ -142,7 +161,7 @@ def test_late_refusal_leaves_nothing(clean_project, outside_source, refuse):
     with get_session() as s:
         assert s.exec(select(Method)).all() == []
         assert s.exec(select(MethodContract)).all() == []
-    assert not (clean_project / "methods" / "transform").exists()
+    assert not _snapshot(clean_project).exists()
     assert _head(clean_project) == head
     assert _porcelain(clean_project) == ""
 
@@ -170,7 +189,7 @@ def test_a_hanging_commit_hook_is_stopped_and_leaves_nothing(
 
     with get_session() as s:
         assert s.exec(select(Method)).all() == []
-    assert not (clean_project / "methods" / "transform").exists()
+    assert not _snapshot(clean_project).exists()
     assert not (clean_project / ".git" / "index.lock").exists()
     assert _head(clean_project) == head
     assert _porcelain(clean_project) == ""
@@ -190,21 +209,121 @@ def test_register_module_commits_module_yaml(clean_project):
     assert "modules/seg/module.yaml" in _head_files(clean_project)
 
 
+@workflow(purpose="wfc demo --remove deletes the demo module's snapshot directory, "
+                  "the demo method's version list with it, and the demo env's "
+                  "captures folder, and commits the deletion, with the env "
+                  "manifest it changed, leaving the tree "
+                  "clean and a user's same-named method and its list intact")
+def test_demo_remove_commits_the_snapshot_deletion(clean_project, outside_source):
+    from wfc.demo.remove import remove_demo
+    from wfc.demo.scaffold import DEMO_ENV, DEMO_MODULE, write_demo_stamp
+    from wfc.layout import tree
+    from wfc.registration import register_method, register_module
+    from wfc.version import get_git_commit
+
+    # The demo's env, committed as register-env's own commit would.
+    write_env_record(clean_project, DEMO_ENV, image="local/wfc-demo-env")
+    _git(clean_project, "add", ".wfc/envs.json", ".wfc/captures")
+    _git(clean_project, "commit", "-q", "-m", "user commits the demo env")
+    register_module(name=DEMO_MODULE, contracts=[], allow_reserved=True)
+    # A demo method names the demo env, as every bundled asset does: the
+    # removal deletes every env the demo's methods name. Same source, its
+    # env line pointed at the demo env.
+    import shutil
+    demo_source = outside_source.parent.parent / "demo-source" / "transform"
+    shutil.copytree(outside_source, demo_source)
+    demo_yaml = demo_source / "method.yaml"
+    demo_yaml.write_text(
+        demo_yaml.read_text("utf-8").replace("fixture-env", DEMO_ENV), "utf-8")
+    register_method(
+        method_dir=demo_source, module_name=DEMO_MODULE,
+        method_name=f"{DEMO_MODULE}transform", script_name="transform.py",
+        allow_reserved=True,
+        assume_yes=True,
+    )
+    # The user's own `transform`, from the same source, in another module.
+    _register(outside_source)
+    demo_rel = tree.module_methods_dir(clean_project, DEMO_MODULE) \
+        .relative_to(clean_project).as_posix()
+    demo_list = tree.method_versions_path(
+        clean_project, DEMO_MODULE, f"{DEMO_MODULE}transform")
+    user_list = tree.method_versions_path(clean_project, "mod", "transform")
+    demo_list_rel = demo_list.relative_to(clean_project).as_posix()
+    assert _git(clean_project, "ls-files", "--", demo_rel) != ""
+    assert _git(clean_project, "ls-files", "--", demo_list_rel) != ""
+    assert _porcelain(clean_project) == ""
+
+    demo_captures = f".wfc/captures/{DEMO_ENV}"
+    assert _git(clean_project, "ls-files", "--", demo_captures) != ""
+    # The stamp, written and committed as `wfc demo` does.
+    write_demo_stamp(clean_project)
+    assert _git(clean_project, "ls-files", "--", ".wfc/demo.json") != ""
+    assert _porcelain(clean_project) == ""
+
+    assert remove_demo(clean_project, assume_yes=True) == 0
+
+    assert not (clean_project / ".wfc" / "demo.json").exists()
+    assert _git(clean_project, "ls-files", "--", ".wfc/demo.json") == ""
+    assert not (clean_project / demo_captures).exists()
+    assert _git(clean_project, "ls-files", "--", demo_captures) == ""
+    assert any(f.startswith(f"{demo_captures}/") for f in _head_files(clean_project))
+    assert not (clean_project / demo_rel).exists()
+    assert not demo_list.exists()
+    assert _git(clean_project, "ls-files", "--", demo_rel) == ""
+    assert _git(clean_project, "ls-files", "--", demo_list_rel) == ""
+    assert user_list.is_file()
+    assert _porcelain(clean_project) == ""
+    assert get_git_commit(clean_project) == _head(clean_project)
+    assert all(
+        f.startswith((f"{demo_rel}/", f"{demo_captures}/"))
+        or f in (".wfc/envs.json", ".wfc/demo.json")
+        for f in _head_files(clean_project)
+    )
+    assert _snapshot_rel(clean_project, "transform.py") in _git(
+        clean_project, "ls-files", "--", _snapshot_rel(clean_project, ""),
+    )
+
+
 # --- init -------------------------------------------------------------------
 
-@workflow(purpose="init in a fresh directory sets DVC up before its commit, which "
-                  "holds exactly its four files; the tree is clean and a second "
-                  "init changes nothing")
+def _is_ignored(root: Path, relpath: str) -> bool:
+    """Return whether git would ignore *relpath* in *root* (it need not exist)."""
+    return subprocess.run(
+        ["git", "check-ignore", "-q", "--no-index", relpath], cwd=root,
+    ).returncode == 0
+
+
+@workflow(purpose="init in a fresh directory creates only .wfc/, .gitignore, "
+                  ".gitattributes and the DVC files; it sets DVC up before its "
+                  "commit, which holds exactly its five files; .gitattributes "
+                  "keeps captures byte-exact; every path it creates is "
+                  "committed or ignored, and so does the registry; the run "
+                  "archive and sample workspace "
+                  "are ignored and the registry is not; a second init changes "
+                  "nothing")
 def test_init_fresh_directory_leaves_clean_tree(tmp_path):
     proj = tmp_path / "fresh"
     init_test_project(proj)
+    top = {p.name for p in proj.iterdir()} - {".git"}
+    assert top <= {".wfc", ".gitignore", ".gitattributes", ".dvc",
+                   ".dvcignore"}, top
+    assert {".wfc", ".gitignore", ".gitattributes", ".dvc"} <= top
     assert _porcelain(proj) == ""
     assert _head_files(proj) == {
-        ".gitignore", ".wfc/wf-canvas.toml", ".dvc/config", ".dvc/.gitignore",
+        ".gitignore", ".gitattributes", ".wfc/wf-canvas.toml", ".dvc/config",
+        ".dvc/.gitignore",
     }
+    attributes = (proj / ".gitattributes").read_text().splitlines()
+    assert ".wfc/captures/** -text" in attributes
+    assert ".wfc/registry/** -text" in attributes
     ignore = (proj / ".gitignore").read_text().splitlines()
-    for line in (".snakemake/", ".dvc/cache/", ".wfc/build/"):
+    for line in (".snakemake/", ".dvc/cache/", ".wfc/build/", ".wfc/runs/",
+                 ".wfc/workspace/"):
         assert line in ignore
+    assert ".runs/" not in ignore and "data/" not in ignore
+    assert _is_ignored(proj, ".wfc/runs/00000001/out.csv")
+    assert _is_ignored(proj, ".wfc/workspace/samples/s1/s1.csv")
+    assert not _is_ignored(proj, ".wfc/registry/methods/mod/filter/filter.py")
     head = _head(proj)
     init_test_project(proj)
     assert _head(proj) == head
@@ -296,7 +415,8 @@ def test_init_existing_project_yes_commits_only_listed(existing_repo):
     archive = project_archive_dir(existing_repo)
     init_test_project(existing_repo)  # archive=project_archive_dir, assume_yes
     assert _head_files(existing_repo) == {
-        ".gitignore", ".wfc/wf-canvas.toml", ".dvc/config", ".dvc/.gitignore",
+        ".gitignore", ".gitattributes", ".wfc/wf-canvas.toml", ".dvc/config",
+        ".dvc/.gitignore",
     }
     assert _porcelain(existing_repo) == "A  draft.py"
     cfg = tomllib.loads((existing_repo / ".wfc" / "wf-canvas.toml").read_text())
@@ -327,7 +447,7 @@ def _root_via_register_method(root: Path) -> Path:
     src = root / "src" / "transform"
     shutil.copytree(FIXTURE_METHOD, src)
     _register(src)
-    assert (root / "methods" / "transform" / "transform.py").exists()
+    assert (_snapshot(root) / "transform.py").exists()
     return root
 
 

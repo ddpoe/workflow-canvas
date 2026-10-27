@@ -39,12 +39,14 @@ def project_archive_dir(project_dir: Path) -> Path:
 def sample_source_dir(project_dir: Path) -> Path:
     """Return where a test stages the *source* files it registers as samples.
 
-    Registration materializes nothing under ``data/samples/`` — it caches the
+    Registration materializes nothing under ``.wfc/workspace/samples/`` — it caches the
     source's bytes and records where ``restore_sample`` will later put them.
-    A fixture that registers a file already sitting at its own
-    ``registered_path`` makes every restore the dest-already-valid skip, which
-    is a project state no user can produce. Staging outside the project keeps
-    ``registered_path != source_path`` so the restore is a real copy.
+    The row records only the source's file name; the restore destination is
+    Layout's sample workspace path for the sample and that name. A fixture
+    that registers a file already sitting at that destination makes every
+    restore the dest-already-valid skip, which is a project state no user can
+    produce. Staging outside the project keeps the source apart from the
+    destination so the restore is a real copy.
 
     Pins: the location only -- a sibling of the project directory, inside
     pytest's temp root. An input, not state.

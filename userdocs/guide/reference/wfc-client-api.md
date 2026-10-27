@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.reference.wfc-client-api @ b863cb41817d; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/reference/wfc-client-api @ b4744057ea1c; do not edit -->
 
 # Python API: wfc-client
 
@@ -10,7 +10,7 @@
 import wfc_client as wfc
 ```
 
-For a walkthrough of a complete method script, see [Authoring a Method Script](../tutorials/authoring-a-method-script.md).
+For a walkthrough of a complete method script, see [Writing a Method in Python](../tutorials/authoring-a-method-script.md).
 
 ## Entry Point
 

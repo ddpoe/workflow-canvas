@@ -61,8 +61,8 @@ def canvas_client(project_root: Path, monkeypatch):
     Pins the canonical resolver at ``project_root`` (``WFC_PROJECT_ROOT``
     and ``DATABASE_URL`` to the project's own database), drops the
     per-process engine and root cache so the next resolution sees the pin,
-    clears the server's job state -- the active-job table and the archive
-    job's thread and progress slots -- and returns a client that surfaces
+    clears the server's job state -- the active-job table, the reached
+    pipelines and the archive job's thread and progress slots -- and returns a client that surfaces
     server exceptions as responses so a test reads the status code a
     browser would see.
 
@@ -113,6 +113,7 @@ def canvas_client(project_root: Path, monkeypatch):
     from wfc.canvas import server, state
 
     state._active_jobs.clear()
+    state._reached_pipelines.clear()
     state._archive_job["thread"] = None
     state._archive_job["progress"] = None
     return TestClient(server.app, raise_server_exceptions=False)

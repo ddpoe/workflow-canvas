@@ -2,9 +2,11 @@
  * The editor's one param check, type by type
  * (canvas-ui case `catalog.machines-param-value-check`).
  *
- * `coerceParamValue` is the only param check in the system: a parameter
- * row commits through it and a pipeline variable is saved through it. It
- * decides what the *editor* accepts, not what a run accepts.
+ * `coerceParamValue` is the editor's param check: a parameter row commits
+ * through it and a pipeline variable is saved through it. It reads the raw
+ * text, then passes the typed value through `checkParamValue`, the value
+ * rule the server shares; the second block runs the shared table
+ * (`shared/paramValueOracle.json`) through that rule.
  *
  * Existing coverage this does NOT duplicate:
  *   - `paramEditor.test.ts` covers the row's state transitions
@@ -16,7 +18,9 @@
  * exactly.
  */
 import { describe, it, expect } from 'vitest';
-import { coerceParamValue } from '../paramEditor.machine';
+import { checkParamValue, coerceParamValue } from '../paramEditor.machine';
+import { PARAM_TYPES } from '../../shared/types';
+import ORACLE from '../../shared/paramValueOracle.json';
 
 type Row = {
   what: string;
@@ -81,5 +85,31 @@ describe('coerceParamValue — the editor\'s one param check', () => {
     expect(coerceParamValue({ ...bounded, raw: '11' })).toEqual({ ok: false, error: 'Must be <= 10.' });
     expect(coerceParamValue({ ...bounded, raw: '1' })).toEqual({ ok: true, value: 1 });
     expect(coerceParamValue({ ...bounded, raw: '10' })).toEqual({ ok: true, value: 10 });
+  });
+});
+
+type OracleRow = {
+  type: string;
+  value: unknown;
+  verdict: 'accept' | 'refuse';
+  required?: boolean;
+  constraints?: { min?: number; max?: number; enum?: unknown[] };
+};
+
+describe('checkParamValue — the value rule the server shares (canvas half)', () => {
+  it('uses the same parameter type vocabulary as the shared table', () => {
+    expect([...PARAM_TYPES]).toEqual(ORACLE.types);
+  });
+
+  it('gives every row of the shared table its verdict', () => {
+    const wrong = (ORACLE.rows as OracleRow[])
+      .map((row) => {
+        const reason = checkParamValue(row.type, row.constraints, row.value, row.required ?? false);
+        const verdict = reason === null ? 'accept' : 'refuse';
+        return verdict === row.verdict ? null : `${JSON.stringify(row)} -> ${verdict} (${reason})`;
+      })
+      .filter((line) => line !== null);
+    expect(wrong).toEqual([]);
+    expect(ORACLE.rows.length).toBeGreaterThan(0);
   });
 });

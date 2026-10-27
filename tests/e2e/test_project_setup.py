@@ -9,6 +9,7 @@ Conservative core stories only:
 from axiom_annotations import workflow, Step, AutoStep
 
 from tests.fixtures.conftest import project_archive_dir
+from wfc import layout
 from wfc.init import init_project
 
 
@@ -27,22 +28,61 @@ def test_init_creates_project(tmp_path, monkeypatch):
 
     口 = Step(step_num=2, name="Verify scaffold structure",
              purpose="Expected project directories and files are created")
-    assert (tmp_path / ".wfc" / "wf-canvas.toml").exists()
-    assert (tmp_path / ".wfc" / "wfc.db").exists()
-    assert (tmp_path / "methods").is_dir()
-    assert (tmp_path / ".runs").is_dir()
-    assert (tmp_path / "data" / "samples").is_dir()
+    assert layout.marker_path(tmp_path).exists()
+    assert layout.db_path(tmp_path).exists()
     assert (tmp_path / ".gitignore").exists()
-    assert created[".wfc/"] is True
-    assert created["methods/"] is True
-    assert created[".runs/"] is True
-    assert created["data/samples/"] is True
+    assert created[f"{layout.STATE_DIR_NAME}/"] is True
+    for absent in ("methods", "modules", "data", ".runs"):
+        assert not (tmp_path / absent).exists(), absent
 
     口 = Step(step_num=3, name="Verify gitignore entries",
-             purpose="Data directory and runs directory are excluded from version control")
-    gitignore = (tmp_path / ".gitignore").read_text()
-    assert "data/" in gitignore
-    assert ".runs/" in gitignore
+             purpose="The run archive and the sample workspace under .wfc/ are "
+                     "excluded from version control")
+    gitignore = (tmp_path / ".gitignore").read_text().splitlines()
+    assert f"{layout.artifact_store_relpath()}/" in gitignore
+    assert f"{layout.restore_workspace_relpath()}/" in gitignore
+
+
+@workflow(
+    purpose="A write in progress on the project database leaves git's tree "
+            "clean: SQLite's sidecar file beside .wfc/wfc.db is ignored like "
+            "the database itself"
+)
+def test_a_write_in_progress_on_the_database_leaves_the_tree_clean(tmp_path, monkeypatch):
+    """SQLite's rollback journal, present while a write is open, is ignored."""
+    import subprocess
+
+    from sqlalchemy import text
+
+    from wfc.persistence import get_session, use_project
+
+    monkeypatch.chdir(tmp_path)
+
+    口 = AutoStep(step_num=1)
+    init_project(tmp_path, init_git=True,
+                 archive=str(project_archive_dir(tmp_path)),
+                 assume_yes=True)
+
+    口 = Step(step_num=2, name="Hold a write transaction open",
+             purpose="A session on the project's database writes and has not "
+                     "committed, as the push worker's does while a run goes "
+                     "on; SQLite keeps its rollback journal beside the database")
+    with use_project(tmp_path), get_session() as session:
+        # DDL commits at once; the INSERT opens the write transaction.
+        session.execute(text("CREATE TABLE write_in_progress (x INTEGER)"))
+        session.execute(text("INSERT INTO write_in_progress VALUES (1)"))
+        journal = layout.db_path(tmp_path).with_name(
+            layout.db_path(tmp_path).name + "-journal")
+        assert journal.exists()
+
+        口 = Step(step_num=3, name="git sees nothing",
+                 purpose="git status lists no file, tracked or untracked")
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=tmp_path, capture_output=True, text=True, check=True,
+        ).stdout
+        assert status == ""
+        session.rollback()
 
 
 @workflow(

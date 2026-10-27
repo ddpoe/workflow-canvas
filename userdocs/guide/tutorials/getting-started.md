@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs.consumer.tutorials.getting-started @ 24a12dc2f117; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/tutorials/getting-started @ a3dfad67bdf7; do not edit -->
 
 # Tutorial: Your First Pipeline
 
@@ -12,7 +12,7 @@ This tutorial takes you from installation to a one-step pipeline you built yours
 
 You need:
 
-- **Python 3.11 or 3.12** to install and run wfc.
+- **Python 3.12** to install and run wfc.
 - **Docker**, installed and running. Each step runs in a container: a packaged copy of the software and dependencies your method needs (see [How the Pieces Fit Together](../explanation/how-the-pieces-fit-together.md)). On Windows and macOS this is Docker Desktop; on Linux, Docker Engine.
 - **Git**. wfc records the commit of your method code with every run and will not run while tracked files have uncommitted changes. Everything stays local: no account or remote is needed.
 - **[pixi](https://pixi.sh)**, used in this tutorial to describe the method's environment.
@@ -42,7 +42,7 @@ cd wfc_project_root
 
 `wfc init` asks one question, where to keep the output archive. Press Enter to accept the default, `~/.wfc/archives/wfc_project_root`. It then:
 
-- creates `.wfc/` (the config file `wf-canvas.toml` and the project database), the folders wfc manages, and a `.gitignore`;
+- creates `.wfc/` (the config file `wf-canvas.toml` and the project database), where wfc keeps everything it manages, and a `.gitignore`;
 - sets up DVC with that archive;
 - runs `git init` if needed and commits the files it wrote;
 - prints a health table for git, the archive, Docker and samples.
@@ -150,7 +150,7 @@ Register it into the `my_analysis` module:
 wfc register-method src/my_analysis/filter_data --module my_analysis
 ```
 
-Registration reads the script's parameters, stores the `method.yaml` contract, checks that the `default` environment is registered, and commits the method's files to git. To change the method later, edit the script and run `wfc register-method` again. [Authoring a Method Script](authoring-a-method-script.md) explains the script API and `method.yaml` in full.
+Registration reads the script's parameters, stores the `method.yaml` contract, checks that the `default` environment is registered, copies the method into `.wfc/registry/methods/my_analysis/filter_data/`, and commits that copy to git. A run executes the copy. To change the method later, edit the script and run `wfc register-method` again. [Writing a Method in Python](authoring-a-method-script.md) explains the script API and `method.yaml` in full.
 
 ### 5. Register a sample
 
@@ -180,7 +180,7 @@ Leave out `--manifest` if you have no description. wfc stores a copy of the file
 
 ### 6. Write and run the pipeline
 
-Pipelines are usually built in the Canvas, which writes the pipeline file for you; see [Build, Run and Inspect in the Canvas](../how-to/canvas.md). Here you write a short one by hand. An `input_selector` node chooses the samples, a method node names a registered method and its parameters, and a link feeds the sample into the method's `data` input. Create `pipeline.json` in the project root:
+Pipelines are usually built in the Canvas, which writes the pipeline file for you; see [Build, Run and Inspect in the Canvas](../how-to/canvas.md). Here you write a short one by hand; [Pipeline Document](../reference/pipeline-document.md) lists every key a pipeline file takes. An `input_selector` node chooses the samples, a method node names a registered method and its parameters, and a link feeds the sample into the method's `data` input. Create `pipeline.json` in the project root:
 
 ```json
 {
@@ -204,7 +204,7 @@ wfc run-pipeline --pipeline pipeline.json
 wfc checks the pipeline, runs the step in the `default` environment's container, records the run, and archives the output. The command ends with a summary:
 
 ```text
-Status: completed
+Status: succeeded
 Total runs: 1  |  Passed: 1  |  Failed: 0  |  Cached: 0  |  Cancelled: 0
 ```
 
@@ -220,22 +220,24 @@ wfc canvas
 
 Go to `http://127.0.0.1:8500` and open the **History** tab. Select a `filter_data` run. Its detail panel shows the run ID and has tabs for the run's parameters, metrics and artifacts. Stop the Canvas with Ctrl+C.
 
-To copy the output out of wfc, use `wfc export <run-id> <slot> <dest>`:
+To copy the output out of wfc, use `wfc export --run <run-id> --slot <slot> --dest <dest>`:
 
-- `<run-id>` is the run ID from the History tab, for example `1`;
-- `<slot>` is the output name from `method.yaml`, here `filtered`;
-- `<dest>` is the file or folder to copy it to.
+- `--run` is the run ID from the History tab or from `wfc runs`, for example `1`;
+- `--slot` is the output name from `method.yaml`, here `filtered`;
+- `--dest` is the file or folder to copy it to.
 
 ```bash
-wfc export 1 filtered filtered.csv
+wfc export --run 1 --slot filtered --dest filtered.csv
 ```
 
-`filtered.csv` holds the two rows with `quality` of at least 0.5. If you leave out `<slot>` and `<dest>`, wfc names the run's outputs. The other export options are in the [CLI Reference](../reference/cli-reference.md#cache-and-export-commands).
+`filtered.csv` holds the two rows with `quality` of at least 0.5. If you leave out `--slot` and `--dest`, wfc names the run's outputs. The other export options are in the [CLI Reference](../reference/cli-reference.md#cache-and-export-commands).
 
 ## Next Steps
 
 - [Exploring the Demo](wfc-demo.md): a five-method pipeline over three samples, set up with `wfc demo`.
-- [Authoring a Method Script](authoring-a-method-script.md): the script API, and methods written in R or bash.
+- [Share runs as a bundle anyone can rerun](../how-to/run-and-inspect-results.md#share-runs-as-a-bundle-anyone-can-rerun): export your pipeline's result as one zip that reruns on another computer and checks each output.
+- [Writing a Method in Python](authoring-a-method-script.md): the script API.
+- [Write an R Method](../how-to/write-an-r-method.md): a method written in R.
 - [Registering an Environment](registering-an-environment.md): capturing conda and pixi environments, using your own image, and working inside an environment's container.
 - [Writing Contracts](writing-contracts.md): declare the inputs, outputs and parameters that wire methods together.
 - [Build, Run and Inspect in the Canvas](../how-to/canvas.md): build and run pipelines in the browser, and browse past runs in History.

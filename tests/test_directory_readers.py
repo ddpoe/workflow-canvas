@@ -47,7 +47,7 @@ def _drop_member(project: Path, dir_hash: str) -> None:
                   "missing is not cached: its health drops from local-only to "
                   "unreachable instead of reading as a usable local copy")
 def test_a_partial_directory_entry_is_not_cached(tmp_project, monkeypatch):
-    """D-2 item 1 (Architect row: health of a partial entry)."""
+    """Health of a partial entry."""
     _ = Step(step_num=1, name="Register a directory sample, unpushed",
              purpose="Inside a pipeline, so the row stays pending (local only)")
     monkeypatch.setenv("WFC_PIPELINE_ID", "partial")
@@ -106,7 +106,7 @@ def _drop_output_rows(run_id: int) -> None:
                   "pulled back whole by the output resolver, which then serves "
                   "its checkout, rather than serving the partial entry")
 def test_a_resolver_pulls_a_partial_directory_entry(tmp_project, monkeypatch):
-    """D-2 item 1 (Architect row: health of a partial entry), resolver leg."""
+    """Health of a partial entry, resolver leg."""
     from wfc.persistence import PushStatus
     from wfc.storage import resolve_output
     from wfc.storage.push_worker import _push_worker_tick
@@ -138,7 +138,7 @@ def test_a_resolver_pulls_a_partial_directory_entry(tmp_project, monkeypatch):
                   "once, and pruning one directory's references keeps the shared "
                   "object and every member of the live directory")
 def test_prune_keeps_the_members_of_a_live_directory(tmp_project, monkeypatch):
-    """P3-12, prune half (the stored-once half is in test_directory_cache_entry)."""
+    """Prune half (the stored-once half is in test_directory_cache_entry)."""
     from wfc.storage import local_path, prune_dvc_cache
 
     _ = Step(step_num=1, name="Two runs archive directories sharing one file",
@@ -155,9 +155,9 @@ def test_prune_keeps_the_members_of_a_live_directory(tmp_project, monkeypatch):
     assert checkout_a is not None and checkout_a.is_dir()
 
     _ = Step(step_num=2, name="Drop directory A's references and prune",
-             purpose="force bypasses the unpushed guard, so only references keep entries")
+             purpose="B's unpushed row keeps its entry; A is named by no record")
     _drop_output_rows(run_a.run_id)
-    prune_dvc_cache(tmp_project, dry_run=False, force=True)
+    prune_dvc_cache(tmp_project, dry_run=False)
 
     _ = Step(step_num=3, name="The live directory is whole; A is gone",
              purpose="Shared object kept; A's manifest, own member and checkout removed")

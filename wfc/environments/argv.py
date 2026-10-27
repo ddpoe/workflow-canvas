@@ -14,9 +14,10 @@ exist on Windows; Docker Desktop ignores ``--user`` on Windows/macOS).
 
 Bind-mount layout is fixed and the same for Docker and Apptainer:
 
-  - ``<project_root>:/work`` -- the wfc project tree, including
-    ``methods/``, ``.runs/`` and ``.wfc/``, so the method script and its
-    run directory are reachable inside the container.
+  - ``<project_root>:/work`` -- the wfc project tree, including ``.wfc/``:
+    the method's registered snapshot under
+    ``.wfc/registry/methods/<module>/<name>/`` and the run directory under
+    ``.wfc/runs/``, so both are reachable inside the container.
   - ``<dvc_cache_dir>:/dvc-cache`` -- the DVC content-addressed cache, so
     input paths that point into the cache resolve inside the container.
 
@@ -34,6 +35,7 @@ GPU plumbing:
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 from axiom_annotations import task
@@ -76,8 +78,9 @@ def daemon_ref(record_container: str) -> str:
     ``local/`` record is handed over as its bare image ID,
     ``sha256:<hex>``, which both stores run and neither pulls.
 
-    Dispatch and the dev loop hand Docker what this returns; no caller
-    parses ``local/`` itself.
+    The run-time rule (:mod:`wfc.environments.runnable`) hands Docker what
+    this returns when the daemon holds the image, and a pulled image's
+    registry ref otherwise; no caller parses ``local/`` itself.
 
     Args:
         record_container: The record's container ref, with or without the
@@ -93,8 +96,50 @@ def daemon_ref(record_container: str) -> str:
     return bare
 
 
-@task(purpose="Assemble the docker run argv — image ref, project + DVC-cache bind "
-              "mounts, --user uid:gid, optional --gpus")
+#: Whether each backend's argv builder may bind a mount read-only. A
+#: backend that declares False gets the run's code copy bound read-write,
+#: and dispatch re-checks the copy after the run instead.
+READ_ONLY_BINDS: dict[str, bool] = {"docker": True, "apptainer": True}
+
+
+def accepts_read_only_binds(backend: str) -> bool:
+    """Return whether *backend*'s argv builder binds a read-only row as such.
+
+    Args:
+        backend: ``"docker"`` or ``"apptainer"``.
+
+    Returns:
+        The backend's declaration; ``False`` for a backend with none.
+    """
+    return READ_ONLY_BINDS.get(backend, False)
+
+
+def _rendered_mounts(backend: str, project_root: str | Path,
+                     dvc_cache_dir: str | Path,
+                     code_copy: str | Path | None) -> tuple[layout.Mount, ...]:
+    """Layout's mount table as *backend* binds it.
+
+    A backend that accepts read-only binds renders the table as it is; one
+    that does not binds every row read-write.
+
+    Args:
+        backend: The backend whose declaration applies.
+        project_root: The project root.
+        dvc_cache_dir: The DVC cache directory.
+        code_copy: The run's extracted code copy, or ``None``.
+
+    Returns:
+        The rows to render, in bind order.
+    """
+    table = layout.mount_table(project_root, dvc_cache_dir, code_copy=code_copy)
+    if accepts_read_only_binds(backend):
+        return table
+    return tuple(replace(m, read_only=False) for m in table)
+
+
+@task(purpose="Assemble the docker run argv — --pull never, image ref, project + "
+              "DVC-cache bind mounts, the run's code copy bound read-only when "
+              "Docker declares read-only binds, --user uid:gid, optional --gpus")
 def build_docker_command(
     image_ref: str,
     project_root: str | Path,
@@ -104,12 +149,13 @@ def build_docker_command(
     uid: int,
     gid: int,
     gpus: bool = False,
+    code_copy: str | Path | None = None,
 ) -> list[str]:
     """Assemble the ``docker run --rm --user <uid>:<gid> ...`` argv.
 
     The argv shape is verbatim::
 
-        docker run --rm --user <uid>:<gid>
+        docker run --rm --pull never --user <uid>:<gid>
                    -v <project_root>:/work -w /work
                    -v <dvc_cache_dir>:/dvc-cache
                    [--gpus all]
@@ -117,9 +163,12 @@ def build_docker_command(
                    <run_step_argv...>
 
     Args:
-        image_ref: The record's daemon ref from :func:`daemon_ref`:
-            ``sha256:<hex>`` for a local env, or a registry image's
-            ``ghcr.io/dante/image-io@sha256:<hex>``. No scheme prefix.
+        image_ref: The ref the run-time rule returned
+            (:func:`wfc.environments.runnable.ensure_version_runnable`, or
+            :func:`~wfc.environments.runnable.version_run_ref` at dispatch):
+            ``sha256:<hex>`` for a local env the daemon holds, or a
+            registry image's ``ghcr.io/dante/image-io@sha256:<hex>``. No
+            scheme prefix. ``--pull never`` keeps Docker from fetching it.
         project_root: Absolute host path to the wfc project. Mounted at
             ``/work`` inside the container; ``-w /work`` makes the project
             root the container's cwd.
@@ -142,14 +191,21 @@ def build_docker_command(
             CUDA/PyTorch methods get host GPU access. No pre-flight check
             -- if the host lacks ``nvidia-container-runtime``, Docker's
             own error propagates verbatim.
+        code_copy: The run's extracted code copy under the project root;
+            bound last, at its own ``/work`` path, read-only when Docker
+            declares read-only binds (:data:`READ_ONLY_BINDS`). ``None``
+            binds no copy.
 
     Returns:
         argv list ready to pass to :func:`wfc.execution.dispatch._run_method_subprocess`.
     """
     # Binds render from Layout's mount table — the same rows translation
     # uses — with the workdir set on the project mount.
-    cmd: list[str] = ["docker", "run", "--rm", "--user", f"{uid}:{gid}"]
-    for mount in layout.mount_table(project_root, dvc_cache_dir):
+    # --pull never: Docker runs only an image the daemon already holds, so
+    # nothing reaches a run without the pre-flight's fingerprint check.
+    cmd: list[str] = ["docker", "run", "--rm", "--pull", "never",
+                      "--user", f"{uid}:{gid}"]
+    for mount in _rendered_mounts("docker", project_root, dvc_cache_dir, code_copy):
         cmd.extend(["-v", layout.bind_spec(mount)])
         if mount.container == layout.CONTAINER_WORKDIR:
             cmd.extend(["-w", layout.CONTAINER_WORKDIR])
@@ -169,6 +225,7 @@ def build_apptainer_command(
     run_step_argv: Sequence[str],
     *,
     gpus: bool = False,
+    code_copy: str | Path | None = None,
 ) -> list[str]:
     """Assemble the ``apptainer exec --bind ... docker://<ref> ...`` argv.
 
@@ -192,12 +249,15 @@ def build_apptainer_command(
         run_step_argv: Inner command line, appended verbatim after the
             image URI.
         gpus: When true, inject ``--nv`` (Apptainer's NVIDIA passthrough).
+        code_copy: The run's extracted code copy, bound last at its own
+            ``/work`` path, read-only when Apptainer declares read-only
+            binds; ``None`` binds no copy.
 
     Returns:
         argv list. **Not invoked by any caller.**
     """
     cmd: list[str] = ["apptainer", "exec"]
-    for mount in layout.mount_table(project_root, dvc_cache_dir):
+    for mount in _rendered_mounts("apptainer", project_root, dvc_cache_dir, code_copy):
         cmd.extend(["--bind", layout.bind_spec(mount)])
     cmd.extend(["--pwd", layout.CONTAINER_WORKDIR])
     if gpus:

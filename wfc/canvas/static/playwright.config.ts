@@ -15,10 +15,12 @@ import { defineConfig, devices } from '@playwright/test';
  * Gallery capture is OPT-IN, and off by default.
  *
  * `behaviors.spec.ts` and `param-editor-gallery.spec.ts` both drop a PNG
- * (and, for four rows, a .webm) under `gallery/states/`.  Those files are
- * tracked in git on purpose — the docs link them — so every incidental
- * `npx playwright test` used to rewrite 24 tracked files and dirty the
- * working tree.
+ * (and, for four rows, a .webm) under `gallery/states/`, and
+ * `cache-key-card-gallery.spec.ts` one PNG per hover under
+ * `gallery/cache-key-card/`.  Those files are
+ * tracked in git on purpose — the docs link them — so writing them on
+ * every incidental `npx playwright test` would rewrite tracked files and
+ * dirty the working tree.
  *
  * What is gated is the *file write*, never a test.  Every assertion in both
  * specs runs on every run, so a default run keeps the full 36-test suite;

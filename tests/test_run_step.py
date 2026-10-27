@@ -42,7 +42,7 @@ def _inline_project(git_project, monkeypatch):
 
     # No sample data on disk: an inline invocation carries no pipeline
     # document, so the classifier takes its legacy root-sample fallback and
-    # a populated data/samples/S1/ would fill the slot — hiding the very
+    # a populated .wfc/workspace/samples/S1/ would fill the slot — hiding the very
     # "root node with no input" condition these tests are about.
     scn = Scenario(
         nodes=[node("test_method", module="test_mod")],
@@ -178,7 +178,6 @@ class TestRunStep:
             "--variant", "default",
             "--method", "test_method",
             "--module", "test_mod",
-            "--script", str(project.method_scripts["test_method"]),
             "--pipeline-id", "test-pipeline-001",
             "--git-commit", "abc123",
             "--ref-input", f"data={project.sample_file('S1')}",
@@ -215,7 +214,6 @@ class TestRunStep:
             "--variant", "default",
             "--method", "test_method",
             "--module", "test_mod",
-            "--script", str(project.method_scripts["test_method"]),
             "--pipeline-id", "test-pipeline-002",
             "--git-commit", "abc123",
             "--ref-input", f"data={project.sample_file('S1')}",
@@ -256,7 +254,6 @@ class TestRunStep:
             "--variant", "default",
             "--method", "test_method",
             "--module", "test_mod",
-            "--script", str(project.method_scripts["test_method"]),
             "--pipeline-id", "test-pipeline-006",
             "--git-commit", "abc123",
             "--parent-run-id", "data:999999",
@@ -284,7 +281,6 @@ class TestRunStep:
             "--variant", "default",
             "--method", "test_method",
             "--module", "test_mod",
-            "--script", str(project.method_scripts["test_method"]),
             "--pipeline-id", "test-pipeline-005",
             "--git-commit", "abc123",
             "--ref-input", f"data={project.sample_file('S1')}",
@@ -307,7 +303,7 @@ class TestRunStep:
     @requires_docker
     def test_run_step_tees_stdout_to_per_run_log(self, cli, git_project, monkeypatch,
                                                  fixture_container_image):
-        """run-step writes the method's stdout to .runs/<run_id>/stdout.log."""
+        """run-step writes the method's stdout to .wfc/runs/<run_id>/stdout.log."""
         project = _container_project(
             git_project, monkeypatch, fixture_container_image,
             Behavior(
@@ -323,7 +319,6 @@ class TestRunStep:
             "--variant", "default",
             "--method", "test_method",
             "--module", "test_mod",
-            "--script", str(project.method_scripts["test_method"]),
             "--pipeline-id", "stdout-log-test",
             "--git-commit", "abc123",
             "--ref-input", f"data={project.sample_file('S1')}",
@@ -362,7 +357,6 @@ class TestRunStep:
             "--variant", "default",
             "--method", "test_method",
             "--module", "test_mod",
-            "--script", str(project.method_scripts["test_method"]),
             "--pipeline-id", "stderr-log-test",
             "--git-commit", "abc123",
             "--ref-input", f"data={project.sample_file('S1')}",
@@ -406,7 +400,6 @@ def test_root_node_without_ref_input_raises_error(cli, git_project, monkeypatch,
         "--variant", "default",
         "--method", "test_method",
         "--module", "test_mod",
-        "--script", str(project.method_scripts["test_method"]),
         "--pipeline-id", "root-no-ref-input-001",
         "--git-commit", "abc123",
     )
@@ -665,7 +658,7 @@ class TestParentLookupPipelineScoped:
     """Parent run_id sidecar lookup must be pipeline-scoped.
 
     Run-id sidecars are written under
-    ``.runs/sentinels/<pipeline_id>/<node_id>/<sample>/<variant>/``, so the
+    ``.wfc/runs/sentinels/<pipeline_id>/<node_id>/<sample>/<variant>/``, so the
     sidecar lookup that resolves a downstream node's parent ``run_id`` must
     include the same ``pipeline_id``. Without that scoping the lookup either
     finds nothing (downstream gets treated as root) or finds a stale sidecar
@@ -744,7 +737,6 @@ class TestSnakemakeGen:
             steps=[StepDef(
                 method_name="tile_gen",
                 module_name="test_mod",
-                script_path="methods/tile_gen/tile_gen.py",
                 params={},
                 slot_outputs={"tiles_dir": "tiles_dir"},
                 slot_types={"tiles_dir": "directory"},
@@ -756,7 +748,7 @@ class TestSnakemakeGen:
         output_section = rule_block.split("output:")[1].split("params:")[0]
         output_lines = [ln.strip() for ln in output_section.splitlines() if ln.strip()]
         assert len(output_lines) == 1, output_lines
-        assert ".runs/sentinels/" in output_lines[0] and ".complete" in output_lines[0], output_lines
+        assert ".wfc/runs/sentinels/" in output_lines[0] and ".complete" in output_lines[0], output_lines
 
     def test_file_slot_emits_sentinel(self, wfc_root):
         """File slots also collapse to the same sentinel shape."""
@@ -766,7 +758,6 @@ class TestSnakemakeGen:
             steps=[StepDef(
                 method_name="extractor",
                 module_name="test_mod",
-                script_path="methods/extractor/extractor.py",
                 params={},
                 slot_outputs={"config": "extraction_config.json"},
                 slot_types={"config": "JSON"},
@@ -778,7 +769,7 @@ class TestSnakemakeGen:
         output_section = rule_block.split("output:")[1].split("params:")[0]
         output_lines = [ln.strip() for ln in output_section.splitlines() if ln.strip()]
         assert len(output_lines) == 1, output_lines
-        assert ".runs/sentinels/" in output_lines[0] and ".complete" in output_lines[0], output_lines
+        assert ".wfc/runs/sentinels/" in output_lines[0] and ".complete" in output_lines[0], output_lines
 
 
 # =============================================================================
@@ -820,8 +811,10 @@ class TestPipelineSummary:
         口 = Step(step_num=3, name="The counts are the rows",
                  purpose="One of each outcome: the seeded run passed, the "
                          "re-run is counted as cached rather than passed, and "
-                         "the refused step is a failure with its message")
-        assert "Status: failed" in result.stdout
+                         "the refused step is a failure with its message; "
+                         "some runs succeeded and some failed, so the "
+                         "pipeline is mixed")
+        assert "Status: mixed" in result.stdout
         assert ("Total runs: 4  |  Passed: 1  |  Failed: 1  |  Cached: 1  |  "
                 "Cancelled: 1") in result.stdout
         assert "FAILED RUNS:" in result.stdout
@@ -849,7 +842,6 @@ class TestGenerateRuleSimplified:
             steps=[StepDef(
                 method_name="preprocess",
                 module_name="test_mod",
-                script_path="methods/preprocess/preprocess.py",
                 params={"k": 1},
             )],
             samples=["S1"],
@@ -877,7 +869,6 @@ class TestGenerateRuleSimplified:
             steps=[StepDef(
                 method_name="preprocess",
                 module_name="test_mod",
-                script_path="methods/preprocess/preprocess.py",
                 params={"k": 1},
             )],
             samples=["S1"],
@@ -895,7 +886,6 @@ class TestGenerateRuleSimplified:
             steps=[StepDef(
                 method_name="preprocess",
                 module_name="test_mod",
-                script_path="methods/preprocess/preprocess.py",
                 params={"k": 1},
             )],
             samples=["S1"],
@@ -911,7 +901,6 @@ class TestGenerateRuleSimplified:
             steps=[StepDef(
                 method_name="preprocess",
                 module_name="test_mod",
-                script_path="methods/preprocess/preprocess.py",
                 params={"k": 1},
             )],
             samples=["S1"],

@@ -1,15 +1,12 @@
-<!-- generated from pm_mvp::docs.consumer.tutorials.authoring-a-method-script @ 16391e807643; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/tutorials/authoring-a-method-script @ 13d90e300f92; do not edit -->
 
-# Tutorial: Authoring a Method Script
+# Tutorial: Writing a Method in Python
 
-## Authoring a Method Script
+## Writing a Method in Python
 
-A *method* is one step of a pipeline: it takes input files and parameters, does its work, and writes output files. In this tutorial you write a small method that keeps the rows of a CSV whose `score` is above a threshold, then register it.
+A *method* is one step of a pipeline: it takes input files and parameters, does its work, and writes output files. In this tutorial you write a small Python method that keeps the rows of a CSV whose `score` is above a threshold, then register it.
 
-You can write a method two ways:
-
-1. **With the `wfc-client` decorator** (Python). You decorate one function, read inputs from a context object, and declare each output you write.
-2. **Directly against environment variables and files**, in any language. wfc tells the method where its inputs and parameters are through a few environment variables, and the method writes its outputs into a run directory. The decorator is a thin layer over this.
+The script uses the `wfc-client` decorator: you decorate one function, read inputs from a context object, and declare each output you write. Methods can also be written in R or bash; see [Write an R Method](../how-to/write-an-r-method.md) and the [Method Script Contract](../reference/method-script-contract.md).
 
 You need a project first; [Getting Started](getting-started.md) sets one up. The commands on this page run from the project root, called `wfc_project_root` here (`wfc init --dir wfc_project_root`, then `cd wfc_project_root`).
 
@@ -43,7 +40,7 @@ Create those directories now, and write a one-line `src/my_analysis/module.yaml`
 description: Filtering steps for scored data
 ```
 
-A `module.yaml` can also list outputs every method in the module must provide; [Writing Contracts](writing-contracts.md) covers that. wfc keeps its own registered copy of each method under `methods/<name>/`; write your code under `src/`, not there.
+A `module.yaml` can also list outputs every method in the module must provide; [Writing Contracts](writing-contracts.md) covers that. wfc keeps its own registered copy of each method under `.wfc/registry/methods/<module>/<name>/`; write your code under `src/`, not there.
 
 To use a different script name, set `script:` in `method.yaml` (see the [method.yaml Schema](../reference/method-yaml-schema.md)).
 
@@ -97,7 +94,7 @@ import wfc_client as wfc
 @wfc.method
 def filter_data(ctx):
     data_path = ctx.input("data")[0]              # the file wired into the "data" slot
-    threshold = float(ctx.params.get("threshold", 0.5))
+    threshold = float(ctx.params["threshold"])
 
     df = pd.read_csv(data_path)
     kept = df[df["score"] > threshold]
@@ -117,107 +114,23 @@ if __name__ == "__main__":
 |---|---|
 | `@wfc.method` | Marks the method's function. A script has exactly one. |
 | `ctx.input(slot)` | The input files for a slot, as a list of paths. |
-| `ctx.params` | The parameter values set on the node, as a dict. |
+| `ctx.params` | The node's parameter values, as a dict. A parameter you leave unset is in it at its declared default. |
 | `ctx.run_dir` | The run directory. Everything you save must be inside it. |
 | `ctx.workdir` | A scratch directory inside the run directory. |
 | `ctx.save_artifact(slot, path)` | Declares that the file (or directory) at `path` is the output for `slot`. |
 | `ctx.log_metric(name, value)` | Records a number or short string for this run. |
 | `wfc.run()` | Runs the decorated function. |
 
-A parameter you leave unset in the canvas is not in `ctx.params`, so read it with `.get()` and the same default you wrote in `method.yaml`.
+A parameter you leave unset in the canvas arrives at the `default` you wrote in `method.yaml` (here `threshold` is `0.5`), and the run records it. A parameter with no `default` arrives only when it is set.
 
 When you register the method, wfc checks each `ctx.save_artifact` call in the decorated function against `method.yaml`: an output name that isn't declared, or a declared output that is never saved, stops the registration. Write the output name as a string literal in the decorated function so the check can see it.
 
 When the function returns, `wfc.run()` writes a small `_wfc_results.json` file listing your saved outputs and metrics. wfc reads it after the method exits.
 
+The decorator is optional. Underneath it, wfc passes the method its inputs and parameters in environment variables and collects the files it writes. The [Method Script Contract](../reference/method-script-contract.md) lists them, with this method written using only the standard library.
 
-## Step 4 — Or write against the environment variables directly
 
-Underneath the decorator, a method is a process that reads a few environment variables and writes files. You can write a method this way in any language with no wfc package installed. This is how R and bash methods work.
-
-### What wfc gives the method
-
-| Variable | Contents |
-|---|---|
-| `WFC_RUN_DIR` | The run directory. Write your outputs here. |
-| `WFC_INPUT_PATHS` | JSON `{slot: [paths]}`: the files (or directories) wired into each input slot. |
-| `WFC_PARAMS` | JSON `{name: value}`: the parameter values set on the node. Unset parameters are absent. |
-| `WFC_RUN_ID` | The run's id. |
-| `WFC_SAMPLE` | The sample this run is for (`__all__` for a step that bundles several samples). |
-| `WFC_NODE_ID` | The node's id in the pipeline. |
-| `WFC_PIPELINE_ID` | The pipeline run's id. |
-| `WFC_VARIANT` | The parameter variant's name. |
-
-### What the method gives back
-
-- Write each output into `WFC_RUN_DIR`, named after its slot plus the slot's `type`: the `filtered` output with `type: csv` is `filtered.csv`. A `dir` output is a directory named after the slot.
-- Exit 0 on success and non-zero on failure.
-- Anything printed to stdout or stderr is kept in the run's log.
-
-Every declared output must be there when the method exits, or the step fails. Other files in the run directory are ignored.
-
-### The same method with the standard library
-
-```python
-import csv
-import json
-import os
-from pathlib import Path
-
-run_dir = Path(os.environ["WFC_RUN_DIR"])
-inputs = json.loads(os.environ["WFC_INPUT_PATHS"])
-params = json.loads(os.environ.get("WFC_PARAMS", "{}"))
-
-threshold = float(params.get("threshold", 0.5))
-
-with open(inputs["data"][0], newline="") as f:
-    reader = csv.DictReader(f)
-    fieldnames = reader.fieldnames
-    rows = [r for r in reader if float(r["score"]) > threshold]
-
-with open(run_dir / "filtered.csv", "w", newline="") as f:
-    writer = csv.DictWriter(f, fieldnames=fieldnames)
-    writer.writeheader()
-    writer.writerows(rows)
-```
-
-### R
-
-```r
-inputs <- jsonlite::fromJSON(Sys.getenv("WFC_INPUT_PATHS"))
-params <- jsonlite::fromJSON(Sys.getenv("WFC_PARAMS"))
-threshold <- if (is.null(params$threshold)) 0.5 else params$threshold
-
-rows <- read.csv(inputs$data[1])
-write.csv(rows[rows$score > threshold, ],
-          file.path(Sys.getenv("WFC_RUN_DIR"), "filtered.csv"), row.names = FALSE)
-```
-
-### bash
-
-This example uses `jq`, so the environment needs it installed:
-
-```bash
-input=$(jq -r '.data[0]' <<< "$WFC_INPUT_PATHS")
-threshold=$(jq -r '.threshold // 0.5' <<< "$WFC_PARAMS")
-awk -F, -v t="$threshold" 'NR == 1 || $2 > t' "$input" > "$WFC_RUN_DIR/filtered.csv"
-```
-
-The bash example assumes `score` is the second column.
-
-On Windows, save `.sh` and `.R` scripts with LF line endings (for example with `git config core.autocrlf input`). A bash script with CRLF line endings fails in the container, and the step reports that it did not produce its declared slot.
-
-### Metrics without the decorator
-
-To record metrics, write `_wfc_results.json` into `WFC_RUN_DIR`:
-
-```json
-{"outputs": {"filtered": "filtered.csv"}, "metrics": {"kept_rows": 42}}
-```
-
-Output paths are relative to the run directory, so a file listed here can have any name. Without this file, wfc looks for each output under its slot name and extension.
-
-## Step 5 — Register the method
+## Step 4 — Register the method
 
 Methods belong to a module. From the project root, register the module once, then the method:
 
@@ -228,16 +141,26 @@ wfc register-method src/my_analysis/filter_data --module my_analysis
 
 `--module-dir` points at the directory holding `module.yaml`. `wfc register-method <method-dir> --module <module>` takes the method's directory as its one positional argument, and `--module` names the module it joins. See the [CLI Reference](../reference/cli-reference.md) for every flag.
 
-Registration reads `method.yaml`, checks it, and checks that the environment named in `env:` is registered. It commits the method directory to the project's git repository and copies the method's script files and `method.yaml` into `methods/filter_data/`. wfc compares against that copy to decide whether a step must recompute.
+Registration reads `method.yaml`, checks it, and checks that the environment named in `env:` is registered. It copies the method's script files and `method.yaml` into `.wfc/registry/methods/my_analysis/filter_data/` and commits that copy to the project's git repository. It first says whether this registers a new method, adds a new version or adds nothing, and asks `Proceed? [y/N]` before it adds one (pass `--yes` to skip the question). A run executes the registered code, and wfc compares against it to decide whether a step must recompute.
 
-To change the method, edit the script (or `method.yaml`) in `src/my_analysis/filter_data/`, then run `wfc register-method` again.
+To change the method, edit the script (or `method.yaml`) in `src/my_analysis/filter_data/`, then run `wfc register-method` again. Each change adds a new version; earlier versions stay runnable, and a pipeline node can pin one.
 
-Method names are unique across the project: registration refuses a name that another module already uses.
-
-An R or bash method runs under the interpreter its environment was registered with. Register that environment with `--interpreter` pointing at `Rscript` or `bash` inside the image; [Registering an Environment](registering-an-environment.md) shows how.
+A method name is unique within its module; two modules may each have a method of the same name.
 
 The method now appears in the canvas sidebar under its module, ready to drop into a pipeline.
 
+
+## Writing outputs that rerun the same
+
+When someone reruns an exported run, each output is compared byte for byte with the recorded one. A method that writes the same bytes every time gives a clean `same`. To get there:
+
+- Fix random seeds, and take them from a parameter so they are recorded with the run.
+- Don't embed the time the file was made. Most plotting and PDF libraries can leave it out.
+- Sort rows before writing them, so the order does not depend on which parallel job finished first.
+- Set the precision of numbers in final tables, so the last digits don't vary between machines.
+- Use one thread when exact repeatability matters.
+
+If an output still says `DIFFERENT`, see [If a step says DIFFERENT](../how-to/run-and-inspect-results.md#if-a-step-says-different).
 
 ## Next steps
 
@@ -245,3 +168,13 @@ The method now appears in the canvas sidebar under its module, ready to drop int
 - Declare the columns your slots carry and add column pickers: [Writing Contracts](writing-contracts.md).
 - Look up any `method.yaml` key: [method.yaml Schema](../reference/method-yaml-schema.md).
 - See what happens when a step runs: [How a Run Executes](../explanation/how-a-run-executes.md).
+
+## Inputs are read-only
+
+A method reads its inputs and writes its results to the step's output folder. Open input files in read mode.
+
+A method that saves back over its input fails at the save. Do not write into or beside an input: on Linux and macOS a tool that does fails, because the folder holding an input is read-only. Three cases to watch for:
+
+- A reader that writes an index or memo file next to the input (Bio-Formats' memo files, for example). Point it at a folder in the step's working directory.
+- A SQLite database in WAL mode, which needs `-wal` and `-shm` files beside it even to read. Open it with `?mode=ro&immutable=1`, or copy it into the step's working folder first.
+- A file opened for update, such as HDF5 or `h5ad` in `r+` or `a` mode, or a zarr store being appended to. Open it read-only and write a new output.

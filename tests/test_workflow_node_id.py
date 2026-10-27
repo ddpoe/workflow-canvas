@@ -9,9 +9,9 @@ Scenario: Two parallel branches — each uses ``csv_filter`` → ``feature_qc``,
 but the four nodes have unique string IDs: ``filter_rep2``, ``filter_rep3``,
 ``qc_rep2``, ``qc_rep3``.
 
-This exercises the ``has_duplicate_methods=True`` code path in
-``load_pipeline()``; the other fixture pipeline JSONs have unique method
-names per node.
+A node's identity is its document id, so two nodes sharing a method stay
+two nodes in ``load_pipeline()``; the other fixture pipeline JSONs have
+unique method names per node.
 """
 
 import json
@@ -111,7 +111,7 @@ def test_snakefile_duplicate_methods(dup_pipeline_path, wfc_root):
     for nid in ("filter_rep2", "filter_rep3", "qc_rep2", "qc_rep3"):
         assert f"rule {nid}:" in snakefile
         # Snakemake-visible outputs are sentinels.
-        assert f".runs/sentinels/test-pid/{nid}/" in snakefile
+        assert f".wfc/runs/sentinels/test-pid/{nid}/" in snakefile
     assert "rule csv_filter:" not in snakefile
     assert "rule feature_qc:" not in snakefile
 
@@ -127,8 +127,8 @@ def test_snakefile_duplicate_methods(dup_pipeline_path, wfc_root):
     compile(python_section, "<snakefile>", "exec")
 
 
-def test_legacy_integer_ids_with_unique_methods_key_steps_on_the_method_name():
-    """Integer-string ids and unique methods: each node id is its method name."""
+def test_integer_string_ids_key_steps_on_the_document_id():
+    """Integer-string ids and unique methods: each node id is its document id."""
     from wfc.graph import load_pipeline
 
     document = {
@@ -145,6 +145,6 @@ def test_legacy_integer_ids_with_unique_methods_key_steps_on_the_method_name():
     pipeline = load_pipeline(document, contract_map={}, reference_outputs={})
 
     steps = {s.method_name: s for s in pipeline.steps}
-    assert {m: s.node_id for m, s in steps.items()} == {"load": "load",
-                                                         "filter": "filter"}
-    assert steps["filter"].depends_on == ["load"]
+    assert {m: s.node_id for m, s in steps.items()} == {"load": "1",
+                                                         "filter": "2"}
+    assert steps["filter"].depends_on == ["1"]

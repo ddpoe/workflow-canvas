@@ -13,17 +13,25 @@ from pathlib import Path
 import pytest
 from axiom_annotations import Step, workflow
 
-from tests.fixtures.fakes import stub_dev_loop_launch, stub_docker_image_inspect
+from tests.fixtures.fakes import (
+    FAKE_PUSHED_DIGEST,
+    stub_dev_loop_launch,
+    stub_docker_image_content,
+    stub_docker_image_inspect,
+    stub_docker_push,
+    stub_docker_tag,
+)
 from tests.harness import (
-    Phase,
     STUB_DIGEST,
+    Phase,
     Scenario,
+    build_project,
+    drive_target,
     node,
     run_target,
     selector,
     wire,
 )
-
 
 ENV_NAME = "image-io"
 # The env is recorded as docker://local/<name>@sha256:<image ID>, the shape
@@ -84,11 +92,17 @@ def test_run_step_container_dispatch_docker_argv(git_project, monkeypatch):
     # wfc-related. The env record
     # declares backend=pixi with no recorded `python`, so the resolver
     # falls back to the pixi per-backend default for env name "image-io".
+    # The script is the version's extracted copy's, under /work at its own
+    # project-relative path.
+    from wfc.registration import resolve_method_code
+
+    copy = resolve_method_code("test", "ml_train", git_project).code_dir
+    copy_in_container = "/work/" + copy.relative_to(git_project).as_posix()
     image_idx = cmd.index(DAEMON_REF)
     inner = cmd[image_idx + 1:]
     assert inner == [
         "/opt/.pixi/envs/image-io/bin/python",
-        "/work/methods/ml_train/ml_train.py",
+        f"{copy_in_container}/ml_train.py",
     ], f"inner argv must be [<env-python>, <script-in-container>]; got {inner!r}"
     assert "-m" not in cmd and "wfc" not in cmd, (
         "Inner argv must NOT dispatch through `python -m wfc` — registered "
@@ -108,37 +122,76 @@ def test_run_step_container_dispatch_docker_argv(git_project, monkeypatch):
     assert "PYTHONPATH" not in forwarded_keys
     # No --gpus flag (method.yaml gpus=false default).
     assert "--gpus" not in cmd
+    # Docker never fetches an image the pre-flight did not check.
+    assert cmd[cmd.index("--pull") + 1] == "never"
 
 
-@workflow(purpose="A method script outside the project root reaches the "
-                  "docker argv as the host path the document named, not "
-                  "rewritten under /work")
-def test_run_step_passes_a_script_outside_the_root_through_unchanged(
+@workflow(purpose="Through dispatch: the version's image was pushed and "
+                  "pulled (the daemon lacks its local image ID and answers "
+                  "another ID for the pulled registry ref); dispatch hands "
+                  "Docker the registry ref, never a recomputed image ID, with "
+                  "--pull never")
+def test_dispatch_runs_a_pulled_images_registry_ref_with_pull_never(
         git_project, monkeypatch):
-    outside = git_project.parent / "outside"
-    outside.mkdir()
-    outside_script = outside / "outside.py"
-    outside_script.write_text("print('outside')\n", encoding="utf-8")
-    # The document's script entry is methods/<m>/<script_name>; three
-    # parent hops leave the project root for its sibling directory.
-    scn = _dispatch_scenario("ml_train",
-                             script_name="../../../outside/outside.py")
-    obs = run_target(scn, "ml_train", root=git_project, monkeypatch=monkeypatch,
-                     through=Phase.DISPATCH)
+    import subprocess
 
-    target = ("ml_train", "s1", "default")
+    from wfc import environments as envs_mod
+    from wfc.environments.docker import ImageNotFoundError
+    from wfc.persistence import set_registry_url
+
+    project = build_project(_registered_env_scenario(), root=git_project,
+                            monkeypatch=monkeypatch)
+    root = project.root
+    target = ("a", "s1", "default")
+    base = "ghcr.io/owner/repo"
+    registry_ref = f"{base}/{ENV_NAME}@{FAKE_PUSHED_DIGEST}"
+    pulled_id = "sha256:" + "f" * 64
+
+    口 = Step(step_num=1, name="Push the env's image",
+             purpose="push_image writes pushed.json; it and the base are "
+                     "committed so the claim sees a clean tree")
+    record = envs_mod.get(ENV_NAME, root)
+    set_registry_url(root, base)
+    stub_docker_tag(monkeypatch, None)
+    stub_docker_push(monkeypatch, None)
+    envs_mod.push_image(root, ENV_NAME, record.env_fingerprint,
+                        record.container, base)
+    subprocess.run(["git", "add", ".wfc"], cwd=root, check=True,
+                   capture_output=True)
+    subprocess.run(["git", "commit", "-q", "-m", "push env images"], cwd=root,
+                   check=True, capture_output=True)
+
+    口 = Step(step_num=2, name="The daemon holds only the pulled image",
+             purpose="Its local image ID misses; the registry ref answers "
+                     "another image ID, as the other image store does")
+
+    def inspect(ref):
+        if ref == registry_ref:
+            return pulled_id
+        raise ImageNotFoundError(f"Error: No such image: {ref}")
+
+    stub_docker_image_inspect(monkeypatch, inspect)
+
+    口 = Step(step_num=3, name="Dispatch the step",
+             purpose="The argv names the registry ref and --pull never")
+    obs = drive_target(project, target, monkeypatch=monkeypatch,
+                       through=Phase.DISPATCH)
     cmd = obs.dispatch_cmd(target)
-    inner = cmd[cmd.index(DAEMON_REF) + 1:]
-    assert len(inner) == 2
-    script_arg = inner[1]
-    assert script_arg == str(
-        git_project / "methods" / "ml_train" / "../../../outside/outside.py")
-    assert not script_arg.startswith("/work")
-    assert Path(script_arg).resolve() == outside_script.resolve()
+    assert cmd is not None, obs.runs[target].ending
+    assert cmd[cmd.index("--pull") + 1] == "never"
+    assert registry_ref in cmd
+    assert DAEMON_REF not in cmd
+    assert not any(pulled_id in a for a in cmd)
+
+
+
+
 @workflow(purpose="For one recorded pixi env in one project, the argv dispatch "
                   "builds and the argv `wfc exec` builds carry the same --user, "
                   "the same binds and the same workdir, and differ only in the "
-                  "flags each caller splices after --rm and in the inner command")
+                  "flags each caller splices after --rm, in the inner command, "
+                  "and in dispatch's read-only bind of the version's extracted "
+                  "copy at its own /work path")
 def test_dispatch_and_dev_loop_argv_agree_on_user_binds_and_workdir(
     git_project, monkeypatch,
 ):
@@ -162,19 +215,24 @@ def test_dispatch_and_dev_loop_argv_agree_on_user_binds_and_workdir(
         return 0
 
     stub_dev_loop_launch(monkeypatch, fake_run_subprocess)
-    # The daemon holds the env's image, so the dev loop rebuilds nothing.
+    # The daemon holds the env's image, so the dev loop pulls nothing.
     stub_docker_image_inspect(monkeypatch, DAEMON_REF)
     assert dev_loop.exec_(ENV_NAME, ["python", "-c", "print(1)"]) == 0
     (exec_argv,) = launched
 
     口 = Step(step_num=3, name="Compare the two argvs",
              purpose="Split each argv at --rm, --user and the image ref: the "
-                     "builder's --user, binds and workdir must match, so only "
-                     "the caller's spliced flags and the inner command differ")
+                     "builder's --user, binds and workdir must match once "
+                     "dispatch's read-only bind of the code copy is set aside, "
+                     "so only that bind, the caller's spliced flags and the "
+                     "inner command differ")
+    from wfc import layout
+    from wfc.registration import resolve_method_code
 
     def _parts(argv):
         """The ``docker run --rm`` prefix, and the builder's run options
-        from ``--user`` up to the image ref."""
+        from ``--user`` up to the image ref.
+        """
         image_idx = argv.index(DAEMON_REF)
         user_idx = argv.index("--user")
         return argv[:3], argv[user_idx:image_idx]
@@ -183,6 +241,14 @@ def test_dispatch_and_dev_loop_argv_agree_on_user_binds_and_workdir(
     exec_prefix, exec_body = _parts(exec_argv)
     assert dispatch_prefix == exec_prefix == ["docker", "run", "--rm"]
     assert {"-v", "-w"} <= set(dispatch_body)
+    code = resolve_method_code("test", "ml_train", git_project)
+    copy = layout.code_copy_dir(git_project, code.entry.tree_hash)
+    assert copy == code.code_dir
+    copy_bind = (f"{copy.as_posix()}:/work/"
+                 f"{copy.relative_to(git_project).as_posix()}:ro")
+    bind_idx = dispatch_body.index(copy_bind)
+    assert dispatch_body[bind_idx - 1] == "-v"
+    dispatch_body = dispatch_body[:bind_idx - 1] + dispatch_body[bind_idx + 1:]
     assert dispatch_body == exec_body, (
         f"dispatch and wfc exec disagree on --user / binds / workdir:\n"
         f"  dispatch: {dispatch_body}\n  exec:     {exec_body}"
@@ -239,7 +305,7 @@ def test_run_step_translates_wfc_paths_for_container(git_project, monkeypatch):
     forwarded = {pair[1].split("=", 1)[0]: pair[1].split("=", 1)[1] for pair in flag_pairs}
 
     # WFC_RUN_DIR is rewritten to /work/... (the run_dir lives under
-    # project_root at .runs/<run_id>/...).
+    # project_root at .wfc/runs/<run_id>/...).
     assert "WFC_RUN_DIR" in forwarded
     assert forwarded["WFC_RUN_DIR"].startswith("/work"), (
         f"WFC_RUN_DIR should be translated to /work/...; got {forwarded['WFC_RUN_DIR']!r}"
@@ -275,36 +341,17 @@ def test_run_step_translates_wfc_paths_for_container(git_project, monkeypatch):
     assert "PYTHONPATH" not in forwarded
 
 
-@workflow(purpose="run_step with a nonexistent method script fails host-side "
-                  "with a clear error BEFORE any docker invocation")
-def test_run_step_missing_script_fails_before_docker(git_project, monkeypatch, capsys):
-    # The node's script points at a file that does NOT exist.
-    scn = _dispatch_scenario("ml_ghost", script_name="nope.py")
-    obs = run_target(scn, "ml_ghost", root=git_project, monkeypatch=monkeypatch)
-
-    target = ("ml_ghost", "s1", "default")
-    assert obs.exit_code(target) == 1
-    # No docker command was ever assembled/run.
-    assert obs.runs[target].dispatch_cmd is None, (
-        f"docker must not be invoked for a missing script; "
-        f"got {obs.runs[target].dispatch_cmd!r}"
-    )
-    err = capsys.readouterr().err
-    assert "method script not found" in err
-    assert "nope.py" in err
-
-
 def test_snakefile_generator_emits_python_dash_m_wfc_for_container_env(tmp_path):
     """Container-env methods get a plain ``python -m wfc run-step`` shell
     line. Container wrapping happens inside run-step, not in the generated
-    Snakefile."""
+    Snakefile.
+    """
     from wfc.graph import StepDef
     from wfc.orchestration.snakemake import _generate_rule
 
     step = StepDef(
         method_name="ml_train",
         module_name="test",
-        script_path="methods/ml_train/ml_train.py",
         params={},
         node_id="n1",
         env="image-io",   # container env name registered in .wfc/envs.json
@@ -349,3 +396,331 @@ def test_host_paths_translate_over_the_mount_table(tmp_path, given, expected):
 
     assert translated == (host_path if expected is None else expected)
     assert "\\" not in translated or expected is None
+
+
+# =============================================================================
+# The env a step runs in is its method's registered env
+# =============================================================================
+
+OTHER_ENV = "other-env"
+OTHER_DIGEST = "e" * 64
+
+
+def _registered_env_scenario() -> Scenario:
+    """One selector-rooted method node in the harness's built env."""
+    return Scenario(nodes=[selector(),
+                           node("a", module="test", inputs=[wire("sel")])],
+                    samples=["s1"], env_name=ENV_NAME)
+
+
+def _register_other_env(root: Path, monkeypatch) -> None:
+    """Register a second, byo env through production (its commit included).
+
+    Its image content names its own layer, so its env fingerprint differs
+    from the harness env's, whose content names the ``STUB_DIGEST`` layer.
+    """
+    from wfc import environments as envs_mod
+
+    stub_docker_image_inspect(monkeypatch, f"sha256:{OTHER_DIGEST}")
+    stub_docker_image_content(monkeypatch, {
+        "layers": [f"sha256:{OTHER_DIGEST}"], "env": None,
+        "user": None, "workdir": None})
+    envs_mod.register(name=OTHER_ENV, backend="byo",
+                      source={"image": "docker://local/other-env:latest"},
+                      project_dir=root)
+
+
+def _register_in_env(spec, env: str) -> None:
+    """Register the node's method again through production, declaring *env*.
+
+    Only ``env:`` changes in the source ``method.yaml``: ``env`` is outside
+    the contract projection, so the code fingerprint and the version stay.
+    """
+    from tests.harness.project import method_source_dir
+    from wfc.persistence import project_root
+    from wfc.registration import register_method
+
+    source_dir = method_source_dir(project_root(), spec)
+    method_yaml = source_dir / "method.yaml"
+    method_yaml.write_text(
+        method_yaml.read_text(encoding="utf-8")
+        .replace(f"env: {ENV_NAME}\n", f"env: {env}\n"),
+        encoding="utf-8")
+    register_method(method_dir=source_dir, module_name=spec.module, assume_yes=True)
+
+
+def _image(root: Path, env: str) -> str:
+    from wfc.environments import daemon_ref, get
+
+    return daemon_ref(get(env, root).container)
+
+
+def _env_fingerprint(root: Path, env: str) -> str:
+    from wfc.environments import get
+
+    return get(env, root).env_fingerprint
+
+
+@workflow(purpose="A frozen document enriched while the method was registered "
+                  "in one env, run after the method is registered again in "
+                  "another (same code, same version): the step launches the "
+                  "registered env's image and its run row carries that env's "
+                  "fingerprint, so what runs is what the key is over")
+def test_a_document_naming_an_earlier_env_runs_in_the_registered_env(
+        git_project, monkeypatch):
+    project = build_project(_registered_env_scenario(), root=git_project,
+                            monkeypatch=monkeypatch)
+    spec = project.scenario.node_by_id("a")
+    target = ("a", "s1", "default")
+
+    口 = Step(step_num=1, name="Register the method again in another env",
+             purpose="The document still names the env of the earlier "
+                     "registration")
+    _register_other_env(project.root, monkeypatch)
+    _register_in_env(spec, OTHER_ENV)
+    document = json.loads(project.pipeline_json.read_text())
+    assert next(n for n in document["nodes"] if n["id"] == "a")["env"] == ENV_NAME
+
+    口 = Step(step_num=2, name="Run the step",
+             purpose="It launches in, and is keyed on, the registered env")
+    obs = drive_target(project, target, monkeypatch=monkeypatch,
+                       through=Phase.DISPATCH)
+    cmd = obs.dispatch_cmd(target)
+    assert cmd is not None, obs.runs[target].ending
+    assert _image(project.root, OTHER_ENV) in cmd
+    assert _image(project.root, ENV_NAME) not in cmd
+    assert (obs.run_row(target)["env_fingerprint"]
+            == _env_fingerprint(project.root, OTHER_ENV))
+
+
+@workflow(purpose="A committed hand edit of the registered copy's env: changes "
+                  "nothing that runs: a standalone run-step with no document "
+                  "launches the method's registered env's image and its run "
+                  "row carries that env's fingerprint")
+def test_a_hand_edited_registered_env_runs_and_keys_in_the_registered_env(
+        git_project, monkeypatch):
+    import subprocess
+    from types import SimpleNamespace
+
+    from sqlmodel import select
+
+    from tests.fixtures.fakes import stub_method_process
+    from tests.harness.drivers import STUB
+    from tests.harness.observe import TargetRun
+    from wfc import layout
+    from wfc.execution.run_step import run_step
+    from wfc.persistence import Run, get_session
+
+    project = build_project(_registered_env_scenario(), root=git_project,
+                            monkeypatch=monkeypatch)
+    spec = project.scenario.node_by_id("a")
+    root = project.root
+
+    口 = Step(step_num=1, name="Hand-edit and commit the registered copy's env",
+             purpose="The copy's method.yaml names another registered env; "
+                     "Method.env still names the env of the registration")
+    _register_other_env(root, monkeypatch)
+    copy_yaml = layout.method_dir(root, spec.module, spec.method_name) / "method.yaml"
+    copy_yaml.write_text(copy_yaml.read_text(encoding="utf-8")
+                         .replace(f"env: {ENV_NAME}\n", f"env: {OTHER_ENV}\n"),
+                         encoding="utf-8")
+    subprocess.run(["git", "commit", "-q", "-am", "user edits registered env"],
+                   cwd=root, check=True, capture_output=True)
+
+    口 = Step(step_num=2, name="Run the step standalone, with no document",
+             purpose="The pre-flight finds the registered env's image held; "
+                     "the step launches in, and is keyed on, that env")
+    for var in ("WFC_PIPELINE_ID", "WFC_PIPELINE_JSON"):
+        monkeypatch.delenv(var, raising=False)
+    stub_docker_image_inspect(monkeypatch, lambda ref: ref)
+    record = TargetRun(target=("a", "s1", "default"))
+    with stub_method_process(project, SimpleNamespace(method_name="a"), record,
+                             monkeypatch, STUB):
+        run_step(node_id="a", sample="s1", method_name=spec.method_name,
+                 module_name=spec.module, pipeline_json=None)
+    assert record.dispatch_cmd is not None
+    assert _image(root, ENV_NAME) in record.dispatch_cmd
+    assert _image(root, OTHER_ENV) not in record.dispatch_cmd
+    with get_session() as session:
+        run = session.exec(select(Run).order_by(Run.id.desc())).first()
+    assert run.env_fingerprint == _env_fingerprint(root, ENV_NAME)
+
+
+@workflow(purpose="A method registered again in another env between the claim "
+                  "and dispatch (the same code in another env, so the next "
+                  "version) leaves the claimed version intact: the step "
+                  "launches the claimed version's recorded image with its "
+                  "copy bound read-only, and its completed run row carries the "
+                  "claimed version and env fingerprint")
+def test_env_registered_again_after_the_claim_launches_the_claimed_env(
+        git_project, monkeypatch):
+    from sqlmodel import select
+
+    from tests.fixtures.fakes import register_after_claim
+    from wfc import layout
+    from wfc.persistence import MethodVersion, get_session
+    from wfc.registration.method_version import read_version_list
+
+    project = build_project(_registered_env_scenario(), root=git_project,
+                            monkeypatch=monkeypatch)
+    spec = project.scenario.node_by_id("a")
+    target = ("a", "s1", "default")
+    root = project.root
+    _register_other_env(root, monkeypatch)
+    (v1,) = read_version_list(root, spec.module, spec.method_name)
+    claimed_image = _image(root, ENV_NAME)
+
+    口 = Step(step_num=1, name="Register the method in another env mid-step",
+             purpose="The claim keyed the step on v1 in the first env; the "
+                     "registration (v2, the other env) lands before dispatch "
+                     "launches")
+    register_after_claim(monkeypatch, lambda: _register_in_env(spec, OTHER_ENV))
+    obs = drive_target(project, target, monkeypatch=monkeypatch)
+    _, v2 = read_version_list(root, spec.module, spec.method_name)
+    assert (v2.env_name, v2.code_fingerprint) == (OTHER_ENV, v1.code_fingerprint)
+
+    口 = Step(step_num=2, name="The claimed version launches",
+             purpose="Its recorded image and its read-only copy; the run row "
+                     "is v1's with v1's env fingerprint")
+    assert obs.runs[target].ending == "completed", obs.runs[target].ending
+    cmd = obs.dispatch_cmd(target)
+    assert claimed_image in cmd
+    assert _image(root, OTHER_ENV) not in cmd
+    copy = layout.code_copy_dir(root, v1.tree_hash)
+    assert (f"{copy.as_posix()}:/work/{copy.relative_to(root).as_posix()}:ro"
+            in cmd)
+    row = obs.run_row(target)
+    assert row["status"] == "completed"
+    assert row["env_fingerprint"] == v1.env_fingerprint
+    with get_session() as session:
+        v1_row = session.exec(select(MethodVersion.id).where(
+            MethodVersion.label == 1,
+            MethodVersion.env_fingerprint == v1.env_fingerprint)).one()
+    assert row["version_id"] == v1_row
+
+
+# =============================================================================
+# A run executes its version's extracted copy, which it cannot write to
+# =============================================================================
+
+def _copy_bind_value(root: Path, tree_hash: str, *, read_only: bool) -> str:
+    """The ``-v`` value binding a version's copy at its own /work path."""
+    from wfc import layout
+
+    copy = layout.code_copy_dir(root, tree_hash)
+    value = f"{copy.as_posix()}:/work/{copy.relative_to(root).as_posix()}"
+    return value + ":ro" if read_only else value
+
+
+def _commit(root: Path, message: str) -> None:
+    """Commit the edited pipeline document, so the claim sees a clean tree."""
+    import subprocess
+
+    subprocess.run(["git", "commit", "-q", "-am", message], cwd=root,
+                   check=True, capture_output=True)
+
+
+def _version_row(entry) -> int:
+    """The ``MethodVersion`` row id mirroring a version-list entry."""
+    from sqlmodel import select
+
+    from wfc.persistence import MethodVersion, get_session
+
+    with get_session() as session:
+        return session.exec(select(MethodVersion.id).where(
+            MethodVersion.label == entry.label,
+            MethodVersion.tree_hash == entry.tree_hash)).one()
+
+
+@workflow(purpose="A node pinned to an older version runs that "
+                  "version's tree under that version's key: with v1 and v2 "
+                  "registered, the step pinned to v1 launches v1's extracted "
+                  "copy (bound read-only, its script inside) and records v1's "
+                  "row; the same step unpinned runs v2's copy under another key")
+def test_a_node_pinned_to_an_older_version_runs_that_versions_tree(
+        git_project, monkeypatch):
+    from tests.harness.project import method_source_dir
+    from wfc.registration import register_method
+    from wfc.registration.method_version import read_version_list
+
+    project = build_project(_registered_env_scenario(), root=git_project,
+                            monkeypatch=monkeypatch)
+    root = project.root
+    spec = project.scenario.node_by_id("a")
+    target = ("a", "s1", "default")
+
+    口 = Step(step_num=1, name="Register changed code: v2",
+             purpose="v1 stays runnable beside it")
+    source = method_source_dir(root, spec)
+    script = source / "a.py"
+    script.write_text(script.read_text(encoding="utf-8") + "\n# v2\n",
+                      encoding="utf-8")
+    register_method(method_dir=source, module_name=spec.module, assume_yes=True)
+    v1, v2 = read_version_list(root, spec.module, spec.method_name)
+    assert v1.tree_hash != v2.tree_hash
+
+    口 = Step(step_num=2, name="Pin the node to v1 and run it",
+             purpose="The frozen document names v1's identity")
+    document = json.loads(project.pipeline_json.read_text())
+    next(n for n in document["nodes"] if n["id"] == "a")["version"] = v1.identity
+    project.pipeline_json.write_text(json.dumps(document, indent=2))
+    _commit(root, "pin a to v1")
+    pinned = drive_target(project, target, monkeypatch=monkeypatch)
+    cmd = pinned.dispatch_cmd(target)
+    assert pinned.runs[target].ending == "completed", pinned.runs[target].ending
+    assert _copy_bind_value(root, v1.tree_hash, read_only=True) in cmd
+    v1_rel = _copy_bind_value(root, v1.tree_hash, read_only=False).split(":/work/")[1]
+    assert f"/work/{v1_rel}/a.py" in cmd
+    assert not any(v2.tree_hash in a for a in cmd)
+    pinned_row = pinned.run_row(target)
+    assert pinned_row["version_id"] == _version_row(v1)
+    assert pinned_row["env_fingerprint"] == v1.env_fingerprint
+
+    口 = Step(step_num=3, name="Unpin the node and run it",
+             purpose="The newest, v2, runs under its own key")
+    del next(n for n in document["nodes"] if n["id"] == "a")["version"]
+    project.pipeline_json.write_text(json.dumps(document, indent=2))
+    _commit(root, "unpin a")
+    newest = drive_target(project, target, monkeypatch=monkeypatch)
+    assert newest.runs[target].ending == "completed"
+    assert _copy_bind_value(root, v2.tree_hash, read_only=True) in newest.dispatch_cmd(target)
+    assert newest.run_row(target)["version_id"] == _version_row(v2)
+    assert newest.run_row(target)["cache_key"] != pinned_row["cache_key"]
+
+
+@workflow(purpose="Fallback: on a backend that declares no read-only "
+                  "binds, the version's copy is bound read-write with "
+                  "PYTHONDONTWRITEBYTECODE=1, and a run that writes into its "
+                  "code directory fails method-failed naming the file, and the "
+                  "copy's stamp is dropped so its next use re-extracts it")
+def test_a_run_that_writes_into_a_writable_code_copy_fails_naming_the_file(
+        git_project, monkeypatch):
+    from tests.harness import Behavior
+    from wfc import layout
+    from wfc.environments import argv
+    from wfc.registration.method_version import read_version_list
+
+    scn = _registered_env_scenario()
+    scn.node_by_id("a").behavior = Behavior(write_beside_script=("scratch.txt",))
+    project = build_project(scn, root=git_project, monkeypatch=monkeypatch)
+    root = project.root
+    target = ("a", "s1", "default")
+    (v1,) = read_version_list(root, "test", "a")
+
+    口 = Step(step_num=1, name="Run on a backend with no read-only binds",
+             purpose="The method writes scratch.txt beside its own script")
+    monkeypatch.setitem(argv.READ_ONLY_BINDS, "docker", False)
+    obs = drive_target(project, target, monkeypatch=monkeypatch)
+
+    口 = Step(step_num=2, name="The run fails naming the file; the stamp is gone",
+             purpose="The argv bound the copy read-write and told Python "
+                     "not to write bytecode")
+    cmd = obs.dispatch_cmd(target)
+    assert _copy_bind_value(root, v1.tree_hash, read_only=False) in cmd
+    assert _copy_bind_value(root, v1.tree_hash, read_only=True) not in cmd
+    assert "PYTHONDONTWRITEBYTECODE=1" in cmd
+    assert obs.runs[target].ending == "method-failed"
+    row = obs.run_row(target)
+    assert row["status"] == "failed"
+    assert "scratch.txt" in row["error_message"]
+    assert not layout.code_copy_stamp(root, v1.tree_hash).exists()

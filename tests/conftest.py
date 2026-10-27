@@ -27,6 +27,7 @@ from tests.fixtures.conftest import (  # noqa: F401
     pipeline_factory,
     register_imaging_methods,
     imaging_pipeline_factory,
+    processes,
     stub_readiness_probes,
 )
 from tests.fixtures.fakes import (  # noqa: F401
@@ -48,6 +49,32 @@ from tests.fixtures.routes import (  # noqa: F401
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+# =============================================================================
+# No background git maintenance in any test repository
+# =============================================================================
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_git_auto_maintenance():
+    """Turn off git's automatic maintenance for every git the suite runs.
+
+    ``git commit`` starts ``git maintenance run --auto --detach``; git 2.5x's
+    geometric repack can fire in a tiny repository (its loose-object estimate
+    is one fan-out directory times 256) and pack it, in the background, under
+    a test that reads its loose objects. The keys go through
+    ``GIT_CONFIG_COUNT``, so they reach the repositories production code
+    makes and runs git in too, not only the fixtures'.
+    """
+    import os
+
+    base = int(os.environ.get("GIT_CONFIG_COUNT", "0") or 0)
+    for i, (key, value) in enumerate((("maintenance.auto", "false"), ("gc.auto", "0")),
+                                     start=base):
+        os.environ[f"GIT_CONFIG_KEY_{i}"] = key
+        os.environ[f"GIT_CONFIG_VALUE_{i}"] = value
+    os.environ["GIT_CONFIG_COUNT"] = str(base + 2)
+    yield
 
 
 # =============================================================================
@@ -151,6 +178,55 @@ def _home_archive_leak_guard():
 
 
 # =============================================================================
+# Suite invariant: no push worker outlives the test that started it
+# =============================================================================
+
+@pytest.fixture(autouse=True)
+def _push_worker_leak_guard():
+    """Fail the test that leaves a push-worker thread running.
+
+    ``run_pipeline`` starts a push worker on a daemon thread, and the worker
+    ticks on the process engine until it is told to stop. One left running
+    outlives its test, and once the next test rebinds the process engine it
+    writes push state into that test's database: rows marked pushed or held
+    in flight, a fresh database bootstrapped under ``init_project``. The
+    failures it causes land in whichever test runs next, far from the leak.
+
+    So the test that leaks is the one that fails, naming the thread. The
+    guard stops and joins the thread first (its stop event is the second
+    argument the thread was started with), so the leak ends here and the
+    next test starts clean. A worker already running when the test started
+    is not this test's.
+    """
+    import threading
+
+    from wfc.execution.lifecycle import PUSH_WORKER_THREAD_NAME
+
+    def running() -> list[threading.Thread]:
+        return [t for t in threading.enumerate()
+                if t.name == PUSH_WORKER_THREAD_NAME and t.is_alive()]
+
+    before = set(running())
+    yield
+    leaked = [t for t in running() if t not in before]
+    if not leaked:
+        return
+    for thread in leaked:
+        for arg in getattr(thread, "_args", ()):
+            if isinstance(arg, threading.Event):
+                arg.set()
+        thread.join(timeout=10)
+    pytest.fail(
+        f"this test left {len(leaked)} push-worker thread(s) running "
+        f"({', '.join(t.name + ' ' + str(t.ident) for t in leaked)}); the guard "
+        "stopped and joined them. A push worker ticks on the process engine "
+        "until it is stopped, so one that outlives its pipeline writes push "
+        "state into the next test's database. Whatever starts one stops it "
+        "before it returns (run_pipeline does, on every ending)."
+    )
+
+
+# =============================================================================
 # Temporary project directory
 # =============================================================================
 
@@ -225,22 +301,27 @@ def tmp_project(git_project, monkeypatch):
 
     Built by production ``init_project`` (through ``init_test_project``), so
     it carries everything a real project does — the full config including the
-    ``[dvc]`` section, the database schema, ``methods/``, ``modules/``,
-    ``data/samples/``, ``.runs/``, ``.gitignore``, ``.dvc/`` and a remote
-    named ``default`` pointing at an archive outside the tree. A test on this
-    fixture can call ``register_sample`` and run a real restore.
+    ``[dvc]`` section, the database schema, ``.gitignore``, ``.dvc/`` and a
+    remote named ``default`` pointing at an archive outside the tree. A test
+    on this fixture can call ``register_sample`` and run a real restore.
 
     - already a git repo (via git_project fixture)
     - WFC_PROJECT_ROOT pinned to this dir (subprocess-safe)
     - cwd set to git_project
     - DATABASE_URL points to in-process SQLite
-    - method scripts copied from real methods/
+    - fixture method sources copied into ``methods/`` (a directory init does
+      not create; the copy makes it)
     """
     monkeypatch.chdir(git_project)
     monkeypatch.setenv("WFC_PROJECT_ROOT", str(git_project))
 
     db_path = git_project / ".wfc" / "wfc.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    # Drop any process engine still bound to an earlier test's database
+    # before anything below writes a row: the fixture env record goes
+    # through the process engine.
+    from wfc.persistence import reset_engine
+    reset_engine()
 
     init_test_project(git_project)
 
@@ -248,15 +329,13 @@ def tmp_project(git_project, monkeypatch):
     # env record so registration's container-env validation passes Docker-free.
     _write_fixture_env_record(git_project)
 
-    # Copy lightweight fixture methods into tmp project. init_project has
-    # already made methods/, so the copy merges into it.
+    # Copy lightweight fixture method sources into the tmp project.
     fixture_methods = PROJECT_ROOT / "tests" / "fixtures" / "methods"
     if fixture_methods.exists():
         shutil.copytree(fixture_methods, git_project / "methods",
                         ignore=shutil.ignore_patterns("__pycache__", "__init__.py"),
                         dirs_exist_ok=True)
 
-    from wfc.persistence import reset_engine
     reset_engine()
 
     yield git_project
@@ -449,6 +528,12 @@ requires_conda_lock = pytest.mark.skipif(
     shutil.which("conda-lock") is None,
     reason="conda-lock not on PATH (a separate install, not a wfc "
            "dependency; required to solve a conda spec for linux-64)",
+)
+
+requires_uv = pytest.mark.skipif(
+    shutil.which("uv") is None,
+    reason="uv not on PATH (not a wfc dependency; required on the host to "
+           "lock and export a uv project for --backend uv)",
 )
 
 requires_pip = pytest.mark.skipif(

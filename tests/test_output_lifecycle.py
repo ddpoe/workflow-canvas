@@ -8,6 +8,7 @@ Covers:
 See ``tests/test_resolve.py`` for the full three-state coverage.
 """
 
+from wfc import layout
 import os
 import shutil
 from pathlib import Path
@@ -36,8 +37,10 @@ def test_resolve_input_fail_path(cli, tmp_project):
 
     # Deferred archiving: content_hash may be NULL until archive pass
 
-    # Delete the artifact
+    # Delete the artifact (collect left it read-only)
+    from wfc.storage.cache import _make_writable
     if artifact_path.exists():
+        _make_writable(artifact_path)
         if artifact_path.is_dir():
             shutil.rmtree(artifact_path)
         else:
@@ -99,6 +102,8 @@ def test_resolve_input_no_content_hash(cli, tmp_project):
 
     # Once the run-archive file is gone the output is in neither place: a
     # loud failure, never a path that does not exist.
+    from wfc.storage.cache import _make_writable
+    _make_writable(output_file)  # collect left it read-only
     os.remove(output_file)
     with pytest.raises(InputUnavailableError) as refusal:
         resolve_input(int(run_id))
@@ -114,7 +119,7 @@ def test_resolve_input_no_content_hash(cli, tmp_project):
 def test_cache_prune_dry_run(cli, tmp_project):
     """wfc cache prune --dry-run prints what would be deleted but doesn't delete."""
     # Create some run archives
-    runs_dir = tmp_project / ".runs"
+    runs_dir = layout.artifact_store(tmp_project)
     (runs_dir / "00000099").mkdir(parents=True, exist_ok=True)
     (runs_dir / "00000099" / "output.csv").write_text("data")
 
@@ -131,7 +136,7 @@ def test_cache_prune_removes_unreferenced(cli, tmp_project):
     run_id = _register_and_complete_with_hash(cli, tmp_project)
 
     # Create an orphan archive (no DB reference)
-    runs_dir = tmp_project / ".runs"
+    runs_dir = layout.artifact_store(tmp_project)
     orphan = runs_dir / "00099999"
     orphan.mkdir(parents=True, exist_ok=True)
     (orphan / "output.csv").write_text("orphan data")
@@ -148,7 +153,9 @@ def test_cache_prune_removes_unreferenced(cli, tmp_project):
 
 
 def test_cache_prune_include_local(cli, tmp_project):
-    """wfc cache prune --all --include-local removes archives AND .dvc/cache/ entries; DB rows preserved."""
+    """wfc cache prune --all --include-local keeps an unpushed entry, even with
+    --force, naming wfc cache push; after the push it removes archives AND
+    .dvc/cache/ entries; DB rows preserved."""
     run_id = _register_and_complete_with_hash(cli, tmp_project)
 
     # Verify the run has a content_hash and a DVC cache entry
@@ -162,13 +169,22 @@ def test_cache_prune_include_local(cli, tmp_project):
     # Deferred archiving: content_hash may be NULL until archive pass
 
     # Verify both archive and DVC cache exist before pruning
-    runs_dir = tmp_project / ".runs"
+    runs_dir = layout.artifact_store(tmp_project)
     archive_dir = runs_dir / f"{int(run_id):08d}"
     cache_entry = tmp_project / ".dvc" / "cache" / "files" / "md5" / content_hash[:2] / content_hash[2:]
     assert archive_dir.exists(), "Archive should exist before prune"
     assert cache_entry.exists(), "DVC cache entry should exist before prune"
 
-    # Prune with --all --include-local --force
+    # Unpushed: --force does not remove it, and the message names the push.
+    r = cli("cache", "prune", "--all", "--include-local", "--force")
+    assert r.returncode == 0
+    assert cache_entry.exists(), "an unpushed entry must survive --force"
+    assert "unpushed cache entr" in r.stdout and "wfc cache push" in r.stdout
+
+    r = cli("cache", "push")
+    assert r.returncode == 0, r.stdout + r.stderr
+
+    # Pushed: prune with --all --include-local --force
     r = cli("cache", "prune", "--all", "--include-local", "--force")
     assert r.returncode == 0
 
@@ -190,7 +206,7 @@ def test_cache_prune_safety_check(cli, tmp_project):
     run_id = _register_and_complete_with_hash(cli, tmp_project)
 
     # Create an orphan archive so there's something to prune
-    runs_dir = tmp_project / ".runs"
+    runs_dir = layout.artifact_store(tmp_project)
     orphan = runs_dir / "00099999"
     orphan.mkdir(parents=True, exist_ok=True)
     (orphan / "output.csv").write_text("orphan data")
@@ -221,7 +237,7 @@ def test_cache_prune_safety_check_include_local_elevated(cli, tmp_project):
     _register_and_complete_with_hash(cli, tmp_project)
 
     # Create orphan archive
-    runs_dir = tmp_project / ".runs"
+    runs_dir = layout.artifact_store(tmp_project)
     orphan = runs_dir / "00099999"
     orphan.mkdir(parents=True, exist_ok=True)
     (orphan / "output.csv").write_text("orphan data")

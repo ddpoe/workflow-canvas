@@ -1,10 +1,9 @@
 {
   "nodes": [
     {
-      "id": 1,
+      "id": "preprocess",
       "module": "demo_pipeline",
       "method": "preprocess",
-      "script": "methods/preprocess/preprocess.py",
       "params": {
         "normalize": true,
         "scale_factor": 1.0
@@ -15,10 +14,9 @@
       ]
     },
     {
-      "id": 2,
+      "id": "filter_cells",
       "module": "demo_pipeline",
       "method": "filter_cells",
-      "script": "methods/filter_cells/filter_cells.py",
       "params": {
         "min_quality": 0.5,
         "remove_outliers": true
@@ -29,10 +27,9 @@
       ]
     },
     {
-      "id": 3,
+      "id": "label",
       "module": "demo_pipeline",
       "method": "label",
-      "script": "methods/label/label.py",
       "params": {
         "threshold": 0.5,
         "label_column": "label"
@@ -45,14 +42,14 @@
   ],
   "links": [
     {
-      "source": 1,
-      "target": 2,
+      "source": "preprocess",
+      "target": "filter_cells",
       "source_slot": "output",
       "target_slot": "input"
     },
     {
-      "source": 2,
-      "target": 3,
+      "source": "filter_cells",
+      "target": "label",
       "source_slot": "output",
       "target_slot": "input"
     }

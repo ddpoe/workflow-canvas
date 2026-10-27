@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 # =============================================================================
 # Pydantic models
@@ -12,7 +12,12 @@ from pydantic import BaseModel
 
 
 class PipelineNode(BaseModel):
+    # A field the model does not declare is kept, so the validator refuses it
+    # by name instead of the route dropping it silently.
+    model_config = ConfigDict(extra="allow")
+
     id: str
+    version: str | None = None  # a method node's pinned version identity
     type: str | None = "method"  # "method" | "input_selector" | "run_reference"
     method: str = ""
     module: str | None = None
@@ -33,6 +38,9 @@ class PipelineLink(BaseModel):
 
 
 class PipelineInput(BaseModel):
+    # Undeclared top-level fields are kept for the validator, as on nodes.
+    model_config = ConfigDict(extra="allow")
+
     name: str | None = None
     nodes: list[PipelineNode]
     links: list[PipelineLink] = []

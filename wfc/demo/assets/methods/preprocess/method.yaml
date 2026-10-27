@@ -29,5 +29,5 @@ params:
 
 executor: local
 # Names the container env this method runs in — `wfc demo` registers
-# `__demo__env` in .wfc/envs.json before registering this method.
-env: __demo__env
+# `wfc-demo-env` in .wfc/envs.json before registering this method.
+env: wfc-demo-env

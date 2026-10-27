@@ -14,6 +14,7 @@ Tests 1-3 are pure string checks on the generated Snakefile text.
 Test 4 uses the ``cli`` fixture (DB-backed).
 """
 
+from wfc import layout
 import json
 import os
 from pathlib import Path
@@ -34,7 +35,6 @@ def _minimal_pipeline(**step_kwargs):
     step = StepDef(
         method_name="feature_qc",
         module_name="data_preprocessing",
-        script_path="methods/feature_qc/feature_qc.py",
         params={"filters": []},
         **step_kwargs)
     return PipelineDef(steps=[step], samples=["Rep2"])
@@ -45,12 +45,10 @@ def _two_step_pipeline():
     root = StepDef(
         method_name="csv_filter",
         module_name="csv_tools",
-        script_path="methods/csv_filter/csv_filter.py",
         params={})
     leaf = StepDef(
         method_name="feature_qc",
         module_name="data_preprocessing",
-        script_path="methods/feature_qc/feature_qc.py",
         params={"filters": []},
         depends_on=["csv_filter"])
     return PipelineDef(steps=[root, leaf], samples=["Rep2"])
@@ -196,7 +194,7 @@ def test_complete_run_stores_metrics_in_db(cli):
     口 = Step(step_num=3, name="Create a fake archive output",
              purpose="Write the archive file and the RunOutput row the collect "
                      "phase records for it; complete_run updates that row by path")
-    archive = os.path.join(".runs", f"{int(run_id):08d}")
+    archive = os.fspath(layout.run_archive_dir(".", int(run_id)))
     os.makedirs(archive, exist_ok=True)
     output_path = os.path.join(archive, "output.csv")
     with open(output_path, "w") as f:

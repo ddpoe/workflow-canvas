@@ -22,6 +22,7 @@ Project materialization mirrors tests/integration/test_containerized_*.py.
 """
 from __future__ import annotations
 
+from wfc import layout
 import json
 import os
 import shutil
@@ -125,7 +126,7 @@ def _seed_trigger_sample(proj: Path) -> None:
     register_sample_row(proj, "s1", source_dir / "trigger.txt")
     # run-step drives this directly, so no Snakemake restore_sample rule
     # materializes the bytes: call the production restore, the only
-    # sanctioned writer under data/samples/.
+    # sanctioned writer under .wfc/workspace/samples/.
     restore_sample("s1", project_root=proj)
 
 
@@ -136,7 +137,7 @@ def _seed_trigger_sample(proj: Path) -> None:
             "its declared output lands on the host",
     inputs="a smoke.sh method + method.yaml in a tmp git project; env record "
            "with interpreter /bin/bash over the pinned minimal image",
-    outputs="run-step exits 0; output.txt exists under .runs/ and proves the "
+    outputs="run-step exits 0; output.txt exists under .wfc/runs/ and proves the "
             "script read $WFC_INPUT_PATHS/$WFC_RUN_DIR",
 )
 def test_bash_method_runs_in_container(
@@ -154,7 +155,7 @@ def test_bash_method_runs_in_container(
     # exactly what `wfc register-env --interpreter /bin/bash` records.
     _write_py_env(proj, minimal_image, interpreter="/bin/bash")
 
-    method_dir = proj / "methods" / "smoke"
+    method_dir = sample_source_dir(proj) / "_methods" / "smoke"
     method_dir.mkdir(parents=True)
     # newline="\n" is load-bearing on Windows hosts: bash treats a CRLF
     # line ending as a literal \r in the redirect filename.
@@ -200,7 +201,6 @@ def test_bash_method_runs_in_container(
                 "method": "smoke",
                 "module": "smoke",
                 "env": "smoke-env",
-                "script": "methods/smoke/smoke.sh",
                 "slot_outputs": {"output": "output.txt"},
             },
         ],
@@ -238,11 +238,11 @@ def test_bash_method_runs_in_container(
     )
 
     s = Step(step_num=4, name="Assert host-visible output + env-var contract",
-             purpose="output.txt exists under .runs/ and embeds the "
+             purpose="output.txt exists under .wfc/runs/ and embeds the "
                      "WFC_INPUT_PATHS value the script read in-container")
-    matches = list((proj / ".runs").rglob("output.txt"))
+    matches = list((layout.artifact_store(proj)).rglob("output.txt"))
     assert matches, (
-        f"output.txt not found under {proj / '.runs'}\n"
+        f"output.txt not found under {layout.artifact_store(proj)}\n"
         f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
     content = matches[0].read_text()
@@ -294,7 +294,7 @@ def test_python_to_r_pipeline_hands_off_across_languages(
              purpose="Python producer and R consumer registered through the "
                      "production register_method flow (probe finds .py/.R)")
     # Producer (Python): writes payload to its output slot.
-    producer_dir = proj / "methods" / "producer"
+    producer_dir = sample_source_dir(proj) / "_methods" / "producer"
     producer_dir.mkdir(parents=True)
     (producer_dir / "producer.py").write_text(
         "import os\n"
@@ -323,7 +323,7 @@ def test_python_to_r_pipeline_hands_off_across_languages(
     # Consumer (R): base-R only (no jsonlite in r-ver) — extract the slot
     # path from the WFC_INPUT_PATHS JSON with a regex, read the payload,
     # write the transformed output via WFC_RUN_DIR.
-    consumer_dir = proj / "methods" / "consumer"
+    consumer_dir = sample_source_dir(proj) / "_methods" / "consumer"
     consumer_dir.mkdir(parents=True)
     (consumer_dir / "consumer.R").write_text(
         'ip <- Sys.getenv("WFC_INPUT_PATHS")\n'
@@ -409,9 +409,9 @@ def test_python_to_r_pipeline_hands_off_across_languages(
     s = Step(step_num=4, name="Assert cross-language handoff + cache keys",
              purpose="Consumer output transformed the producer payload; both "
                      "runs recorded non-null cache keys")
-    consumer_outputs = list((proj / ".runs").rglob("transformed.txt"))
+    consumer_outputs = list((layout.artifact_store(proj)).rglob("transformed.txt"))
     assert consumer_outputs, (
-        f"transformed.txt not found under {proj / '.runs'}\n"
+        f"transformed.txt not found under {layout.artifact_store(proj)}\n"
         f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
     assert consumer_outputs[0].read_text().strip() == "payload-v1-r-consumed", (

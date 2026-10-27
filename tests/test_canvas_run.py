@@ -5,6 +5,7 @@ Covers: pipeline enrichment, run endpoint wiring,
 status endpoint, pipeline ID passthrough, and capture_output.
 """
 
+from wfc import layout
 from tests.conftest import pin_project_root
 import json
 import os
@@ -69,9 +70,10 @@ def _submission_scenario() -> Scenario:
     return Scenario(
         nodes=[
             node("preprocess_1", method="preprocess", module=CANVAS_MODULE,
-                 outputs={"data": ".csv"}),
+                 outputs={"data": ".csv"}, params={"normalize": True}),
             node("filter_1", method="filter_cells", module=CANVAS_MODULE,
-                 inputs=[wire("preprocess_1")], outputs={"filtered": ".h5ad"}),
+                 inputs=[wire("preprocess_1")], outputs={"filtered": ".h5ad"},
+                 params={"min_quality": 0.5}),
         ],
         samples=list(SUBMISSION_SAMPLES),
     )
@@ -176,10 +178,10 @@ def _make_pipeline_input(nodes=None, links=None, name="test"):
 
 
 class TestEnrichPipeline:
-    """Test the _enrich_pipeline function that adds script paths and slot_outputs."""
+    """Test the _enrich_pipeline function that adds slot_outputs and env."""
 
-    def test_adds_script_path(self, db_engine):
-        """Enrichment looks up script_path from the DB for each method node."""
+    def test_carries_method_module_and_params(self, db_engine):
+        """Enrichment keeps each method node's identity and params."""
         pipeline = PipelineInput(
             nodes=[
                 PipelineNode(
@@ -194,9 +196,6 @@ class TestEnrichPipeline:
 
         assert len(result["nodes"]) == 1
         node = result["nodes"][0]
-        # Registration derives script_path from the method directory with the
-        # host's own separators; enrichment passes it through untouched.
-        assert Path(node["script"]).as_posix() == "methods/preprocess/preprocess.py"
         assert node["method"] == "preprocess"
         assert node["module"] == "data_preprocessing"
         assert node["params"] == {"normalize": True}
@@ -747,7 +746,7 @@ class TestPipelineIdPassthrough:
                 pipeline_id=caller_id,
             )
 
-            log_dir = tmp_path / ".runs" / "pipelines" / caller_id
+            log_dir = layout.artifact_store(tmp_path) / "pipelines" / caller_id
             assert log_dir.exists()
             # The real generate_snakefile embeds the id it was handed, proving
             # the caller-provided pipeline_id reached generation (not a UUID).
@@ -772,7 +771,7 @@ class TestPipelineIdPassthrough:
                 wfc_root=str(tmp_path),
             )
 
-            pipelines_dir = tmp_path / ".runs" / "pipelines"
+            pipelines_dir = layout.artifact_store(tmp_path) / "pipelines"
             assert pipelines_dir.exists()
             subdirs = list(pipelines_dir.iterdir())
             assert len(subdirs) == 1
@@ -864,6 +863,38 @@ class TestCaptureOutputParam:
 # =============================================================================
 
 
+def _register_launch_method(root: Path, monkeypatch) -> None:
+    """Register ``demo.qc``, the method ``_launch_document`` names.
+
+    Through production registration, against an env record named ``demo``:
+    a node whose method is not registered is refused before the launch.
+    The daemon is armed as holding the env's image, so the env pre-flight
+    runs it as it is, with no pull.
+    """
+    from tests.fixtures.conftest import (
+        register_test_method,
+        sample_source_dir,
+        write_env_record,
+    )
+    from tests.fixtures.fakes import stub_docker_image_inspect
+
+    write_env_record(root, "demo", digest="d" * 64,
+                     image="ghcr.io/wfc-test/demo")
+    stub_docker_image_inspect(monkeypatch, "sha256:" + "d" * 64)
+    method_dir = sample_source_dir(root) / "_methods" / "qc"
+    method_dir.mkdir(parents=True)
+    (method_dir / "method.yaml").write_text(
+        "env: demo\n"
+        "inputs:\n  data:\n    type: .csv\n    required: false\n"
+        "outputs: {}\n"
+        "params: {}\n",
+        encoding="utf-8",
+    )
+    (method_dir / "qc.py").write_text("def main():\n    pass\n", encoding="utf-8")
+    register_test_method(root, module_name="demo", method_dir=method_dir,
+                         method_name="qc")
+
+
 def _launch_document() -> dict:
     """One selector feeding one method, so the file has a root rule."""
     return {
@@ -871,7 +902,7 @@ def _launch_document() -> dict:
             {"id": "sel", "type": "input_selector", "fan_mode": "out",
              "samples": ["s1"]},
             {"id": "qc", "type": "method", "method": "qc", "module": "demo",
-             "script": "methods/qc/qc.py", "env": "container:demo",
+             "env": "container:demo",
              "params": {}},
         ],
         "links": [{"source": "sel", "target": "qc", "target_slot": "data"}],
@@ -880,7 +911,7 @@ def _launch_document() -> dict:
 
 
 class TestLaunch:
-    """The engine launch over a real frozen document, with only the spawn stubbed."""
+    """The engine launch over a real frozen document: the spawn stubbed, the env image present."""
 
     @pytest.mark.parametrize(
         "keep_going, own_path",
@@ -908,6 +939,7 @@ class TestLaunch:
                           "a sentinel variable in the caller's environment "
                           "must reach the engine")
         root = Path(wfc_root)
+        _register_launch_method(root, monkeypatch)
         doc_path = root / "pipeline.json"
         doc_path.write_text(json.dumps(_launch_document()), encoding="utf-8")
         monkeypatch.setenv("WFC_LAUNCH_PIN_SENTINEL", "carried")
@@ -977,12 +1009,14 @@ class TestLaunch:
                 "so a run from an unactivated environment is recorded the "
                 "way it ended (Tier 2)",
     )
-    def test_handlers_and_launch_name_the_launching_interpreter(self, wfc_root):
+    def test_handlers_and_launch_name_the_launching_interpreter(
+            self, wfc_root, monkeypatch):
         from wfc import layout
         from wfc.execution import run_pipeline
         from wfc.persistence import Sample, get_session
 
         root = Path(wfc_root)
+        _register_launch_method(root, monkeypatch)
         doc_path = root / "pipeline.json"
         doc_path.write_text(json.dumps(_launch_document()), encoding="utf-8")
         # A registered hash for the one sample, so the written file carries
@@ -996,7 +1030,7 @@ class TestLaunch:
         # nowhere and refuses before the launch this test is about.
         with get_session() as session:
             session.add(Sample(name="s1", source_path="/src/s1.csv",
-                               registered_path="data/samples/s1/s1.csv",
+                               registered_path="s1.csv",
                                file_type="csv", content_hash="c" * 32,
                                push_status="pushed"))
             session.commit()

@@ -26,7 +26,7 @@ PARAMS = {
 # Pipeline logger — writes to pipeline.log + stderr
 PIPELINE_LOG_DIR = os.environ.get(
     "WFC_PIPELINE_LOG_DIR",
-    os.path.join(".runs", "pipelines", PIPELINE_ID),
+    os.path.join(".wfc/runs/pipelines", PIPELINE_ID),
 )
 os.makedirs(PIPELINE_LOG_DIR, exist_ok=True)
 os.makedirs(os.path.join(PIPELINE_LOG_DIR, "runs"), exist_ok=True)
@@ -59,17 +59,17 @@ os.environ["WFC_PIPELINE_ID"] = PIPELINE_ID
 
 rule all:
     input:
-        expand(".runs/sentinels/pin-reference-root/report/{sample}/{variant}/.complete", sample=SAMPLES, variant=VARIANT_NAMES)
+        expand(".wfc/runs/sentinels/pin-reference-root/report/{sample}/{variant}/.complete", sample=SAMPLES, variant=VARIANT_NAMES)
 
 rule report:
     input:
-        ref0_baseline=".runs/run-r/table/table.parquet"
-    output: ".runs/sentinels/pin-reference-root/report/{sample}/{variant}/.complete"
+        ref0_baseline=".wfc/runs/run-r/table/table.parquet"
+    output: ".wfc/runs/sentinels/pin-reference-root/report/{sample}/{variant}/.complete"
     params:
         variant="{variant}",
         node_id="report"
     shell:
-        "{sys.executable} -m wfc run-step --node-id {params.node_id} --sample {wildcards.sample} --variant {params.variant} --ref-input baseline=.runs/run-r/table/table.parquet"
+        "{sys.executable} -m wfc run-step --node-id {params.node_id} --sample {wildcards.sample} --variant {params.variant} --ref-input baseline=.wfc/runs/run-r/table/table.parquet"
 
 onsuccess:
     _pipeline_logger.info("Pipeline %s completed successfully", PIPELINE_ID)

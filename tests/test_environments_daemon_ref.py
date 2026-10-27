@@ -61,18 +61,20 @@ def _generated_records(rng: random.Random, count: int) -> list[dict]:
                   "to Docker is sha256:<hex> for a local env and "
                   "<host>/<path>@sha256:<hex> for a registry image, never "
                   "local/...@sha256:")
-def test_docker_is_handed_the_image_id_or_the_registry_ref(tmp_path):
+def test_docker_is_handed_the_image_id_or_the_registry_ref(tmp_project):
     from wfc.environments import daemon_ref
     from wfc.environments import get as env_record
 
+    # The records are registered in the active project, as a user's are:
+    # each env's content blob row is entered on its database.
     specs = _generated_records(random.Random(20260930), 60)
     for spec in specs:
-        write_env_record(tmp_path, spec["name"], backend=spec["backend"],
+        write_env_record(tmp_project, spec["name"], backend=spec["backend"],
                          digest=spec["digest"], image=spec["image"])
 
     seen_local = seen_registry = 0
     for spec in specs:
-        record = env_record(spec["name"], tmp_path)
+        record = env_record(spec["name"], tmp_project)
         handed = daemon_ref(record.container)
 
         assert not handed.startswith("local/"), handed

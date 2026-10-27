@@ -16,6 +16,7 @@ from sqlmodel import select
 
 from axiom_annotations import workflow, Step
 
+from wfc import layout
 from wfc.persistence import Sample, get_session
 from wfc.canvas.wfc_provider import WfcProvider
 from wfc.canvas.models import PipelineInput, PipelineNode, PipelineLink
@@ -275,7 +276,8 @@ class TestSnakemakeSystemNodes:
         Snakefile must include that path as a named input on the method-1
         rule.
         """
-        ref_artifact = ".runs/workspace/align_reads/sample_001/default/output.parquet"
+        ref_artifact = (f"{layout.artifact_store_relpath()}/"
+                        f"{layout.run_archive_name(42)}/output.parquet")
         pipeline_json = {
             "nodes": [
                 {

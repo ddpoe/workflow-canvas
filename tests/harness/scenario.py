@@ -98,6 +98,9 @@ class Behavior:
             output is found by its slot rather than by a file name.
         delete_paths: Project-relative paths the method deletes before
             exiting — fault injection at a real boundary.
+        write_beside_script: File names the method writes into its own
+            script's directory (the version's code copy) before exiting:
+            the write a read-only code mount forbids.
         raises: When set, the method ends by raising
             ``RuntimeError(<text>)`` uncaught, so the interpreter writes a
             real traceback to stderr and the process exits non-zero. A
@@ -125,6 +128,7 @@ class Behavior:
     nested_outputs: tuple[str, ...] = ()
     saved_files: Mapping[str, str] | None = None
     delete_paths: tuple[str, ...] = ()
+    write_beside_script: tuple[str, ...] = ()
     raises: str | None = None
     launch_error: str | None = None
 
@@ -144,6 +148,9 @@ class NodeSpec:
         inputs: Incoming wiring.
         outputs: Declared output slot -> type string (``".csv"``, and
             ``"directory"`` for a directory slot).
+        optional_inputs: Wired input slots ``method.yaml`` declares
+            ``required: false``. Every other wired slot is declared
+            required.
         output_files: Declared output slot -> the published filename.
             Defaults to ``<slot>.csv``. Naming a file that differs from
             its slot is what proves the *declared filename* — not the slot
@@ -160,6 +167,20 @@ class NodeSpec:
             canvas's columns route resolves it; the harness interprets
             nothing.
         params: Node-level default params.
+        variants: This node's own variant sweep (variant name -> params),
+            written as its ``param_sets`` entry in place of the scenario's
+            ``variants``. A pipeline in which only some nodes sweep is
+            declared this way: the rest have no entry, and production pads
+            them to every variant name with their base params.
+        param_types: Param name -> the type ``method.yaml`` declares for
+            it. A param the node passes and this map does not name is
+            declared ``any``.
+        param_defaults: Param name -> the default ``method.yaml`` declares
+            for it. A name here is declared even when no node passes it, so
+            a node that leaves it out runs at this default.
+        undeclared_params: Params the node passes that ``method.yaml`` does
+            not declare at all -- the shape of a run whose params its
+            version's contract does not name.
         behavior: What the method process does.
         behavior_by_sample: Per-sample override of ``behavior``, applied
             wholesale for the named sample. The sample axis is a real axis
@@ -181,21 +202,6 @@ class NodeSpec:
             ``"slurm"`` is the carve-out dispatch rejects.
         gpus: Whether the method declares a GPU requirement, which dispatch
             plumbs through to the container runtime.
-        script_name: The script filename the pipeline document names for
-            this node. Defaults to ``<method>.py``. Naming a file that is
-            not there is what reaches the dispatch phase's host-side
-            script pre-flight: the method directory still holds a real
-            script, so the claim phase's source-directory check passes and
-            the node gets as far as dispatch.
-        document_env: The env the pipeline *document* names for this node
-            when it should differ from the one ``method.yaml`` declares --
-            the ``script_name`` pattern applied to the env. Registration
-            validates ``method.yaml``'s env against the manifest, so a
-            document that names an env no manifest entry backs is how the
-            dispatch phase's ``no-container`` ending is reached: the
-            method registers, the claim passes, and the manifest lookup
-            dispatch makes off the document misses. ``None`` (the default)
-            writes ``env`` to the document unchanged.
         run_id: For ``run_reference`` nodes, the run the reference names.
             Written to the document verbatim, so a run id that resolves to
             nothing is how the unresolvable-reference case is declared.
@@ -221,10 +227,15 @@ class NodeSpec:
     env: str | None = None
     inputs: list[Wire] = field(default_factory=list)
     outputs: dict[str, str] = field(default_factory=lambda: {"data": ".csv"})
+    optional_inputs: tuple[str, ...] = ()
     output_files: dict[str, str] = field(default_factory=dict)
     input_columns: dict[str, dict] = field(default_factory=dict)
     output_columns: dict[str, dict] = field(default_factory=dict)
     params: dict = field(default_factory=dict)
+    variants: dict[str, dict] | None = None
+    param_types: dict[str, str] = field(default_factory=dict)
+    param_defaults: dict = field(default_factory=dict)
+    undeclared_params: tuple[str, ...] = ()
     behavior: Behavior = field(default_factory=Behavior)
     behavior_by_sample: dict[str, Behavior] = field(default_factory=dict)
     behavior_by_variant: dict[str, Behavior] = field(default_factory=dict)
@@ -233,8 +244,6 @@ class NodeSpec:
     label: str | None = None
     executor: str = "local"
     gpus: bool = False
-    script_name: str | None = None
-    document_env: str | None = None
     run_id: str | None = None
     run_of: str | tuple[str, str, str] | None = None
     run_of_pipeline: str | None = None
@@ -362,6 +371,13 @@ class Scenario:
             names it does not list fall back to the derived default, and
             a name that is not a declared sample raises rather than
             silently writing nothing.
+        sample_file_names: Sample name -> the file name its registration
+            source carries. ``register_sample`` records the source's own
+            name as ``registered_path``, and a restore materializes the
+            file under that name, so declaring one here is how a scenario
+            registers a sample from a source named otherwise than the
+            default ``<sample>.csv``. Names it does not list keep the
+            default; a name that is not a declared sample raises.
         empty_samples: Samples whose data directory is created but left
             empty — the starting state a collapsed fan-in's per-sample
             error is asked about.
@@ -399,6 +415,7 @@ class Scenario:
     env_legacy_no_python: bool = False
     dirty_repo: bool = False
     sample_content: str | Mapping[str, str] | None = None
+    sample_file_names: Mapping[str, str] = field(default_factory=dict)
     empty_samples: tuple[str, ...] = ()
     missing_samples: tuple[str, ...] = ()
     sample_ready_sentinel: bool = False
@@ -413,7 +430,7 @@ class Scenario:
         """Return the content declared for one sample.
 
         The single rule both staging and row-recording read, so the
-        bytes written to ``data/samples/`` and the bytes the row is
+        bytes written to ``.wfc/workspace/samples/`` and the bytes the row is
         hashed from cannot drift apart.
 
         Args:
@@ -445,29 +462,50 @@ class Scenario:
         # sample so content-addressed rows carry distinct hashes.
         return f"id,value\n1,{sample}\n"
 
+    def file_name_for(self, sample: str) -> str:
+        """Return the file name declared for one sample's registration source.
+
+        The single rule staging, registration and :meth:`Project.sample_file`
+        read, so the source the harness writes, the name the row records
+        and the path a test reads back cannot drift apart.
+
+        Args:
+            sample: The sample name.
+
+        Returns:
+            The declared file name, or ``<sample>.csv`` when none is declared.
+
+        Raises:
+            KeyError: When ``sample_file_names`` names a sample this
+                scenario does not declare.
+        """
+        unknown = set(self.sample_file_names) - set(self.samples)
+        if unknown:
+            raise KeyError(
+                f"sample_file_names names {sorted(unknown)}, which "
+                f"{'is' if len(unknown) == 1 else 'are'} not among the "
+                f"scenario's samples {list(self.samples)}"
+            )
+        return self.sample_file_names.get(sample, f"{sample}.csv")
+
     def node_by_id(self, node_id: str) -> NodeSpec:
         """Look up one node by id.
 
-        Honours the executor's identity rule: the node's own id first,
-        else the method a node names -- the identity a legacy numeric-id
-        document's steps are scheduled under.
+        Honours the executor's identity rule: a node is named by its own
+        document id.
 
         Args:
-            node_id: The node identity to find: an id, or a method name.
+            node_id: The node's document id.
 
         Returns:
             The matching :class:`NodeSpec`.
 
         Raises:
-            KeyError: When no node carries that id and no one node names
-                that method.
+            KeyError: When no node carries that id.
         """
         for n in self.nodes:
             if n.id == node_id:
                 return n
-        by_method = [n for n in self.nodes if n.method == node_id]
-        if len(by_method) == 1:
-            return by_method[0]
         raise KeyError(f"no node {node_id!r} in scenario (have "
                        f"{[n.id for n in self.nodes]})")
 
@@ -515,7 +553,7 @@ def reference(node_id: str, *,
     that run's outputs they draw. A reference root is what suppresses the
     sample fallback: a method node wired only to one of these has no
     incoming selector edge, so its slot is filled from the referenced run's
-    artifact rather than from ``data/samples/``.
+    artifact rather than from ``.wfc/workspace/samples/``.
 
     Args:
         node_id: Node identity.

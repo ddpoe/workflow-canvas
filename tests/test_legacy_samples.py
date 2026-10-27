@@ -83,7 +83,7 @@ def test_a_sample_row_with_no_content_hash_is_refused(tmp_project, capsys):
     #    interpolating its value, so no argv can collapse to a bare --hash.
     pipeline = PipelineDef(
         steps=[StepDef(method_name="root", module_name="m",
-                       script_path="methods/root/root.py", params={},
+                       params={},
                        node_id="root", env="container:base",
                        selector_slot="data")],
         samples=["modern_s"],

@@ -159,7 +159,7 @@ def test_single_reference_shell_line_is_byte_identical():
     from wfc.graph import StepDef
     from wfc.orchestration.snakemake import _generate_rule
 
-    step = StepDef(method_name="m", module_name="mod", script_path="s.py",
+    step = StepDef(method_name="m", module_name="mod", 
                    params={}, node_id="n1", env="container:e",
                    run_ref_inputs={"data": ["/w/a.csv"]})
     lines = _generate_rule(step, {"n1": step}, pipeline_id="p")
@@ -185,9 +185,9 @@ def test_reference_keys_cannot_collide_with_an_upstream_on_the_same_slot():
     from wfc.graph import StepDef
     from wfc.orchestration.snakemake import _generate_rule
 
-    up = StepDef(method_name="up", module_name="mod", script_path="u.py",
+    up = StepDef(method_name="up", module_name="mod", 
                  params={}, node_id="up", env="container:e")
-    step = StepDef(method_name="m", module_name="mod", script_path="s.py",
+    step = StepDef(method_name="m", module_name="mod", 
                    params={}, node_id="n1", env="container:e",
                    depends_on=["up"], inputs={"data": ["up"]},
                    run_ref_inputs={"data": ["/w/a.csv", "/w/b.csv"]})

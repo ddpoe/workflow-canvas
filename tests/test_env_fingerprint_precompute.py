@@ -1,65 +1,87 @@
-"""Subsystem test: container-branch capture_env_content is canonical and
-deterministic.
+"""Subsystem test: the env content blob is canonical and tracks content.
 
-Covers the precompute *write* path used by wfc.environments.register to populate
-``env_fingerprint`` at registration time. The runtime *read* path (looking
-up a method's container) happens at run-step time.
+Covers the precompute *write* path: ``capture_env_content`` renders what
+``wfc.environments.docker.image_content`` inspected (layers, Env, User,
+WorkingDir) into the blob ``register`` stores as ``env_fingerprint``. The
+runtime *read* path (looking up a method's env) happens at run-step time
+and never renders.
 """
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
+import hashlib
 
 import pytest
 
 from axiom_annotations import workflow
 
+#: An inspected image: two layers and a config that sets every field.
+BASE_CONTENT = {
+    "layers": ["sha256:" + "a" * 64, "sha256:" + "b" * 64],
+    "env": ["PATH=/usr/bin:/bin", "LANG=C.UTF-8"],
+    "user": "1000",
+    "workdir": "/work",
+}
+
+
+def _md5(blob: str) -> str:
+    return hashlib.md5(blob.encode("utf-8")).hexdigest()
+
 
 @workflow(
-    purpose="capture_env_content('container:<image>@sha256:<hex>', ...) "
-            "emits canonical JSON (sorted keys, no spaces), is deterministic "
-            "across calls, and produces a DIFFERENT hash when the digest "
-            "changes — fingerprint must track image identity"
+    purpose="capture_env_content renders inspected image content as canonical "
+            "JSON (sorted keys, no spaces) with layers and Env in the daemon's "
+            "order, and renders a null Env and an empty User and WorkingDir "
+            "as stable values"
 )
-def test_env_fingerprint_precompute_canonical_and_sensitive_to_digest(tmp_path):
+def test_env_content_blob_is_canonical_and_stable():
     from wfc.environments.fingerprint import capture_env_content
-    # Need .wfc/ for downstream store_env_content; capture_env_content itself
-    # does not touch disk for the container branch, but keep the layout
-    # consistent.
-    (tmp_path / ".wfc").mkdir()
 
-    spec_a = "container:image-io@sha256:" + ("a" * 64)
-    spec_a_again = "container:image-io@sha256:" + ("a" * 64)
-    spec_b = "container:image-io@sha256:" + ("b" * 64)
+    blob = capture_env_content(BASE_CONTENT)
+    assert blob == (
+        '{"env":["PATH=/usr/bin:/bin","LANG=C.UTF-8"],'
+        '"layers":["sha256:' + "a" * 64 + '","sha256:' + "b" * 64 + '"],'
+        '"type":"container-content","user":"1000","workdir":"/work"}'
+    )
+    assert capture_env_content(dict(BASE_CONTENT)) == blob
 
-    blob_a = capture_env_content(spec_a)
-    blob_a_again = capture_env_content(spec_a_again)
-    blob_b = capture_env_content(spec_b)
-
-    # Canonical JSON: parseable, sorted keys, no spaces.
-    parsed = json.loads(blob_a)
-    assert parsed == {
-        "type": "container",
-        "image": "image-io",
-        "digest": "sha256:" + ("a" * 64),
-    }
-    # No spaces (separators=(",",":")).
-    assert ", " not in blob_a and ": " not in blob_a
-    # Sorted keys: 'digest' < 'image' < 'type'.
-    assert blob_a.index('"digest"') < blob_a.index('"image"') < blob_a.index('"type"')
-
-    # Determinism.
-    assert blob_a == blob_a_again
-
-    # Digest sensitivity.
-    assert blob_a != blob_b
+    # An image that sets no Env, User or WorkingDir renders one stable blob,
+    # whether the daemon reports them as null or as empty.
+    bare_null = {"layers": ["sha256:" + "a" * 64], "env": None,
+                 "user": None, "workdir": None}
+    bare_empty = {"layers": ["sha256:" + "a" * 64], "env": [],
+                  "user": "", "workdir": ""}
+    assert capture_env_content(bare_null) == capture_env_content(bare_empty) == (
+        '{"env":[],"layers":["sha256:' + "a" * 64 + '"],'
+        '"type":"container-content","user":"","workdir":""}'
+    )
 
 
-def test_container_spec_malformed_rejected(tmp_path):
-    """Missing @sha256 marker must raise ValueError, not silently produce
-    a garbage fingerprint."""
+@workflow(
+    purpose="Images that differ in one layer, or in Env (including only its "
+            "order), User or WorkingDir, render different blobs and so "
+            "record different env fingerprints"
+)
+@pytest.mark.parametrize("field, changed", [
+    ("layers", ["sha256:" + "a" * 64, "sha256:" + "c" * 64]),
+    ("env", ["PATH=/usr/bin:/bin", "LANG=en_US.UTF-8"]),
+    ("env", ["LANG=C.UTF-8", "PATH=/usr/bin:/bin"]),
+    ("user", "root"),
+    ("workdir", "/"),
+])
+def test_one_field_difference_gives_a_different_fingerprint(field, changed):
     from wfc.environments.fingerprint import capture_env_content
-    (tmp_path / ".wfc").mkdir()
-    with pytest.raises(ValueError, match="container env spec"):
-        capture_env_content("container:image-io-no-digest")
+
+    other = {**BASE_CONTENT, field: changed}
+    assert (_md5(capture_env_content(other))
+            != _md5(capture_env_content(BASE_CONTENT)))
+
+
+@pytest.mark.parametrize("layers", [None, [], ()])
+def test_container_spec_malformed_rejected(layers):
+    """Content with no layers is refused, not rendered into a fingerprint:
+    every image has at least one layer, so this is not an inspected image."""
+    from wfc.environments.fingerprint import capture_env_content
+
+    with pytest.raises(ValueError, match="no layers"):
+        capture_env_content({**BASE_CONTENT, "layers": layers})
