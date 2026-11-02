@@ -263,8 +263,9 @@ def test_a_reconnect_with_last_event_id_resumes_without_repeating_or_missing_lin
     err.write_text("err-1\n", encoding="utf-8")
     url = f"/api/wfc/run/{run_id}/stream-logs"
     # The test client reads a response whole: the live stream ends at its
-    # wall-time guard instead of being dropped mid-way.
-    short_log_stream_wall(monkeypatch, 0.4)
+    # wall-time guard instead of being dropped mid-way. The guard leaves the
+    # 0.1 s appender ample slack on a loaded runner.
+    short_log_stream_wall(monkeypatch, 2.0)
 
     # First connection: the snapshot, then a line written while it streams.
     appender = threading.Timer(0.1, lambda: out.open("a", encoding="utf-8").write("out-3\n"))
@@ -347,7 +348,9 @@ def test_a_resumed_stream_sends_a_frame_before_any_new_output(
     assert quiet[0] == (resume_from, None)
     assert _lines(quiet) == []
 
-    # Output written while the resumed stream is open comes after that frame.
+    # Output written while the resumed stream is open comes after that frame;
+    # the longer guard leaves the 0.1 s appender slack on a loaded runner.
+    short_log_stream_wall(monkeypatch, 2.0)
     appender = threading.Timer(0.1, _append, args=(out, "out-3\n"))
     appender.start()
     resumed = _parse_sse_with_ids(client.get(url, headers={"Last-Event-ID": resume_from}).text)

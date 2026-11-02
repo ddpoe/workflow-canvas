@@ -91,7 +91,17 @@ if mode in ("completed", "failed"):
     print("RESULT", flag, run_id, waited, flush=True)
 elif mode == "killed":
     flag, run_id = claim_it("stall")
-    time.sleep(0.3)
+    # Die only once the heartbeat has advanced: a fixed sleep raced the
+    # heartbeat thread on a loaded runner.
+    from wfc.persistence import Run, get_session
+    deadline = time.monotonic() + 60
+    while True:
+        with get_session() as session:
+            if (session.get(Run, run_id).heartbeat or 0) > 0:
+                break
+        if time.monotonic() > deadline:
+            raise SystemExit(f"{name}: heartbeat of run {run_id} never advanced")
+        time.sleep(0.02)
     print("RESULT", flag, run_id, waited, flush=True)
     os._exit(0)
 elif mode == "taker":
