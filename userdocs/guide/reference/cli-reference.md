@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/reference/cli-reference @ 1a3d062c50bc; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/reference/cli-reference @ 421b1be2ff11; do not edit -->
 
 # CLI Reference
 
@@ -58,6 +58,7 @@ Check whether the project is ready to run. `wfc doctor` prints a health table wi
 - **dvc**: an archive is configured, set up in DVC, and reachable.
 - **docker**: `docker` is installed and the daemon is running.
 - **samples**: every registered sample's content is still in the local cache or the archive.
+- **views**: restored samples and checked-out outputs can be links to wfc's cache. It warns when the filesystem forces copies instead, which take twice the disk space.
 
 Each check reports `ok`, `warn` or `fail`, with a fix hint under any row that is not `ok`. `wfc doctor` exits 1 if any check fails (a `warn` does not), so it works as a pre-run check in scripts and CI. It takes no arguments.
 

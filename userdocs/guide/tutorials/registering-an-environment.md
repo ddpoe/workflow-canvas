@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/tutorials/registering-an-environment @ 4a1e9e61c491; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/tutorials/registering-an-environment @ 4fed79ac9c86; do not edit -->
 
 # Tutorial: Registering an Environment
 
@@ -191,7 +191,7 @@ Methods run only in containers, so Docker must be installed and running. If it i
 
 If a registered env's image has been removed (for example by `docker system prune`), wfc pulls it back from the registry before the run, checks it is the same image, and runs it; the steps that use it keep their cached results. An image that was never pushed cannot be pulled: the run stops and the error names the command that recreates it, `wfc register-env <name> --force`, or `wfc demo --force` for the demo's envs. Push images to a registry with `wfc push-env`; see [Share a Project](../how-to/sharing-a-project.md).
 
-`wfc doctor` checks what a project needs to run: git, the DVC archive, Docker and your registered samples. It prints a table. It exits non-zero if anything fails, so you can also use it in CI.
+`wfc doctor` checks that Docker and the rest of the project are ready; see [Check that everything is ready](getting-started.md#2-check-that-everything-is-ready).
 
 ## Next steps
 

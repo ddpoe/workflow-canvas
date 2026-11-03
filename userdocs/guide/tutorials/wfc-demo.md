@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/tutorials/wfc-demo @ 42c6b5136637; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/tutorials/wfc-demo @ 7a5af6c37bbc; do not edit -->
 
 # Tutorial: Exploring the Demo
 
@@ -8,12 +8,13 @@
 
 ```bash
 pip install workflow-canvas
-wfc init --dir demo_project --yes
+wfc init --dir demo_project
 cd demo_project
+wfc doctor
 wfc demo
 ```
 
-`wfc demo` works in an existing project, so run `wfc init` first. It then:
+`wfc demo` works in an existing project, so run `wfc init` first; when it asks where to keep the archive, press Enter to use the suggested folder. `wfc doctor` checks that git, Docker and the archive are ready: every line it prints should say `OK`, and any line that doesn't says how to fix it. `wfc demo` then:
 
 - builds a small container image for the demo, a packaged copy of the software and dependencies its methods need ([The Tools Behind Workflow Canvas](../explanation/how-the-pieces-fit-together.md)) (the first build takes a few minutes) and registers it as the environment `wfc-demo-env`. The image stays on this machine, even when the project has a registry; the output names `wfc push-env wfc-demo-env` for when you want to share it ([Share the demo](#share-the-demo));
 - registers the module `__demo__` with five methods, and three samples;

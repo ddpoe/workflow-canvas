@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/overview/what-is-workflow-canvas @ ec1c672cc7fb; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/overview/what-is-workflow-canvas @ 0c0c39cd9bce; do not edit -->
 
 # What is Workflow Canvas?
 
@@ -15,10 +15,11 @@ The **Builder** tab, with the demo pipeline wired. The other two tabs in the top
 ```bash
 pip install workflow-canvas
 wfc init
+wfc doctor
 wfc demo
 ```
 
-That spins up the exact pipeline shown above on your machine — see [Exploring the Demo](tutorials/wfc-demo.md) for the tour. You'll need [Docker](https://docs.docker.com/get-started/get-docker/) running — every step executes in a container — plus Python 3.12 and git; see [Installation](tutorials/getting-started.md#installation) for the details.
+`wfc doctor` checks that git, Docker and your output archive are ready. Every line should say `OK` before you go on. `wfc demo` then spins up the exact pipeline shown above on your machine — see [Exploring the Demo](tutorials/wfc-demo.md) for the tour. You'll need [Docker](https://docs.docker.com/get-started/get-docker/) running — every step executes in a container — plus Python 3.12 and git; see [Installation](tutorials/getting-started.md#installation) for the details.
 
 **Workflow Canvas hands you that stack, pre-built.** You describe each analysis step once — a contract saying what it takes in and what it produces — and Workflow Canvas takes it from there: it orchestrates the runs, isolates each step in its own container, skips work that hasn't changed, and records every run in a queryable database you can trace any result back through. You get workflow orchestration and a full provenance layer without learning a workflow language or building the infrastructure yourself — that engineering is part of what Workflow Canvas brings.
 Methods can be written in Python, R, or bash — `wfc` detects the language from the script's file extension and runs it inside your declared container environment; the same input/output/parameter contract works across all three.

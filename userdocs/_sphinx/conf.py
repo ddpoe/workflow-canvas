@@ -62,8 +62,8 @@ sitemap_url_scheme = "{link}"
 
 ogp_site_url = html_baseurl
 ogp_site_name = "Workflow Canvas"
-ogp_image = "https://raw.githubusercontent.com/ddpoe/workflow-canvas/main/userdocs/guide/_images/builder-demo-pipeline.png"
-ogp_image_alt = "The Workflow Canvas pipeline Builder"
+ogp_image = "https://raw.githubusercontent.com/ddpoe/workflow-canvas/main/userdocs/_sphinx/static/wfc-social-card.png"
+ogp_image_alt = "The Workflow Canvas logo"
 ogp_social_cards = {"enable": False}
 
 LLMS_SUMMARY = (

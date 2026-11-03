@@ -45,11 +45,11 @@
   },
   "overview/what-is-workflow-canvas.md": {
     "doc_id": "pm_mvp::docs/consumer/overview/what-is-workflow-canvas",
-    "hash": "ec1c672cc7fb"
+    "hash": "0c0c39cd9bce"
   },
   "reference/cli-reference.md": {
     "doc_id": "pm_mvp::docs/consumer/reference/cli-reference",
-    "hash": "1a3d062c50bc"
+    "hash": "421b1be2ff11"
   },
   "reference/method-script-contract.md": {
     "doc_id": "pm_mvp::docs/consumer/reference/method-script-contract",
@@ -77,15 +77,15 @@
   },
   "tutorials/getting-started.md": {
     "doc_id": "pm_mvp::docs/consumer/tutorials/getting-started",
-    "hash": "a3dfad67bdf7"
+    "hash": "4d10ba36ed64"
   },
   "tutorials/registering-an-environment.md": {
     "doc_id": "pm_mvp::docs/consumer/tutorials/registering-an-environment",
-    "hash": "4a1e9e61c491"
+    "hash": "4fed79ac9c86"
   },
   "tutorials/wfc-demo.md": {
     "doc_id": "pm_mvp::docs/consumer/tutorials/wfc-demo",
-    "hash": "42c6b5136637"
+    "hash": "7a5af6c37bbc"
   },
   "tutorials/writing-contracts.md": {
     "doc_id": "pm_mvp::docs/consumer/tutorials/writing-contracts",
