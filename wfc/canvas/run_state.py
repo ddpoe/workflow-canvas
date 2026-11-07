@@ -1,7 +1,8 @@
 """The run state of a submitted pipeline: the ``status-aggregation`` workflow.
 
-``aggregate_pipeline_status`` reads the pipeline's run and output rows,
-tallies each node, projects the node states, settles the unstarted nodes,
+``aggregate_pipeline_status`` reads the pipeline's run and output rows and
+its draft steps (a draft-mode node has no run rows; its steps are in its
+draft's ``draft-run.json``), tallies each node, projects the node states, settles the unstarted nodes,
 derives the overall status, and reads the log. Steps 2 to 5 are functions
 over plain values: run and output records in; tallies, node states and an
 overall status out. The status route is the HTTP wrapper around it and passes
@@ -252,6 +253,38 @@ def read_pipeline_rows(pipeline_id: str) -> tuple[list[RunRecord], list[OutputRe
 
 
 @task(
+    purpose="Read the pipeline's draft steps, which have no run rows, from its "
+            "drafts' draft-run.json into run records, newest first, so a "
+            "draft-mode node is tallied like any other",
+    inputs="The pipeline id and the project root (None reads none)",
+    outputs="One run record per draft step, with no run id",
+)
+def read_draft_step_records(pipeline_id: str, root: Path | None) -> list[RunRecord]:
+    """Read a pipeline's draft steps as run records.
+
+    Args:
+        pipeline_id: The pipeline whose draft steps are read.
+        root: The project root; ``None`` reads none.
+
+    Returns:
+        The records, newest first; empty once the draft steps are cleared.
+    """
+    if root is None:
+        return []
+    from ..execution.draft import pipeline_draft_steps
+
+    steps = [step for _draft, step in pipeline_draft_steps(pipeline_id, root)]
+    steps.sort(key=lambda s: str(s.get("started_at") or ""), reverse=True)
+    return [RunRecord(run_id=None, node_id=str(step.get("node_id")),
+                      status=str(step.get("status") or "unknown"),
+                      sample=step.get("sample"),
+                      error_message=step.get("error_message"),
+                      cache_source_run_id=None, cache_key=None,
+                      cancel_reason=step.get("cancel_reason"))
+            for step in steps if step.get("node_id")]
+
+
+@task(
     purpose="Tally each node's rows: status counts and the collapsed display "
             "state, run ids newest first, the newest failure, the newest cache "
             "hit, the failed run behind the newest cancellation, its "
@@ -324,7 +357,9 @@ def tally_nodes(
         if status not in tally:
             tally[status] = 0
         tally[status] += 1
-        run_ids.setdefault(key, []).append(str(run.run_id))
+        ids = run_ids.setdefault(key, [])
+        if run.run_id is not None:  # a draft step has no run row
+            ids.append(str(run.run_id))
         # Most-recent first: capture cache-hit info from the first
         # row we see for each node that carries ``cache_source_run_id``,
         # the audit-row signal that this run reused another run's outputs.
@@ -356,7 +391,7 @@ def tally_nodes(
                     msg = msg[:_ERROR_MESSAGE_CAP].rstrip() + "…"
                 errors[key] = {
                     "message": msg,
-                    "run_id": str(run.run_id),
+                    "run_id": str(run.run_id) if run.run_id is not None else None,
                     "sample": run.sample,
                     "status": status,
                 }
@@ -422,7 +457,8 @@ def project_node_states(
             err = tallies.errors.get(node_id)
             if err and status in ("failed", "mixed"):
                 entry["error"] = err["message"]
-                entry["error_run_id"] = err["run_id"]
+                if err["run_id"] is not None:
+                    entry["error_run_id"] = err["run_id"]
                 if err.get("sample"):
                     entry["error_sample"] = err["sample"]
             # Why a cancelled node was cancelled: the failed run the
@@ -654,10 +690,12 @@ def read_pipeline_log(log_dir: str | None) -> str:
 
 @workflow(
     purpose="Aggregate a submitted pipeline's status: read its run and output "
-            "rows, tally each node, project the node states, settle the "
-            "unstarted nodes, derive the overall status, and read the log",
+            "rows and its draft steps, tally each node, project the node "
+            "states, settle the unstarted nodes, derive the overall status, "
+            "and read the log",
     inputs="The pipeline id, its step map, its thread's liveness, its recorded "
-           "error, its log directory, whether the user asked for a cancel",
+           "error, its log directory, whether the user asked for a cancel, "
+           "the project root",
     outputs="PipelineStatus: overall status, node states, log",
 )
 def aggregate_pipeline_status(
@@ -667,6 +705,7 @@ def aggregate_pipeline_status(
     error: Any,
     log_dir: str | None,
     cancel_requested: bool = False,
+    root: Path | None = None,
 ) -> PipelineStatus:
     """Aggregate the status of a submitted pipeline.
 
@@ -678,6 +717,8 @@ def aggregate_pipeline_status(
         log_dir: The pipeline's log directory, or ``None``.
         cancel_requested: Whether the user asked for the pipeline to be
             cancelled.
+        root: The project root, where the draft-mode nodes' draft steps
+            are read; ``None`` reads none.
 
     Returns:
         The pipeline's aggregated status.
@@ -685,20 +726,23 @@ def aggregate_pipeline_status(
     口 = AutoStep(step_num=1, name="Read the pipeline's run and output rows")
     runs, outputs = read_pipeline_rows(pipeline_id)
 
-    口 = AutoStep(step_num=2, name="Tally each node")
-    tallies = tally_nodes(runs, outputs)
+    口 = AutoStep(step_num=2, name="Read the pipeline's draft steps")
+    draft_runs = read_draft_step_records(pipeline_id, root)
 
-    口 = AutoStep(step_num=3, name="Project the node states")
+    口 = AutoStep(step_num=3, name="Tally each node")
+    tallies = tally_nodes([*runs, *draft_runs], outputs)
+
+    口 = AutoStep(step_num=4, name="Project the node states")
     node_states = project_node_states(step_map, tallies)
 
-    口 = AutoStep(step_num=4, name="Settle the unstarted nodes")
+    口 = AutoStep(step_num=5, name="Settle the unstarted nodes")
     node_states = settle_unstarted_nodes(step_map, node_states, thread_alive, error)
 
-    口 = AutoStep(step_num=5, name="Derive the overall status")
+    口 = AutoStep(step_num=6, name="Derive the overall status")
     overall = derive_overall_status(node_states, thread_alive, error,
                                     cancel_requested)
 
-    口 = AutoStep(step_num=6, name="Read the log")
+    口 = AutoStep(step_num=7, name="Read the log")
     log = read_pipeline_log(log_dir)
 
     return PipelineStatus(

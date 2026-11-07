@@ -57,6 +57,7 @@ def run_step(
     git_commit: str | None = None,
     ref_inputs: list[str] | None = None,
     collapsed_samples: list[str] | None = None,
+    draft: bool = False,
 ) -> int:
     """Execute a single pipeline step end-to-end.
 
@@ -113,9 +114,20 @@ def run_step(
             bundle into the run's cache key (it is what the root's result was
             computed from), materialize resolves it into data files.
 
+        draft: The step runs in draft mode (the generated workflow passes
+            ``--draft`` for a draft and every step downstream of it): it
+            goes to Execution's draft step, which claims, records and
+            caches nothing.
+
     Returns:
         0 on success, 1 on failure.
     """
+    if draft:
+        from .draft import run_draft_step
+        return run_draft_step(
+            node_id, sample, variant, pipeline_id=pipeline_id,
+            pipeline_json=pipeline_json, parent_run_ids=parent_run_ids,
+            ref_inputs=ref_inputs, collapsed_samples=collapsed_samples)
     # Standalone means no pipeline id at all, by the claim's own rule (the
     # argument, else WFC_PIPELINE_ID). The engine sets the id for every node
     # it runs, and run_pipeline already made those images runnable.

@@ -6,7 +6,7 @@
    * The run actions, the canvas actions and the artifact list are children;
    * the formatting helpers live in runDetailFormat.ts.
    */
-  import { selectRun, jumpToPipelineRun, takePendingSection } from './historyStore.js';
+  import { selectRun, jumpToPipelineRun, takePendingSection, runSectionRequest } from './historyStore.js';
   import type { RunDetailSection } from './historyStore.js';
   import {
     fetchRun,
@@ -20,7 +20,8 @@
     formatTimestamp,
     formatDuration,
     formatRelativeTime,
-    statusColor,
+    runPillKind,
+    PILL_LABEL,
     cancelReasonText,
   } from './historyUtils.js';
   import {
@@ -34,12 +35,68 @@
   import RunActions from './RunActions.svelte';
   import CanvasActions from './CanvasActions.svelte';
   import ArtifactList from './ArtifactList.svelte';
+  import LogPane from '../shared/LogPane.svelte';
+  import { withEndingTraceback } from '../shared/errorSummary.js';
+  import ErrorBox from '../shared/ErrorBox.svelte';
+  import { moduleColor } from '../shared/moduleColor.svelte.js';
+  import {
+    RUN_DETAIL_DEFAULT,
+    RUN_DETAIL_MAX,
+    RUN_DETAIL_MIN,
+    RUN_DETAIL_STEP,
+    runDetailWidth,
+  } from './runDetailWidth.js';
+
+  /** The hero's border: coloured only for an exception (History's rule). */
+  function heroBorder(status: string): string {
+    switch (status) {
+      case 'failed': return 'var(--status-failed)';
+      case 'cancelled': return 'var(--status-cancelled)';
+      case 'running':
+      case 'queued':
+      case 'pending': return 'var(--status-active)';
+      default: return 'var(--border)';
+    }
+  }
 
   interface Props {
     runId: string;
   }
 
   let { runId }: Props = $props();
+
+  // ---- The left edge: dragging or arrow keys set the panel's width ----
+
+  let resizing = $state(false);
+  /** Where the drag started: the pointer's x and the width then. */
+  let grab = { x: 0, width: 0 };
+
+  function onEdgeDown(e: PointerEvent): void {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    resizing = true;
+    grab = { x: e.clientX, width: $runDetailWidth };
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+  }
+
+  function onEdgeMove(e: PointerEvent): void {
+    if (!resizing) return;
+    // The panel's right side stays put: moving the edge left widens it by as much.
+    runDetailWidth.set(grab.width + (grab.x - e.clientX));
+  }
+
+  function onEdgeUp(e: PointerEvent): void {
+    resizing = false;
+    (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+  }
+
+  /** Left widens (the edge moves left), right narrows; the store keeps the bounds. */
+  function onEdgeKey(e: KeyboardEvent): void {
+    const step = e.key === 'ArrowLeft' ? RUN_DETAIL_STEP : e.key === 'ArrowRight' ? -RUN_DETAIL_STEP : 0;
+    if (!step) return;
+    e.preventDefault();
+    runDetailWidth.update(w => w + step);
+  }
 
   type Section = RunDetailSection;
 
@@ -55,14 +112,16 @@
   // Output / log streaming state. Populated when the Output tab is active;
   // backed by an EventSource against /api/wfc/run/{id}/stream-logs.
   type LogLine = { kind: 'stdout' | 'stderr'; line: string };
-  // Same phase names as InspectorPanel — both surfaces consume the same
-  // SSE endpoint and share the badge text/color contract.
+  // Same phase names as the Inspector's Output tab: both read the same SSE
+  // endpoint.
   type LogPhase = 'idle' | 'connecting' | 'streaming' | 'succeeded' | 'failed' | 'cancelled';
   let logLines = $state<LogLine[]>([]);
   let logPhase = $state<LogPhase>('idle');
-  let logTerminalStatus = $state<string | null>(null);
-  let logTerminalError = $state<string | null>(null);
-  let logTerminalTraceback = $state<string | null>(null);
+  // The stream dropped before its terminal frame.
+  let logConnectionLost = $state(false);
+  // The terminal frame's traceback: shown after the log when the log does
+  // not already hold its last line (see shownLines).
+  let logTraceback = $state<string | null>(null);
   let logFullMode = $state(false);
 
   // Cascaded skips — runs cancelled because this run (or its subtree) failed.
@@ -87,15 +146,26 @@
       // Reset log-stream state so the Output tab re-connects for the new run.
       logLines = [];
       logPhase = 'idle';
-      logTerminalStatus = null;
-      logTerminalError = null;
-      logTerminalTraceback = null;
+      logConnectionLost = false;
+      logTraceback = null;
       logFullMode = false;
       cancelledDescendants = null;
       fetchRun(runId)
         .then(r => { run = r; })
         .catch(err => { loadError = err instanceof Error ? err.message : String(err); });
     }
+  });
+
+  $effect(() => {
+    // Another view asked an open run for a tab (✗ Failed on its card): the
+    // runId effect above does not re-run for the same run, so apply it here.
+    // Declared after the runId effect so a freshly opened run takes its
+    // pending tab there first.
+    const req = $runSectionRequest;
+    if (!req || req.runId !== runId) return;
+    activeSection = req.section;
+    takePendingSection(runId);
+    runSectionRequest.set(null);
   });
 
   $effect(() => {
@@ -113,9 +183,8 @@
     if (activeSection !== 'output' || !runId) return;
     logLines = [];
     logPhase = 'connecting';
-    logTerminalStatus = null;
-    logTerminalError = null;
-    logTerminalTraceback = null;
+    logConnectionLost = false;
+    logTraceback = null;
     const es = openRunLogStream(runId, logFullMode);
     es.onmessage = (ev) => {
       try {
@@ -131,9 +200,7 @@
               : p.status === 'cancelled'
                 ? 'cancelled'
                 : 'failed';
-          logTerminalStatus = p.status ?? null;
-          logTerminalError = p.error_message ?? null;
-          logTerminalTraceback = p.error_traceback ?? null;
+          logTraceback = p.error_traceback ?? null;
           es.close();
         }
       } catch {
@@ -145,9 +212,7 @@
         logPhase === 'succeeded' || logPhase === 'failed' || logPhase === 'cancelled';
       if (!isFinal) {
         logPhase = 'failed';
-        logTerminalStatus = 'failed';
-        logTerminalError = 'Connection lost';
-        logTerminalTraceback = null;
+        logConnectionLost = true;
       }
       es.close();
     };
@@ -171,7 +236,31 @@
   });
 
   let errorMessage = $derived(run?.error_message ?? undefined);
-  let errorTraceback = $derived(run?.error_traceback ?? undefined);
+
+  /** The run is still going: its log follows the newest line. A finished
+   *  run's log replays fast over the same stream but opens at its top. */
+  let runIsLive = $derived(
+    run?.status === 'running' || run?.status === 'queued' || run?.status === 'pending',
+  );
+
+  /** Live until the stream's ending lands: `run` is fetched once, so a run
+   *  opened while running still reads running after it ends. */
+  let logIsLive = $derived(
+    runIsLive && logPhase !== 'succeeded' && logPhase !== 'failed' && logPhase !== 'cancelled',
+  );
+
+  /** The log bar's note: the stream's own state, never the run's error. */
+  let logNote = $derived(
+    logPhase === 'connecting' ? 'Connecting…'
+      : logPhase === 'streaming' ? 'Streaming…'
+        : logConnectionLost ? 'Connection lost'
+          : null,
+  );
+
+  /** The log as shown: what the run printed, then the traceback its ending
+   *  carried when the log does not already hold that ending's last line (a
+   *  launch failure's, or wfc's own one-line ending after the method ran). */
+  let shownLines = $derived(withEndingTraceback(logLines, logTraceback));
 
   function displayName(r: WfcRun): string {
     // Prefer a user-set nid (overrides the auto-version vN label).
@@ -181,7 +270,16 @@
   }
 </script>
 
-<div class="detail-panel">
+<div class="detail-panel" class:resizing style="width: {$runDetailWidth}px;">
+  <!-- A focusable separator is a widget (WAI-ARIA window splitter); svelte's check does not know it. -->
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_no_noninteractive_element_interactions -->
+  <div class="edge" role="separator" tabindex="0" aria-orientation="vertical"
+       aria-label="Run panel width" aria-valuenow={$runDetailWidth}
+       aria-valuemin={RUN_DETAIL_MIN} aria-valuemax={RUN_DETAIL_MAX} data-testid="run-detail-edge"
+       title="Drag to change the panel's width; double-click to reset"
+       onpointerdown={onEdgeDown} onpointermove={onEdgeMove}
+       onpointerup={onEdgeUp} onpointercancel={onEdgeUp} onkeydown={onEdgeKey}
+       ondblclick={() => runDetailWidth.set(RUN_DETAIL_DEFAULT)}></div>
   {#if loadError}
     <div class="detail-header">
       <span class="crumb">History</span>
@@ -203,17 +301,14 @@
     />
 
     <!-- Hero card -->
-    <div class="hero">
-      <div
-        class="hero-accent"
-        style="background: linear-gradient(90deg, {statusColor(run.status)}, var(--accent, #4A90D9));"
-      ></div>
+    <!-- The run detail hero (style guide): a 3px module bar, the status
+         pill, a neutral border unless the status is an exception. -->
+    <div class="hero" data-testid="run-hero"
+         style="--module: {moduleColor(run.module)}; border-color: {heroBorder(run.status)};">
+      <div class="hero-accent" style="background: {moduleColor(run.module)};"></div>
       <div class="hero-body">
         <div class="hero-row-1">
-          <span
-            class="status-pill"
-            style="color: {statusColor(run.status)}; border-color: color-mix(in oklab, {statusColor(run.status)} 40%, transparent); background: color-mix(in oklab, {statusColor(run.status)} 15%, transparent);"
-          >● {run.status}</span>
+          <span class="hist-pill {runPillKind(run)}" data-testid="run-hero-pill">{PILL_LABEL[runPillKind(run)]}</span>
           {#if isArchived}
             <span class="archived-pill" title="Archived — hidden from default list">🗄 Archived</span>
           {/if}
@@ -235,6 +330,16 @@
             · on <span class="hero-source">{run.dataSource}</span>
           {/if}
         </div>
+
+        {#if run.status === 'failed'}
+          <!-- The failure lives in the hero, which every tab shows, in the
+               side-panel error box laid out like the Inspector's; the
+               traceback is on the Output tab, never repeated here. -->
+          <div class="hero-err">
+            <ErrorBox testid="run-hero-error" message={errorMessage}
+                      onSeeOutput={() => { activeSection = 'output'; }} />
+          </div>
+        {/if}
 
         {#if run.tags && run.tags.length > 0}
           <div class="tags-row">
@@ -261,7 +366,7 @@
           class:no-meta={tab.count === null}
           onclick={() => { activeSection = tab.key; }}
         >
-          <span class="tab-label">{tab.label}</span>
+          <span class="tab-label">{tab.label}{#if tab.key === 'output' && run.status === 'failed'}<span class="tab-x" aria-hidden="true">✗</span><span class="sr-only"> (failed)</span>{/if}</span>
           {#if tab.count !== null}
             <span class="tab-divider"></span>
             <span class="tab-count">{tab.count}</span>
@@ -355,13 +460,6 @@
             </div>
           {/if}
 
-          {#if run.status === 'failed' && (errorMessage || errorTraceback)}
-            <div class="err-block">
-              {#if errorMessage}<div class="err-msg">{errorMessage}</div>{/if}
-              {#if errorTraceback}<pre class="err-trace">{errorTraceback}</pre>{/if}
-            </div>
-          {/if}
-
           {#if run.status === 'failed' && cancelledDescendants && cancelledDescendants.length > 0}
             <div class="cascade-block">
               <div class="cascade-header">
@@ -429,38 +527,20 @@
         {/if}
 
       {:else if activeSection === 'output'}
-        <div class="output-block">
-          <div class="output-header">
-            <span class="output-status output-status-{logPhase}">
-              {#if logPhase === 'connecting'}Connecting…
-              {:else if logPhase === 'streaming'}Streaming
-              {:else if logPhase === 'succeeded'}Success
-              {:else if logPhase === 'failed'}
-                {logTerminalError ? `Failed: ${logTerminalError}` : 'Failed'}
-              {:else if logPhase === 'cancelled'}
-                {logTerminalError ? `Cancelled: ${logTerminalError}` : 'Cancelled'}
-              {:else}Idle{/if}
-            </span>
-            {#if !logFullMode && (logPhase === 'succeeded' || logPhase === 'failed' || logPhase === 'cancelled')}
-              <button class="footer-btn" onclick={loadFullLog}>Load full log</button>
-            {/if}
-            {#if logFullMode}
-              <span class="output-hint">full log</span>
-            {/if}
-          </div>
-          {#if logLines.length === 0 && logPhase !== 'connecting'}
-            <div class="empty">No output captured.</div>
-          {:else}
-            <pre class="log-pane">{#each logLines as l}<span class="log-line log-{l.kind}">{l.line}</span>
-{/each}</pre>
-          {/if}
-          {#if (logPhase === 'failed' || logPhase === 'cancelled') && (logTerminalError || logTerminalTraceback)}
-            <div class="err-block">
-              {#if logTerminalError}<div class="err-msg">{logTerminalError}</div>{/if}
-              {#if logTerminalTraceback}<pre class="err-trace">{logTerminalTraceback}</pre>{/if}
-            </div>
-          {/if}
-        </div>
+        {#if shownLines.length === 0 && logPhase !== 'connecting' && logNote === null}
+          <div class="empty">No output captured.</div>
+        {:else}
+          {#key runId}<LogPane lines={shownLines} live={logIsLive} note={logNote}
+                   noteTone={logNote === 'Connection lost' ? 'failed' : 'muted'}>
+            {#snippet actions()}
+              {#if !logFullMode && (logPhase === 'succeeded' || logPhase === 'failed' || logPhase === 'cancelled')}
+                <button type="button" class="log-bar-btn" onclick={loadFullLog}>Load full log</button>
+              {:else if logFullMode}
+                <span class="output-hint">full log</span>
+              {/if}
+            {/snippet}
+          </LogPane>{/key}
+        {/if}
       {/if}
     </div>
 
@@ -475,21 +555,46 @@
        to the primary color so captions, counts, sizes, and dim labels
        stay readable. Borders/dividers use `--border` and are unaffected.
        The children inherit these, as they are DOM descendants. */
-    --text-secondary: var(--text-primary, #ccc);
-    --text-muted: var(--text-primary, #ccc);
+    --text-secondary: var(--text-primary);
+    --text-muted: var(--text-primary);
 
-    width: 360px;
-    background: var(--bg-panel, #252526);
-    border-left: 1px solid var(--border, #3e3e42);
+    /* The width is runDetailWidth's (360-720 px), set inline. */
+    background: var(--bg-panel);
+    border-left: 1px solid var(--border);
     display: flex;
     flex-direction: column;
     flex-shrink: 0;
     overflow: hidden;
     font-family: 'Mukta Vaani', 'Segoe UI', sans-serif;
     font-size: 12px;
-    color: var(--text-primary, #ccc);
+    color: var(--text-primary);
     position: relative;
   }
+  .detail-panel.resizing { cursor: col-resize; user-select: none; }
+
+  /* The left edge's grab strip: a thin accent line on hover, focus or drag. */
+  .edge {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 6px;
+    cursor: col-resize;
+    touch-action: none;
+    z-index: 5;
+  }
+  .edge::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 2px;
+    background: transparent;
+    transition: background 0.12s;
+  }
+  .edge:hover::after, .edge:focus-visible::after, .resizing .edge::after { background: var(--accent); }
+  .edge:focus-visible { outline: none; }
 
   /* Header strip — the error and loading states' bare header; the loaded
      panel's header lives in RunActions. */
@@ -498,8 +603,8 @@
     align-items: center;
     justify-content: space-between;
     padding: 8px 12px;
-    background: var(--bg-header, #2d2d30);
-    border-bottom: 1px solid var(--border, #3e3e42);
+    background: var(--bg-header);
+    border-bottom: 1px solid var(--border);
     flex-shrink: 0;
   }
   .crumb {
@@ -507,7 +612,7 @@
     align-items: center;
     gap: 6px;
     font-size: 11px;
-    color: var(--text-secondary, #888);
+    color: var(--text-secondary);
     min-width: 0;
   }
   .icon-btn {
@@ -516,12 +621,12 @@
     background: none;
     border: none;
     border-radius: 3px;
-    color: var(--text-muted, #666);
+    color: var(--text-muted);
     font-size: 13px;
     cursor: pointer;
     line-height: 1;
   }
-  .icon-btn:hover { color: var(--text-primary, #ccc); }
+  .icon-btn:hover { color: var(--text-primary); }
 
   /* Error / loading */
   .detail-error, .detail-loading {
@@ -529,68 +634,63 @@
     text-align: center;
     font-size: 12px;
   }
-  .detail-error { color: var(--color-failed, #E74C3C); }
-  .detail-loading { color: var(--text-secondary, #888); }
+  .detail-error { color: var(--status-failed-ink); }
+  .detail-loading { color: var(--text-secondary); }
 
   .archived-pill {
     font-size: 10px;
     font-weight: 600;
-    color: var(--text-secondary, #888);
+    color: var(--text-secondary);
     padding: 2px 8px;
-    border: 1px solid var(--border, #3e3e42);
+    border: 1px solid var(--border);
     background: rgba(62, 62, 66, 0.3);
     border-radius: 3px;
     letter-spacing: 0.3px;
   }
 
   /* Hero card */
+  /* The hero's body carries a 10% tint of its module colour, as History's
+     cards do (SOP Run detail hero). */
   .hero {
+    position: relative;
     margin: 12px;
-    background: var(--bg-header, #2d2d30);
-    border: 1px solid var(--border, #3e3e42);
+    background: color-mix(in srgb, var(--module) 10%, var(--bg-panel));
+    border: 2px solid var(--border);
+    border-radius: 6px;
     overflow: hidden;
     flex-shrink: 0;
   }
-  .hero-accent { height: 3px; }
-  .hero-body { padding: 14px 16px 12px; }
+  .hero-accent { height: 3px; border-radius: 4px 4px 0 0; }
+  .hero-body { padding: 10px 14px 12px; }
   .hero-row-1 {
     display: flex;
     align-items: center;
     gap: 8px;
     margin-bottom: 6px;
   }
-  .status-pill {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.7px;
-    text-transform: uppercase;
-    padding: 2px 8px;
-    border: 1px solid;
-    border-radius: 3px;
-  }
-  .hero-time { font-size: 11px; color: var(--text-secondary, #888); }
+  .hero-time { font-size: 11px; color: var(--text-secondary); }
   .hero-duration {
     margin-left: auto;
     font-size: 11px;
-    color: var(--text-secondary, #888);
+    color: var(--text-secondary);
     font-family: 'Consolas', 'Courier New', monospace;
   }
   .hero-method {
     font-size: 17px;
     font-weight: 600;
-    color: var(--text-primary, #ccc);
+    color: var(--text-primary);
     letter-spacing: -0.2px;
     font-family: 'Consolas', 'Courier New', monospace;
     word-break: break-word;
   }
   .hero-sub {
     font-size: 12px;
-    color: var(--text-secondary, #888);
+    color: var(--text-secondary);
     margin-top: 2px;
   }
-  .hero-module { color: var(--accent, #4A90D9); }
+  .hero-module { color: var(--module-ink); font-weight: 600; }
   .hero-source {
-    color: var(--color-completed, #50C878);
+    color: #d0d0d0;
     font-family: 'Consolas', 'Courier New', monospace;
   }
   .tags-row {
@@ -602,8 +702,8 @@
   .tag {
     font-size: 10px;
     padding: 2px 8px;
-    background: rgba(74, 144, 217, 0.10);
-    color: var(--accent, #4A90D9);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    color: var(--accent);
     border-radius: 3px;
     font-weight: 500;
   }
@@ -619,8 +719,8 @@
     flex: 1;
     padding: 4px 8px 3px;
     background: transparent;
-    color: var(--text-primary, #fff);
-    border: 1px solid var(--border, #3e3e42);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
     border-radius: 3px;
     cursor: pointer;
     display: flex;
@@ -634,8 +734,8 @@
     justify-content: center;
   }
   .tab.active {
-    background: var(--accent, #4A90D9);
-    border-color: var(--accent, #4A90D9);
+    background: var(--accent);
+    border-color: var(--accent);
     color: #fff;
   }
   .tab-label {
@@ -653,7 +753,7 @@
   .tab-count {
     font-size: 9.5px;
     font-family: 'Consolas', 'Courier New', monospace;
-    color: var(--text-muted, #666);
+    color: var(--text-muted);
     line-height: 1;
   }
   .tab.active .tab-count { color: rgba(255, 255, 255, 0.55); }
@@ -668,8 +768,8 @@
 
   /* Cards */
   .card {
-    background: var(--bg-header, #2d2d30);
-    border: 1px solid var(--border, #3e3e42);
+    background: var(--bg-header);
+    border: 1px solid var(--border);
     overflow: hidden;
   }
 
@@ -683,10 +783,10 @@
     font-size: 11px;
     padding: 10px 12px;
   }
-  .fact-label { color: var(--text-muted, #666); }
-  .fact-value { color: var(--text-primary, #ccc); }
+  .fact-label { color: var(--text-muted); }
+  .fact-value { color: var(--text-primary); }
   .fact-mono {
-    color: var(--text-primary, #ccc);
+    color: var(--text-primary);
     font-family: 'Consolas', 'Courier New', monospace;
   }
   .fact-mono.strong { font-weight: 600; }
@@ -694,11 +794,11 @@
     background: none;
     border: none;
     padding: 0;
-    color: var(--accent, #4A90D9);
+    color: var(--accent);
     font-family: 'Consolas', 'Courier New', monospace;
     cursor: pointer;
     text-decoration: underline;
-    text-decoration-color: rgba(74, 144, 217, 0.3);
+    text-decoration-color: color-mix(in srgb, var(--accent) 30%, transparent);
     text-align: left;
   }
   /* Per-slot parent chips — rendered when a run has fan-in (multiple
@@ -724,7 +824,7 @@
     width: fit-content;
   }
   .parent-chip:hover {
-    border-color: var(--accent, #4A90D9);
+    border-color: var(--accent);
     color: #fff;
   }
   /* "Cached from" chip — visually distinct from parent chips (amber tint)
@@ -734,11 +834,11 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    background: rgba(233, 168, 71, 0.10);
-    border: 1px solid rgba(233, 168, 71, 0.45);
+    background: color-mix(in srgb, var(--marker-light) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--marker-light) 45%, transparent);
     border-radius: 3px;
     padding: 2px 8px;
-    color: #e9a847;
+    color: var(--marker-light);
     text-decoration: none;
     font-family: 'Consolas', 'Courier New', monospace;
     font-size: 12px;
@@ -746,7 +846,7 @@
     width: fit-content;
   }
   .cache-chip:hover {
-    background: rgba(233, 168, 71, 0.18);
+    background: color-mix(in srgb, var(--marker-light) 16%, transparent);
     color: #fff;
   }
   .parent-slot {
@@ -754,10 +854,10 @@
     font-family: 'Consolas', 'Courier New', monospace;
   }
   .parent-arrow {
-    color: #666;
+    color: var(--text-muted);
   }
   .parent-run {
-    color: var(--accent, #4A90D9);
+    color: var(--accent);
     font-family: 'Consolas', 'Courier New', monospace;
   }
   /* Recorded sample reads — one plain line per read, listed under the
@@ -780,14 +880,14 @@
   .highlight { padding: 10px 12px; }
   .hl-label {
     font-size: 9.5px;
-    color: var(--text-muted, #666);
+    color: var(--text-muted);
     letter-spacing: 0.6px;
     text-transform: uppercase;
   }
   .hl-value {
     font-size: 17px;
     font-weight: 600;
-    color: var(--accent, #4A90D9);
+    color: var(--accent);
     font-family: 'Consolas', 'Courier New', monospace;
     margin-top: 3px;
     word-break: break-all;
@@ -804,23 +904,23 @@
   }
   .flat-row:last-child { border-bottom: none; }
   .flat-key {
-    color: var(--text-secondary, #888);
+    color: var(--text-secondary);
     font-family: 'Consolas', 'Courier New', monospace;
     font-size: 10.5px;
     width: 45%;
     flex-shrink: 0;
   }
   .flat-val {
-    color: var(--text-primary, #ccc);
+    color: var(--text-primary);
     font-family: 'Consolas', 'Courier New', monospace;
     font-size: 10.5px;
     flex: 1;
     word-break: break-all;
   }
-  .metric-val { color: var(--accent, #4A90D9); font-weight: 600; }
+  .metric-val { color: var(--accent); font-weight: 600; }
 
   .empty {
-    color: var(--text-muted, #666);
+    color: var(--text-muted);
     font-size: 11px;
     text-align: center;
     padding: 14px;
@@ -828,8 +928,8 @@
 
   /* Cancel banner */
   .cancel-banner {
-    background: rgba(127, 142, 163, 0.10);
-    border: 1px solid rgba(127, 142, 163, 0.35);
+    background: color-mix(in srgb, var(--status-cancelled) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--status-cancelled) 35%, transparent);
     border-radius: 3px;
     padding: 8px 10px;
     font-size: 11px;
@@ -837,27 +937,10 @@
     margin-bottom: 6px;
   }
 
-  /* Err block */
-  .err-block {
-    background: rgba(231, 76, 60, 0.08);
-    border: 1px solid rgba(231, 76, 60, 0.30);
-    border-radius: 3px;
-    padding: 8px 10px;
-  }
-  .err-msg { color: var(--color-failed, #E74C3C); font-size: 11px; font-weight: 600; }
-  .err-trace {
-    margin: 6px 0 0;
-    color: #c88;
-    font-size: 10px;
-    white-space: pre-wrap;
-    line-height: 1.4;
-    font-family: 'Consolas', 'Courier New', monospace;
-  }
-
   .cascade-block {
     margin-top: 6px;
-    background: rgba(231, 76, 60, 0.05);
-    border: 1px solid rgba(231, 76, 60, 0.20);
+    background: color-mix(in srgb, var(--status-failed) 5%, transparent);
+    border: 1px solid color-mix(in srgb, var(--status-failed) 20%, transparent);
     border-radius: 3px;
     padding: 8px 10px;
   }
@@ -886,70 +969,33 @@
   .cascade-sample { color: #8a98ac; }
   .cascade-id {
     margin-left: auto;
-    color: var(--accent, #4A90D9);
+    color: var(--accent);
     font-family: 'Consolas', 'Courier New', monospace;
     font-size: 10px;
   }
 
-  /* Output / log-stream pane */
-  .output-block { display: flex; flex-direction: column; gap: 8px; }
-  .output-header {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 0 4px;
-  }
-  .output-status {
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    padding: 3px 7px;
-    border-radius: 999px;
-    border: 1px solid var(--border, #444);
-    color: var(--text-secondary, #ccc);
-    font-family: 'Consolas', 'Courier New', monospace;
-  }
-  .output-status-streaming { color: var(--accent, #4A90D9); border-color: color-mix(in oklab, var(--accent, #4A90D9) 40%, transparent); }
-  .output-status-succeeded { color: var(--color-completed, #50C878); border-color: color-mix(in oklab, var(--color-completed, #50C878) 40%, transparent); }
-  .output-status-failed    { color: var(--color-failed, #E74C3C); border-color: color-mix(in oklab, var(--color-failed, #E74C3C) 40%, transparent); }
-  .output-status-cancelled { color: #d8c08a; border-color: color-mix(in oklab, #d8c08a 40%, transparent); }
+  /* Output tab: the log box is the shared LogPane; these are the controls
+     this panel puts in its bar. */
   .output-hint {
     font-size: 10px;
-    color: var(--text-muted, #888);
+    color: var(--text-muted);
     font-family: 'Consolas', 'Courier New', monospace;
   }
-  .log-pane {
-    margin: 0;
-    max-height: 380px;
-    overflow: auto;
-    padding: 8px 10px;
-    background: rgba(0, 0, 0, 0.25);
-    border: 1px solid var(--border, #333);
+  .log-bar-btn {
+    font: inherit;
+    font-size: 10.5px;
+    line-height: 17px;
+    padding: 0 8px;
+    color: var(--text-primary);
+    background: transparent;
+    border: 1px solid var(--border);
     border-radius: 3px;
-    font-family: 'Consolas', 'Courier New', monospace;
-    font-size: 11px;
-    line-height: 1.45;
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-  .log-line { display: block; }
-  .log-stdout { color: var(--text-primary, #ddd); }
-  .log-stderr { color: var(--color-failed, #E74C3C); }
-
-  /* The Output tab's "Load full log" button; the panel footer's copies of
-     these rules live in CanvasActions. */
-  .footer-btn {
-    flex: 1;
-    padding: 7px 10px;
-    background: var(--bg-header, #2d2d30);
-    border: 1px solid var(--border, #3e3e42);
-    color: var(--text-primary, #ccc);
-    border-radius: 3px;
-    font-size: 11px;
-    font-weight: 500;
-    font-family: inherit;
     cursor: pointer;
   }
-  .footer-btn:hover:not(:disabled) { border-color: var(--accent, #4A90D9); }
-  .footer-btn:disabled { color: var(--text-muted, #666); cursor: not-allowed; }
+  .log-bar-btn:hover { border-color: var(--accent); }
+
+  /* The hero's failure box (shared ErrorBox) under the "in <module>" line. */
+  .hero-err { margin-top: 10px; }
+  .tab-x { color: var(--status-failed-ink); margin-left: 3px; }
+  .tab.active .tab-x { color: #fff; }
 </style>

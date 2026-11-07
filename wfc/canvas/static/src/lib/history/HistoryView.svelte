@@ -4,6 +4,8 @@
   import PipelinesView from './PipelinesView.svelte';
   import DescendantsView from './DescendantsView.svelte';
   import RunDetailPanel from './RunDetailPanel.svelte';
+  import DraftStepPanel from './DraftStepPanel.svelte';
+  import { isDraftRef, draftBundleRefusal } from './historyDrafts.js';
   import ExportPreview from './ExportPreview.svelte';
   import ExportRunsDialog from './ExportRunsDialog.svelte';
   import {
@@ -15,12 +17,20 @@
     statusBuckets,
     loadRuns,
     historyView,
+    draftSteps,
   } from './historyStore.js';
 
   let { visible = false }: { visible?: boolean } = $props();
   let showExportPreview = $state(false);
   // The runs Export runs was pressed for; the dialog is open while set.
   let exportRunIds = $state<string[] | null>(null);
+  // A lineage with a draft step cannot become a rerun bundle: Export runs
+  // is disabled while the selection holds one, naming it (d-10).
+  let bundleRefusal = $derived.by(() => {
+    const ref = [...$selectedRunIds].find(isDraftRef);
+    const step = ref ? $draftSteps.find(d => d.draftString === ref) : undefined;
+    return step ? draftBundleRefusal(step) : null;
+  });
 
   $effect(() => {
     if (visible) {
@@ -51,25 +61,32 @@
 
   <div class="status-summary" title="Run counts after time/module/method/sample filters, before status chips">
     <span class="summary-bucket summary-success">
-      <span class="summary-dot" style="background:#27ae60"></span>
+      <span class="summary-dot" style="background: var(--status-ok)"></span>
       {$statusBuckets.success} success
     </span>
     <span class="summary-bucket summary-cached" title="Cache-hit runs (also counted in success)">
-      <span class="summary-dot" style="background:#E9A847"></span>
+      <span class="summary-dot" style="background: var(--status-cached)"></span>
       {$statusBuckets.cached} cached
     </span>
     <span class="summary-bucket summary-failed">
-      <span class="summary-dot" style="background:#e74c3c"></span>
+      <span class="summary-dot" style="background:var(--status-failed)"></span>
       {$statusBuckets.failed} failed
     </span>
     <span class="summary-bucket summary-running">
-      <span class="summary-dot" style="background:#3498db"></span>
+      <span class="summary-dot" style="background: var(--status-active)"></span>
       {$statusBuckets.running} running
     </span>
     <span class="summary-bucket summary-cancelled">
-      <span class="summary-dot" style="background:#7f8ea3"></span>
+      <span class="summary-dot" style="background:var(--status-cancelled)"></span>
       {$statusBuckets.cancelled} cancelled
     </span>
+    {#if $statusBuckets.draft > 0}
+      <span class="summary-bucket summary-draft" data-testid="summary-draft"
+            title="Draft steps: each draft's latest draft run (also counted by status)">
+        <span class="summary-sq"></span>
+        {$statusBuckets.draft} draft (latest kept, not recorded)
+      </span>
+    {/if}
   </div>
 
   {#if $loading}
@@ -94,7 +111,9 @@
         {/if}
       </div>
 
-      {#if $selectedRunId}
+      {#if $selectedRunId && isDraftRef($selectedRunId)}
+        <DraftStepPanel draftRef={$selectedRunId} />
+      {:else if $selectedRunId}
         <RunDetailPanel runId={$selectedRunId} />
       {/if}
     </div>
@@ -107,7 +126,9 @@
         <button
           class="export-btn"
           onclick={() => { exportRunIds = [...$selectedRunIds]; }}
-          title="Export the selected runs and every run above them as a bundle anyone can rerun"
+          disabled={!!bundleRefusal}
+          data-testid="export-runs"
+          title={bundleRefusal ?? 'Export the selected runs and every run above them as a bundle anyone can rerun'}
         >
           Export runs
         </button>
@@ -133,7 +154,7 @@
     flex-direction: column;
     flex: 1;
     overflow: hidden;
-    background: var(--bg-canvas, #1a1a1a);
+    background: var(--bg-canvas);
   }
   .history-loading {
     display: flex;
@@ -141,14 +162,14 @@
     justify-content: center;
     gap: 10px;
     flex: 1;
-    color: var(--text-secondary, #888);
+    color: var(--text-secondary);
     font-size: 13px;
   }
   .spinner {
     width: 16px;
     height: 16px;
-    border: 2px solid var(--border, #3e3e42);
-    border-top-color: var(--accent, #4A90D9);
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
   }
@@ -162,20 +183,20 @@
     justify-content: center;
     gap: 10px;
     flex: 1;
-    color: var(--color-failed, #E74C3C);
+    color: var(--status-failed-ink);
     font-size: 13px;
   }
   .retry-btn {
-    background: var(--bg-panel, #252526);
-    border: 1px solid var(--border, #3e3e42);
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
     border-radius: 4px;
     padding: 6px 14px;
-    color: var(--text-primary, #ccc);
+    color: var(--text-primary);
     font-size: 12px;
     cursor: pointer;
   }
   .retry-btn:hover {
-    border-color: var(--accent, #4A90D9);
+    border-color: var(--accent);
   }
   .history-content {
     display: flex;
@@ -192,10 +213,10 @@
     align-items: center;
     justify-content: space-between;
     padding: 6px 12px;
-    background: var(--bg-header, #2d2d30);
-    border-top: 1px solid var(--border, #3e3e42);
+    background: var(--bg-header);
+    border-top: 1px solid var(--border);
     font-size: 12px;
-    color: var(--text-primary, #ccc);
+    color: var(--text-primary);
     flex-shrink: 0;
   }
   .export-actions {
@@ -203,7 +224,7 @@
     gap: 6px;
   }
   .export-btn {
-    background: var(--accent, #4A90D9);
+    background: var(--accent);
     border: none;
     border-radius: 4px;
     padding: 5px 14px;
@@ -215,15 +236,23 @@
   .export-btn:hover {
     filter: brightness(1.1);
   }
+  .export-btn:disabled { opacity: 0.45; cursor: not-allowed; filter: none; }
+  .summary-sq {
+    width: 10px;
+    height: 9px;
+    border: 1px solid var(--dash-neutral);
+    border-radius: 2px;
+    display: inline-block;
+  }
   .status-summary {
     display: flex;
     flex-wrap: wrap;
     gap: 14px;
     padding: 6px 14px;
-    background: var(--bg-panel, #252526);
-    border-bottom: 1px solid var(--border, #3e3e42);
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
     font-size: 11px;
-    color: var(--text-secondary, #888);
+    color: var(--text-secondary);
     flex-shrink: 0;
   }
   .summary-bucket {
@@ -241,15 +270,15 @@
     display: flex;
     gap: 2px;
     padding: 6px 14px;
-    background: var(--bg-panel, #252526);
-    border-bottom: 1px solid var(--border, #3e3e42);
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
     flex-shrink: 0;
   }
   .seg {
     padding: 4px 12px;
-    background: var(--bg-input, #1e1e1e);
-    border: 1px solid var(--border, #3e3e42);
-    color: var(--text-secondary, #888);
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
     font-size: 11px;
     font-weight: 500;
     border-radius: 3px;
@@ -257,8 +286,8 @@
     font-family: inherit;
   }
   .seg.active {
-    background: var(--accent, #4A90D9);
-    border-color: var(--accent, #4A90D9);
+    background: var(--accent);
+    border-color: var(--accent);
     color: #fff;
   }
 </style>

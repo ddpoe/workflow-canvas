@@ -17,10 +17,12 @@
   import type { TimeRange, RunStatusFilter } from './historyStore.js';
 
   const STATUS_CHIPS: { key: RunStatusFilter; label: string; color: string }[] = [
-    { key: 'success',   label: 'Success',   color: '#27ae60' },
-    { key: 'failed',    label: 'Failed',    color: '#e74c3c' },
-    { key: 'running',   label: 'Running',   color: '#3498db' },
-    { key: 'cancelled', label: 'Cancelled', color: '#7f8ea3' },
+    { key: 'success',   label: 'Success',   color: 'var(--status-ok)' },
+    { key: 'failed',    label: 'Failed',    color: 'var(--status-failed)' },
+    { key: 'running',   label: 'Running',   color: 'var(--status-active)' },
+    { key: 'cancelled', label: 'Cancelled', color: 'var(--status-cancelled)' },
+    // Draft steps: kept, not recorded; the neutral draft marker.
+    { key: 'draft',     label: 'Draft',     color: 'var(--dash-neutral)' },
   ];
 
   function toggleStatus(status: RunStatusFilter) {
@@ -239,8 +241,8 @@
     align-items: flex-end;
     gap: 12px;
     padding: 10px 14px;
-    background: var(--bg-panel, #252526);
-    border-bottom: 1px solid var(--border, #3e3e42);
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
     flex-shrink: 0;
     flex-wrap: wrap;
   }
@@ -252,25 +254,25 @@
   }
   .filter-label {
     font-size: 11px;
-    color: var(--text-muted, #666);
+    color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.5px;
   }
   .filter-select, .filter-input {
-    background: var(--bg-input, #1e1e1e);
-    border: 1px solid var(--border, #3e3e42);
+    background: var(--bg-input);
+    border: 1px solid var(--border);
     border-radius: 3px;
     padding: 6px 10px;
-    color: var(--text-primary, #ccc);
+    color: var(--text-primary);
     font-size: 13px;
     outline: none;
     min-height: 30px;
   }
   .filter-select:focus, .filter-input:focus {
-    border-color: var(--accent, #4A90D9);
+    border-color: var(--accent);
   }
   .filter-select.active {
-    border-color: var(--accent, #4A90D9);
+    border-color: var(--accent);
     color: #fff;
   }
   .search-group {
@@ -290,33 +292,33 @@
     margin-left: auto;
   }
   .collapse-all-btn, .expand-all-btn {
-    color: var(--accent, #4A90D9);
+    color: var(--accent);
   }
   .filter-btn {
-    background: var(--bg-input, #1e1e1e);
-    border: 1px solid var(--border, #3e3e42);
+    background: var(--bg-input);
+    border: 1px solid var(--border);
     border-radius: 3px;
     padding: 6px 10px;
-    color: var(--text-secondary, #888);
+    color: var(--text-secondary);
     font-size: 13px;
     cursor: pointer;
     min-height: 30px;
   }
   .filter-btn:hover {
-    border-color: var(--accent, #4A90D9);
-    color: var(--text-primary, #ccc);
+    border-color: var(--accent);
+    color: var(--text-primary);
   }
   .filter-btn.active {
-    background: var(--accent, #4A90D9);
+    background: var(--accent);
     color: white;
-    border-color: var(--accent, #4A90D9);
+    border-color: var(--accent);
   }
   .refresh-btn {
-    color: var(--accent, #4A90D9);
-    border-color: var(--accent, #4A90D9);
+    color: var(--accent);
+    border-color: var(--accent);
   }
   .reset-btn {
-    color: var(--text-muted, #666);
+    color: var(--text-muted);
     font-size: 12px;
   }
   .method-toggle, .sample-toggle {
@@ -343,7 +345,7 @@
     pointer-events: none;
   }
   .arrow {
-    color: var(--text-muted, #666);
+    color: var(--text-muted);
     font-size: 14px;
   }
   .dropdown {
@@ -351,8 +353,8 @@
     top: 100%;
     left: 0;
     z-index: 100;
-    background: var(--bg-panel, #252526);
-    border: 1px solid var(--border, #3e3e42);
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
     border-radius: 4px;
     padding: 4px 0;
     max-height: 200px;
@@ -366,19 +368,19 @@
     gap: 8px;
     padding: 6px 10px;
     font-size: 13px;
-    color: var(--text-primary, #ccc);
+    color: var(--text-primary);
     cursor: pointer;
   }
   .dropdown-option:hover {
-    background: var(--bg-header, #2d2d30);
+    background: var(--bg-header);
   }
   .dropdown-option input[type="checkbox"] {
-    accent-color: var(--accent, #4A90D9);
+    accent-color: var(--accent);
   }
   .dropdown-empty {
     padding: 10px;
     font-size: 13px;
-    color: var(--text-muted, #666);
+    color: var(--text-muted);
   }
   .status-chips-group {
     min-width: 0;
@@ -394,29 +396,29 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    background: var(--bg-input, #1e1e1e);
-    border: 1px solid var(--border, #3e3e42);
+    background: var(--bg-input);
+    border: 1px solid var(--border);
     border-radius: 12px;
     padding: 3px 10px;
-    color: var(--text-secondary, #888);
+    color: var(--text-secondary);
     font-size: 12px;
     cursor: pointer;
     line-height: 1.4;
   }
   .status-chip:hover {
-    border-color: var(--chip-color, var(--accent, #4A90D9));
-    color: var(--text-primary, #ccc);
+    border-color: var(--chip-color, var(--accent));
+    color: var(--text-primary);
   }
   .status-chip.active {
-    background: var(--chip-color, var(--accent, #4A90D9));
-    border-color: var(--chip-color, var(--accent, #4A90D9));
+    background: var(--chip-color, var(--accent));
+    border-color: var(--chip-color, var(--accent));
     color: #fff;
   }
   .status-dot {
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: var(--chip-color, #888);
+    background: var(--chip-color, var(--text-secondary));
     display: inline-block;
   }
   .status-chip.active .status-dot {

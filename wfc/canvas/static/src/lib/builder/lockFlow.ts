@@ -16,13 +16,16 @@
  * parameter, with its value. Confirming commits the rows; a row that cannot
  * be committed is named in the summary and nothing proceeds, and the wait
  * never hangs. Run is disabled while the current lock has blocked rows, and
- * while a node holds a parameter the version it runs does not declare.
+ * while a node holds a parameter the version it runs does not declare (a
+ * draft node's are the server's to refuse, naming the node and the field).
  */
 import { writable, derived, get } from 'svelte/store';
 import { nodes, pipelineName, pipelineVariables, edges, setPipelineError } from './stores.js';
 import { exportPipeline } from './pipeline.js';
-import { nodeVersion, undeclaredParams } from './nodeData.js';
+import { isDraftNode, nodeVersion, undeclaredParams } from './nodeData.js';
 import { fetchCacheStatus } from './api.js';
+import { refreshDrafts } from './drafts.js';
+import { clearRefusals } from './nodeRefusals.js';
 import { projectRuns } from '../graph/projection.js';
 import { blockedVerdict, verdictsFor, type RowVerdict } from './runsPreviewStatus.js';
 import {
@@ -113,7 +116,8 @@ export async function lockNow(): Promise<void> {
 
 /**
  * Every parameter a method node holds that the version it runs does not
- * declare, as ``node.param is not in vN, remove it``.
+ * declare, as ``node.param is not in vN, remove it``. A draft node is left
+ * out: Run posts it and the server refuses such a param, naming the node.
  *
  * Args:
  *     canvasNodes: The canvas nodes.
@@ -122,7 +126,7 @@ export function undeclaredParamLines(canvasNodes: { id: string; data: CanvasNode
   const out: string[] = [];
   for (const n of canvasNodes) {
     const d = n.data;
-    if (!d || (d.nodeType && d.nodeType !== 'method')) continue;
+    if (!d || (d.nodeType && d.nodeType !== 'method') || isDraftNode(d)) continue;
     const names = undeclaredParams(d);
     if (names.length === 0) continue;
     const label = nodeVersion(d)?.label;
@@ -286,18 +290,33 @@ export function missingRequired(): string[] {
   return errors;
 }
 
-/** Submit the pipeline. The statuses described the state before this run, so they clear. */
-export function startRun(): void {
+/**
+ * Submit the pipeline. The statuses described the state before this run, so
+ * they clear, and so do the refusals the last Validate or Run showed. Every
+ * draft node first takes the contract its `method.yaml` declares now, so the
+ * required-params check reads that contract; the server reads each draft
+ * again and refuses what cannot run, naming the node.
+ */
+export async function startRun(): Promise<void> {
   if (get(blockedReasons).length > 0) return;
+  // Only a canvas with a draft node waits on the check, so a pipeline with
+  // none is dispatched in the same tick as before.
+  const hasDraft = get(nodes).some(n => isDraftNode(n.data as CanvasNodeData));
+  if (hasDraft) {
+    clearRefusals();
+    await refreshDrafts();
+  }
   const required = missingRequired();
   if (required.length > 0) {
     setPipelineError({
       kind: 'not_found',
-      message: 'Cannot run — required params missing:\n' + required.map(r => `  • ${r}`).join('\n'),
+      message: 'Cannot run — required params missing:',
+      items: required,
       hint: 'Fill in the listed params (or set a default) before running.',
     });
     return;
   }
+  if (!hasDraft) clearRefusals();
   setPipelineError(null);
   const doc = exportPipeline();
   clearLock();

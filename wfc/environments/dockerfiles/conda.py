@@ -54,7 +54,7 @@ from __future__ import annotations
 
 import re
 
-from ..introspect import PIP_MISSING_SENTINEL
+from ..introspect import freeze_has_packages
 from .bases import MICROMAMBA_BASE
 from .tail import finish_recipe
 
@@ -232,8 +232,7 @@ def _pip_layers(pip_freeze_content: str) -> list[str]:
     Returns:
         The recipe lines, each layer followed by a blank line.
     """
-    stripped_freeze = (pip_freeze_content or "").strip()
-    if not stripped_freeze or stripped_freeze == PIP_MISSING_SENTINEL.strip():
+    if not freeze_has_packages(pip_freeze_content):
         return []
     return [
         "COPY pip-freeze.txt /opt/",

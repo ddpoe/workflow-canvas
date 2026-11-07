@@ -19,7 +19,7 @@ Index by boundary:
   fake_subprocess_run (+ canned_process, refusing_process,
   real_subprocess_run), fake_docker_build_process, stub_binary_lookup,
   always_busy_socket, fake_os_rename, fake_path_replace, refuse_path_unlink,
-  refuse_path_write, fake_os_replace,
+  refuse_path_unlink_once, refuse_path_write, fake_os_replace,
   fake_os_chmod, recording_file_copy, redirect_home, stub_interactive_prompt, stub_terminal,
   stub_server_bind, stub_wall_clock, fake_conda_list_explicit,
   fake_conda_solve_capture, stub_host_conda_platform, fake_pip_freeze.
@@ -39,7 +39,8 @@ Index by boundary:
   fake_engine_process, stub_pipeline_stage, stub_record_writers,
   stub_runtime_phases, lose_claimed_script, register_during_claim,
   register_after_claim, short_claim_stall_window, deny_process_kill,
-  short_log_stream_wall.
+  short_log_stream_wall, interrupt_method_process (the container launch
+  interrupted, as Ctrl-C does).
 
 **seams** -- production functions replaced at a module attribute.
   stub_registry_seam, stub_pipeline_submission, stub_transport,
@@ -50,7 +51,9 @@ Index by boundary:
   fault_at_protect_chmod, fail_first_pull_again, volume_without_change_time,
   fault_at_output_row_write, fault_at_run_release, fault_at_version_rows_write,
   prune_during_claim, interrupt_view_rename, refuse_view_links,
-  fault_after_claim_input_rows, order_registration_commits.
+  fault_after_claim_input_rows, order_registration_commits,
+  run_dir_removed_at_first_lock, takeover_left_after_polls,
+  takeover_renewed_before_claim.
 
 **server_state** -- the canvas process's module-level state.
   bind_provider, stub_reference_seeding, seed_active_job.
@@ -62,7 +65,9 @@ Index by boundary:
 **spies** -- wrap and call through.
   interpose_phases, snapshot_output_writers, probing_provider_session,
   spy_directory_listings, spy_content_reads, spy_setting_reads,
-  spy_writable_walks, spy_pull_again, spy_claim_resolutions.
+  spy_writable_walks, spy_pull_again, spy_claim_resolutions,
+  spy_image_conversions (and its ConversionLog), spy_checkout_builds (and
+  its CheckoutBuildLog).
 """
 
 from __future__ import annotations
@@ -85,8 +90,11 @@ from .docker import (
     stub_docker_tag,
 )
 from .engine import (
+    NOT_A_RUN_ID,
+    refuse_claim_after_load,
     deny_process_kill,
     fake_engine_process,
+    interrupt_method_process,
     short_log_stream_wall,
     lose_claimed_script,
     mocked_snakemake,
@@ -115,6 +123,7 @@ from .process import (
     recording_file_copy,
     redirect_home,
     refuse_path_unlink,
+    refuse_path_unlink_once,
     refuse_path_write,
     refusing_process,
     stub_binary_lookup,
@@ -156,6 +165,9 @@ from .seams import (
     refuse_view_links,
     fault_after_claim_input_rows,
     order_registration_commits,
+    run_dir_removed_at_first_lock,
+    takeover_left_after_polls,
+    takeover_renewed_before_claim,
 )
 from .server_state import bind_provider, seed_active_job, stub_reference_seeding
 from .shortcuts import (
@@ -177,6 +189,10 @@ from .spies import (
     spy_writable_walks,
     spy_pull_again,
     spy_claim_resolutions,
+    spy_image_conversions,
+    ConversionLog,
+    spy_checkout_builds,
+    CheckoutBuildLog,
 )
 
 __all__ = [
@@ -189,7 +205,7 @@ __all__ = [
     "fake_subprocess_run", "canned_process", "refusing_process",
     "real_subprocess_run", "fake_docker_build_process", "stub_binary_lookup",
     "always_busy_socket", "fake_os_rename", "fake_path_replace",
-    "refuse_path_unlink", "refuse_path_write", "fake_os_replace", "fake_os_chmod", "recording_file_copy", "redirect_home",
+    "refuse_path_unlink", "refuse_path_unlink_once", "refuse_path_write", "fake_os_replace", "fake_os_chmod", "recording_file_copy", "redirect_home",
     "stub_interactive_prompt", "stub_terminal", "stub_server_bind", "stub_wall_clock",
     "fake_conda_list_explicit", "fake_conda_solve_capture",
     "stub_host_conda_platform", "fake_pip_freeze",
@@ -206,8 +222,10 @@ __all__ = [
     "stub_pipeline_stage", "stub_record_writers", "stub_runtime_phases",
     "lose_claimed_script", "register_during_claim", "register_after_claim",
     "short_claim_stall_window",
+    "refuse_claim_after_load", "NOT_A_RUN_ID",
     "deny_process_kill",
     "short_log_stream_wall",
+    "interrupt_method_process",
     # seams
     "REGISTRY_SEAMS", "stub_registry_seam", "stub_pipeline_submission",
     "stub_transport", "stub_cache_writers", "stub_dvc_setup",
@@ -219,6 +237,8 @@ __all__ = [
     "fault_at_version_rows_write", "prune_during_claim",
     "interrupt_view_rename", "refuse_view_links",
     "fault_after_claim_input_rows", "order_registration_commits",
+    "run_dir_removed_at_first_lock", "takeover_left_after_polls",
+    "takeover_renewed_before_claim",
     # server_state
     "bind_provider", "stub_reference_seeding", "seed_active_job",
     # shortcuts
@@ -228,5 +248,6 @@ __all__ = [
     "interpose_phases", "snapshot_output_writers",
     "probing_provider_session", "spy_directory_listings", "spy_content_reads",
     "spy_setting_reads", "spy_writable_walks", "spy_pull_again",
-    "spy_claim_resolutions",
+    "spy_claim_resolutions", "spy_image_conversions", "ConversionLog",
+    "spy_checkout_builds", "CheckoutBuildLog",
 ]

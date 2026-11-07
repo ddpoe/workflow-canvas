@@ -218,8 +218,8 @@
     z-index: 1000;
   }
   .modal-content {
-    background: var(--bg-panel, #252526);
-    border: 1px solid var(--border, #3e3e42);
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
     border-radius: 8px;
     width: 460px;
     max-width: 90vw;
@@ -233,28 +233,28 @@
     align-items: center;
     justify-content: space-between;
     padding: 12px 16px;
-    border-bottom: 1px solid var(--border, #3e3e42);
+    border-bottom: 1px solid var(--border);
   }
   .modal-title {
     font-size: 14px;
     font-weight: 600;
-    color: var(--text-primary, #ccc);
+    color: var(--text-primary);
   }
   .modal-close {
     background: none;
     border: none;
-    color: var(--text-muted, #666);
+    color: var(--text-muted);
     font-size: 20px;
     cursor: pointer;
     line-height: 1;
   }
-  .modal-close:hover { color: var(--text-primary, #ccc); }
+  .modal-close:hover { color: var(--text-primary); }
   .modal-body {
     padding: 16px;
     overflow-y: auto;
     flex: 1;
     font-size: 12px;
-    color: var(--text-primary, #ccc);
+    color: var(--text-primary);
     line-height: 1.45;
   }
   .modal-body.center {
@@ -262,14 +262,14 @@
     align-items: center;
     justify-content: center;
     min-height: 80px;
-    color: var(--text-secondary, #888);
+    color: var(--text-secondary);
   }
   .options {
     display: flex;
     gap: 16px;
     padding: 10px 16px 0;
     font-size: 12px;
-    color: var(--text-primary, #ccc);
+    color: var(--text-primary);
   }
   .options label {
     display: flex;
@@ -277,8 +277,8 @@
     gap: 6px;
     cursor: pointer;
   }
-  .error { color: var(--color-failed, #E74C3C); }
-  .modal-body.center.error { color: var(--color-failed, #E74C3C); }
+  .error { color: var(--status-failed-ink); }
+  .modal-body.center.error { color: var(--status-failed-ink); }
   .lead { margin: 0 0 10px; }
   .reasons {
     margin: 0;
@@ -286,8 +286,8 @@
   }
   .reasons li { margin-bottom: 4px; }
   .warning {
-    border: 1px solid #E9A847;
-    background: rgba(233, 168, 71, 0.10);
+    border: 1px solid var(--marker-light);
+    background: color-mix(in srgb, var(--marker-light) 8%, transparent);
     border-radius: 4px;
     padding: 8px 10px;
   }
@@ -298,20 +298,20 @@
     justify-content: flex-end;
     gap: 8px;
     padding: 12px 16px;
-    border-top: 1px solid var(--border, #3e3e42);
+    border-top: 1px solid var(--border);
   }
   .cancel-btn {
-    background: var(--bg-header, #2d2d30);
-    border: 1px solid var(--border, #3e3e42);
+    background: var(--bg-header);
+    border: 1px solid var(--border);
     border-radius: 4px;
     padding: 6px 14px;
-    color: var(--text-primary, #ccc);
+    color: var(--text-primary);
     font-size: 12px;
     cursor: pointer;
   }
-  .cancel-btn:hover { border-color: var(--accent, #4A90D9); }
+  .cancel-btn:hover { border-color: var(--accent); }
   .confirm-btn {
-    background: var(--accent, #4A90D9);
+    background: var(--accent);
     border: none;
     border-radius: 4px;
     padding: 6px 14px;

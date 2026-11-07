@@ -1,15 +1,15 @@
 """Behavior tests for typed-param-relationships.
 
-column_of_input resolution and Pipeline Variables (server-side
-substitution + editable sidecar). These are subsystem-level behavior
-tests, not snapshots of current output.
+Pipeline Variables (server-side substitution + editable sidecar) and the
+options declarations a parameter's ``options_from`` reads. These are
+subsystem-level behavior tests, not snapshots of current output.
 """
 from __future__ import annotations
 
 import pytest
 
 from wfc.graph import resolve_variables, UnknownVariableError
-from wfc.contracts import resolve_columns, parse_method_yaml
+from wfc.contracts import resolve_options, parse_method_yaml
 
 
 # ── Variable substitution ──────────────────────────────────────────
@@ -86,27 +86,13 @@ def test_resolve_variables_rejects_nested_var_refs():
         resolve_variables(pipeline)
 
 
-# ── column_of_input resolution against contracts ──────────────────
-
-
-def test_resolve_columns_strict_plus_from_params_union():
-    """column_of_input reuses the shared resolve_columns. Verify the union semantics."""
-    spec = {
-        "strict": ["a", "b"],
-        "from_params": [
-            {"params": ["chmap"], "pattern": "R1_{}"},
-        ],
-    }
-    out = resolve_columns(spec, {"chmap": ["p27", "CycD1"]})
-    assert out == {"a", "b", "R1_p27", "R1_CycD1"}
-
-
 # ── parse_method_yaml producer side reuses the shared vocab unchanged ─
 
 
-def test_parse_method_yaml_passes_through_columns_unchanged(tmp_path):
-    """Producer side: declaring outputs.<slot>.columns.strict is a
-    no-modification pass-through. resolve_columns consumes it directly."""
+def test_parse_method_yaml_passes_through_options_unchanged(tmp_path):
+    """Producer side: declaring outputs.<slot>.options is a no-modification
+    pass-through, and a parameter's options_from is kept as written;
+    resolve_options consumes the stored block directly."""
     method_dir = tmp_path / "my_method"
     method_dir.mkdir()
     (method_dir / "method.yaml").write_text(
@@ -118,12 +104,23 @@ def test_parse_method_yaml_passes_through_columns_unchanged(tmp_path):
         "outputs:\n"
         "  measurements:\n"
         "    type: .csv\n"
-        "    columns:\n"
-        "      strict: [a, b, c]\n"
-        "params: {}\n",
+        "    options:\n"
+        "      fixed: [a, b, c]\n"
+        "      from_params:\n"
+        "        - params: [chmap]\n"
+        "          pattern: 'R1_{}'\n"
+        "params:\n"
+        "  group_by:\n"
+        "    type: str\n"
+        "    options_from: data\n"
+        "  chmap:\n"
+        "    type: list\n",
         encoding="utf-8",
     )
     spec = parse_method_yaml(method_dir)
-    cols = spec["outputs"]["measurements"]["columns"]
-    assert cols == {"strict": ["a", "b", "c"]}
-    assert resolve_columns(cols, {}) == {"a", "b", "c"}
+    options = spec["outputs"]["measurements"]["options"]
+    assert options == {"fixed": ["a", "b", "c"],
+                       "from_params": [{"params": ["chmap"], "pattern": "R1_{}"}]}
+    assert spec["params"]["group_by"]["options_from"] == "data"
+    assert resolve_options(options, [{"chmap": ["p27", "CycD1"]}])["all"] == [
+        "a", "b", "c", "R1_p27", "R1_CycD1"]

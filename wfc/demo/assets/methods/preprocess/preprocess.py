@@ -17,8 +17,8 @@ import wfc_client as wfc
 
 @wfc.method
 def preprocess(ctx):
-    # ctx.input("data") -> list of files wired into the "data" input slot.
-    with open(ctx.input("data")[0], newline="") as f:
+    # ctx.input("data") -> the path of the file wired into the "data" input.
+    with open(ctx.input("data"), newline="") as f:
         rows = list(csv.DictReader(f))
     fieldnames = list(rows[0].keys()) if rows else ["id", "intensity", "area", "quality"]
 

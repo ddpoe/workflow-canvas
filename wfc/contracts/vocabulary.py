@@ -32,10 +32,15 @@ COLLAPSED_SAMPLE = "__all__"
 # ``WFC_INPUT_PATHS`` is present only when the node has inputs; nothing
 # else from the host environment -- ``PYTHONPATH`` in particular -- crosses
 # the container barrier. Dispatch assembles the values; this is the set of
-# names.
+# names. ``WFC_DECLARED_NAMES`` is the method's declared inputs (each with
+# ``multiple`` and ``optional``) and outputs as JSON
+# (``contracts.slots.declared_names``): the client reads it to hand a single
+# input over as one path and to name the declared names when a script asks
+# for one that is not.
 WFC_ENV_VARS = (
     "WFC_RUN_ID", "WFC_RUN_DIR", "WFC_SAMPLE", "WFC_PARAMS",
     "WFC_NODE_ID", "WFC_PIPELINE_ID", "WFC_VARIANT", "WFC_INPUT_PATHS",
+    "WFC_DECLARED_NAMES",
 )
 
 

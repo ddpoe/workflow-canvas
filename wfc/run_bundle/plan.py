@@ -799,6 +799,29 @@ def _images_to_save(steps: list[PlanStep], refusals: list[Refusal]) -> list[Plan
     return images
 
 
+_REGISTER_AND_RERUN = ("A bundle holds recorded runs only: register the draft "
+                       "and run the pipeline again, then export its runs.")
+
+
+def _draft_string_refusal(text: str) -> str:
+    """The refusal of a draft string asked for as a run.
+
+    The bundle's one draft refusal. Draft mode spreads only downstream, so
+    no recorded run's lineage holds a draft step: a recorded run of a
+    pipeline that ran a draft exports, and only a draft string (History's
+    export of a selection or lineage that holds a draft step) is refused.
+    """
+    from ..execution.draft import DraftRefError, parse_draft_ref
+
+    try:
+        ref = parse_draft_ref(text)
+    except DraftRefError as exc:
+        return str(exc)
+    return (f"{text} names draft step '{ref.node_id}' of the draft "
+            f"{ref.module}.{ref.method}, which is never recorded. "
+            f"{_REGISTER_AND_RERUN}")
+
+
 @workflow(purpose="Plan an export of runs as a rerun bundle, writing no bundle: select "
                   "the runs and every ancestor (originals only), archive their "
                   "unarchived outputs, collect every refusal and find the images "
@@ -833,8 +856,12 @@ def plan_export(
         The :class:`ExportPlan`. Its ``refusals`` hold every reason, so a
         surface lists them all and writes nothing.
     """
+    from ..execution.draft import is_draft_ref
+
     root = Path(project_dir).resolve() if project_dir is not None else get_project_root()
-    requested = tuple(dict.fromkeys(int(r) for r in run_ids))
+    asked = list(run_ids)
+    draft_texts = [str(r).strip() for r in asked if is_draft_ref(r)]
+    requested = tuple(dict.fromkeys(int(r) for r in asked if not is_draft_ref(r)))
 
     口 = AutoStep(step_num=1, name="Read the run graph")
     records = read_run_records()
@@ -886,8 +913,9 @@ def plan_export(
                      "gone and never pushed",
              outputs="The refusals, in step order; each step's outputs; the "
                      "entries the bundle reads, with those it will pull")
-    refusals = [Refusal(run_id, f"Run {run_id} not found.")
-                for run_id in selection.missing]
+    refusals = [Refusal(None, _draft_string_refusal(text)) for text in draft_texts]
+    refusals += [Refusal(run_id, f"Run {run_id} not found.")
+                 for run_id in selection.missing]
     top = git_toplevel(root)
     for index, step in enumerate(steps):
         reasons = _run_refusals(step, root, top)

@@ -45,8 +45,6 @@ from wfc.storage.cache import _cache_path
 from tests.fixtures.conftest import create_sample_csv as _create_sample_csv
 from tests.conftest import requires_docker
 
-WFC_ROOT = Path(__file__).resolve().parent.parent.parent
-
 pytestmark = [pytest.mark.integration, requires_docker]
 
 
@@ -130,7 +128,6 @@ def test_imaging_skip_link_provenance(imaging_pipeline_factory, register_imaging
     run_pipeline(
         pipeline_path=str(pipeline_path),
         project_root=str(project_dir),
-        wfc_root=str(WFC_ROOT),
         cores=1,
         archive=False,
     )

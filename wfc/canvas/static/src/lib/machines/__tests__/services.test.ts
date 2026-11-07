@@ -16,23 +16,32 @@ import {
   pollNodeStatus,
   runStatusToNodeState,
   stateValueToRunStatus,
+  submitPipeline,
   subscribeSSE,
+  type BackendNodeState,
 } from '../services';
+import { toPromise } from 'xstate';
+import { NO_REMOTE_PUSH, type PushField } from '../../__fixtures__/timelines';
+
+/** One status row as the server sends it: the push fields are always present. */
+function row(state: Omit<BackendNodeState, PushField>): BackendNodeState {
+  return { ...NO_REMOTE_PUSH, ...state };
+}
 
 describe('runStatusToNodeState', () => {
   it('pending → null (parent already moved node to queued)', () => {
-    expect(runStatusToNodeState({ status: 'pending' })).toBe(null);
+    expect(runStatusToNodeState(row({ status: 'pending' }))).toBe(null);
   });
 
   it('running with no tally → null (heartbeat sent separately)', () => {
-    expect(runStatusToNodeState({ status: 'running' })).toBe(null);
+    expect(runStatusToNodeState(row({ status: 'running' }))).toBe(null);
   });
 
   it('running with tally → TALLY event', () => {
-    const evt = runStatusToNodeState({
+    const evt = runStatusToNodeState(row({
       status: 'running',
       tally: { running: 2, completed: 1, failed: 0 },
-    });
+    }));
     expect(evt).toEqual({
       type: 'TALLY',
       tally: { running: 2, completed: 1, failed: 0 },
@@ -40,10 +49,10 @@ describe('runStatusToNodeState', () => {
   });
 
   it('completed → RUN_OK with tally', () => {
-    const evt = runStatusToNodeState({
+    const evt = runStatusToNodeState(row({
       status: 'completed',
       tally: { running: 0, completed: 4, failed: 0 },
-    });
+    }));
     expect(evt).toEqual({
       type: 'RUN_OK',
       tally: { running: 0, completed: 4, failed: 0 },
@@ -54,10 +63,10 @@ describe('runStatusToNodeState', () => {
     // The mapper does NOT collapse mixed → completed_with_failures —
     // that decision lives in the actor (see nodeRun.machine.ts running
     // → RUN_OK guarded transition). The mapper just forwards the tally.
-    const evt = runStatusToNodeState({
+    const evt = runStatusToNodeState(row({
       status: 'mixed',
       tally: { running: 0, completed: 3, failed: 1 },
-    });
+    }));
     expect(evt?.type).toBe('RUN_OK');
     if (evt?.type === 'RUN_OK') {
       expect(evt.tally.failed).toBe(1);
@@ -65,21 +74,21 @@ describe('runStatusToNodeState', () => {
   });
 
   it('failed → RUN_FAILED with error_message', () => {
-    const evt = runStatusToNodeState({
+    const evt = runStatusToNodeState(row({
       status: 'failed',
       error: 'segfault',
-    });
+    }));
     expect(evt).toEqual({ type: 'RUN_FAILED', error_message: 'segfault' });
   });
 
   it('cancelled upstream_failed with cancelled_due_to_run_id only → UPSTREAM_FAILED', () => {
     // Backend may only have the upstream run id (not the node id) —
     // mapper still treats this as upstream-caused cancellation.
-    const evt = runStatusToNodeState({
+    const evt = runStatusToNodeState(row({
       status: 'cancelled',
       cancel_reason: 'upstream_failed',
       cancelled_due_to_run_id: 'run-99',
-    });
+    }));
     expect(evt).toEqual({
       type: 'UPSTREAM_FAILED',
       upstreamNodeId: '?',
@@ -90,20 +99,20 @@ describe('runStatusToNodeState', () => {
   it('a cancelled node is read by its reason, not by whether it names a cause', () => {
     // After a user cancel the walk links a failed ancestor where there is
     // one, but the node was still stopped by the user.
-    expect(runStatusToNodeState({
+    expect(runStatusToNodeState(row({
       status: 'cancelled',
       cancel_reason: 'user',
       cancelled_due_to_run_id: 'run-7',
       upstream_run_id: 'run-7',
       upstream_node_id: 'parent_node',
-    })).toEqual({ type: 'USER_STOP' });
-    expect(runStatusToNodeState({
+    }))).toEqual({ type: 'USER_STOP' });
+    expect(runStatusToNodeState(row({
       status: 'cancelled',
       cancel_reason: 'upstream_failed',
       cancelled_due_to_run_id: 'run-7',
       upstream_run_id: 'run-7',
       upstream_node_id: 'parent_node',
-    })).toEqual({
+    }))).toEqual({
       type: 'UPSTREAM_FAILED', upstreamNodeId: 'parent_node', upstreamRunId: 'run-7',
     });
   });
@@ -111,19 +120,19 @@ describe('runStatusToNodeState', () => {
   it('a node the pipeline ended before it started never reads as stopped by the user', () => {
     // No cause, reason not_run: the node is left as it is (no outcome)
     // rather than reported as the user's stop.
-    expect(runStatusToNodeState({ status: 'cancelled', cancel_reason: 'not_run' })).toBeNull();
+    expect(runStatusToNodeState(row({ status: 'cancelled', cancel_reason: 'not_run' }))).toBeNull();
   });
 
   // Cache-hit wins over status.
   it('cache_hit=true → CACHE_HIT regardless of status (completed)', () => {
-    const evt = runStatusToNodeState({
+    const evt = runStatusToNodeState(row({
       status: 'completed',
       cache_hit: true,
       original_run_id: 'run-original-42',
       cache_key: 'cache-key-abc',
       run_ids: ['audit-1'],
       tally: { running: 0, completed: 1, failed: 0 },
-    });
+    }));
     expect(evt).toEqual({
       type: 'CACHE_HIT',
       cacheKey: 'cache-key-abc',
@@ -135,12 +144,12 @@ describe('runStatusToNodeState', () => {
     // Defends against a polling tick where the cache
     // signal arrives before the audit row's terminal status.  The
     // bridge MUST short-circuit so the streaming actor never spawns.
-    const evt = runStatusToNodeState({
+    const evt = runStatusToNodeState(row({
       status: 'running',
       cache_hit: true,
       original_run_id: 'run-original-7',
       cache_key: 'k',
-    });
+    }));
     expect(evt).toEqual({
       type: 'CACHE_HIT',
       cacheKey: 'k',
@@ -249,7 +258,7 @@ function startSubscribeSSE(): {
     types: {
       events: {} as EventObject,
     },
-    actors: { subscribeSSE: subscribeSSE as never },
+    actors: { subscribeSSE },
   }).createMachine({
     id: 'harness',
     initial: 'live',
@@ -462,7 +471,7 @@ function startPollNodeStatus(
   const events: EventObject[] = [];
   const harness = setup({
     types: { events: {} as EventObject },
-    actors: { pollNodeStatus: pollNodeStatus as never },
+    actors: { pollNodeStatus },
   }).createMachine({
     id: 'pollHarness',
     initial: 'live',
@@ -690,5 +699,64 @@ describe('pollNodeStatus — a lost connection is retried, a 404 ends it', () =>
     await vi.advanceTimersByTimeAsync(2000);
     expect(events.filter(e => e.type === 'PIPELINE_DONE')).toHaveLength(1);
     stop();
+  });
+});
+
+describe('submitPipeline — a refused Run lists its refusals for the banner', () => {
+  // The banner over the canvas lists `items` as bullets under `message`.
+  // Each refusal the server sends as its own entry becomes one item; the
+  // canvas checks nothing itself.
+  const pipeline = { name: 'p', nodes: [], edges: [] } as never;
+  const run = () => {
+    const actor = createActor(submitPipeline, { input: { pipeline } });
+    actor.start();
+    return toPromise(actor);
+  };
+  const answer = (validate: unknown, runStatus = 200, runBody: unknown = { job_id: 'j1' }) =>
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('/api/workflow/validate')) return new Response(JSON.stringify(validate));
+      return new Response(JSON.stringify(runBody), { status: runStatus });
+    }));
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('a validation refusal is a header with one item per error, each draft refusal listed once', async () => {
+    const param = "Node 'n1' (demo.label draft): parameter 'label_column' is not declared by draft; remove it";
+    const unwired = "Node 'n1': demo.label declares input 'mask', which nothing is connected to.";
+    const draft = "Node 'n2' (demo.plot): its draft has no selected script";
+    // The validate route's shape: each draft refusal's message is also one
+    // of `errors`, so `errors` already lists it.
+    answer({ valid: false, errors: [param, unwired, draft], draftRefusals: [{ nodeId: 'n2', message: draft }] });
+    await expect(run()).rejects.toMatchObject({
+      message: 'Cannot run — validation errors:',
+      items: [param, unwired, draft],
+    });
+  });
+
+  it('a 409 draft_refused is a header with one item per refusal, keeping its kind, hint and status', async () => {
+    const a = "Node 'n1' (demo.label draft): its draft run is still running";
+    const b = "Node 'n2' (demo.plot draft): its env cannot be made runnable";
+    answer({ valid: true }, 409, { detail: {
+      kind: 'draft_refused', message: `${a}\n${b}`, hint: 'Fix each draft in the Registry, then click Run again.',
+      refusals: [{ nodeId: 'n1', message: a }, { nodeId: 'n2', message: b }],
+    } });
+    await expect(run()).rejects.toMatchObject({
+      message: 'Cannot run — drafts refused:',
+      items: [a, b],
+      kind: 'draft_refused',
+      hint: 'Fix each draft in the Registry, then click Run again.',
+      status: 409,
+    });
+  });
+
+  it('a single-message refusal stays one message with no items', async () => {
+    answer({ valid: true }, 409, { detail: {
+      kind: 'not_runnable_docker', message: 'Docker is installed but the daemon is not running.', hint: 'Start Docker.',
+    } });
+    const err = await run().catch(e => e);
+    expect(err.message).toBe('Docker is installed but the daemon is not running.');
+    expect(err.items).toBeUndefined();
   });
 });

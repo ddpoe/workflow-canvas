@@ -71,3 +71,38 @@ def version_interpreter(env: str, fingerprint: str | None,
     from .captures import image_info
 
     return image_info(env, fingerprint, Path(project_dir)).interpreter
+
+
+def version_bin_dir(env: str, fingerprint: str | None,
+                    project_dir: Path | str) -> str | None:
+    """Return the ``bin`` directory of *env*'s image at *fingerprint*.
+
+    The directory holding the interpreter :func:`version_interpreter`
+    answers, for an image wfc built (uv, pixi, conda): put first on the
+    container's ``PATH``, it makes ``python`` and the env's other tools the
+    env's own. A bring-your-own image, or an interpreter recorded as a bare
+    name, has none: its own ``PATH`` is left as it is.
+
+    Args:
+        env: The env name the version (or the env's record) records.
+        fingerprint: The ``env_fingerprint`` it records.
+        project_dir: The project root.
+
+    Returns:
+        A container path (``/opt/venv/bin``), or ``None``.
+
+    Raises:
+        CaptureMissingError: As :func:`version_interpreter` raises.
+    """
+    import posixpath
+
+    from .backends import BACKENDS
+    from .captures import image_info
+
+    info = image_info(env, fingerprint, Path(project_dir))
+    row = BACKENDS.get(info.backend)
+    if row is None or not row.builds_image:
+        return None
+    if not posixpath.isabs(info.interpreter):
+        return None
+    return posixpath.dirname(info.interpreter)

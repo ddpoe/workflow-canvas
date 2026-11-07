@@ -12,7 +12,7 @@ re-run.
   run-archive file), ``remote`` (recorded pushed) or ``missing``.  The hit
   rule and both resolvers read it; it never builds a checkout or pulls.
 - :func:`resolve_input` serves a run's consumer (Execution's materialize
-  phase and ``wfc resolve_input``).  A pre-archive row resolves to the run
+  phase).  A pre-archive row resolves to the run
   archive; an archived row resolves through :func:`_local_entry_path`, the
   one reader both resolvers share, which pulls only a remote entry.
 - :func:`resolve_output` serves a user (``wfc export`` and the Canvas

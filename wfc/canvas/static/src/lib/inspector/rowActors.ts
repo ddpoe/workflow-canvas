@@ -38,6 +38,8 @@ import {
   unregisterEditorChild,
 } from '../machines/root.js';
 import { pendingBoundVariables } from '../builder/pipeline.js';
+import { isVarRef } from '../builder/compile.js';
+import { canvasGeneration, nodes } from '../builder/stores.js';
 import type { ParamDef } from '../shared/types.js';
 import type { RenderTick } from './renderTick.svelte.js';
 
@@ -102,10 +104,94 @@ const trackReleases = new WeakMap<RowActor, () => void>();
  */
 const registeredIds = new WeakMap<RowActor, string>();
 
+/** The variable a `{"$var": name}` value names, or `null` for any other value. */
+function varNameOf(v: unknown): string | null {
+  return isVarRef(v) ? v.$var : null;
+}
+
+/**
+ * Drafts kept across a row's teardown, by the aggregator id the row's actor
+ * was registered under (node, param, suffix and row).
+ *
+ * A row the user has unlocked and typed into lives only in its actor's
+ * `draftValue`, and a node switch tears the actor down. Teardown keeps the
+ * draft here with the committed value it was typed over; the next spawn of
+ * the same row, after its first-render EDIT, puts the draft back with
+ * CHANGE_VALUE when the committed value is still the same. The row comes
+ * back unlocked with the typed text and nothing is committed, so per-row
+ * actor isolation holds (the draft belongs to one row id, never a sibling).
+ */
+const keptDrafts = new Map<string, { draft: string | boolean; over: string; nodeId: string }>();
+
+/**
+ * The canvas generation and node id each actor was spawned for. A draft is
+ * kept only while both still hold: a pipeline load or Clear starts a new
+ * generation, and a deleted node's id may be taken by a new node.
+ */
+const spawnedFor = new WeakMap<RowActor, { generation: number; nodeId: string }>();
+
+// A new canvas drops every kept draft; a deleted node drops its own.
+canvasGeneration.subscribe(() => keptDrafts.clear());
+nodes.subscribe(ns => {
+  if (keptDrafts.size === 0) return;
+  const live = new Set(ns.map(n => n.id));
+  for (const [id, kept] of keptDrafts) if (!live.has(kept.nodeId)) keptDrafts.delete(id);
+});
+
+/** The states in which a row is unlocked and holds a draft. */
+const UNLOCKED = new Set(['editing', 'invalid', 'addingVariant', 'editingValue']);
+
+/** A committed value as a comparable string (`undefined` included). */
+function valueKey(v: unknown): string {
+  return v === undefined ? 'undefined' : JSON.stringify(v);
+}
+
+/**
+ * Keep a torn-down row's draft when the row was unlocked and its node is
+ * still on the same canvas; else drop any kept one. A teardown that runs
+ * after a pipeline load or a node delete keeps nothing.
+ */
+function keepDraft(id: string, actor: RowActor): void {
+  const snap = actor.getSnapshot();
+  const born = spawnedFor.get(actor);
+  const stillHere = born !== undefined
+    && born.generation === get(canvasGeneration)
+    && get(nodes).some(n => n.id === born.nodeId);
+  if (!stillHere || !UNLOCKED.has(snap.value as string)) {
+    keptDrafts.delete(id);
+    return;
+  }
+  keptDrafts.set(id, { draft: snap.context.draftValue, over: valueKey(snap.context.currentValue), nodeId: born.nodeId });
+}
+
+/**
+ * Put a kept draft back into a freshly spawned, unlocked row, once.
+ *
+ * Args:
+ *     ctx: The owning component's context.
+ *     row: The row just spawned.
+ *     actor: Its started actor.
+ */
+function restoreDraft(ctx: RowActorContext, row: Row, actor: RowActor): void {
+  const id = aggregatorIdFor(ctx, row.id);
+  const kept = keptDrafts.get(id);
+  if (!kept) return;
+  keptDrafts.delete(id);
+  if (kept.over !== valueKey(ctx.committedValueFor(row))) return;
+  if (!UNLOCKED.has(actor.getSnapshot().value as string)) return;
+  actor.send({ type: 'CHANGE_VALUE', value: kept.draft });
+}
+
+/** Forget every kept draft (a fresh test, a fresh canvas). */
+export function clearKeptDrafts(): void {
+  keptDrafts.clear();
+}
+
 /** Register an actor with the aggregator and remember the id it went in under. */
 function register(ctx: RowActorContext, rowId: string, actor: RowActor): void {
   const id = aggregatorIdFor(ctx, rowId);
   registeredIds.set(actor, id);
+  spawnedFor.set(actor, { generation: get(canvasGeneration), nodeId: ctx.nodeId });
   registerEditorChild(id, actor);
 }
 
@@ -148,6 +234,10 @@ export function spawnBaseActor(ctx: RowActorContext, row: Row): ParamEditorActor
       return next;
     });
   }
+  // A binding is saved with the node as a `{"$var": name}` value, so a row
+  // whose committed value is a reference spawns bound, with no literal.
+  const committed = ctx.committedValueFor(row);
+  const savedVar = varNameOf(committed);
   const next = createActor(machine, {
     input: {
       nodeId: ctx.nodeId,
@@ -158,8 +248,8 @@ export function spawnBaseActor(ctx: RowActorContext, row: Row): ParamEditorActor
       enumOptions: ctx.enumOptions,
       min: ctx.min,
       max: ctx.max,
-      currentValue: ctx.committedValueFor(row),
-      boundVariable: pendingBV ?? null,
+      currentValue: savedVar === null ? committed : undefined,
+      boundVariable: pendingBV ?? savedVar,
     },
     inspect: inspectCallback,
   }) as unknown as ParamEditorActor;
@@ -170,9 +260,22 @@ export function spawnBaseActor(ctx: RowActorContext, row: Row): ParamEditorActor
   // so the Run-button payload would carry stale values. Tracking lastValue
   // here suppresses redundant calls when RESET_TO echoes the parent's
   // own state back at us.
-  let lastForwardedBase: unknown = ctx.committedValueFor(row);
+  //
+  // A bound row forwards `{"$var": name}`, so the binding is in the node's
+  // data and outlives this actor; a row leaving `bound` (unbind, or edit)
+  // forwards its literal again.
+  let lastForwardedBase: unknown = committed;
   next.subscribe(snap => {
-    if ((snap.value as string) !== 'committed') return;
+    const state = snap.value as string;
+    if (state === 'bound') {
+      const name = snap.context.boundVariable!;
+      if (varNameOf(lastForwardedBase) === name) return;
+      lastForwardedBase = { $var: name };
+      ctx.onBaseChange(lastForwardedBase);
+      return;
+    }
+    const leftBound = varNameOf(lastForwardedBase) !== null;
+    if (state !== 'committed' && !leftBound) return;
     const cv = snap.context.currentValue;
     if (cv === lastForwardedBase) return;
     lastForwardedBase = cv;
@@ -187,6 +290,7 @@ export function spawnBaseActor(ctx: RowActorContext, row: Row): ParamEditorActor
     next.send({ type: 'EDIT' });
     ctx.onAutoEdit(row.id);
   }
+  restoreDraft(ctx, row, next);
   return next;
 }
 
@@ -256,6 +360,7 @@ export function spawnVariantActor(ctx: RowActorContext, row: Row): VariantActor 
     next.send({ type: 'EDIT' });
     ctx.onAutoEdit(row.id);
   }
+  restoreDraft(ctx, row, next);
   return next;
 }
 
@@ -280,7 +385,10 @@ export function spawnVariantActor(ctx: RowActorContext, row: Row): VariantActor 
  */
 export function teardownRowActor(_ctx: RowActorContext, _rowId: string, actor: RowActor): void {
   const id = registeredIds.get(actor);
-  if (id !== undefined) unregisterEditorChild(id, actor);
+  if (id !== undefined) {
+    keepDraft(id, actor);
+    unregisterEditorChild(id, actor);
+  }
   registeredIds.delete(actor);
   const release = trackReleases.get(actor);
   if (release) {

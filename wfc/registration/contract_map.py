@@ -31,8 +31,7 @@ def load_contract_map(session) -> dict[str, dict]:
     newest version; the entry's top-level slots are the newest version's and
     its top-level env is the Method row's stored value (the spelling the
     registration recorded), which is what an unpinned node reads. Two labels
-    with one
-    identity share a key, holding the newer label.
+    with one identity share a key, holding the newer label.
 
     Args:
         session: An open database session.
@@ -46,15 +45,23 @@ def load_contract_map(session) -> dict[str, dict]:
         ``None`` for a version with no contract); a method with no version
         list is malformed and left out, so a node naming it is refused.
         Enrichment reads the output half; the Graph unit's structural core
-        and column cross-check read the input half; the params
-        normalization reads ``params``.
+        reads the input half; the params normalization reads ``params``.
+
+        A method with a draft also holds ``versions["draft"]``: the contract
+        its draft's ``method.yaml`` holds now (read as the draft re-read
+        reads it, so an edit needs no Update first), with ``label: None`` and
+        the draft's ``folder``. A DRAFT method (no registered version) gets
+        an entry of its own, ``draft_only: True``, whose top level is the
+        draft's contract and whose ``version`` and ``label`` are ``None``. A
+        draft whose ``method.yaml`` could not be read, or whose module is not
+        registered, adds nothing.
     """
     contract_map: dict[str, dict] = {}
-    names = [(mod.name, meth.name, meth.env)
-             for mod in session.exec(select(Module)).all() for meth in mod.methods]
-    if not names:
-        # Nothing registered: no version list to read, so no project root
-        # is needed (a bare database answers an empty map).
+    modules = session.exec(select(Module)).all()
+    names = [(mod.name, meth.name, meth.env) for mod in modules for meth in mod.methods]
+    if not modules:
+        # Nothing registered: no version list or draft to read, so no project
+        # root is needed (a bare database answers an empty map).
         return contract_map
     root = get_project_root()
     for module, method, row_env in names:
@@ -73,4 +80,29 @@ def load_contract_map(session) -> dict[str, dict]:
             "version": newest.entry.identity,
             "versions": versions,
         }
+    _add_drafts(contract_map, {mod.name for mod in modules}, root)
     return contract_map
+
+
+def _add_drafts(contract_map: dict[str, dict], modules: set[str], root) -> None:
+    """Add each draft's contract, its ``method.yaml`` read now, as ``versions["draft"]``."""
+    from .draft import draft_contract_now, list_drafts
+
+    for pointer in list_drafts(root):
+        contract, _error = draft_contract_now(pointer)
+        if contract is None or pointer.module not in modules:
+            continue
+        draft = {
+            "label": None,
+            "input_slots": contract["inputs"],
+            "output_slots": contract["outputs"],
+            "params": contract["params"],
+            "env": contract["env"],
+            "folder": str(pointer.folder),
+        }
+        key = f"{pointer.module}.{pointer.method}"
+        if key in contract_map:
+            contract_map[key]["versions"]["draft"] = draft
+        else:
+            contract_map[key] = {**draft, "version": None, "draft_only": True,
+                                 "versions": {"draft": draft}}

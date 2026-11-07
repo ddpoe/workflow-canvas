@@ -163,6 +163,52 @@ def test_demo_remove_takes_a_restored_sample_folder(tmp_project, capsys):
     assert not os.access(obj, os.W_OK), "the cache object stays read-only"
 
 
+@workflow(purpose="wfc demo --remove with no terminal and no --yes lists what it "
+                  "would delete, asks nothing, refuses naming --yes and removes "
+                  "nothing, with no traceback; --remove --yes removes the demo",
+          inputs="a demo module and a demo-named sample registered through the "
+                 "demo's opt-in; pytest's own stdin, which is not a terminal",
+          outputs="exit 1 naming --yes, the module and sample rows kept; then "
+                  "exit 0 with --yes and both gone")
+def test_demo_remove_with_no_terminal_refuses_naming_yes(cli, tmp_project,
+                                                         monkeypatch):
+    from sqlmodel import select
+
+    from tests.fixtures.fakes import stub_interactive_prompt
+    from wfc.persistence import Module, Sample, get_session
+    from wfc.registration import register_sample
+
+    register_module(name="__demo__", contracts=[], allow_reserved=True)
+    src = tmp_project.parent / "ctrl_01.csv"
+    src.write_bytes(b"id,value\n1,ctrl\n")
+    register_sample(name="__demo__ctrl_01", source_path=src,
+                    project_root=tmp_project, allow_reserved=True)
+    prompts: list[str] = []
+    stub_interactive_prompt(monkeypatch, "y", prompts=prompts)
+
+    def demo_rows():
+        with get_session() as session:
+            return (
+                [m.name for m in session.exec(select(Module)).all()],
+                [s.name for s in session.exec(select(Sample)).all()],
+            )
+
+    result = cli("demo", "--dir", str(tmp_project), "--remove")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "wfc demo --remove will delete:" in result.stdout
+    assert "--yes" in result.stderr and "Nothing was removed" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert prompts == []
+    assert demo_rows() == (["__demo__"], ["__demo__ctrl_01"])
+
+    result = cli("demo", "--dir", str(tmp_project), "--remove", "--yes")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert prompts == []
+    assert demo_rows() == ([], [])
+
+
 def test_demo_sample_selection_escapes_like_wildcards(tmp_project, capsys):
     """Tier 1: `_` is a single-char SQL LIKE wildcard — the __demo__ prefix
     query must escape it, or a user sample like 'mydemo__x' (chars 3-6 spell

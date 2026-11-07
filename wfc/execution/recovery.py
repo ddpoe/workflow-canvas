@@ -15,8 +15,10 @@ puts them together for one pipeline.
 ``close_out_pipeline`` ends a dead pipeline: its running rows fail with
 "Interrupted: the server stopped", the pipeline-end walk gives every target
 still without a row its reason (``upstream_failed`` below a failed run,
-otherwise ``interrupted``, or ``user`` when the record says a cancel was
-asked for), Storage releases what the pipeline held, and the record goes.
+otherwise ``interrupted``), Storage releases what the pipeline held, the
+record goes, and the pipeline's status and end are stored once the record is
+gone. When the record says a cancel was asked for, the user's reason wins:
+the running rows are cancelled for the user and the walk says ``user``.
 
 ``cancel_recorded_pipeline`` is the one way a pipeline is cancelled through
 its record: it sets the record's cancel flag, kills the engine's process tree
@@ -24,8 +26,13 @@ when its identity matches, and cancels the running rows; when the owner is
 still alive its own end steps then walk with ``user``, and when it is gone
 this operation closes the pipeline out with ``user`` itself. Never two walks.
 
-Both take plain values (a project root, a pipeline id), are idempotent, and
-are serialised per pipeline within this process.
+Both take plain values (a project root, a pipeline id) and are idempotent.
+They are serialised per pipeline across processes by the close-out lock file
+beside the pipeline record (``close_out_lock``), so ``wfc cancel`` in a
+terminal and the canvas server's recovery never both walk one pipeline: one
+walk, one release, one record removal. The cancel sets its flag before it
+waits for the lock, so a close-out that holds the lock reads the flag and the
+cancel's reason wins whichever takes the lock first.
 """
 from __future__ import annotations
 
@@ -34,7 +41,8 @@ import json
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -50,9 +58,12 @@ from ..persistence import (
 from ..storage import end_pipeline_samples, release_finished_runs
 from . import claim as _claim
 from .lifecycle import _write_cancelled_rows, cancel_pipeline, fail_pipeline
+from .pipeline_outcome import store_pipeline_outcome
 from .pipeline_record import (
     PipelineRecord,
     ProcessIdentity,
+    hold_lock_file,
+    is_pipeline_id,
     process_identity,
     read_pipeline_record,
     remove_pipeline_record,
@@ -329,14 +340,86 @@ def kill_process_tree(identity: ProcessIdentity | None) -> bool:
 
 
 _locks: dict[str, threading.RLock] = {}
+_depths: dict[str, int] = {}
 _locks_guard = threading.Lock()
 
 
-def _pipeline_lock(project_root: Path | str, pipeline_id: str) -> threading.RLock:
-    """The lock that serialises the close-out and the cancel of one pipeline."""
-    key = f"{Path(project_root).resolve()}::{pipeline_id}"
+@task(
+    purpose="Serialise the close-out and the cancel of one pipeline, across "
+            "threads (a re-entrant lock) and processes (the close-out lock file)",
+    inputs="project_root, pipeline_id",
+    outputs="the lock held for the block",
+    critical="The lock file is taken over only when the process holding it is "
+             "gone; a run dir this call made is removed again when empty, and a "
+             "waiter whose run dir was removed that way makes it again",
+)
+@contextmanager
+def close_out_lock(project_root: Path | str, pipeline_id: str) -> Iterator[None]:
+    """Hold the lock that serialises the close-out and the cancel of one pipeline.
+
+    Across processes it is the close-out lock file beside the pipeline record
+    (Layout's ``pipeline_close_out_lock_path``), so ``wfc cancel`` in a
+    terminal and the canvas server's recovery never walk one pipeline at the
+    same time. Within this process a re-entrant lock stands in front of it:
+    threads queue on it, and the cancel closes the pipeline out while it
+    holds the lock. A missing run dir is made for the lock file and removed
+    again when it is left empty; a waiter in another process whose run dir
+    was removed that way while it waited makes it again. An id that is not a
+    pipeline id never forms a path and is locked within this process only.
+
+    Args:
+        project_root: The wfc project root.
+        pipeline_id: The pipeline.
+
+    Yields:
+        Nothing; the lock is held until the block ends.
+    """
+    root = Path(project_root)
+    key = f"{root.resolve()}::{pipeline_id}"
     with _locks_guard:
-        return _locks.setdefault(key, threading.RLock())
+        lock = _locks.setdefault(key, threading.RLock())
+    with lock:
+        depth = _depths.get(key, 0)
+        _depths[key] = depth + 1
+        try:
+            if depth or not is_pipeline_id(pipeline_id):
+                yield
+            else:
+                run_dir = layout.pipeline_run_dir(root, pipeline_id)
+                held = ExitStack()
+                while True:
+                    made = not run_dir.is_dir()
+                    run_dir.mkdir(parents=True, exist_ok=True)
+                    try:
+                        held.enter_context(hold_lock_file(
+                            layout.pipeline_close_out_lock_path(root, pipeline_id)))
+                    except FileNotFoundError:
+                        # The holder this caller waited on (another process)
+                        # removed the run dir it had made; make it again.
+                        continue
+                    break
+                try:
+                    with held:
+                        yield
+                finally:
+                    if made:
+                        try:
+                            run_dir.rmdir()
+                        except OSError:
+                            pass
+        finally:
+            if depth:
+                _depths[key] = depth
+            else:
+                _depths.pop(key, None)
+
+
+def _has_running_row(pipeline_id: str) -> bool:
+    """Whether the pipeline has a running row."""
+    with get_session() as session:
+        return session.exec(
+            select(Run.id).where(Run.pipeline_id == pipeline_id)
+            .where(Run.status == "running")).first() is not None
 
 
 def _frozen_document_hash(project_root: Path | str, pipeline_id: str) -> str | None:
@@ -356,11 +439,16 @@ class CloseOut:
 
     Attributes:
         pipeline_id: The pipeline.
-        runs_failed: The running rows it failed.
+        runs_failed: The running rows it failed as interrupted.
         rows_written: The rows the pipeline-end walk wrote.
         user_cancelled: Whether the walk gave the ``user`` reason.
         samples_removed: The sample views Storage removed.
         record_removed: Whether a record was removed.
+        runs_cancelled: The running rows it cancelled for the user (a close-out
+            with the user's reason cancels them instead of failing them).
+        closed: False when nothing was left to close: the pipeline had no
+            record and no running row (another closer ended it first), so
+            nothing was written, released or removed.
     """
 
     pipeline_id: str
@@ -369,18 +457,23 @@ class CloseOut:
     user_cancelled: bool
     samples_removed: list[str]
     record_removed: bool
+    runs_cancelled: int = 0
+    closed: bool = True
 
 
-@workflow(purpose="Close out a pipeline nothing is running any more: fail its "
-                  "running rows as interrupted, write a row for every target "
-                  "still without one, ask Storage to release what the pipeline "
-                  "held, and remove its record",
+@workflow(purpose="Close out a pipeline nothing is running any more: end its "
+                  "running rows (failed as interrupted, or cancelled for the "
+                  "user when a cancel was asked for), write a row for every "
+                  "target still without one, ask Storage to release what the "
+                  "pipeline held, remove its record, and store its status and end",
           inputs="project root, pipeline id; the pipeline's record and rows",
-          outputs="CloseOut: the rows failed and written, the samples removed",
+          outputs="CloseOut: the rows ended and written, the samples removed",
           critical="only for a pipeline judged dead (or whose owner is gone after "
-                   "a cancel); idempotent and serialised per pipeline. The "
-                   "record goes last, so a close-out that fails part-way is "
-                   "tried again")
+                   "a cancel); idempotent and serialised per pipeline across "
+                   "processes by the close-out lock file, so one walk, one "
+                   "release and one record removal. A pipeline with no record "
+                   "and no running row is left as it is. The record goes last, "
+                   "so a close-out that fails part-way is tried again")
 def close_out_pipeline(project_root: Path | str, pipeline_id: str, *,
                        user_cancelled: bool = False) -> CloseOut:
     """End a pipeline whose owner and engine are gone.
@@ -392,20 +485,37 @@ def close_out_pipeline(project_root: Path | str, pipeline_id: str, *,
             record's cancel flag counts the same.
 
     Returns:
-        What the close-out did; a second call fails and writes nothing.
+        What the close-out did; a second call (or one after another process
+        closed the pipeline out) finds nothing to close and does nothing.
     """
-    with _pipeline_lock(project_root, pipeline_id):
+    with close_out_lock(project_root, pipeline_id):
         口 = Step(step_num=1, name="Read the record's cancel flag",
                  purpose="A cancel the user asked for (the flag, or the cancel "
-                         "operation calling) makes the walk's reason user; "
-                         "otherwise it is interrupted, also for a pipeline with "
-                         "no record (one from before records)")
+                         "operation calling) makes the reason user; otherwise "
+                         "it is interrupted, also for a pipeline with no record "
+                         "(one from before records). Read under the lock, after "
+                         "a cancel in another process set the flag, so the "
+                         "cancel's reason wins. A pipeline with no record and no "
+                         "running row was closed already: nothing is done")
         record: PipelineRecord | None = read_pipeline_record(project_root, pipeline_id)
+        if record is None and not _has_running_row(pipeline_id):
+            return CloseOut(pipeline_id=pipeline_id, runs_failed=[], rows_written=0,
+                            user_cancelled=user_cancelled, samples_removed=[],
+                            record_removed=False, closed=False)
         user = user_cancelled or bool(record is not None and record.cancel_requested)
 
-        口 = AutoStep(step_num=2, name="Fail the running rows as interrupted")
-        failed = fail_pipeline(pipeline_id, message=INTERRUPTED_RUN_MESSAGE,
-                               traceback_text=None)
+        口 = Step(step_num=2, name="End the running rows",
+                 purpose="With the user's reason, cancel_pipeline cancels each "
+                         "running row for the user, as the cancel does; "
+                         "otherwise fail_pipeline fails each as interrupted, "
+                         "with no traceback")
+        failed: list[int] = []
+        cancelled = 0
+        if user:
+            cancelled = cancel_pipeline(pipeline_id, str(project_root))
+        else:
+            failed = fail_pipeline(pipeline_id, message=INTERRUPTED_RUN_MESSAGE,
+                                   traceback_text=None, project_root=project_root)
 
         口 = Step(step_num=3, name="Hash the frozen document",
                  purpose="The walk stamps its rows with the launch's document "
@@ -427,7 +537,7 @@ def close_out_pipeline(project_root: Path | str, pipeline_id: str, *,
                   f"{exc}", file=sys.stderr)
 
         口 = Step(step_num=6, name="Release the records bound to ended runs",
-                 purpose="The rows step 2 failed held their claims' in-use "
+                 purpose="The rows step 2 ended held their claims' in-use "
                          "records; Storage releases every record bound to a run "
                          "that is no longer running")
         try:
@@ -438,9 +548,13 @@ def close_out_pipeline(project_root: Path | str, pipeline_id: str, *,
 
         口 = AutoStep(step_num=7, name="Remove the record")
         gone = remove_pipeline_record(project_root, pipeline_id)
+
+        口 = AutoStep(step_num=8, name="Store the pipeline's status and end")
+        store_pipeline_outcome(project_root, pipeline_id)
         return CloseOut(pipeline_id=pipeline_id, runs_failed=failed,
                         rows_written=written, user_cancelled=user,
-                        samples_removed=removed, record_removed=gone)
+                        samples_removed=removed, record_removed=gone,
+                        runs_cancelled=cancelled)
 
 
 @dataclass(frozen=True)
@@ -454,6 +568,9 @@ class CancelOutcome:
         runs_cancelled: The running rows cancelled for the user.
         owner_alive: Whether the owner is alive: its own end steps then walk.
         close_out: The close-out this operation ran (owner gone), or None.
+        ended_before: Whether the pipeline ended between the cancel's flag and
+            its turn at the lock (another process closed it out, with the
+            user's reason, or its owner finished): nothing was left to cancel.
     """
 
     pipeline_id: str
@@ -462,18 +579,21 @@ class CancelOutcome:
     runs_cancelled: int
     owner_alive: bool
     close_out: CloseOut | None
+    ended_before: bool = False
 
 
-@workflow(purpose="Cancel a pipeline through its record: set the cancel flag, "
-                  "kill the engine's process tree when its identity matches, "
-                  "cancel the running rows for the user; then, only when the "
-                  "owner is gone, walk with user, release and remove the record",
+@workflow(purpose="Cancel a pipeline through its record: set the cancel flag "
+                  "before taking the close-out lock, then kill the engine's "
+                  "process tree when its identity matches and cancel the "
+                  "running rows for the user; then, only when the owner is "
+                  "gone, walk with user, release and remove the record",
           inputs="project root, pipeline id",
           outputs="CancelOutcome",
           critical="never two walks: a live owner's end steps walk with user "
                    "(its cancel probe reads the flag); a pid whose creation time "
                    "differs is never killed; serialised per pipeline with the "
-                   "close-out")
+                   "close-out across processes, and a close-out that takes the "
+                   "lock first reads the flag, so the cancel's reason wins")
 def cancel_recorded_pipeline(project_root: Path | str, pipeline_id: str) -> CancelOutcome:
     """Cancel a pipeline, whichever process runs it.
 
@@ -487,35 +607,42 @@ def cancel_recorded_pipeline(project_root: Path | str, pipeline_id: str) -> Canc
     Raises:
         UnknownPipelineError: The pipeline has no record and no running row.
     """
-    with _pipeline_lock(project_root, pipeline_id):
-        口 = Step(step_num=1, name="Set the record's cancel flag",
-                 purpose="The owner's cancel probe reads the flag, so a live "
-                         "owner in another process learns of the cancel; a "
-                         "pipeline with neither a record nor a running row is "
-                         "refused")
-        record = request_cancel(project_root, pipeline_id)
-        if record is None:
-            with get_session() as session:
-                running = session.exec(
-                    select(Run.id).where(Run.pipeline_id == pipeline_id)
-                    .where(Run.status == "running")).first()
-            if running is None:
+    口 = Step(step_num=1, name="Set the record's cancel flag",
+             purpose="Before the close-out lock: the owner's cancel probe reads "
+                     "the flag, so a live owner in another process learns of the "
+                     "cancel, and a close-out holding the lock in another "
+                     "process reads it and walks with the user's reason")
+    announced = request_cancel(project_root, pipeline_id)
+    with close_out_lock(project_root, pipeline_id):
+        口 = Step(step_num=2, name="Read the pipeline again under the lock",
+                 purpose="A pipeline that ended while the cancel waited (no "
+                         "record and no running row any more) is left as it "
+                         "ended; one with neither from the start is refused; a "
+                         "record written since the flag gets the flag")
+        record = read_pipeline_record(project_root, pipeline_id)
+        if record is None and not _has_running_row(pipeline_id):
+            if announced is None:
                 raise UnknownPipelineError(
                     f"pipeline {pipeline_id} has no record and no running step: "
                     f"nothing to cancel")
+            return CancelOutcome(pipeline_id=pipeline_id, had_record=True,
+                                 engine_killed=False, runs_cancelled=0,
+                                 owner_alive=False, close_out=None, ended_before=True)
+        if record is not None and not record.cancel_requested:
+            record = request_cancel(project_root, pipeline_id) or record
 
         killed = False
         if record is not None:
             # A kill that fails is printed and the cancel carries on: the
             # rows still end cancelled for the user.
             try:
-                口 = AutoStep(step_num=2, name="Kill the engine's tree on identity match")
+                口 = AutoStep(step_num=3, name="Kill the engine's tree on identity match")
                 killed = kill_process_tree(record.engine)
             except Exception as exc:  # noqa: BLE001 - the cancel must reach its rows
                 print(f"[cancel] killing pipeline {pipeline_id}'s engine raised: "
                       f"{exc!r}", file=sys.stderr)
 
-        口 = Step(step_num=3, name="Cancel the running rows for the user",
+        口 = Step(step_num=4, name="Cancel the running rows for the user",
                  purpose="cancel_pipeline flips each running row to cancelled "
                          "with the user reason and removes the samples the "
                          "pipeline restored")
@@ -525,7 +652,7 @@ def cancel_recorded_pipeline(project_root: Path | str, pipeline_id: str) -> Canc
                        and probe_process(record.owner) is ProcessState.ALIVE)
         closed: CloseOut | None = None
         if not owner_alive:
-            口 = AutoStep(step_num=4, name="Owner gone: close out with the user reason")
+            口 = AutoStep(step_num=5, name="Owner gone: close out with the user reason")
             closed = close_out_pipeline(project_root, pipeline_id, user_cancelled=True)
         return CancelOutcome(pipeline_id=pipeline_id, had_record=record is not None,
                              engine_killed=killed, runs_cancelled=flipped,

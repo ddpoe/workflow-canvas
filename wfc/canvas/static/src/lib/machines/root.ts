@@ -8,7 +8,13 @@
  * `@statelyai/inspect` import is gated behind `import.meta.env.DEV`
  * so Vite tree-shakes it out of the production bundle.
  */
-import { createActor, fromPromise } from 'xstate';
+import {
+  createActor,
+  fromPromise,
+  type InspectionEvent,
+  type Observer,
+  type Subscribable,
+} from 'xstate';
 import { writable, get } from 'svelte/store';
 import {
   runState,
@@ -52,7 +58,7 @@ import {
  * Vite tree-shakes the dynamic import below, so this stays `undefined`
  * and `createActor({ inspect })` is a no-op.
  */
-export let inspect: ((evt: { type: string }) => void) | undefined;
+export let inspect: Observer<InspectionEvent> | undefined;
 
 // Inspector handle kept module-local so `startInspector()` (called from
 // the DevToolbar "Open Inspector" button) can defer `window.open()` to
@@ -61,7 +67,7 @@ export let inspect: ((evt: { type: string }) => void) | undefined;
 // reliably every time. Until the button is clicked the inspect
 // callback still buffers events into the adapter's deferred queue
 // (capped at maxDeferredEvents below), and they flush on connect.
-let _inspector: { start: () => void } | undefined;
+let _inspector: { start: () => void; inspect: Observer<InspectionEvent> } | undefined;
 
 if (import.meta.env.DEV) {
   // Top-level `await` — Vite tree-shakes the entire branch out of prod
@@ -157,7 +163,10 @@ function bridgeChildToAggregator(id: string, child: ChildActor): void {
   if (childAggregatorSubs.has(child)) return;
   childAggregatorIds.set(child, id);
   let last: unknown = child.getSnapshot().value;
-  const sub = child.subscribe(snap => {
+  // Both row machines' snapshots carry `value`; subscribing through the
+  // common supertype avoids calling a union of incompatible overloads.
+  const source: Subscribable<{ value: unknown }> = child;
+  const sub = source.subscribe(snap => {
     const now: unknown = snap.value;
     if (childSettledBetween(last, now)) {
       paramEditorAggregator.send({ type: 'CHILD_SETTLED', id });

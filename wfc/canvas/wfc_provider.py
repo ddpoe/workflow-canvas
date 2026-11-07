@@ -36,7 +36,8 @@ from wfc.persistence import (
 
 from .. import layout
 from ..contracts import COLLAPSED_SAMPLE, declared_param_types
-from ..execution import expected_targets, list_pipeline_records, pipeline_status
+from ..execution import expected_targets
+from ..execution.pipeline_outcome import pipeline_document_name
 from ..identity import (
     KEY_RECIPE,
     SampleIdentity,
@@ -330,9 +331,6 @@ class WfcProvider:
             )
 
         self._runs: dict[str, WfcRun] = {}
-        # Each pipeline's runs as stored, ``(status, cancel_reason)``, by
-        # pipeline id.
-        self._pipeline_statuses: dict[str, list[tuple[str, str | None]]] = {}
         # Each pipeline's expected targets, counted once and kept: a frozen
         # document never changes. A frozen document that cannot be loaded is
         # kept as None too; a pipeline with no frozen document yet is not
@@ -422,19 +420,7 @@ class WfcProvider:
         the user-submitted shape), then from ``pipeline.json``. Returns
         None when neither file carries a usable name.
         """
-        base = layout.pipeline_run_dir(self.project_root, pipeline_id)
-        for filename in ("pipeline.editable.json", "pipeline.json"):
-            path = base / filename
-            if not path.exists():
-                continue
-            try:
-                raw = json.loads(path.read_text())
-            except (json.JSONDecodeError, OSError):
-                continue
-            name = raw.get("name")
-            if isinstance(name, str) and name.strip():
-                return name
-        return None
+        return pipeline_document_name(self.project_root, pipeline_id)
 
     def _iso_to_epoch_ms(self, iso_str: str | None) -> float:
         """Convert an ISO datetime string to Unix epoch milliseconds."""
@@ -600,9 +586,6 @@ class WfcProvider:
                     orphaned_runs.add(rid)
 
             cache_keys: dict[str, str | None] = {}
-            # Each pipeline's runs as stored, ``(status, cancel_reason)``,
-            # for its summary.
-            statuses: dict[str, list[tuple[str, str | None]]] = {}
             for run_row in session.exec(select(Run)):
                 method_info = methods.get(run_row.method_id, {})
                 module_name = modules.get(
@@ -703,9 +686,6 @@ class WfcProvider:
 
                 runs[run.id] = run
                 cache_keys[run.id] = run_row.cache_key
-                if run_row.pipeline_id:
-                    statuses.setdefault(run_row.pipeline_id, []).append(
-                        (run_row.status or "unknown", run_row.cancel_reason))
 
             # The failed run behind a cancellation, named by its method and
             # sample from that run's own record.
@@ -822,7 +802,6 @@ class WfcProvider:
         self._modules = modules
         self._methods = methods
         self._runs = runs
-        self._pipeline_statuses = statuses
         self._loaded = True
         print(
             f"WfcProvider: Loaded {len(self._modules)} modules, "
@@ -855,32 +834,42 @@ class WfcProvider:
         return self._expected[pipeline_id]
 
     def get_pipeline_summaries(self) -> list[dict[str, Any]]:
-        """Each pipeline's status and the runs its frozen document expects.
+        """Each pipeline's stored status and the runs its frozen document expects.
 
-        The status is Execution's ``pipeline_status`` over the pipeline's
-        runs (each status and cancel reason) and its pending targets. A
-        pipeline has pending targets only while it has a pipeline record
-        (read through Execution on every call, never cached): the expected
-        count minus its runs of every status, never below zero. A pipeline
-        with no record, or no frozen document (``expected`` is then None),
-        has none, so its status comes from its rows as they are.
+        One entry per ``pipeline_runs`` row, read on every call. The status
+        is the row's, as Execution's status helper stored it through
+        ``pipeline_status``; nothing here works one out. ``expected`` counts
+        the recorded steps the frozen document expects (None without a
+        readable document) and ``nodeOrder`` is its method nodes in
+        document order.
+
+        Each also carries the row's name and start, and its draft fields:
+        whether it ran in draft mode, its drafts, its draft-step count, the
+        draft steps that still exist (from the draft runs) and, once some
+        are cleared, the one line that says why.
 
         Returns:
-            ``{pipelineId, status, expected, nodeOrder}`` per pipeline.
+            ``PipelineSummary`` per pipeline.
         """
+        from . import draft_views
+
         self.load()
-        recorded = {r.pipeline_id for r in list_pipeline_records(self.project_root)}
+        root = self.project_root.resolve()
+        rows = draft_views.pipeline_rows()
+        steps_by_pipeline: dict[str, list[dict[str, Any]]] = {}
+        for step in draft_views.draft_steps(root, rows=rows):
+            steps_by_pipeline.setdefault(step["pipelineId"], []).append(step)
         summaries = []
-        for pipeline_id, statuses in self._pipeline_statuses.items():
+        for pipeline_id, row in rows.items():
             expected = self._expected_targets(pipeline_id)
             count, node_order = expected if expected is not None else (None, None)
-            pending = (max(count - len(statuses), 0)
-                       if count is not None and pipeline_id in recorded else 0)
             summaries.append({
                 "pipelineId": pipeline_id,
-                "status": pipeline_status(statuses, pending),
+                "status": row.status,
                 "expected": count,
                 "nodeOrder": node_order,
+                **draft_views.pipeline_draft_fields(
+                    row, steps_by_pipeline.get(pipeline_id, []), root),
             })
         return summaries
 
@@ -1057,7 +1046,8 @@ class WfcProvider:
             wfc.storage.ResolveOutputError: The run has a malformed record,
                 or its outputs cannot be named apart.
         """
-        image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}
+        from .previews import extension_of, viewer_kind
+
         artifacts: list[dict[str, Any]] = []
 
         for name, _ro, cache_path in self._named_outputs(run_id):
@@ -1083,11 +1073,16 @@ class WfcProvider:
                             direct_children.append({
                                 "name": child.name,
                                 "size": child.stat().st_size,
+                                "extension": extension_of(child.name),
+                                "viewer": viewer_kind(child.name),
                             })
                         elif child.is_dir():
+                            # A subdirectory row opens nothing.
                             direct_children.append({
                                 "name": child.name + "/",
                                 "size": 0,
+                                "extension": "",
+                                "viewer": None,
                             })
                 except OSError:
                     pass
@@ -1097,20 +1092,21 @@ class WfcProvider:
                         "type": "dir",
                         "size": total,
                         "count": count,
-                        "is_image": False,
+                        "viewer": None,
                         "extension": "",
                         "children": direct_children,
                     }
                 )
             else:
-                ext = Path(name).suffix.lower()
+                # Classified from the displayed name: the cache entry of a
+                # file output has no extension.
                 artifacts.append(
                     {
                         "name": name,
                         "type": "file",
                         "size": cache_path.stat().st_size,
-                        "is_image": ext in image_extensions,
-                        "extension": ext.lstrip("."),
+                        "viewer": viewer_kind(name),
+                        "extension": extension_of(name),
                     }
                 )
 
@@ -1209,15 +1205,42 @@ class WfcProvider:
             wfc.storage.ResolveOutputError: The run has a malformed record,
                 or its outputs cannot be named apart.
         """
+        resolved = self.get_artifact_content(run_id, artifact_name)
+        return resolved[0] if resolved is not None else None
+
+    def get_artifact_content(
+        self, run_id: str, artifact_name: str
+    ) -> tuple[Path, str | None] | None:
+        """Resolve an artifact display name to its local cache path and its content key.
+
+        The same resolution as :meth:`get_artifact_path`, which returns its
+        path. The content key names the bytes without reading them: the
+        output's content hash for a file output or a whole folder, and
+        ``<hash>/<member path>`` for a folder member. It changes when the
+        content does, and a cache-hit run, whose outputs follow its source
+        run's records, has its source's keys.
+
+        Returns:
+            ``(path, content key)``, the key ``None`` when the record has no
+            hash; ``None`` for an unknown name.
+
+        Raises:
+            ArtifactPathRefusedError: The name is not a path inside an
+                output.
+            wfc.storage.ResolveOutputError: The run has a malformed record,
+                or its outputs cannot be named apart.
+        """
         _refuse_unsafe_artifact_name(artifact_name)
         requested = artifact_name
 
-        for name, _ro, cache_path in self._named_outputs(run_id):
+        for name, ro, cache_path in self._named_outputs(run_id):
+            content = ro.content_hash
             if cache_path.is_dir():
                 if requested == name:
-                    return cache_path
+                    return cache_path, content
                 if requested.startswith(name + "/"):
-                    member = cache_path / requested[len(name) + 1:]
+                    relative = requested[len(name) + 1:]
+                    member = cache_path / relative
                     if not member.exists():
                         continue
                     root = cache_path.resolve()
@@ -1225,8 +1248,8 @@ class WfcProvider:
                         raise ArtifactPathRefusedError(
                             artifact_name,
                             f"it resolves outside the output '{name}'")
-                    return member
+                    return member, (f"{content}/{relative}" if content else None)
             else:
                 if requested == name:
-                    return cache_path
+                    return cache_path, content
         return None

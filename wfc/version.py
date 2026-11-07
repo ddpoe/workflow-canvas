@@ -710,6 +710,13 @@ def has_head_commit(directory: Path | str) -> bool:
     return _git(["git", "rev-parse", "HEAD"], directory).returncode == 0
 
 
+def _identity_set(directory: Path | str, *scope: str) -> bool:
+    """Whether git config, read in *directory* at *scope*, names a user and an email."""
+    name = _git(["git", "config", *scope, "user.name"], directory)
+    email = _git(["git", "config", *scope, "user.email"], directory)
+    return bool(name.stdout.strip()) and bool(email.stdout.strip())
+
+
 def global_identity_configured() -> bool:
     """Return whether the global git config names a user and an email.
 
@@ -719,10 +726,52 @@ def global_identity_configured() -> bool:
     Raises:
         FileNotFoundError: git is not installed.
     """
-    home = Path.home()
-    name = _git(["git", "config", "--global", "user.name"], home)
-    email = _git(["git", "config", "--global", "user.email"], home)
-    return bool(name.stdout.strip()) and bool(email.stdout.strip())
+    return _identity_set(Path.home(), "--global")
+
+
+#: The identity wfc commits under when git names none for the repository.
+FALLBACK_IDENTITY = ("wfc", "wfc@wfc")
+
+
+def identity_configured(directory: Path | str) -> bool:
+    """Return whether git names a user and an email for the repository at *directory*.
+
+    git's own reading: the repository's config, then the global and the
+    system config.
+
+    Args:
+        directory: A directory inside the repository.
+
+    Returns:
+        ``True`` when both ``user.name`` and ``user.email`` are set.
+
+    Raises:
+        FileNotFoundError: git is not installed.
+    """
+    return _identity_set(directory)
+
+
+def commit_identity_args(directory: Path | str) -> list[str]:
+    """Return the ``-c`` options a wfc ``git commit`` in *directory* adds.
+
+    None when git names the user (:func:`identity_configured`), so the commit
+    is authored as the user; otherwise :data:`FALLBACK_IDENTITY`, so a
+    repository with no identity configured still commits. Both commit paths
+    (:func:`commit_paths`, :func:`commit_over_head`) take their identity here.
+
+    Args:
+        directory: A directory inside the repository.
+
+    Returns:
+        ``[]``, or ``["-c", "user.email=wfc@wfc", "-c", "user.name=wfc"]``.
+
+    Raises:
+        FileNotFoundError: git is not installed.
+    """
+    if identity_configured(directory):
+        return []
+    name, email = FALLBACK_IDENTITY
+    return ["-c", f"user.email={email}", "-c", f"user.name={name}"]
 
 
 def init_repository(directory: Path | str) -> None:
@@ -1309,8 +1358,9 @@ def commit_over_head(repo_root: Path | str, base: str | None, *,
     it, so the repository's hooks run, bounded by :func:`commit_timeout`.
     HEAD moves only from *base*: when HEAD is not *base* when the commit
     starts, or another commit lands first, nothing stays committed and
-    :class:`HeadMovedError` is raised. The commit uses the fixed ``wfc``
-    identity.
+    :class:`HeadMovedError` is raised. The commit is authored as the user
+    when git names one for the repository, else as ``wfc <wfc@wfc>``
+    (:func:`commit_identity_args`).
 
     Args:
         repo_root: A directory inside the repository (the project root).
@@ -1374,7 +1424,7 @@ def commit_over_head(repo_root: Path | str, base: str | None, *,
         if base and tree == base_tree:
             return None
         try:
-            commit = _git(["git", "-c", "user.email=wfc@wfc", "-c", "user.name=wfc",
+            commit = _git(["git", *commit_identity_args(top),
                            "-c", "core.abbrev=40", "commit", "--no-status", "-m", message],
                           top, timeout=commit_timeout(), env=env)
         except GitTimeoutError as exc:
@@ -1464,8 +1514,9 @@ def commit_paths(
     Deletions inside a named directory are staged too (``git add -A``), so a
     snapshot that dropped a stale script commits the removal.
 
-    The commit uses a fixed ``wfc`` identity, so the repository needs no git
-    identity configured.
+    The commit is authored as the user when git names one for the
+    repository, else as ``wfc <wfc@wfc>`` (:func:`commit_identity_args`), so
+    the repository needs no git identity configured.
 
     Args:
         repo_root: A directory inside the repository (the project root).
@@ -1550,8 +1601,7 @@ def commit_paths(
         commit = _git(
             [
                 "git",
-                "-c", "user.email=wfc@wfc",
-                "-c", "user.name=wfc",
+                *commit_identity_args(top),
                 "commit", "-q", "-m", message,
                 "--", *staged_ok,
             ],

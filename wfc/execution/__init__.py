@@ -25,6 +25,16 @@ pipeline when a named sample's content is unreachable (Registration's
 the push worker, hand the pipeline to Orchestration's engine, and close the
 run (the failure sequence raises the engine's message).
 
+``one_method.py`` runs one registered method on one sample, with the params
+and the name given: Contracts' one-step document, checked by the validator's
+verdict, saved in the project's pipelines folder (named, or carrying the
+params' fingerprint; reused when the same file is there, refused when a
+different one is), then ``run_pipeline`` over it. ``run_detail.py`` reads one run, recorded or a
+draft step: status, metrics, outputs, error, its log paths and stderr's
+tail. ``run_counts.py`` counts the runs per method, method version, sample
+and env spec, with the newest start time, for every door that lists them
+with their run counts.
+
 ``pipeline_record.py`` is the pipeline record ``run_pipeline`` keeps in the
 pipeline run dir while it runs a pipeline: the entry point, the owning and
 engine processes (each a pid and its creation time) and the cancel flag. It
@@ -49,6 +59,7 @@ collaborator will be missing.
 from .composer import (
     DatabaseUnreachableError,
     LoadedPipeline,
+    PipelineDocumentError,
     load_pipeline_from_document,
     load_pipeline_from_path,
 )
@@ -62,6 +73,13 @@ from .lifecycle import (
     ExpectedTargets,
     expected_targets,
     pipeline_status,
+)
+from .one_method import (
+    OneMethodRunRefusedError,
+    SavedOneMethodPipeline,
+    params_fingerprint,
+    run_one_method,
+    save_one_method_pipeline,
 )
 from .pipeline import run_pipeline
 from .pipeline_record import (
@@ -105,6 +123,8 @@ from .recovery import (
     kill_process_tree,
     probe_process,
 )
+from .run_counts import RunTallies, RunTally, run_tallies
+from .run_detail import RunDetail, RunDetailError, RunDetailOutput, run_detail, run_log
 from .run_step import run_step
 
 __all__ = [
@@ -124,6 +144,7 @@ __all__ = [
     "ExpectedTargets",
     "HeartbeatSampler",
     "LoadedPipeline",
+    "PipelineDocumentError",
     "PipelineRecord",
     "PipelineRecordError",
     "ProcessIdentity",
@@ -156,6 +177,10 @@ __all__ = [
     "request_cancel",
     "run_all_checks",
     "run_pipeline",
+    "OneMethodRunRefusedError", "SavedOneMethodPipeline", "run_one_method",
+    "save_one_method_pipeline", "params_fingerprint",
+    "RunDetail", "RunDetailError", "RunDetailOutput", "run_detail", "run_log",
+    "RunTallies", "RunTally", "run_tallies",
     "run_step",
     "share_checks",
 ]

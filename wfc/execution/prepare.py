@@ -35,11 +35,20 @@ is kept, an unpinned node gains its method's newest version. The frozen
 what each node ran, and a node whose method is not registered is refused by
 name. A document is already enriched when every method node carries its
 ``slot_outputs`` -- the frozen ``pipeline.json`` the canvas writes is.
+
+Every refusal on this path is a ``PipelineDocumentError`` naming the node
+and the field where it has one: a pipeline file that is missing or is not a
+JSON object (``read_pipeline_document``), an undeclared variable or a
+``param_sets`` that is not a mapping (``substitute_variables``), the
+validator's refusals (``PipelineRefusedError``, a subclass) and a method
+that is not registered.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, NamedTuple
 
 from axiom_annotations import AutoStep, Step, task
@@ -51,13 +60,13 @@ from ..contracts import (
     normalize_document_params,
     resolve_versions,
 )
-from ..graph import resolve_variables
+from ..graph import UnknownVariableError, resolve_variables
 from ..registration import (
     MalformedMethodRecordError,
     load_contract_map,
     version_contracts,
 )
-from .composer import _composer_session
+from .composer import PipelineDocumentError, _composer_session, document_error
 from .validation import refuse_invalid
 
 _SYSTEM_NODE_TYPES = ("input_selector", "run_reference")
@@ -89,7 +98,77 @@ _ENRICHED_KEYS = ("slot_outputs", "slot_types", "env")
 _CANVAS_LINK_KEYS = ("sourceHandle", "targetHandle")
 
 
-def _read_contract_map() -> dict:
+@task(purpose="Read a pipeline file into a document, refusing a file that is "
+              "missing, is not JSON or is not a JSON object with one typed "
+              "refusal naming the file",
+      inputs="The pipeline file's path",
+      outputs="The document, or PipelineDocumentError")
+def read_pipeline_document(path: str | Path) -> dict[str, Any]:
+    """Read a pipeline file into a document.
+
+    Args:
+        path: The pipeline JSON file.
+
+    Returns:
+        The document it holds.
+
+    Raises:
+        PipelineDocumentError: The file is missing or cannot be read, is
+            not UTF-8 JSON (the message names the line and column), or holds
+            something other than a JSON object.
+    """
+    path = Path(path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise PipelineDocumentError(f"Pipeline file not found: {path}") from exc
+    except (OSError, UnicodeDecodeError) as exc:
+        raise PipelineDocumentError(
+            f"Pipeline file {path} cannot be read: {exc}") from exc
+    try:
+        document = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise PipelineDocumentError(
+            f"Pipeline file {path} is not valid JSON: {exc.msg} (line "
+            f"{exc.lineno}, column {exc.colno})") from exc
+    if not isinstance(document, dict):
+        raise PipelineDocumentError(
+            f"Pipeline file {path} must hold a JSON object, got "
+            f"{type(document).__name__}")
+    return document
+
+
+@task(purpose="Resolve a document's {$var} refs to literals so everything "
+              "after sees only literals; an undeclared variable or an "
+              "unreadable variables or param_sets block is one typed refusal",
+      inputs="A pipeline document as submitted",
+      outputs="The substituted document, or PipelineDocumentError",
+      critical="The same words at the verdict and the run path")
+def substitute_variables(document: Mapping[str, Any]) -> dict[str, Any]:
+    """Resolve a document's ``{$var}`` refs to literals, refusing in one typed error.
+
+    Args:
+        document: The document as submitted.
+
+    Returns:
+        The document with every ref replaced by its variable's value.
+
+    Raises:
+        PipelineDocumentError: A ref names a variable the ``variables``
+            block does not declare, or the variables (or a top-level
+            ``param_sets`` that is not a mapping) cannot be resolved.
+    """
+    try:
+        return resolve_variables(dict(document))
+    except UnknownVariableError as exc:
+        raise PipelineDocumentError(
+            f"Unknown pipeline variable: '{exc.name}' -- the document's "
+            f"'variables' block declares no such name") from exc
+    except ValueError as exc:
+        raise document_error(exc) from exc
+
+
+def read_contract_map() -> dict:
     """The registered contract map, read in one composer session.
 
     Raises:
@@ -126,7 +205,7 @@ def enrich_document(document: Mapping[str, Any],
         ValueError: A registered method's stored output slot type is unusable.
     """
     if contract_map is None:
-        contract_map = _read_contract_map()
+        contract_map = read_contract_map()
     enriched = enrich_pipeline(document, contract_map)
     nodes = []
     for original, filled in zip(document.get("nodes", []), enriched["nodes"]):
@@ -174,22 +253,21 @@ def prepare_document(document: Mapping[str, Any]) -> dict[str, Any]:
         default its version has filled in.
 
     Raises:
-        UnknownVariableError: The document names a variable its
-            ``variables`` block does not declare.
         DatabaseUnreachableError: The contract map is needed and the
             database cannot be reached; nothing was launched.
         PipelineRefusedError: The validator refuses the substituted
             document (an unknown key, or a parameter its version's contract
-            does not accept); carries every refusal.
-        MethodNotFoundError: A method node names a method that is not
-            registered, whatever ``env`` it carries (a ``ValueError``).
-        ValueError: Its variables fail to resolve, or a stored output slot
-            type is unusable.
+            does not accept); carries every refusal (a
+            ``PipelineDocumentError``).
+        PipelineDocumentError: The document names a variable its
+            ``variables`` block does not declare, its variables or its
+            ``param_sets`` cannot be read, a method node names a method
+            that is not registered (whatever ``env`` it carries) or whose
+            record names no version, or a stored output slot type is
+            unusable; the message names the node where there is one.
     """
-    口 = Step(step_num=1, name="Substitute variables",
-             purpose="Resolve the document's {$var} refs to literals so "
-                     "enrichment and the load see only literals")
-    substituted = resolve_variables(dict(document))
+    口 = AutoStep(step_num=1, name="Substitute variables")
+    substituted = substitute_variables(document)
 
     口 = AutoStep(step_num=2, name="Validate")
     refuse_invalid(substituted)
@@ -197,7 +275,7 @@ def prepare_document(document: Mapping[str, Any]) -> dict[str, Any]:
     口 = Step(step_num=3, name="Read the contract map",
              purpose="One read of every registered method version's contract, "
                      "for the enrichment and the version resolution below")
-    contract_map = _read_contract_map()
+    contract_map = read_contract_map()
 
     口 = Step(step_num=4, name="Enrich a sparse document, or resolve an enriched one's versions",
              purpose="A sparse document gains each method node's version, slot "
@@ -208,13 +286,16 @@ def prepare_document(document: Mapping[str, Any]) -> dict[str, Any]:
                       "frozen pipeline.json records what each node ran; a node "
                       "whose module.method is not registered is refused")
     try:
-        if is_enriched(substituted):
-            resolved = resolve_versions(substituted, contract_map)
-        else:
-            resolved = enrich_document(substituted, contract_map)
-    except MethodNotFoundError as missing:
-        _raise_malformed_record(missing)
-        raise
+        try:
+            if is_enriched(substituted):
+                resolved = resolve_versions(substituted, contract_map)
+            else:
+                resolved = enrich_document(substituted, contract_map)
+        except MethodNotFoundError as missing:
+            _raise_malformed_record(missing)
+            raise
+    except (ValueError, KeyError) as exc:
+        raise document_error(exc) from exc
 
     口 = AutoStep(step_num=5, name="Normalize int and float params")
     normalized = normalize_document_params(resolved, contract_map)
@@ -292,7 +373,7 @@ def unpinned_resolutions(submitted: Mapping[str, Any],
     if not unpinned:
         return []
     by_id = {str(n.get("id")): n for n in _method_nodes(prepared)}
-    contract_map = _read_contract_map()
+    contract_map = read_contract_map()
     out: list[ResolvedVersion] = []
     for node_id in unpinned:
         node = by_id.get(node_id)

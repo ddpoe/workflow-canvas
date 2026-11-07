@@ -1,9 +1,9 @@
-"""The schema: fourteen SQLModel table classes and their enums.
+"""The schema: fifteen SQLModel table classes and their enums.
 
 Tables:
   modules, methods, method_versions, tracked_functions, param_defs,
   module_contracts, method_contracts, runs, run_inputs, run_outputs,
-  run_annotations, samples, blobs, in_use_records
+  run_annotations, samples, blobs, in_use_records, pipeline_runs
 """
 
 from datetime import UTC, datetime
@@ -186,7 +186,7 @@ class ParamDef(SQLModel, table=True):
 #: The rows the running-claim index covers: a claim that computes (not a
 #: cache-hit audit row), still running, and carrying the claim heartbeat. A
 #: failed, completed or cancelled row, and a row with no heartbeat (written
-#: before the heartbeat existed, or by the hand-run verb), is outside it, so
+#: before the heartbeat existed, or by a direct ``pre_run`` call), is outside it, so
 #: a key may hold a retried failure and an outputs-missing rerun.
 RUNNING_CLAIM_PREDICATE = (
     "cache_source_run_id IS NULL AND status = 'running' "
@@ -361,6 +361,42 @@ class RunAnnotation(SQLModel, table=True):
     )
 
     run: Run | None = Relationship(back_populates="annotation")
+
+
+class PipelineRun(SQLModel, table=True):
+    """One pipeline execution: its name, its start, its status and its end.
+
+    Execution writes the row at the launch (status ``running``) and, for a
+    pipeline from before the table, at the canvas server's start. ``status``
+    and ``ended_at`` are written only by Execution's one status helper, which
+    works them out through ``pipeline_status`` from the pipeline's run rows
+    (and its draft steps) after every path that changes its outcome; no
+    other writer touches the two columns, so History reads them as they
+    are. ``status`` is one of ``running``, ``succeeded``, ``failed``,
+    ``cancelled`` or ``mixed``; ``ended_at`` is NULL while the pipeline
+    runs, and else its rows' latest finish time (NULL when no row recorded
+    one).
+
+    The draft fields say whether the pipeline ran a draft (``draft_mode``),
+    its drafts as ``<module>.<method>`` in document order (``drafts``), how
+    many draft-mode steps it ran (``draft_step_count``), and, once those
+    steps' results are cleared, why and when (``cleared_reason``,
+    ``cleared_at``). A pipeline with no draft keeps the defaults.
+    """
+
+    __tablename__ = "pipeline_runs"
+
+    pipeline_id: str = Field(primary_key=True, max_length=200)
+    #: The document's name, else NULL (shown as the pipeline id).
+    name: str | None = Field(default=None, max_length=500)
+    started_at: datetime | None = Field(default=None)
+    status: str = Field(default="running", max_length=50, index=True)
+    ended_at: datetime | None = Field(default=None)
+    draft_mode: bool = Field(default=False)
+    drafts: list[str] | None = Field(default=None, sa_column=Column(JSON))
+    draft_step_count: int = Field(default=0)
+    cleared_reason: str | None = Field(default=None)
+    cleared_at: datetime | None = Field(default=None)
 
 
 class ModuleContract(SQLModel, table=True):

@@ -1,6 +1,6 @@
-<!-- generated from pm_mvp::docs/consumer/reference/method-yaml-schema @ e540d18d78ce; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/reference/method-yaml-schema @ f27e32445270; do not edit -->
 
-# Reference: method.yaml Schema
+# method.yaml Schema
 
 ## Overview
 
@@ -8,7 +8,7 @@
 
 Every method needs a `method.yaml` with an `env` and at least one input slot. `wfc register-method` refuses a method without them. A key written with nothing under it (`outputs:`) is the same as leaving it out.
 
-The tutorials [Writing a Method in Python](../tutorials/authoring-a-method-script.md) and [Writing Contracts](../tutorials/writing-contracts.md) introduce these keys in context. This page lists every key.
+[Write a Method in Python](../tutorials/authoring-a-method-script.md) and [Write a Method](../how-to/write-a-method.md) introduce these keys in context. This page lists every key.
 
 ## Top-level keys
 
@@ -31,7 +31,7 @@ Input and output slot names are how pipelines wire nodes together. A slot name c
 
 After you edit `method.yaml` or the script, run `wfc register-method` again. Each registration that changes anything a run uses adds a new version of the method, and a run is reused from the cache only for the version it ran on.
 
-Everything in `method.yaml` is part of a version except descriptions, formatting (key order, comments, quoting), `env` and `helpers`. Changing a slot name or `type`, a `columns` block, a param's `type`, `default`, `required` or `constraints`, `script`, `executor` or `gpus` adds a version. Editing only descriptions or formatting does not: `wfc register-method` says the edit is not kept and adds nothing. A different `env` is tracked on its own and also makes the next run recompute, and the `helpers` files themselves are code, so editing one adds a version. Parameter values are part of the cache key on their own. See [Caching and Reproducibility](../explanation/caching-and-reproducibility.md).
+Everything in `method.yaml` is part of a version except descriptions, formatting (key order, comments, quoting), `env` and `helpers`. Changing a slot name or `type`, an output's `options` block, a param's `type`, `default`, `required` or `constraints`, `script`, `executor` or `gpus` adds a version. Editing only descriptions or formatting does not: `wfc register-method` says the edit is not kept and adds nothing. A different `env` is tracked on its own and also makes the next run recompute, and the `helpers` files themselves are code, so editing one adds a version. Parameter values are part of the cache key on their own. See [Caching & Reproducibility](../explanation/caching-and-reproducibility.md).
 
 ## inputs and outputs
 
@@ -43,9 +43,8 @@ Each entry under `inputs` and `outputs` is a named slot.
 |---|---|---|---|
 | `type` | string | none | File extension the slot carries (`csv`, `.h5ad`), or `dir` for a directory. Used for display in the canvas. A value that doesn't follow the convention below prints a warning at registration. |
 | `required` | bool | `true` | A required input that nothing feeds is flagged before the step runs. Set `false` for an optional input. |
-| `multiple` | bool | `false` | Marks the slot as taking several files; the Registry shows it as `multi`. Bundling samples into one run is set on the Input Selector (see [Fan out and fan in](../how-to/canvas.md#fan-out-and-fan-in)). |
+| `multiple` | bool | `false` | Lets the input take several files; the Registry shows it as `multi`. Without it the input takes one file, and a pipeline that wires more than one file into it is refused before it runs, naming the node and the input. Bundling samples into one run is set on the Input Selector (see [Fan Out and Fan In](../how-to/fan-out-and-fan-in.md)). |
 | `description` | string | `""` | Label shown in the canvas. |
-| `columns` | mapping | none | Declared columns, for tabular slots (see Column contracts below). |
 
 An input can receive a file or a directory. A directory sample or a directory output from an upstream step arrives as the path of that directory.
 
@@ -55,7 +54,7 @@ An input can receive a file or a directory. A directory sample or a directory ou
 |---|---|---|---|
 | `type` | string | **required** | File extension of the output, or `dir` / `directory` for a directory. |
 | `description` | string | `""` | Label shown in the canvas. |
-| `columns` | mapping | none | Declared columns, for tabular slots (see Column contracts below). |
+| `options` | mapping | none | The names this output offers to downstream parameters (see Output options below). |
 
 Every declared output must exist when the method exits, or the step fails naming the missing slot.
 
@@ -69,7 +68,6 @@ A missing or empty output `type` is refused at registration.
 
 A method that uses the `wfc-client` decorator, or writes `_wfc_results.json` itself, can save each output under any file name; wfc finds it by slot. Two slots cannot be saved to the same file.
 
-The canvas shows slot types without the leading dot (`csv`, `tar.gz`).
 
 ## params
 
@@ -87,35 +85,35 @@ Each entry under `params` declares a parameter. The canvas inspector shows an ed
 
 ### Checking a value against its type
 
-The canvas, `wfc run-pipeline` and the server all check a parameter value the same way, and refuse a pipeline whose value fails, naming the node and the parameter. A parameter set on a node that the node's method version does not declare is refused too.
+The canvas and `wfc run-pipeline` check a parameter value the same way, and refuse a pipeline whose value fails, naming the node and the parameter. A parameter set on a node that the node's method version does not declare is refused too.
 
-- `int` accepts a whole number, including a whole-number float such as `3.0` (stored as `3`), within ±(2^53 − 1). `2.5`, `NaN`, `inf` or `true` is refused.
+- `int` accepts a whole number, including a whole-number float such as `3.0` (stored as `3`). `2.5`, `NaN`, `inf` or `true` is refused.
 - `float` accepts any number, whole numbers included; `1` is read as `1.0`. `true` is refused.
 - A value must be one of `constraints.enum`, compared by its JSON value (`1` equals `1.0`; `true` equals only `true`), and inside `min` and `max` when those are set.
 - An empty value counts as no value: fine for an optional parameter, refused for a required one.
 - Every value of a `param_sets` variant is checked the same way.
 
-### Column-picker fields
+### Options-picker field
 
-Two optional fields turn a `str` parameter that names a column into a column picker in the inspector.
+One optional field turns a `str` parameter into an options picker in the inspector.
 
 | Field | Type | Purpose |
 |---|---|---|
-| `column_of_input` | string | Names an input slot of this method. The inspector offers the columns declared by whatever feeds that slot as a dropdown, and still accepts free text. Use it for a parameter that names a column the method reads. |
-| `new_column` | bool | When `true`, the inspector always shows a plain text field. Use it for a parameter that names a column the method creates. It wins over `column_of_input`. |
+| `options_from` | string or list of strings | Names one input slot of this method, or several. The inspector opens a list of the options that the upstream step wired to each named slot offers (its output's `options` block), grouped by where each name comes from and filtered as you type. wfc does not check the value against the options. Naming an input the method does not declare is refused at registration, naming the parameter. |
 
-When the upstream declares no columns, the dropdown is empty and you type the name.
+When the upstream offers no options, the list is empty and you type the value. A parameter that names something the method creates declares no `options_from`.
 
-## Column contracts (columns:)
 
-A `columns` block on a tabular slot declares which columns the slot carries. The canvas uses it to fill column pickers, and pipeline load uses it to catch mis-wired steps.
+## Output options (options:)
+
+An `options` block on an output slot declares the names the output offers to the parameters downstream: column names, gene names, sample labels. The canvas uses it to fill options pickers; nothing else reads it.
 
 ```yaml
-inputs:
-  data:
+outputs:
+  table:
     type: csv
-    columns:
-      strict: ["cell_index", "condition", "proliferative"]
+    options:
+      fixed: ["cell_index", "condition", "proliferative"]
       from_params:
         - params: [markers]
           pattern: "{}_intensity"
@@ -124,13 +122,14 @@ inputs:
 
 | Key | Purpose |
 |---|---|
-| `strict` | A list of exact column names. |
-| `from_params` | Column names built from parameter values. Each entry has `params` (a list of parameter names) and `pattern`, a string with one `{}` per parameter. When a parameter holds a list, every combination is produced. |
-| `patterns` | A list of glob patterns such as `*_intensity`, shown as hints. |
+| `fixed` | A list of exact names. |
+| `from_params` | Names built from parameter values. Each entry has `params` (a list of parameter names) and `pattern`, a string with one `{}` per parameter. When a parameter holds a list, every combination is produced. |
+| `patterns` | A list of glob patterns such as `*_intensity`, shown in the picker and never expanded to names. |
 
-When a pipeline loads, the declared columns of connected slots are compared and a mismatch is reported as a warning. wfc does not open your data files to check their actual columns.
+The options are suggestions only: wfc does not check them against your data or against a parameter's value. An input slot declares no options.
 
-A malformed block (for example `patterns` written as a single string instead of a list) is refused at registration, naming the slot. [Writing Contracts](../tutorials/writing-contracts.md) explains how to design these declarations.
+A malformed block (for example `patterns` written as a single string instead of a list) is refused at registration, naming the slot. [Let Users Pick Columns in the Canvas](../how-to/pick-columns-in-the-canvas.md) explains how to design these declarations.
+
 
 ## env, gpus, and executor
 
@@ -148,7 +147,7 @@ The value is the bare environment name: letters, digits, `_` and `-`. How the im
 
 A pipeline step always runs in the env its method version registered with, and its cache key uses that env. To change a method's env, edit `env:` and register the method again; earlier versions keep the env they registered with.
 
-The method script runs under the environment's interpreter. For an R or bash method, register the environment with `--interpreter` pointing at `Rscript` or `bash` inside the image. See [Registering an Environment](../tutorials/registering-an-environment.md).
+The method script runs under the environment's interpreter. For an R or bash method, register the environment with `--interpreter` pointing at `Rscript` or `bash` inside the image. See [Register an Environment](../tutorials/registering-an-environment.md).
 
 ### gpus
 
@@ -156,7 +155,8 @@ The method script runs under the environment's interpreter. For an R or bash met
 
 ### executor
 
-`executor` selects how the method is dispatched. `local`, the default, runs it in a local Docker container, so you can leave the key out.
+`executor` selects where the method runs. `local`, the default, runs it in a local Docker container, so you can leave the key out.
+
 
 ## script and helpers
 
@@ -168,7 +168,7 @@ A method script can be Python (`.py`), R (`.R` or `.r`) or bash (`.sh`). A metho
 script: run_analysis.R
 ```
 
-Without it, registration stops, lists the scripts it found and gives the `script:` line to add. The other scripts register as the method's helpers. The `script:` line is part of the method's contract, so adding it to a method that is already registered makes its next registration a new version, and its runs compute again.
+Without it, registration stops, lists the scripts it found and gives the `script:` line to add. The other scripts register as the method's helpers.
 
 The file must be inside the method folder and have one of the extensions above. The `--script` flag on `wfc register-method` names the main script for a single registration and overrides `script:`. A new version of a method keeps its main script's file name: to register a folder whose main script has another name, rename it back.
 
@@ -188,6 +188,7 @@ helpers:
 ```
 
 Paths are relative to the method folder and may point elsewhere in the project with `../`. With `helpers:` set, the method is the main script plus the listed files, and registration refuses a method folder that holds any other script file. Each listed file must exist and have a recognized extension.
+
 
 ## Worked examples
 
@@ -211,7 +212,7 @@ env: my-analysis
 
 ### Full method.yaml
 
-Column declarations, constrained and column-picker parameters, an R script with a shared helper, a directory output, and a GPU.
+Output options, constrained and options-picker parameters, an R script with a shared helper, a directory output, and a GPU.
 
 ```yaml
 inputs:
@@ -219,14 +220,14 @@ inputs:
     type: csv
     required: true
     description: "Labeled cell CSV"
-    columns:
-      strict: ["cell_index", "condition"]
-      patterns: ["*_intensity"]
 
 outputs:
   predictions:
     type: csv
     description: "Per-cell predictions"
+    options:
+      fixed: ["cell_index", "condition"]
+      patterns: ["*_intensity"]
   plots:
     type: dir
     description: "One PNG per condition"
@@ -244,12 +245,11 @@ params:
   label_column:
     type: str
     required: true
-    column_of_input: data        # dropdown of the columns feeding `data`
+    options_from: data           # picker of the options feeding `data` offers
     description: "Name of the label column"
   score_column:
     type: str
     required: true
-    new_column: true             # always free text
     description: "Name for the new score column"
 
 script: classify.R
@@ -261,6 +261,6 @@ gpus: true
 
 ## Next steps
 
-- [Writing a Method in Python](../tutorials/authoring-a-method-script.md) — write the method script that reads these inputs and params and writes these outputs.
-- [Registering an Environment](../tutorials/registering-an-environment.md) — build the container image that the `env` key names.
-- [Writing Contracts](../tutorials/writing-contracts.md) — the mental model behind `columns`, module contracts, and column pickers.
+- [Write a Method in Python](../tutorials/authoring-a-method-script.md) — write the method script that reads these inputs and params and writes these outputs.
+- [Register an Environment](../tutorials/registering-an-environment.md) — build the container image that the `env` key names.
+- [Let Users Pick Columns in the Canvas](../how-to/pick-columns-in-the-canvas.md) — how output `options`, module contracts and options pickers fit together.

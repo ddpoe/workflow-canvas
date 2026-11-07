@@ -111,6 +111,25 @@ def test_pixi_dockerfile_no_deps_pip_layer_after_pixi_install():
     assert "--mount=type=cache" in dockerfile
 
 
+@workflow(purpose="A pixi Dockerfile whose freeze has nothing to install (empty, "
+                  "whitespace or the absent-pip sentinel) has no pip stage and "
+                  "never runs the env's Python, so a pixi env holding only R "
+                  "builds; the locked install and the chmod stay")
+def test_pixi_dockerfile_without_a_freeze_has_no_pip_stage():
+    """A pip-less pixi env (R-only) generates a Dockerfile that builds."""
+    from wfc.environments.dockerfiles.pixi import env_python_path, generate
+    from wfc.environments.introspect import PIP_MISSING_SENTINEL
+
+    for freeze in ("", "   \n", PIP_MISSING_SENTINEL):
+        dockerfile = generate(env_name="default", pip_freeze_content=freeze)
+
+        assert "pip install" not in dockerfile, f"freeze={freeze!r}"
+        assert "pip-freeze.txt" not in dockerfile, f"freeze={freeze!r}"
+        assert env_python_path("default") not in dockerfile, f"freeze={freeze!r}"
+        assert "pixi install --locked --environment default" in dockerfile
+        assert "RUN chmod -R a+rX /opt/.pixi/envs/default" in dockerfile
+
+
 # ---------------------------------------------------------------------------
 # Tier 1: pixi lock validation — register-time guard before any docker work
 # ---------------------------------------------------------------------------

@@ -25,7 +25,7 @@ from tests.harness import Phase
 
 def test_resolve_input_fail_path(cli, tmp_project):
     """resolve_input refuses an output it can read from nowhere, naming it."""
-    run_id = _register_and_complete_with_hash(cli, tmp_project)
+    run_id = _register_and_complete_with_hash(tmp_project)
 
     from wfc.persistence import get_session, RunOutput
     with get_session() as session:
@@ -65,7 +65,7 @@ def test_resolve_input_fail_path(cli, tmp_project):
     assert f"Re-run run {run_id}" in str(refusal.value)
 
 
-def test_resolve_input_no_content_hash(cli, tmp_project):
+def test_resolve_input_no_content_hash(tmp_project):
     """A pre-archive row resolves to its run archive while the file is there.
 
     A row with no ``content_hash`` yet is a pre-archive row: the archive
@@ -76,7 +76,7 @@ def test_resolve_input_no_content_hash(cli, tmp_project):
     re-run, rather than return the dead path.
     """
     # A run stopped after the collect phase: the RunOutput row is the one
-    # collect recorded, and the record verb below completes it without
+    # collect recorded, and complete_run below completes it without
     # archiving, which is what leaves content_hash unset.
     with pytest.MonkeyPatch.context() as mp:
         run = claimed_run(tmp_project, monkeypatch=mp, through=Phase.COLLECT,
@@ -85,8 +85,8 @@ def test_resolve_input_no_content_hash(cli, tmp_project):
     run_id = str(run.run_id)
     output_file = run.output_rows[0]["artifact_path"]
 
-    cli("complete_run", "--run-id", run_id, "--status", "completed",
-        "--output", output_file)
+    from wfc.execution.record import complete_run
+    complete_run(run_id=int(run_id), status="completed", output_files=[output_file])
 
     # Force content_hash to None
     from wfc.persistence import get_session, RunOutput
@@ -133,7 +133,7 @@ def test_cache_prune_dry_run(cli, tmp_project):
 def test_cache_prune_removes_unreferenced(cli, tmp_project):
     """wfc cache prune removes unreferenced archives, keeps referenced ones."""
     # Create a real run (will be referenced in DB)
-    run_id = _register_and_complete_with_hash(cli, tmp_project)
+    run_id = _register_and_complete_with_hash(tmp_project)
 
     # Create an orphan archive (no DB reference)
     runs_dir = layout.artifact_store(tmp_project)
@@ -156,7 +156,7 @@ def test_cache_prune_include_local(cli, tmp_project):
     """wfc cache prune --all --include-local keeps an unpushed entry, even with
     --force, naming wfc cache push; after the push it removes archives AND
     .dvc/cache/ entries; DB rows preserved."""
-    run_id = _register_and_complete_with_hash(cli, tmp_project)
+    run_id = _register_and_complete_with_hash(tmp_project)
 
     # Verify the run has a content_hash and a DVC cache entry
     from wfc.persistence import get_session, RunOutput
@@ -203,7 +203,7 @@ def test_cache_prune_include_local(cli, tmp_project):
 
 def test_cache_prune_safety_check(cli, tmp_project):
     """wfc cache prune aborts when DVC remote is unreachable (no --force)."""
-    run_id = _register_and_complete_with_hash(cli, tmp_project)
+    run_id = _register_and_complete_with_hash(tmp_project)
 
     # Create an orphan archive so there's something to prune
     runs_dir = layout.artifact_store(tmp_project)
@@ -234,7 +234,7 @@ def test_cache_prune_safety_check(cli, tmp_project):
 
 def test_cache_prune_safety_check_include_local_elevated(cli, tmp_project):
     """wfc cache prune --include-local shows elevated warning when remote unreachable."""
-    _register_and_complete_with_hash(cli, tmp_project)
+    _register_and_complete_with_hash(tmp_project)
 
     # Create orphan archive
     runs_dir = layout.artifact_store(tmp_project)
@@ -250,6 +250,39 @@ def test_cache_prune_safety_check_include_local_elevated(cli, tmp_project):
     assert r.returncode == 1, "Should abort with --include-local when remote unreachable"
     assert "unrecoverable" in r.stderr.lower(), \
         f"Should warn about unrecoverable outputs: {r.stderr}"
+
+
+@workflow(purpose="wfc cache prune with no terminal and no --yes lists what it "
+                  "would remove, asks nothing, refuses naming --yes and removes "
+                  "nothing; --yes prunes without asking",
+          inputs="a completed run and an orphan run folder, a reachable "
+                 "archive; pytest's own stdin, which is not a terminal",
+          outputs="exit 1 naming --yes, the orphan kept; then exit 0 with "
+                  "--yes and the orphan gone")
+def test_cache_prune_with_no_terminal_refuses_naming_yes(cli, tmp_project,
+                                                         monkeypatch):
+    from tests.fixtures.fakes import stub_interactive_prompt
+
+    _register_and_complete_with_hash(tmp_project)
+    orphan = layout.artifact_store(tmp_project) / "00099999"
+    orphan.mkdir(parents=True, exist_ok=True)
+    (orphan / "output.csv").write_text("orphan data")
+    prompts: list[str] = []
+    stub_interactive_prompt(monkeypatch, "y", prompts=prompts)
+
+    r = cli("cache", "prune")
+
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "Run archives to remove: 1" in r.stdout
+    assert "--yes" in r.stderr and "Nothing was removed" in r.stderr
+    assert prompts == []
+    assert orphan.is_dir()
+
+    r = cli("cache", "prune", "--yes")
+
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert prompts == []
+    assert not orphan.exists()
 
 
 # =============================================================================
@@ -275,9 +308,9 @@ def _remove_archive(project_dir):
         shutil.rmtree(archive)
 
 
-def _register_and_complete_with_hash(cli, project_dir, method="csv_merge",
+def _register_and_complete_with_hash(project_dir, method="csv_merge",
                                       module="csv_tools", sample="S1"):
-    """Complete a run through the record verb and archive its output. Returns run ID.
+    """Complete a run through ``complete_run`` and archive its output. Returns run ID.
 
     The claim, materialize, dispatch and collect phases run through the
     route, stopped after collect, so the ``RunOutput`` row ``complete_run``
@@ -287,6 +320,7 @@ def _register_and_complete_with_hash(cli, project_dir, method="csv_merge",
     archive_outputs to populate content_hash (archiving is deferred;
     complete_run does not archive inline).
     """
+    from wfc.execution.record import complete_run
     from wfc.storage import archive_outputs
 
     with pytest.MonkeyPatch.context() as mp:
@@ -296,9 +330,7 @@ def _register_and_complete_with_hash(cli, project_dir, method="csv_merge",
     run_id = str(run.run_id)
     output_file = run.output_rows[0]["artifact_path"]
 
-    r = cli("complete_run", "--run-id", run_id, "--status", "completed",
-            "--output", output_file)
-    assert r.returncode == 0, r.stderr
+    complete_run(run_id=int(run_id), status="completed", output_files=[output_file])
 
     # Deferred archiving: explicitly archive to populate content_hash
     archive_outputs(project_dir, run_id=int(run_id))

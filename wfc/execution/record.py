@@ -266,8 +266,8 @@ def complete_run(
         error_message: Error message for failed runs.
         error_traceback: Error traceback for failed runs.
         session: The record phase's write transaction, which also enqueues
-            the push and releases the run's in-use records. ``None`` (the
-            standalone ``complete_run`` verb): the flip and the release of
+            the push and releases the run's in-use records. ``None`` (a direct
+            call with no record phase): the flip and the release of
             the run's in-use records are one write transaction of its own.
 
     Returns:

@@ -10,8 +10,23 @@ resolver and its typed errors, the strict enumeration of a run's named
 outputs, the export naming rule and the egress copy.  It opens no
 session and names no table of its own, so nothing about the database's
 shape reaches the export.
+
+:func:`export_draft_output` serves ``wfc export --run draft:…``: a draft
+step's outputs, read from its draft's latest draft run through Execution's
+resolver, while that draft run exists.
+
+:func:`export_paths` gives the read-only local path of each requested
+output, of a run or a draft step, as values (``wfc export --path --json``);
+the ``--path`` lines read the same resolution.
 """
 
-from .output import export_output
+from .output import (
+    ExportPath,
+    ExportPathError,
+    export_draft_output,
+    export_output,
+    export_paths,
+)
 
-__all__ = ["export_output"]
+__all__ = ["ExportPath", "ExportPathError", "export_draft_output", "export_output",
+           "export_paths"]

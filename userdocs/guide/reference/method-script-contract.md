@@ -1,12 +1,12 @@
-<!-- generated from pm_mvp::docs/consumer/reference/method-script-contract @ 57a6dd49f8f9; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/reference/method-script-contract @ fc449c88370a; do not edit -->
 
-# Reference: Method Script Contract
+# Method Script Contract
 
 ## Overview
 
 A method is a process that reads a few environment variables and writes files. wfc sets the variables when it starts the step, and collects the files when the script exits. A method can be written this way in any language, with no wfc package installed.
 
-The Python package `wfc-client` ([Python API](wfc-client-api.md)) is a layer over this contract. [Write an R Method](../how-to/write-an-r-method.md) uses it from R.
+The Python package `wfc-client` ([wfc-client Python API](wfc-client-api.md)) does this for you. [Write a Method in R](../how-to/write-an-r-method.md) uses it from R.
 
 
 ## What wfc gives the method
@@ -83,7 +83,7 @@ write.csv(rows[rows$score > params$threshold, ],
           file.path(Sys.getenv("WFC_RUN_DIR"), "filtered.csv"), row.names = FALSE)
 ```
 
-The environment needs `jsonlite`; [Write an R Method](../how-to/write-an-r-method.md) builds one.
+The environment needs `jsonlite`; [Write a Method in R](../how-to/write-an-r-method.md) builds one.
 
 ### bash
 
@@ -102,5 +102,4 @@ On Windows, save `.sh` scripts with LF line endings (for example with `git confi
 
 ## Which interpreter runs the script
 
-A method script runs under the interpreter its environment was registered with: the environment's Python by default, or the program named with `wfc register-env --interpreter`, such as `Rscript` or `/bin/bash`. See [Registering an Environment](../tutorials/registering-an-environment.md).
-
+A method script runs under the interpreter its environment was registered with: the environment's Python by default, or the program named with `wfc register-env --interpreter`, such as `Rscript` or `/bin/bash`. See [Register an Environment](../tutorials/registering-an-environment.md).

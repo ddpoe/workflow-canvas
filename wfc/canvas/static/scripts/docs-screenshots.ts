@@ -23,8 +23,10 @@
  *     Leaves any canvas on other ports untouched.
  *
  * Overview shots are full-viewport; detail shots (inspector, variables
- * panel, run detail panel on its Artifacts and Overview tabs) are element crops so they stay readable at
- * doc-page width.  Everything is captured at 2x device scale.
+ * panel, run detail panel on its Artifacts tab with one image preview open,
+ * and on its Overview tab) are element crops so they stay readable at
+ * doc-page width; the artifact viewer on that image is full-viewport.
+ * Everything is captured at 2x device scale.
  */
 import { chromium, type Locator, type Page } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -87,6 +89,14 @@ async function captureMain(base: string): Promise<void> {
     { timeout: 15_000 },
   );
   await settle(page);
+  // The Runs Preview panel opens across the canvas's lower half; close it
+  // so the pipeline fills the shot, then fit the view to the nodes.
+  const previewClose = page.locator('.runs-preview-panel .close-btn');
+  if (await previewClose.isVisible().catch(() => false)) {
+    await previewClose.click();
+    await page.locator('.svelte-flow__controls-fitview').click().catch(() => {});
+    await settle(page);
+  }
   await shot(page, 'builder-demo-pipeline.png');
 
   // ---- Inspector with a method node selected (panel crop) -------
@@ -94,6 +104,21 @@ async function captureMain(base: string): Promise<void> {
   await labelNode.click();
   await settle(page, 400);
   await shot(page.locator('.inspector'), 'builder-inspector.png');
+
+  // ---- Options picker: summarize's group_by, the list open (crop) --
+  // group_by takes its options from `data`, wired to label's `labeled`
+  // output: the four sample columns and `label`, built from label_column.
+  console.log('Options picker…');
+  const summarizeNode = page.locator('.svelte-flow__node', { hasText: 'summarize' }).first();
+  await summarizeNode.click();
+  await settle(page, 400);
+  const groupBy = page.locator('.inspector .param-block')
+    .filter({ has: page.locator('.pname', { hasText: 'group_by' }) });
+  await groupBy.getByTestId('options-chevron').click();
+  await groupBy.getByTestId('options-list').waitFor({ timeout: 15_000 });
+  await settle(page, 400);
+  await shot(page.locator('.inspector'), 'builder-options-picker.png');
+  await page.keyboard.press('Escape');
 
   // ---- Pipeline Variables panel (crop) + bound param row (crop) -
   console.log('Pipeline variables…');
@@ -108,6 +133,19 @@ async function captureMain(base: string): Promise<void> {
   await page.getByTestId('pv-confirm-add').click();
   await page.waitForSelector('[data-testid="pv-row"]');
   await shot(page.locator('.pv-panel'), 'builder-variables-panel.png');
+
+  // Widen the inspector (drag its left edge) so the bound param's
+  // `→ val_col` chip stays on one line in the crop.
+  const inspectorEdge = page.locator('.resize-handle').nth(1);
+  const edge = await inspectorEdge.boundingBox();
+  if (edge) {
+    const x = edge.x + edge.width / 2;
+    const y = edge.y + edge.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x - 100, y, { steps: 5 });
+    await page.mouse.up();
+  }
 
   const plotNode = page.locator('.svelte-flow__node', { hasText: 'plot' }).first();
   await plotNode.click();
@@ -153,16 +191,32 @@ async function captureMain(base: string): Promise<void> {
   console.log('Detail panel…');
   await page.locator('.view-switcher .seg', { hasText: 'Descendants' }).click();
   await page.waitForSelector('.tree-card', { timeout: 15_000 });
-  // The plot method emits the PNG artifact.
-  await page.locator('.tree-card', { hasText: 'plot' }).first().click();
+  // The plot method emits the PNG artifact. treat_02's figure shows both
+  // sides of the threshold, so its plot run is the one opened.
+  await page.locator('.descendants-view .section')
+    .filter({ has: page.locator('.section-label', { hasText: 'treat_02' }) })
+    .locator('.tree-card', { hasText: 'plot' }).first().click();
   await settle(page, 400);
   await page.locator('.detail-panel button', { hasText: 'Artifacts' }).first().click();
+  // Previews start closed: open the first image's, so the shot shows one.
+  const imageRow = page.getByTestId('artifact-row').filter({ has: page.getByTestId('preview-toggle') }).first();
+  await imageRow.getByTestId('preview-toggle').click();
   await page.waitForFunction(() => {
     const imgs = Array.from(document.querySelectorAll('.detail-panel img'));
     return imgs.some(i => (i as HTMLImageElement).complete && (i as HTMLImageElement).naturalWidth > 0);
-  }, undefined, { timeout: 15_000 }).catch(() => console.warn('  ! no artifact thumbnail detected'));
+  }, undefined, { timeout: 15_000 }).catch(() => console.warn('  ! no artifact preview detected'));
   await settle(page);
   await shot(page.locator('.detail-panel'), 'run-detail-panel.png');
+
+  // ---- The viewer on that image (full viewport) -----------------
+  console.log('Viewer…');
+  await imageRow.locator('.name-btn').click();
+  await page.getByTestId('viewer-image').waitFor({ timeout: 15_000 });
+  await page.getByTestId('viewer-making-preview').waitFor({ state: 'detached', timeout: 15_000 })
+    .catch(() => console.warn('  ! the viewer is still making its preview'));
+  await settle(page);
+  await shot(page, 'run-detail-viewer.png');
+  await page.keyboard.press('Escape');
 
   // ---- Run detail overview of a sample-reading run (panel crop) -
   // preprocess reads its sample directly, so its overview lists the read

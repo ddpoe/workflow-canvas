@@ -326,6 +326,11 @@ def build_pipeline_json(
         # cancelled-rows walk keys rows by it.
         if "label" in node:
             enriched["label"] = node["label"]
+        # A node pinned to its method's draft names the draft's folder, as
+        # the Builder writes it.
+        for key in ("version", "folder"):
+            if key in node:
+                enriched[key] = node[key]
         enriched_nodes.append(enriched)
 
     pipeline = {

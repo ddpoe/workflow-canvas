@@ -11,7 +11,7 @@ authors:
     given-names: Dante
 license: BSD-3-Clause
 repository-code: "https://github.com/ddpoe/workflow-canvas"
-url: "https://workflow-canvas.readthedocs.io"
+url: "https://workflow-canvas.readthedocs.io/en/stable/"
 keywords:
   - workflow
   - pipeline

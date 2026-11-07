@@ -21,17 +21,21 @@ import {
   formatParamValue,
   formatSampleReads,
   pickHighlights,
+  pillKind,
+  splitNameForCut,
 } from '../runDetailFormat';
 import type { Artifact } from '../historyApi';
 
+// `type` stays absent unless a row gives it, so the trailing-slash fallback
+// in deriveArtifactType is still exercised.
 function art(partial: Partial<Artifact>): Artifact {
   return {
     name: partial.name ?? 'result.txt',
     size: partial.size ?? 0,
-    is_image: partial.is_image ?? false,
+    viewer: partial.viewer ?? null,
     extension: partial.extension ?? 'txt',
     ...partial,
-  };
+  } as Artifact;
 }
 
 describe('categoryOf', () => {
@@ -55,6 +59,17 @@ describe('categoryOf', () => {
     expect(rows.map(([a]) => categoryOf(a))).toEqual(rows.map(([, want]) => want));
   });
 
+  it('groups every file the server gives the image viewer under Images, whatever its extension', () => {
+    // Extensions outside the grouping sets: the server's viewer decides.
+    for (const ext of ['avif', 'bmp', 'ico', 'jp2', 'ppm', 'AVIF']) {
+      expect(categoryOf(art({ name: `scan.${ext}`, extension: ext, viewer: 'image' }))).toBe('images');
+    }
+    // The same extension with no image viewer stays where the sets put it.
+    expect(categoryOf(art({ name: 'scan.avif', extension: 'avif', viewer: null }))).toBe('other');
+    // A folder is a directory even if a viewer were sent for it.
+    expect(categoryOf(art({ name: 'plots/', extension: '', type: 'dir', viewer: 'image' }))).toBe('directories');
+  });
+
   it('puts every artifact in exactly one category', () => {
     const all = [
       art({ name: 'figures/', extension: '' }),
@@ -72,6 +87,29 @@ describe('categoryOf', () => {
     const placed = Object.values(grouped).flat();
     expect(placed).toHaveLength(all.length);
     expect(new Set(placed).size).toBe(all.length);
+  });
+});
+
+describe('pillKind', () => {
+  it('colours images and PDFs by the server viewer, data files by the Data set, the rest grey', () => {
+    expect(pillKind({ viewer: 'image', extension: 'avif' })).toBe('image');
+    expect(pillKind({ viewer: 'pdf', extension: 'pdf' })).toBe('image');
+    expect(pillKind({ viewer: 'table', extension: 'CSV' })).toBe('data');
+    expect(pillKind({ viewer: null, extension: 'parquet' })).toBe('data');
+    expect(pillKind({ viewer: 'text', extension: 'log' })).toBe('other');
+    expect(pillKind({ viewer: null, extension: '' })).toBe('other');
+  });
+});
+
+describe('splitNameForCut', () => {
+  it('keeps the last ten characters of a long name whole, and a short name uncut', () => {
+    expect(splitNameForCut('cluster_assignments.csv')).toEqual({ head: 'cluster_assig', tail: 'nments.csv' });
+    expect(splitNameForCut('umap.png')).toEqual({ head: 'umap.png', tail: '' });
+    expect(splitNameForCut('sixteen_chars.ab')).toEqual({ head: 'sixteen_chars.ab', tail: '' });
+    // A character outside the BMP counts as one and is never split.
+    const { head, tail } = splitNameForCut('figure_with_emoji_😀_final.png');
+    expect(head + tail).toBe('figure_with_emoji_😀_final.png');
+    expect(Array.from(tail)).toHaveLength(10);
   });
 });
 

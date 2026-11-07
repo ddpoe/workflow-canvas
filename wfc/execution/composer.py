@@ -2,12 +2,15 @@
 
 The one place on the execution path that fetches what the Graph unit's pure
 load takes as values: the referenced runs' outputs and sample (Storage's
-``resolve_run_reference_outputs``), the contract map (Registration's
-``load_contract_map``) and, once the load has derived the sample list, the
-samples' content hashes (Registration's ``load_sample_hashes``) for the
-emitter's restore rule. The reads share one session, opened after a
-connection probe: an unreachable database is one typed failure before the
-launch (``DatabaseUnreachableError``), and a failing query reports itself.
+``resolve_run_reference_outputs``), the contract map for the load's
+single-input rule (Registration's ``load_contract_map``) and, once the load
+has derived the sample list, the samples' content hashes (Registration's
+``load_sample_hashes``) for the emitter's restore rule. The reads share one
+session, opened after a connection probe: an unreachable database is one
+typed failure before the launch (``DatabaseUnreachableError``), and a
+failing query reports itself. A document Graph's load refuses is
+``PipelineDocumentError``, the typed refusal the whole prepare-and-load
+path raises.
 """
 
 from __future__ import annotations
@@ -48,6 +51,37 @@ class DatabaseUnreachableError(RuntimeError):
             f"The project database is unreachable ({self.masked_url}); "
             "the pipeline was not launched."
         )
+
+
+class PipelineDocumentError(ValueError):
+    """A pipeline document the preparation or the load refuses; nothing was launched.
+
+    Raised on the prepare-and-load path every run door shares: a pipeline
+    file that is missing or is not a JSON object, a variable the document
+    does not declare, a ``param_sets`` that is not a mapping, a method that
+    is not registered, a validator refusal (``PipelineRefusedError``) and a
+    refusal of Graph's load. The message names the node and the field where
+    the refusal has one. A ``ValueError``, so a caller that catches
+    ``ValueError`` keeps working.
+    """
+
+
+def document_error(exc: Exception) -> PipelineDocumentError:
+    """The typed refusal for an error the preparation or the load raised.
+
+    Args:
+        exc: The ``ValueError`` or ``KeyError`` raised; a ``KeyError``'s
+            message is its first argument, unquoted.
+
+    Returns:
+        A ``PipelineDocumentError`` with the same words; ``exc`` itself when
+        it already is one.
+    """
+    if isinstance(exc, PipelineDocumentError):
+        return exc
+    if isinstance(exc, KeyError) and exc.args and isinstance(exc.args[0], str):
+        return PipelineDocumentError(exc.args[0])
+    return PipelineDocumentError(str(exc))
 
 
 class LoadedPipeline(NamedTuple):
@@ -93,13 +127,13 @@ def load_pipeline_from_document(document: dict) -> LoadedPipeline:
 
     The one place on the execution path that fetches what the pure load
     takes as values: the referenced runs' outputs and sample
-    (``wfc.storage.resolve_run_reference_outputs``), the contract map
-    (``wfc.registration.load_contract_map``) and, once the load has derived
-    the sample list, the samples' content hashes
-    (``wfc.registration.load_sample_hashes``) for the emitter's restore
-    rule. The reads share one session, opened after a connection probe, so
-    an unreachable database is one failure before the launch and a failing
-    query reports itself.
+    (``wfc.storage.resolve_run_reference_outputs``), the contract map for
+    the load's single-input rule (``wfc.registration.load_contract_map``)
+    and, once the load has derived the sample list, the samples' content
+    hashes (``wfc.registration.load_sample_hashes``) for the emitter's
+    restore rule. The reads share one session, opened after a connection
+    probe, so an unreachable database is one failure before the launch and
+    a failing query reports itself.
 
     Args:
         document: The pipeline document, already substituted.
@@ -110,12 +144,17 @@ def load_pipeline_from_document(document: dict) -> LoadedPipeline:
     Raises:
         DatabaseUnreachableError: When the database cannot be reached; no
             read has run.
+        PipelineDocumentError: Graph's load refuses the document (its
+            ``ValueError`` or ``KeyError``, in the same words).
     """
     with _composer_session() as session:
         refs = resolve_run_reference_outputs(reference_nodes(document), session)
         contract_map = load_contract_map(session)
-        pipeline = load_pipeline(document, contract_map=contract_map,
-                                 reference_outputs=refs)
+        try:
+            pipeline = load_pipeline(document, contract_map=contract_map,
+                                     reference_outputs=refs)
+        except (ValueError, KeyError) as exc:
+            raise document_error(exc) from exc
         sample_hashes = load_sample_hashes(pipeline.samples, session)
     return LoadedPipeline(pipeline, sample_hashes)
 

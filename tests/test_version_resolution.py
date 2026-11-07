@@ -120,7 +120,7 @@ def test_run_pipeline_names_the_version_each_unpinned_node_resolved(
              purpose="Only the engine spawn is stubbed")
     with fake_engine_process():
         run_pipeline(pipeline_path=str(doc_path), project_root=str(root),
-                     wfc_root=str(root), cores=1, pipeline_id="vr-cli")
+                     cores=1, pipeline_id="vr-cli")
 
     口 = Step(step_num=3, name="One line, for the unpinned node",
              purpose="Naming the node, module/method and the resolved label")
@@ -148,7 +148,7 @@ def test_run_pipeline_names_the_version_each_unpinned_node_resolved(
     frozen_path.write_text(json.dumps(frozen), encoding="utf-8")
     with fake_engine_process():
         run_pipeline(pipeline_path=str(frozen_path), project_root=str(root),
-                     wfc_root=str(root), cores=1, pipeline_id="vr-frozen")
+                     cores=1, pipeline_id="vr-frozen")
     assert _version_lines(capsys.readouterr().out) == []
 
 
@@ -159,8 +159,8 @@ def test_run_pipeline_names_the_version_each_unpinned_node_resolved(
                   "map")
 def test_a_node_whose_method_is_not_registered_is_refused_by_name(
         wfc_root, enriched):
-    from wfc.contracts import MethodNotFoundError
     from wfc.execution.prepare import prepare_document
+    from wfc.execution.validation import PipelineDocumentError
 
     root = Path(wfc_root)
     _project(root)
@@ -172,7 +172,7 @@ def test_a_node_whose_method_is_not_registered_is_refused_by_name(
             n.update({"env": ENV, "slot_outputs": {}, "slot_types": {}})
     document["links"][1]["target"] = "ghost"
 
-    with pytest.raises(MethodNotFoundError) as refused:
+    with pytest.raises(PipelineDocumentError) as refused:
         prepare_document(document)
 
     assert str(refused.value).startswith(
@@ -200,7 +200,7 @@ def test_download_returns_the_frozen_copy_with_every_node_pinned(
                         encoding="utf-8")
     with fake_engine_process():
         run_pipeline(pipeline_path=str(doc_path), project_root=str(root),
-                     wfc_root=str(root), cores=1, pipeline_id="vr-dl")
+                     cores=1, pipeline_id="vr-dl")
     client = canvas_client(root, monkeypatch)
     bind_provider(monkeypatch, WfcProvider(str(root)))
 

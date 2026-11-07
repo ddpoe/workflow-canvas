@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.fixtures.fakes import stub_interactive_prompt
+from tests.fixtures.fakes import stub_interactive_prompt, stub_terminal
 
 from axiom_annotations import workflow, Step
 
@@ -443,8 +443,7 @@ def test_cli_delete_env_commits_the_record_and_captures_removal(
     # Every untracked file listed: git folds an all-untracked dir into one line.
     status_before = _git(tmp_project, "status", "--porcelain", "-uall")
 
-    stub_interactive_prompt(monkeypatch, "y")
-    result = cli("delete-env", "spare")
+    result = cli("delete-env", "spare", "--yes")
 
     assert result.returncode == 0, result.stderr
     assert env_get("spare", tmp_project) is None
@@ -527,6 +526,7 @@ def test_cli_delete_env_declined_keeps_the_record_and_captures(
     before = (manifest.read_bytes(), _tree_bytes(captures),
               _git(tmp_project, "rev-parse", "HEAD"))
 
+    stub_terminal(monkeypatch, True)
     stub_interactive_prompt(monkeypatch, "n")
     result = cli("delete-env", "spare")
 
@@ -536,6 +536,45 @@ def test_cli_delete_env_declined_keeps_the_record_and_captures(
     assert (captures / record.env_fingerprint).is_dir()
     assert (manifest.read_bytes(), _tree_bytes(captures),
             _git(tmp_project, "rev-parse", "HEAD")) == before
+
+
+@pytest.mark.parametrize("flag", ["--yes", "--force"])
+@workflow(
+    purpose="wfc delete-env with no terminal and no --yes asks nothing, "
+            "refuses naming --yes and deletes nothing; --yes, or --force (the "
+            "same flag), deletes the env without asking",
+    inputs="an env registered (and committed) through production; pytest's "
+           "own stdin, which is not a terminal; the flag --yes or --force",
+    outputs="exit 1 naming --yes, the record, the captures folder and HEAD "
+            "kept; then exit 0 with the flag and the env gone",
+)
+def test_cli_delete_env_with_no_terminal_refuses_naming_yes(
+    cli, tmp_project, monkeypatch, flag,
+):
+    from wfc.environments import get as env_get
+
+    _register_env(tmp_project, "spare", monkeypatch)
+    manifest = tmp_project / ".wfc" / "envs.json"
+    captures = tmp_project / ".wfc" / "captures" / "spare"
+    before = (manifest.read_bytes(), _tree_bytes(captures),
+              _git(tmp_project, "rev-parse", "HEAD"))
+    prompts: list[str] = []
+    stub_interactive_prompt(monkeypatch, "y", prompts=prompts)
+
+    result = cli("delete-env", "spare")
+
+    assert result.returncode == 1
+    assert "--yes" in result.stderr and "Nothing was deleted" in result.stderr
+    assert prompts == []
+    assert (manifest.read_bytes(), _tree_bytes(captures),
+            _git(tmp_project, "rev-parse", "HEAD")) == before
+
+    result = cli("delete-env", "spare", flag)
+
+    assert result.returncode == 0, result.stderr
+    assert prompts == []
+    assert env_get("spare", tmp_project) is None
+    assert not captures.exists()
 
 
 def test_cli_delete_env_refused_commit_leaves_the_tree_as_it_was(
@@ -614,7 +653,7 @@ def test_delete_env_outside_git_removes_without_committing(tmp_path, monkeypatch
     folder.mkdir(parents=True)
     (folder / "packages.lock").write_text("x\n", encoding="utf-8")
 
-    assert delete_env("image-io", references=[], force=True) == 0
+    assert delete_env("image-io", references=[]) == 0
     assert env_get("image-io", tmp_path) is None
     assert not folder.parent.exists()
     assert not (tmp_path / ".git").exists()

@@ -8,13 +8,14 @@
  * than per-edge negative assertions.
  */
 import { describe, expect, it } from 'vitest';
-import { createActor, createMachine, fromCallback } from 'xstate';
+import { createActor, createMachine, fromCallback, type EventObject } from 'xstate';
 import { makeNodeRunMachine } from '../nodeRun.machine';
+import type { StreamingInput } from '../streaming.machine';
 
 // Tiny no-op streaming actor stub. We override the streamingActor child
 // in the machine's `setup` so spawning `running` does not try to open a
 // real EventSource. The stub stays alive until the parent stops it.
-const streamingStub = fromCallback(() => {
+const streamingStub = fromCallback<EventObject, StreamingInput>(() => {
   return () => {};
 });
 
@@ -22,7 +23,7 @@ function makeActor() {
   const m = makeNodeRunMachine().provide({
     actors: { streamingActor: streamingStub },
   });
-  return createActor(m);
+  return createActor(m, { input: {} });
 }
 
 describe('nodeRunActor', () => {
@@ -125,7 +126,7 @@ describe('nodeRunActor', () => {
   // callback so we can assert it was called.
   it('running → cached on CACHE_HIT and tears down the streaming child', () => {
     let streamingDisposed = false;
-    const captureDispose = fromCallback(() => {
+    const captureDispose = fromCallback<EventObject, StreamingInput>(() => {
       return () => {
         streamingDisposed = true;
       };
@@ -133,7 +134,7 @@ describe('nodeRunActor', () => {
     const m = makeNodeRunMachine().provide({
       actors: { streamingActor: captureDispose },
     });
-    const actor = createActor(m);
+    const actor = createActor(m, { input: {} });
     actor.start();
     actor.send({ type: 'RUN', jobId: 'job-1' });
     actor.send({ type: 'HEARTBEAT', runId: 'run-1' });

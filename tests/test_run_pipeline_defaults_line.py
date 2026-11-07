@@ -103,7 +103,7 @@ def test_run_pipeline_names_the_declared_defaults_each_node_runs(
              purpose="Only the Snakemake spawn is stubbed")
     with fake_engine_process(only_snakemake=True):
         run_pipeline(pipeline_path=str(path), project_root=str(project.root),
-                     wfc_root=str(project.root), pipeline_id="defaults-line-cli")
+                     pipeline_id="defaults-line-cli")
 
     口 = Step(step_num=3, name="One line per node or variant running defaults",
              purpose="a names all four (count required, unmarked); v's own "
@@ -124,7 +124,7 @@ def test_run_pipeline_names_the_declared_defaults_each_node_runs(
     frozen_path.write_text(json.dumps(frozen), encoding="utf-8")
     with fake_engine_process(only_snakemake=True):
         run_pipeline(pipeline_path=str(frozen_path), project_root=str(project.root),
-                     wfc_root=str(project.root), pipeline_id="defaults-line-frozen")
+                     pipeline_id="defaults-line-frozen")
     assert _defaults_lines(capsys.readouterr().out) == []
 
 

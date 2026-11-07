@@ -30,7 +30,10 @@ function row(status: string): PipelineRowSummary {
     sampleCount: 1,
     started: Date.now(),
     runs: [],
-  } as PipelineRowSummary;
+    draftMode: false,
+    draftSteps: [],
+    cleared: null,
+  };
 }
 
 describe('a History pipeline row\'s Watch in Canvas', () => {

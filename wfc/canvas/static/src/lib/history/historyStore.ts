@@ -4,11 +4,13 @@
  * (matches the pattern in stores.ts).
  */
 import { writable, derived, get } from 'svelte/store';
-import type { MethodInfo, PipelineSummary, WfcRun } from './historyApi.js';
+import type { DraftStep, MethodInfo, PipelineCleared, PipelineSummary, WfcRun } from './historyApi.js';
+import { draftStepRun } from './historyDrafts.js';
 import { COLLAPSED_SAMPLE } from '../shared/types.js';
 import {
   fetchRuns,
   fetchPipelineSummaries,
+  fetchDraftSteps,
   fetchModules,
   fetchMethods,
   favoriteRun as apiFavoriteRun,
@@ -21,7 +23,8 @@ import {
 
 export type TimeRange = 'all' | '24h' | '7d' | '30d';
 
-export type RunStatusFilter = 'success' | 'failed' | 'running' | 'cancelled';
+/** A status chip; `draft` keeps the draft steps (kept, not recorded). */
+export type RunStatusFilter = 'success' | 'failed' | 'running' | 'cancelled' | 'draft';
 
 export interface FilterState {
   timeRange: TimeRange;
@@ -47,6 +50,19 @@ export interface PathRow {
 // ---------- Stores ----------
 
 export const runs = writable<WfcRun[]>([]);
+
+/** Every draft step that still exists: each draft's latest draft run. */
+export const draftSteps = writable<DraftStep[]>([]);
+
+/**
+ * The rows Lineages and Descendants draw: the recorded runs, then a row per
+ * draft step (historyDrafts.ts). The draft rows are never in `runs`, so
+ * the run actions, the Pipelines grouping and the running check see only
+ * recorded runs.
+ */
+export const historyRuns = derived([runs, draftSteps], ([$runs, $drafts]) =>
+  $drafts.length === 0 ? $runs : [...$runs, ...$drafts.map(draftStepRun)],
+);
 export const loading = writable<boolean>(false);
 export const error = writable<string | null>(null);
 
@@ -295,7 +311,7 @@ function timeRangeMs(range: TimeRange): number {
 }
 
 export const filteredRuns = derived(
-  [runs, filters, favorites],
+  [historyRuns, filters, favorites],
   ([$runs, $filters, $favorites]) => {
     let result = $runs;
 
@@ -355,7 +371,8 @@ export const filteredRuns = derived(
     // runs whose status matches one of the selected chips.
     if ($filters.statuses.length > 0) {
       const statusSet = new Set<string>($filters.statuses);
-      result = result.filter(r => statusSet.has(r.status));
+      result = result.filter(r =>
+        statusSet.has(r.status) || (!!r.draftStep && statusSet.has('draft')));
     }
 
     // Sort by timestamp descending (newest first)
@@ -385,7 +402,7 @@ export const filteredRuns = derived(
  * The Inspector's per-slot parent chips remain the place to see "who fed
  * this exact slot"; a row shows "what had to run before this terminal".
  */
-export const pathRows = derived([filteredRuns, runs], ([$filtered, $runs]) => {
+export const pathRows = derived([filteredRuns, historyRuns], ([$filtered, $runs]) => {
   const allMap = new Map<string, WfcRun>();
   for (const r of $runs) allMap.set(r.id, r);
   const nearest = nearestVisibleAncestors(
@@ -447,8 +464,13 @@ export async function loadRuns(): Promise<void> {
       // them, so a failed summary read leaves the list unsummarised.
       fetchPipelineSummaries().catch(() => [] as PipelineSummary[]),
     ]);
+    // Draft steps: their own route, else the ones the summaries carry.
+    const drafts = await fetchDraftSteps().catch(
+      () => summaries.flatMap(s => s.draftSteps ?? []),
+    );
     runs.set(allRuns);
     pipelineSummaries.set(summaries);
+    draftSteps.set(drafts);
     availableModules.set(mods.sort());
     methodInfos.set(meths);
   } catch (err) {
@@ -478,8 +500,18 @@ let pendingSection: { runId: string; section: RunDetailSection } | null = null;
  */
 export function openRunOn(runId: string, section: RunDetailSection): void {
   pendingSection = { runId, section };
+  // A run already open in the panel does not reload (setting the same id is
+  // no change), so the request is also published for the open panel to take.
+  runSectionRequest.set({ runId, section });
   selectedRunId.set(runId);
 }
+
+/**
+ * A tab request for the run detail panel, taken (and cleared) by the panel
+ * showing that run. Lets `openRunOn` switch the tab of a run that is
+ * already open.
+ */
+export const runSectionRequest = writable<{ runId: string; section: RunDetailSection } | null>(null);
 
 /**
  * Take the tab a run was asked to open on, once.
@@ -764,6 +796,12 @@ export interface PipelineRowSummary {
   started: number;
   /** The child runs in step order, then sample. */
   runs: WfcRun[];
+  /** Whether it ran in draft mode (the summary's). */
+  draftMode: boolean;
+  /** Its draft steps that still exist, in step order (the DRAFT rows). */
+  draftSteps: DraftStep[];
+  /** The greyed line once its draft steps are cleared, else null. */
+  cleared: PipelineCleared | null;
 }
 
 /**
@@ -779,26 +817,37 @@ export const pipelineRuns = derived([runs, pipelineSummaries], ([$runs, $summari
     arr.push(r);
     groups.set(r.pipelineId, arr);
   }
+  // A pipeline that recorded nothing still has a row while its draft
+  // steps exist or its cleared line stands.
+  for (const s of $summaries) {
+    if (!groups.has(s.pipelineId) && ((s.draftSteps?.length ?? 0) > 0 || s.cleared)) {
+      groups.set(s.pipelineId, []);
+    }
+  }
   const rows: PipelineRowSummary[] = [];
   for (const [pid, group] of groups.entries()) {
     const summary = summaries.get(pid);
+    const drafts = sortDraftSteps(summary?.draftSteps ?? [], summary?.nodeOrder);
     const samples = new Set(
-      group
-        .map(r => r.dataSource)
+      [...group.map(r => r.dataSource), ...drafts.map(d => d.sample)]
         .filter(s => !!s && s !== COLLAPSED_SAMPLE),
     );
-    const started = group.reduce(
-      (min, r) => (r.timestamp && (!min || r.timestamp < min) ? r.timestamp : min),
+    const started = [...group.map(r => r.timestamp), ...drafts.map(d => d.timestamp ?? 0)].reduce(
+      (min, t) => (t && (!min || t < min) ? t : min),
       0,
-    );
+    ) || (summary?.startedAt ? Date.parse(summary.startedAt) : 0);
     rows.push({
       pipelineId: pid,
-      name: group.map(r => r.pipelineName).find(n => !!n) ?? pid.slice(0, 8),
+      name: group.map(r => r.pipelineName).find(n => !!n)
+        ?? summary?.name ?? drafts.map(d => d.pipelineName).find(n => !!n) ?? pid.slice(0, 8),
       status: summary?.status ?? null,
       buckets: runBuckets(group, summary?.expected),
       sampleCount: samples.size,
       started,
       runs: sortPipelineRuns(group, summary?.nodeOrder),
+      draftMode: !!summary?.draftMode,
+      draftSteps: drafts,
+      cleared: summary?.cleared ?? null,
     });
   }
   rows.sort((a, b) => (b.started || 0) - (a.started || 0));
@@ -848,6 +897,16 @@ export function togglePipelineExpanded(pipelineId: string): void {
   });
 }
 
+/** A pipeline's draft steps in step order (as its runs), then by sample. */
+export function sortDraftSteps(steps: DraftStep[], nodeOrder: string[] | null | undefined): DraftStep[] {
+  const order = nodeOrder ?? [];
+  const rank = (n: string) => { const i = order.indexOf(n); return i >= 0 ? i : order.length; };
+  return [...steps].sort((a, b) =>
+    rank(a.nodeId) - rank(b.nodeId)
+    || (a.timestamp ?? 0) - (b.timestamp ?? 0)
+    || a.sample.localeCompare(b.sample, 'en', { numeric: true }));
+}
+
 // ---------- Derived: status bucket counts ----------
 
 /**
@@ -858,7 +917,7 @@ export function togglePipelineExpanded(pipelineId: string): void {
  * so the counts always match the visible row count for the chosen filters.
  */
 export const statusBuckets = derived(
-  [runs, filters],
+  [historyRuns, filters],
   ([$runs, $filters]) => {
     let result = $runs;
     if ($filters.timeRange !== 'all') {
@@ -898,7 +957,7 @@ export const statusBuckets = derived(
       result = result.filter(r => !!r.archivedAt);
     }
     const buckets: Record<RunStatusFilter | 'cached', number> = {
-      success: 0, failed: 0, running: 0, cancelled: 0, cached: 0,
+      success: 0, failed: 0, running: 0, cancelled: 0, cached: 0, draft: 0,
     };
     for (const r of result) {
       if (r.status === 'success' || r.status === 'failed' ||
@@ -911,6 +970,9 @@ export const statusBuckets = derived(
       if (r.cacheSourceRunId) {
         buckets.cached += 1;
       }
+      // A draft step counts in its status bucket and in `draft` (kept,
+      // not recorded), as the cached overlap does.
+      if (r.draftStep) buckets.draft += 1;
     }
     return buckets;
   }
@@ -970,7 +1032,7 @@ function forestOrder(a: WfcRun, b: WfcRun): number {
  * the unlabelled section last.
  */
 export const descendantForest = derived(
-  [filteredRuns, runs],
+  [filteredRuns, historyRuns],
   ([$filtered, $runs]): DescendantSection[] => {
     const allMap = new Map<string, WfcRun>();
     for (const r of $runs) allMap.set(r.id, r);

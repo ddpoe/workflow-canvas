@@ -97,6 +97,23 @@ def conda_list_explicit(env_path: str | Path) -> str:
 PIP_MISSING_SENTINEL = "pip-freeze: unavailable (pip not installed)\n"
 
 
+def freeze_has_packages(pip_freeze_content: str | None) -> bool:
+    """Say whether a captured pip freeze names anything to install.
+
+    The Dockerfile generators omit their pip stage when it does not, so an
+    env with no Python or no pip (an R-only env, say) builds.
+
+    Args:
+        pip_freeze_content: The captured freeze or pip set.
+
+    Returns:
+        ``False`` when it is empty, only whitespace, or
+        :data:`PIP_MISSING_SENTINEL`; ``True`` otherwise.
+    """
+    stripped = (pip_freeze_content or "").strip()
+    return bool(stripped) and stripped != PIP_MISSING_SENTINEL.strip()
+
+
 def pip_freeze_best_effort(env_python: str | Path) -> str:
     """Return ``<env_python> -m pip freeze`` output, tolerating a missing pip.
 
@@ -262,8 +279,8 @@ class SolveSpec:
     """The spec a solved conda env is installed from.
 
     Attributes:
-        channels: The channels, in order, as the host's export names them
-            (a ``defaults`` channel is kept).
+        channels: The channels, in order, the env's packages came from
+            (Anaconda's own channels as ``defaults``).
         specs: Each requested package as ``[channel::]name=<version>``, the
             version the host has installed, with no build string.
         platform: The platform it is solved for.
@@ -292,8 +309,68 @@ def _channel_of(package: dict) -> str:
     return "defaults" if channel.startswith("pkgs/") else channel
 
 
+# What conda reports for a package from a local build or a tarball install.
+_LOCAL_CHANNELS = frozenset({"local", "<unknown>"})
+
+
+def _reachable(channel: str) -> bool:
+    """Whether the linux image's solve can reach *channel* (or ``base_url``).
+
+    A local build or a tarball install (``local``, ``<unknown>``, a
+    ``file:`` URL) lives only on the host.
+    """
+    return channel not in _LOCAL_CHANNELS and not channel.startswith("file:")
+
+
+def _names_package_channel(channel: str, package: dict) -> bool:
+    """Whether a channel the export lists is the one *package* came from.
+
+    The export may name a channel as conda does (``conda-forge``,
+    ``defaults``) or by URL; the package carries its channel name and its
+    ``base_url``.
+    """
+    channel = channel.rstrip("/")
+    base_url = str(package.get("base_url") or "").rstrip("/")
+    return (channel == _channel_of(package) or channel == base_url
+            or (bool(base_url) and base_url.endswith(f"/{channel}")))
+
+
+def _solve_channels(listed: list[str], requested: list[dict],
+                    installed: list[dict]) -> dict[str, str]:
+    """Map each installed conda package to the channel it is solved from.
+
+    A package is solved from the first listed channel it came from, else
+    from its own channel.
+
+    Args:
+        listed: The export's channels, in order.
+        requested: The requested packages' entries, in the export's order.
+        installed: Every conda-installed package's entry.
+
+    Returns:
+        ``{package name (lower case): channel}``, requested packages first,
+        then the rest in list order; a package with no channel, or from one
+        the image cannot reach (a local build or tarball), is left out.
+    """
+    by_package: dict[str, str] = {}
+    for package in [*requested, *installed]:
+        name = str(package.get("name", "")).lower()
+        if name in by_package or not _reachable(str(package.get("base_url") or "")):
+            continue
+        channel = next((c for c in listed if _names_package_channel(c, package)),
+                       _channel_of(package))
+        if channel and _reachable(channel):
+            by_package[name] = channel
+    return by_package
+
+
 def pinned_spec(from_history: str, installed: list[dict]) -> SolveSpec:
-    """Pin each requested package to the version the host has installed.
+    """Pin each requested package to the version and channel it was installed from.
+
+    The export's channels are the host's configured ones, which need not be
+    where the packages came from (an env made with ``-c conda-forge
+    --override-channels`` exports ``defaults``), so the solve's channels are
+    the ones the installed packages came from.
 
     Args:
         from_history: ``conda env export --from-history`` text (CRLF and a
@@ -301,10 +378,17 @@ def pinned_spec(from_history: str, installed: list[dict]) -> SolveSpec:
         installed: ``conda list --json`` for the same env.
 
     Returns:
-        The :class:`SolveSpec`: the export's channels (or, when it names
-        none, the channels the requested packages came from) and one
-        ``[channel::]name=<installed version>`` per request, in the export's
-        order.
+        The :class:`SolveSpec`. Its channels are those the env's conda
+        packages came from: the ones the export lists, in its order, then
+        the others, the requested packages' first; an exported channel no
+        package came from is left out, and when no package names a channel
+        the export's channels are used. A channel the image cannot reach (a
+        local build or tarball: ``local``, ``<unknown>``, a ``file:`` URL)
+        is never one of them; its packages are solved from the rest. Its
+        specs are one ``[channel::]name=<installed version>`` per request,
+        in the export's order: a request with no ``channel::`` of its own is
+        pinned to the channel it came from, unless that is Anaconda's
+        ``defaults`` or one the image cannot reach.
 
     Raises:
         ValueError: The export cannot be read, or a requested package is not
@@ -318,8 +402,7 @@ def pinned_spec(from_history: str, installed: list[dict]) -> SolveSpec:
                          "YAML mapping")
     by_name = {str(p.get("name", "")).lower(): p for p in _conda_packages(installed)}
 
-    specs: list[str] = []
-    requested: list[dict] = []
+    requests: list[tuple[str, str | None, dict]] = []
     seen: set[str] = set()
     for entry in doc.get("dependencies") or []:
         if not isinstance(entry, str):
@@ -338,14 +421,22 @@ def pinned_spec(from_history: str, installed: list[dict]) -> SolveSpec:
                 f"package is installed in it, so there is no version to pin. "
                 f"Install it again, or remove it from the env, then register."
             )
-        prefix = f"{match['channel']}::" if match["channel"] else ""
-        specs.append(f"{prefix}{name}={package['version']}")
-        requested.append(package)
+        requests.append((name, match["channel"], package))
 
-    channels = [str(c) for c in doc.get("channels") or []]
-    if not channels:
-        channels = list(dict.fromkeys(_channel_of(p) for p in requested
-                                      if _channel_of(p)))
+    listed = [str(c) for c in doc.get("channels") or []]
+    solve_from = _solve_channels(listed, [p for _, _, p in requests],
+                                 list(by_name.values()))
+    specs: list[str] = []
+    for name, own_channel, package in requests:
+        channel = own_channel or solve_from.get(name)
+        prefix = (f"{channel}::" if channel and (own_channel or channel != "defaults")
+                  else "")
+        specs.append(f"{prefix}{name}={package['version']}")
+
+    used = list(dict.fromkeys(solve_from.values()))
+    channels = ([c for c in listed if c in used]
+                + [c for c in used if c not in listed]
+                or [c for c in listed if _reachable(c)])
     return SolveSpec(channels=tuple(channels), specs=tuple(specs))
 
 

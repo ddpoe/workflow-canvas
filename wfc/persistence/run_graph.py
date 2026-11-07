@@ -8,7 +8,8 @@ Two reads, both returning plain values:
   protocol by shape, so Lineage walks them without this package importing
   Lineage.
 - :func:`list_runs` gives each run's id, pipeline, node, method, sample and
-  status, reading ``runs`` with its method, module and method version.
+  status, reading ``runs`` with its method, module and method version, and
+  its pipeline's name from ``pipeline_runs``.
 
 This module owns how the rows are read, not what they mean: which runs a
 walk reaches, or what a status says to a user, is the caller's. The one
@@ -25,7 +26,7 @@ from axiom_annotations import Step, task
 from sqlmodel import col, select
 
 from .engine import get_session
-from .schema import Method, MethodVersion, Module, Run, RunInput
+from .schema import Method, MethodVersion, Module, PipelineRun, Run, RunInput
 
 
 @dataclass(frozen=True)
@@ -64,6 +65,8 @@ class RunListing:
             ``None`` for a run with no method.
         sample: The sample the run ran on, or ``None``.
         status: The row's status, as recorded.
+        pipeline_name: The pipeline's name from its ``pipeline_runs`` row,
+            or ``None`` when it has no row or the row has no name.
     """
 
     run_id: int
@@ -72,6 +75,7 @@ class RunListing:
     method: str | None
     sample: str | None
     status: str
+    pipeline_name: str | None = None
 
 
 def _optional_id(value: int | None) -> str | None:
@@ -167,10 +171,14 @@ def list_runs(pipeline_id: str | None = None,
     Raises:
         ValueError: *method* has no module part.
     """
-    query = (select(Run, Module.name, Method.name, MethodVersion.label)
+    # sqlmodel's select() stubs stop at four entities; at runtime it takes any number.
+    query = (select(Run, Module.name, Method.name, MethodVersion.label,  # type: ignore[call-overload]
+                    PipelineRun.name)
              .outerjoin(Method, col(Run.method_id) == col(Method.id))
              .outerjoin(Module, col(Method.module_id) == col(Module.id))
              .outerjoin(MethodVersion, col(Run.version_id) == col(MethodVersion.id))
+             .outerjoin(PipelineRun,
+                        col(Run.pipeline_id) == col(PipelineRun.pipeline_id))
              .order_by(col(Run.id)))
     if pipeline_id is not None:
         query = query.where(Run.pipeline_id == pipeline_id)
@@ -184,5 +192,6 @@ def list_runs(pipeline_id: str | None = None,
         return [RunListing(run_id=int(run.id or 0), pipeline_id=run.pipeline_id,
                            node_id=run.node_id,
                            method=_method_label(module, name, label),
-                           sample=run.sample, status=run.status)
-                for run, module, name, label in session.exec(query)]
+                           sample=run.sample, status=run.status,
+                           pipeline_name=pipeline_name)
+                for run, module, name, label, pipeline_name in session.exec(query)]

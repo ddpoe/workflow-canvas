@@ -48,6 +48,7 @@ function row(nodeId: string, sample: string, over: Partial<CacheStatusRow>): Cac
     source_run_id: null,
     source_nid: null,
     outputs: [],
+    draft_mode: false,
     ...over,
   };
 }

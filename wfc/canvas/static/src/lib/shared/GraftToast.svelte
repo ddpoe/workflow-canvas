@@ -45,29 +45,29 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    background: var(--bg-header, #2d2d30);
-    border: 1px solid var(--color-completed, #50C878);
+    background: var(--bg-header);
+    border: 1px solid var(--status-ok);
     border-radius: 4px;
     padding: 10px 14px;
-    color: var(--text-primary, #ccc);
+    color: var(--text-primary);
     font-size: 12px;
     z-index: 100;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
   }
-  .check { color: var(--color-completed, #50C878); font-weight: 700; }
+  .check { color: var(--status-ok); font-weight: 700; }
   .msg { display: flex; flex-direction: column; gap: 2px; }
   .head { font-weight: 600; }
-  .detail { font-size: 10.5px; color: var(--text-secondary, #888); font-family: 'Consolas', monospace; }
+  .detail { font-size: 10.5px; color: var(--text-secondary); font-family: 'Consolas', monospace; }
   .jump {
     margin-left: 8px;
     background: none;
-    border: 1px solid var(--accent, #4A90D9);
-    color: var(--accent, #4A90D9);
+    border: 1px solid var(--accent);
+    color: var(--accent);
     border-radius: 3px;
     font-size: 11px;
     padding: 4px 10px;
     cursor: pointer;
     font-family: inherit;
   }
-  .jump:hover { background: rgba(74, 144, 217, 0.10); }
+  .jump:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 </style>

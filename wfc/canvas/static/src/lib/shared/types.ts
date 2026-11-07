@@ -56,17 +56,12 @@ export interface ParamDef {
   required?: boolean;
   constraints?: ParamConstraints;
   /**
-   * When set, the inspector renders this string param as
-   * a column-name dropdown populated from the upstream method's declared
-   * `outputs.<slot>.columns`. The slot name is the value of this field.
+   * The input (or inputs, in order) whose upstream outputs offer this
+   * param's options. When set, the Inspector renders the string row with the
+   * options picker, listing what each upstream wired to those inputs declares
+   * in its output's `options`. Suggestions only: free text is always accepted.
    */
-  column_of_input?: string;
-  /**
-   * When true, the param is a column the method
-   * *creates* (not consumes) — render as plain free-text always, no
-   * dropdown, even if column_of_input is also set.
-   */
-  new_column?: boolean;
+  options_from?: string | string[];
 }
 
 // ---------- Pipeline Variables ----------
@@ -113,24 +108,55 @@ export interface MethodVersionDef {
   params: ParamDef[];
 }
 
+/**
+ * A method's draft, as the palette's Drafts group lists it: a method folder
+ * the canvas runs as it is on disk, with the contract its `method.yaml`
+ * declared when the draft was last read (added or updated in the Registry).
+ *
+ * A `version` draft is the next version of the registered method of the same
+ * name in its module; a `method` draft is a new method of the module. A draft
+ * is not a version: a node runs it with `version: "draft"` and its folder.
+ */
+export interface DraftDef {
+  module: string;
+  method: string;
+  kind: 'version' | 'method';
+  /** The method folder the draft's pointer names. */
+  folder: string;
+  /** False when the draft's Registration check fails; `reasons` says why. */
+  valid: boolean;
+  reasons: string[];
+  env?: string;
+  description?: string;
+  inputs: SlotDef[];
+  outputs: SlotDef[];
+  params: ParamDef[];
+}
+
 export interface MethodDef {
   name: string;
   module: string;
   /** Every registered version in label order, newest last. */
   versions?: MethodVersionDef[];
+  /** The method's draft, when it has one (one draft per method). */
+  draft?: DraftDef;
   description?: string;
   script_path?: string;
   inputs: SlotDef[];
   outputs: SlotDef[];
   params: ParamDef[];
-  color?: string;       // module accent color
 }
 
+/** A palette module. Its colour is read through `moduleColor(name)`. */
 export interface ModuleDef {
   name: string;
   description?: string;
-  color: string;
   methods: MethodDef[];
+  /**
+   * The module's drafts, each as the method a node runs (a `version` draft
+   * is its registered method's own entry; a `method` draft lists no versions).
+   */
+  drafts?: MethodDef[];
 }
 
 // ---------- Node type discriminator ----------
@@ -144,8 +170,10 @@ export interface PipelineNode {
   type?: NodeType;
   method: string;
   module?: string;
-  /** A method node's pin: an older version's content identity. */
+  /** A method node's pin: an older version's content identity, or `"draft"`. */
   version?: string;
+  /** A draft node's method folder (only with `version: "draft"`). */
+  folder?: string;
   params: Record<string, unknown>;
   position?: { x: number; y: number };
   // input_selector fields
@@ -187,7 +215,7 @@ export interface ExplicitCombo {
   [k: string]: unknown;
 }
 
-export interface PipelineJSON {
+export type PipelineJSON = {
   name?: string;
   nodes: PipelineNode[];
   links: PipelineLink[];
@@ -204,7 +232,7 @@ export interface PipelineJSON {
    * the Pipeline Variables panel and per-row binding chips.
    */
   variables?: PipelineVariables;
-}
+};
 
 // ---------- Run state ----------
 
@@ -233,6 +261,11 @@ export interface PipelineError {
     | 'not_runnable_git'
     | 'unknown'
     | string;
+  /**
+   * The lines under `message` when it is a header ("Validation errors:"):
+   * the banner lists them as bullets. Absent for a single message.
+   */
+  items?: string[];
   hint?: string;
 }
 
@@ -244,18 +277,34 @@ export interface WorkflowRunState {
 
 // ---------- Canvas node data ----------
 
-export interface CanvasNodeData {
+export type CanvasNodeData = {
   label: string;
   method: string;
   module: string;
   /**
-   * The content identity of the older version this node is pinned to.
-   * Absent when the node follows the newest version.
+   * The content identity of the older version this node is pinned to, or
+   * `"draft"` for a node that runs its method's draft. Absent when the node
+   * follows the newest version.
    */
   version?: string;
   /** The method's versions, for the node's version number and dropdown. */
   versions?: MethodVersionDef[];
-  color: string;
+  /** The method's draft, when it has one: the dropdown's ● DRAFT entry. */
+  draft?: DraftDef;
+  /** A draft node's method folder, as its document names it. */
+  folder?: string;
+  /**
+   * What the last snapshot check said of a draft node's folder, shown on the
+   * node with `draftMessage` saying why; the server decides whether it runs.
+   */
+  draftState?: 'current' | 'invalid' | 'missing';
+  draftMessage?: string;
+  /**
+   * The server's refusals naming this node from the last Validate or Run
+   * (`nodeRefusals.ts`), shown on the node and in the Inspector until the
+   * next one.
+   */
+  refusals?: string[];
   inputs: SlotDef[];
   outputs: SlotDef[];
   params: ParamDef[];
@@ -312,7 +361,7 @@ export interface CanvasNodeData {
   inputCollapsed?: boolean;
   // run_reference
   selectedRunId?: string;
-}
+};
 
 // ---------- System node API types ----------
 

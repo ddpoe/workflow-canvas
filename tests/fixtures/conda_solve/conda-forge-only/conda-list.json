@@ -1,0 +1,62 @@
+[
+  {
+    "base_url": "https://conda.anaconda.org/conda-forge",
+    "build_number": 10,
+    "build_string": "h0ad9c76_10",
+    "channel": "conda-forge",
+    "dist_name": "bzip2-1.0.8-h0ad9c76_10",
+    "name": "bzip2",
+    "platform": "win-64",
+    "version": "1.0.8"
+  },
+  {
+    "base_url": "https://conda.anaconda.org/conda-forge",
+    "build_number": 0,
+    "build_string": "hf411b9b_0",
+    "channel": "conda-forge",
+    "dist_name": "openssl-3.6.5-hf411b9b_0",
+    "name": "openssl",
+    "platform": "win-64",
+    "version": "3.6.5"
+  },
+  {
+    "base_url": "https://conda.anaconda.org/conda-forge",
+    "build_number": 2,
+    "build_string": "pyh8b19718_2",
+    "channel": "conda-forge",
+    "dist_name": "pip-26.2.2-pyh8b19718_2",
+    "name": "pip",
+    "platform": "noarch",
+    "version": "26.2.2"
+  },
+  {
+    "base_url": "https://conda.anaconda.org/conda-forge",
+    "build_number": 0,
+    "build_string": "pyhe01879c_0",
+    "channel": "conda-forge",
+    "dist_name": "pyfiglet-1.0.4-pyhe01879c_0",
+    "name": "pyfiglet",
+    "platform": "noarch",
+    "version": "1.0.4"
+  },
+  {
+    "base_url": "https://conda.anaconda.org/conda-forge",
+    "build_number": 0,
+    "build_string": "hb12b558_0_cpython",
+    "channel": "conda-forge",
+    "dist_name": "python-3.12.16-hb12b558_0_cpython",
+    "name": "python",
+    "platform": "win-64",
+    "version": "3.12.16"
+  },
+  {
+    "base_url": "https://conda.anaconda.org/conda-forge",
+    "build_number": 42,
+    "build_string": "habf1de7_42",
+    "channel": "conda-forge",
+    "dist_name": "vc14_runtime-14.51.36247-habf1de7_42",
+    "name": "vc14_runtime",
+    "platform": "win-64",
+    "version": "14.51.36247"
+  }
+]

@@ -14,13 +14,21 @@ from ...execution import (
     kill_process_tree,
     process_identity,
 )
-from ..models import PipelineInput
+from ..models import PipelineInput, RunRefusalBody
 from ..recovery import reach_pipeline
 from ..run_state import aggregate_pipeline_status
 from ..state import _active_jobs, _server_project_root
-from ..submission import RunNotReady, SubmissionRefused, submit_pipeline
+from ..submission import DraftRunRefused, RunNotReady, SubmissionRefused, submit_pipeline
 
 router = APIRouter()
+
+
+def _draft_steps_root():
+    """The served project, where a draft-mode node's steps are read; None if none resolves."""
+    try:
+        return _server_project_root()
+    except RuntimeError:
+        return None
 
 
 # Per-node state row returned by /api/workflow/status. Captured as a typed
@@ -75,7 +83,7 @@ class WorkflowStatusResponse(BaseModel):
     error: Any | None = None
 
 
-@router.post("/api/workflow/run")
+@router.post("/api/workflow/run", responses={409: {"model": RunRefusalBody}})
 def run_workflow(pipeline: PipelineInput):
     """Submit a pipeline for execution via Snakemake.
 
@@ -83,16 +91,31 @@ def run_workflow(pipeline: PipelineInput):
     writes it to a temp file, and spawns a background thread running
     ``run_pipeline()``. Returns the pipeline_id as the job_id immediately.
 
-    Rejects empty pipelines with HTTP 400.  Before spawning the run thread it
-    pre-flights Docker and git: a not-ready
+    Before spawning the run thread it pre-flights Docker and git: a not-ready
     environment is rejected with HTTP 409 carrying a kind-tagged
     ``{kind, message, hint}`` payload (the same shape the frontend renders for
     pre-run errors), so no orphan run is started.  Multiple pipelines may run
     concurrently — each gets its own pipeline_id-scoped workspace.
+
+    HTTP 400, with the refusal's text as its detail, answers a document the
+    preparation refuses: an empty pipeline, an undeclared variable, an
+    unregistered method, or the validator's refusals. The validator reads
+    each draft's ``method.yaml`` now, so a draft node that cannot run (no
+    draft, another folder, its folder gone, an unreadable ``method.yaml``)
+    and a param or ``param_sets`` value its contract does not accept are
+    400s too.
+
+    A draft node that passes the validator but cannot run is a 409 whose
+    detail is a ``draft_refused`` payload listing each refusal of
+    Execution's draft preflight (which reads each draft again, so no Update
+    is needed): its Registration check fails, its draft run is still
+    running, it has no selected script, its env cannot be made runnable, or
+    a link names a slot its contract no longer declares or a required input
+    it declares is unwired, each naming its node.
     """
     try:
         submitted = submit_pipeline(pipeline, _server_project_root())
-    except RunNotReady as exc:
+    except (RunNotReady, DraftRunRefused) as exc:
         raise HTTPException(status_code=409, detail=exc.payload) from exc
     except SubmissionRefused as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -184,7 +207,7 @@ def get_workflow_status(job_id: str):
             raise HTTPException(status_code=404, detail=f"Unknown job: {job_id}")
         status = aggregate_pipeline_status(
             job_id, reached.step_map, reached.live, None, reached.log_dir,
-            reached.cancel_requested,
+            reached.cancel_requested, _server_project_root(),
         )
         return {
             "job_id": job_id,
@@ -206,6 +229,7 @@ def get_workflow_status(job_id: str):
         job_error,
         job_info.get("log_dir"),
         bool(job_info.get("cancel_requested")),
+        _draft_steps_root(),
     )
 
     return {

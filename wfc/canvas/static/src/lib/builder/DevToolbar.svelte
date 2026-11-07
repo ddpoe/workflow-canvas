@@ -279,7 +279,7 @@
         {
           value: 'required_slot_unfed',
           label: 'Required slot unfed',
-          hint: 'build_config → stitch.config only; stitch.corrected is required and nothing feeds it. Validate warns, the claim refuses naming the slot.',
+          hint: 'build_config → stitch.config only; stitch.corrected is required and nothing feeds it. Validate refuses naming the step and the input.',
         },
       ],
     },
@@ -333,16 +333,16 @@
     align-items: center;
     gap: 8px;
     padding: 6px 12px;
-    background: #2d2d30;
+    background: var(--bg-header);
     border-top: 1px solid var(--border);
   }
   .dev-label {
     font-size: 10px;
     font-weight: 700;
-    color: #E9A847;
+    color: var(--marker-light);
     letter-spacing: 1px;
     padding: 2px 6px;
-    background: rgba(233, 168, 71, 0.15);
+    background: color-mix(in srgb, var(--marker-light) 12%, transparent);
     border-radius: 3px;
   }
   .seg-label {
@@ -352,9 +352,9 @@
     text-transform: uppercase;
   }
   .topology-select {
-    background: #1e1e1e;
+    background: var(--bg-input);
     border: 1px solid var(--border);
-    color: #ccc;
+    color: var(--text-primary);
     font-size: 11px;
     padding: 3px 22px 3px 8px;
     border-radius: 3px;
@@ -364,8 +364,8 @@
     appearance: none;
     -webkit-appearance: none;
     background-image:
-      linear-gradient(45deg, transparent 50%, #888 50%),
-      linear-gradient(135deg, #888 50%, transparent 50%);
+      linear-gradient(45deg, transparent 50%, var(--text-secondary) 50%),
+      linear-gradient(135deg, var(--text-secondary) 50%, transparent 50%);
     background-position: calc(100% - 12px) 50%, calc(100% - 7px) 50%;
     background-size: 5px 5px;
     background-repeat: no-repeat;
@@ -378,7 +378,7 @@
     border: none;
     border-radius: 3px;
     font-size: 11px;
-    color: #ccc;
+    color: var(--text-primary);
     cursor: pointer;
   }
   .dev-btn:hover {

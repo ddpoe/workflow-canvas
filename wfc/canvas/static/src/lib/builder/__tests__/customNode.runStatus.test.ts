@@ -38,7 +38,6 @@ function methodData(runStatus: RunStatus, runTally?: RunTally): CanvasNodeData {
     label: 'my_method',
     method: 'my_method',
     module: 'mod_a',
-    color: '#2ecc71',
     inputs: [{ name: 'data', type: 'csv' }],
     outputs: [{ name: 'output', type: 'csv' }],
     params: [],
@@ -61,16 +60,15 @@ const ROWS: Array<{ status: RunStatus; label: string | null; icon: string | null
   // Idle on an unselected node draws no status at all — the footer shows
   // the param count instead.
   { status: 'idle', label: null, icon: null },
-  { status: 'pending', label: 'pending...', icon: '●' },
+  { status: 'pending', label: 'queued...', icon: '●' },
   { status: 'running', label: 'running...', icon: '↻' },
   { status: 'completed', label: 'completed', icon: '✓' },
-  // A cache hit draws the History tab's reuse glyph; its label says the run
-  // was reused rather than run.
-  { status: 'cached', label: 'cached', icon: '⟳' },
+  // A cache hit is completed with the CACHED pill beside it (SOP canvas-colours).
+  { status: 'cached', label: 'completed', icon: '⟳' },
   { status: 'failed', label: 'failed', icon: '✗' },
-  // Cancelled draws its label with no glyph.
-  { status: 'cancelled', label: 'cancelled', icon: null },
-  { status: 'mixed', label: 'mixed', icon: '⚠' },
+  { status: 'cancelled', label: 'cancelled', icon: '■' },
+  // Partial: some samples completed, some failed.
+  { status: 'mixed', label: 'partial', icon: '◐' },
 ];
 
 describe('CustomNode draws one run status at a time', () => {
@@ -119,6 +117,38 @@ describe('CustomNode draws one run status at a time', () => {
     expect(new Set(drawn).size).toBe(drawn.length);
   });
 
+  it('a cache hit shows completed with the CACHED pill beside it', () => {
+    const { container } = render(CustomNode, {
+      props: { data: methodData('cached'), id: 'node_1', selected: false },
+    });
+    const label = container.querySelector('.status-label')!;
+    expect(label.textContent).toContain('✓');
+    expect(label.textContent).toContain('completed');
+    expect(label.querySelector('.cached-pill')!.textContent).toContain('cached');
+    // Same border as a completed node.
+    const completed = render(CustomNode, {
+      props: { data: methodData('completed'), id: 'node_2', selected: false },
+    }).container.querySelector('.custom-node')!.getAttribute('style');
+    expect(container.querySelector('.custom-node')!.getAttribute('style')).toBe(completed);
+  });
+
+  it.each(['idle', 'running', 'completed', 'failed', 'cancelled', 'mixed'] as RunStatus[])(
+    'selecting a %s node keeps its border and adds the glow (case 20)', (status) => {
+      const border = (selected: boolean) => {
+        const { container } = render(CustomNode, {
+          props: { data: methodData(status), id: `n_${selected}`, selected },
+        });
+        const node = container.querySelector('.custom-node') as HTMLElement;
+        return { style: node.getAttribute('style'), glow: node.classList.contains('sel-glow') };
+      };
+      const before = border(false);
+      const after = border(true);
+      expect(after.style).toBe(before.style);
+      expect(before.glow).toBe(false);
+      expect(after.glow).toBe(true);
+    },
+  );
+
   it('the mixed state adds the tally badge of how its runs ended', () => {
     const { container } = render(CustomNode, {
       props: {
@@ -135,6 +165,6 @@ describe('CustomNode draws one run status at a time', () => {
     const { container } = render(CustomNode, {
       props: { data: methodData('mixed'), id: 'node_1', selected: false },
     });
-    expect(container.querySelector('.status-label')!.textContent!.trim()).toBe('⚠ mixed');
+    expect(container.querySelector('.status-label')!.textContent!.trim()).toBe('◐ partial');
   });
 });

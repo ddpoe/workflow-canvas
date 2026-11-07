@@ -1,25 +1,24 @@
 """Graph — the Tier 0 declared wiring of a pipeline document.
 
 It covers what a pipeline document says and everything computable from it
-alone.
-
-The load (parse, reference binding, order and legality, collapse, the
-column cross-check moment), the order questions, sample x variant expansion
-over the one variant axis, structural validation of the sparse canvas
-document, and ``{$var}`` substitution. Documented by
-``docs/system/graph.json``.
+alone: the load (parse, reference binding, order and legality, collapse),
+the order questions, sample x variant expansion over the one variant axis,
+structural validation of the sparse canvas document, and ``{$var}``
+substitution. Documented by ``docs/system/graph.json``.
 
 The package is pure: the standard library and ``wfc.contracts`` only -- no
 database, no Docker, no subprocess, no network, no writes, no file reads.
 Its inputs are values; the consumers keep the I/O (the document is read by
 the caller, the referenced runs are resolved by Orchestration generation,
-the contract map comes from Registration).
+and the contract map that validation and the load's single-input rule
+read comes from Registration).
 
 Family modules:
 
 - ``model`` — ``StepDef`` and ``PipelineDef``.
 - ``load`` — the stage callables and ``load_pipeline`` composing them.
 - ``order`` — the topological sort and the leaves.
+- ``drafts`` — the draft-mode closure and which draft owns each step.
 - ``expansion`` — the variant axis and per-step sample x variant rows.
 - ``validation`` — the structural core over the sparse document.
 - ``variables`` — ``{$var}`` substitution.
@@ -27,6 +26,7 @@ Family modules:
 
 from __future__ import annotations
 
+from .drafts import draft_owners, is_draft_node
 from .expansion import (
     VariantModel,
     expand_step_combos,
@@ -40,7 +40,6 @@ from .load import (
     ParsedDocument,
     bind_references,
     check_legality,
-    cross_check_columns_moment,
     document_node,
     inbound_wiring,
     load_pipeline,
@@ -52,10 +51,12 @@ from .load import (
 )
 from .model import PipelineDef, StepDef, carries_sample_bundle, reads_per_sample
 from .order import find_leaf_nodes, topo_sort_steps
-from .validation import validate_structure
+from .validation import link_slot_errors, unwired_input_errors, validate_structure
 from .variables import UnknownVariableError, resolve_variables
 
 __all__ = [
+    "link_slot_errors",
+    "unwired_input_errors",
     "InboundLink",
     "ParsedDocument",
     "PipelineDef",
@@ -64,8 +65,9 @@ __all__ = [
     "VariantModel",
     "bind_references",
     "carries_sample_bundle",
+    "draft_owners",
+    "is_draft_node",
     "check_legality",
-    "cross_check_columns_moment",
     "document_node",
     "expand_step_combos",
     "find_leaf_nodes",

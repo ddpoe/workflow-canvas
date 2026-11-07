@@ -23,7 +23,7 @@
    */
   import { untrack } from 'svelte';
   import LabelTag from '../shared/LabelTag.svelte';
-  import { getModuleColor } from '../history/historyUtils.js';
+  import { moduleColor } from '../shared/moduleColor.svelte.js';
   import { displaySlotType, slotColor } from '../shared/slotColor.js';
   import {
     cellChanged, cellValue, changeCounts, codeCounts, moreDiff,
@@ -207,7 +207,7 @@
 <div class="ck" data-testid="confirm-card" data-outcome={plan.outcome}>
   <div class="head">
     {#if isNew}
-      <LabelTag kind="module" label="MODULE" value={module} color={getModuleColor(module)} />
+      <LabelTag kind="module" label="MODULE" value={module} color={moduleColor(module)} />
       <LabelTag kind="method" label="method" value={method} />
       <LabelTag kind="version" label="version" value={`v${plan.label}`} />
       <span class="dim">new method</span>
@@ -299,18 +299,18 @@
     padding: 5px 10px; border-top: 1px solid #38383c; align-items: start;
   }
   .row > .box { grid-column: 1 / -1; }
-  .lbl { color: #8a8a90; white-space: nowrap; line-height: 17px; }
+  .lbl { color: var(--dash-neutral); white-space: nowrap; line-height: 17px; }
   .sw { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; }
   .sw-method { background: var(--method); } .sw-env { background: var(--env); }
   .sw-params { background: var(--params); } .sw-inputs { background: var(--inputs); }
   .val { line-height: 17px; min-width: 0; font-family: Consolas, monospace; overflow-wrap: anywhere; }
-  .val.plain { color: #d4d4d4; }
-  .files { color: #d4d4d4; }
+  .val.plain { color: var(--marker-light); }
+  .files { color: var(--marker-light); }
   .chev { display: inline-block; width: 10px; color: var(--text-secondary); transition: transform 0.12s; flex-shrink: 0; }
   .chev.down { transform: rotate(90deg); }
   .sub-toggle {
     display: inline-flex; align-items: flex-start; max-width: 100%; min-width: 0;
-    background: none; border: none; padding: 0; cursor: pointer; color: #d4d4d4;
+    background: none; border: none; padding: 0; cursor: pointer; color: var(--marker-light);
     font-family: Consolas, monospace; font-size: 10.5px; text-align: left;
   }
   .keys { min-width: 0; overflow-wrap: break-word; }
@@ -349,11 +349,11 @@
   .tbl > div.bcol { background: rgba(232, 138, 125, 0.03); }
   .tbl > div.acol { background: rgba(126, 198, 153, 0.03); }
   .dimc { opacity: 0.4; }
-  .lit { box-shadow: inset 0 0 0 1px rgba(233, 168, 71, 0.55); border-radius: 2px; }
+  .lit { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--marker-light) 55%, transparent); border-radius: 2px; }
   .old { text-decoration: line-through; text-decoration-color: rgba(232, 138, 125, 0.7); }
   .ell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; max-width: 100%; }
   .p-key { color: #9cdcfe; overflow-wrap: anywhere; }
-  .file { color: #d4d4d4; }
+  .file { color: var(--marker-light); }
   .chip {
     display: inline-block; max-width: 100%; padding: 0 5px; border-radius: 3px; font-family: Consolas, monospace;
     font-size: 10px; line-height: 15px; border: 1px solid transparent; overflow-wrap: anywhere;
@@ -361,7 +361,7 @@
   .ch-in { background: rgba(122, 159, 200, 0.12); color: #a9c3e0; border-color: #4d6a8c; font-weight: 600; }
   .ch-out { background: rgba(111, 165, 164, 0.10); color: var(--out); border: 1px dashed #4a7473; }
   .chg { font-size: 9px; padding: 0 5px; line-height: 14px; border-radius: 3px; text-transform: uppercase; letter-spacing: 0.3px; border: 1px solid; white-space: nowrap; }
-  .chg.changed { color: var(--color-running); border-color: rgba(233, 168, 71, 0.45); background: rgba(233, 168, 71, 0.1); }
+  .chg.changed { color: var(--marker-light); border-color: color-mix(in srgb, var(--marker-light) 45%, transparent); background: color-mix(in srgb, var(--marker-light) 10%, transparent); }
   .chg.added { color: #7ec699; border-color: rgba(126, 198, 153, 0.45); background: rgba(126, 198, 153, 0.1); }
   .chg.removed { color: #e88a7d; border-color: rgba(232, 138, 125, 0.45); background: rgba(232, 138, 125, 0.1); }
   .stype {
@@ -372,7 +372,7 @@
   }
   .t-str { --t: #c9917a; } .t-int { --t: #a9c49a; } .t-float { --t: #86bfae; }
   .t-bool { --t: #7ea6d6; } .t-list { --t: #cdb27a; } .t-dict { --t: #b98fb6; }
-  .t-any { --t: #9a9da5; } .t-none { --t: #ccc; }
+  .t-any { --t: #9a9da5; } .t-none { --t: var(--text-primary); }
   .tv { color: var(--t); overflow-wrap: anywhere; }
   .tchip {
     display: inline-block; padding: 0 5px; border-radius: 3px; font-size: 9px; line-height: 14px;
@@ -389,7 +389,7 @@
   .side.a { color: #7ec699; background: rgba(126, 198, 153, 0.12); }
   pre {
     margin: 0; background: var(--bg-input); border: 1px solid #45454b; border-radius: 3px; padding: 5px 7px;
-    font-size: 10.5px; color: #d4d4d4; white-space: pre-wrap; overflow-wrap: anywhere;
+    font-size: 10.5px; color: var(--marker-light); white-space: pre-wrap; overflow-wrap: anywhere;
   }
   .del { background: rgba(232, 138, 125, 0.16); }
   .ins { background: rgba(126, 198, 153, 0.16); }

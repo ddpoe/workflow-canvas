@@ -105,6 +105,15 @@ export function verdictsFor(
   for (const row of response.rows) byKey[row.key] = row;
   for (const k of keys) {
     const row = byKey[k];
+    // A draft-mode step always runs and never reads or writes the cache, so
+    // it counts as new whatever earlier run would match it.
+    if (row?.draft_mode && row.status !== 'blocked') {
+      out[k] = {
+        status: 'new_step_changed', reason: row.reason || DRAFT_MODE_REASON,
+        sourceRunId: null, sourceNid: '', outputs: [],
+      };
+      continue;
+    }
     out[k] = row
       ? {
           status: row.status,
@@ -117,6 +126,9 @@ export function verdictsFor(
   }
   return out;
 }
+
+/** Why a draft-mode row is new. */
+export const DRAFT_MODE_REASON = 'draft mode: runs every time, never cached';
 
 /** A blocked verdict carrying one reason. */
 export function blockedVerdict(reason: string): RowVerdict {

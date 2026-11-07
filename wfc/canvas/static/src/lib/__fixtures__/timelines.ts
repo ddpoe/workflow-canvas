@@ -85,16 +85,44 @@ export interface BehaviorRow {
   sseStream?: SSEStreamFixture;
 }
 
+export type NodeRunState = components['schemas']['NodeRunState'];
+
+/** The per-node push fields the server sends on every node state. */
+export type PushField = 'push_state' | 'push_pending_count' | 'push_failed_count';
+
+/**
+ * The push fields as the server sends them with no remote configured
+ * (every fixture project): `deferred` with zero counts. See
+ * `run_state.py::settle_unstarted_nodes` and `_aggregate_push` on an
+ * empty bucket.
+ */
+export const NO_REMOTE_PUSH: Pick<NodeRunState, PushField> = {
+  push_state: 'deferred',
+  push_pending_count: 0,
+  push_failed_count: 0,
+};
+
+/** A node state as a timeline writes it: the push fields may be left out. */
+export type NodeRunStateInput = Omit<NodeRunState, PushField> &
+  Partial<Pick<NodeRunState, PushField>>;
+
+/** Complete one node state with the push fields the server always sends. */
+export function nodeState(state: NodeRunStateInput): NodeRunState {
+  return { ...NO_REMOTE_PUSH, ...state };
+}
+
 // Helper: build a base response of the right shape so each frame stays
 // readable.  Keeps the noise out of individual timelines.
 function frame(
   overall: string,
-  node_states: WorkflowStatusResponse['node_states'],
+  node_states: Record<string, NodeRunStateInput>,
 ): WorkflowStatusResponse {
   return {
     job_id: 'job-fixture',
     overall_status: overall,
-    node_states,
+    node_states: Object.fromEntries(
+      Object.entries(node_states).map(([id, s]) => [id, nodeState(s)]),
+    ),
     thread_alive: overall === 'running' || overall === 'pending',
     log: '',
     error: null,

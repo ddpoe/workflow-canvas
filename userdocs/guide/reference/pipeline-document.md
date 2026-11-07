@@ -1,6 +1,6 @@
-<!-- generated from pm_mvp::docs/consumer/reference/pipeline-document @ 057b5ff5f724; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/reference/pipeline-document @ cba0669fdcb2; do not edit -->
 
-# Reference: Pipeline Document
+# Pipeline Document
 
 ## Overview
 
@@ -51,7 +51,8 @@ Every node has an `id`, unique in the document, and a `type`: `method` (the defa
 |---|---|
 | `run_id` | The run whose output it delivers. The link's `source_slot` names which output; it can be left out when the run has only one. |
 
-The Canvas also writes `position`, `source`, `keep_going` on a selector, and, in the copy wfc records for each run, `slot_outputs`, `slot_types`, `env`, `env_strategy` and `output_ext`. They are accepted; a hand-written document leaves them out.
+The Canvas also writes keys for its own layout and records, such as `position`. They are accepted; a hand-written document leaves them out.
+
 
 ## Links
 
@@ -69,7 +70,8 @@ The Canvas writes `sourceHandle` and `targetHandle` for the two slots; they are 
 These wirings are refused:
 
 - A method node with no incoming link. Only input selectors and run references start a pipeline.
-- Two links into one input, unless every link into it comes from a run reference; those arrive as a list, in link order.
+- Two links into one input, unless every link into it comes from a run reference and the input is declared `multiple: true`; then they arrive as a list, in link order.
+- More than one file into an input that takes one file (an input without `multiple: true` in its `method.yaml`), such as a fan-in selector bundling several samples into it. The refusal names the node and the input.
 - A method node fed by two per-sample selectors. Put both samples on one selector, or give the second its own method node.
 - A fan-in selector with no samples, or one whose consumer has another upstream node.
 - A step that runs once over a fan-in bundle and also takes the outputs of a step that runs per sample.
@@ -109,7 +111,8 @@ A pipeline with a fan-in selector cannot use `explicit_combos`.
 ]
 ```
 
-The reference is replaced by the value before the pipeline loads. An unknown name is refused, and so is a variable whose value is itself a reference.
+An unknown name is refused, and so is a variable whose value is itself a reference.
+
 
 ## Example: fan-in
 

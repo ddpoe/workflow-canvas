@@ -21,6 +21,9 @@ const ROW: PipelineRowSummary = {
   sampleCount: 1,
   started: Date.now(),
   runs: [],
+  draftMode: false,
+  draftSteps: [],
+  cleared: null,
 };
 
 describe('a History pipeline row', () => {

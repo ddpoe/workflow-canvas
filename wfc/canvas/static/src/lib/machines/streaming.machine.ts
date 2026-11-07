@@ -28,7 +28,7 @@
  * (`POLL_RETRY_BOUND_MS`). A server restart shorter than that is never
  * seen by the machine.
  */
-import { setup, assign, fromCallback, type ActorRefFrom } from 'xstate';
+import { setup, assign, fromCallback, type ActorRefFrom, type EventObject } from 'xstate';
 import { isSuccessStatus, isCancelledStatus } from './streaming.guards';
 
 export interface StreamingContext {
@@ -60,7 +60,7 @@ export type StreamingEvent =
 // in-Inspector way to re-open the stream short of clicking Run again.
 // A Retry action that re-spawned the streaming child would fit here.
 
-const subscribeSSESlot = fromCallback(() => {
+const subscribeSSESlot = fromCallback<EventObject, StreamingInput>(() => {
   return () => {};
 });
 

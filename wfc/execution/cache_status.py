@@ -62,6 +62,8 @@ class CacheStatusRow:
         source_nid: That run's NID, when it has one.
         outputs: ``(slot, location)`` per output of that run, from the probe
             that decided the status; empty on new and blocked rows.
+        draft_mode: True for a draft-mode target (a draft or a step
+            downstream of one): always new, never looked up in the cache.
     """
 
     node_id: str
@@ -73,6 +75,7 @@ class CacheStatusRow:
     source_run_id: int | None = None
     source_nid: str | None = None
     outputs: list[tuple[str, str]] = field(default_factory=list)
+    draft_mode: bool = False
 
     @property
     def key(self) -> str:
@@ -300,6 +303,34 @@ def _predict_row(document, step, sample, variant, params, predicted) -> CacheSta
     return row
 
 
+def _draft_mode_row(document, step, sample, variant, predicted) -> CacheStatusRow:
+    """A draft-mode target's row: new, with no key, and nothing looked up.
+
+    A draft and every step below it always run, so the row is new: "upstream
+    re-runs" under a new upstream, else "this step changed". A blocked
+    upstream blocks it, as it blocks any step. No fingerprint, key, contract
+    or cache row is read.
+    """
+    from ..graph import inbound_wiring
+
+    row = CacheStatusRow(node_id=step.node_id, sample=sample, variant=variant,
+                         status=NEW_STEP_CHANGED, draft_mode=True)
+    for wire in inbound_wiring(document, step.node_id):
+        if wire.source_kind == "run_reference":
+            continue
+        upstream = predicted.get((wire.source_id, sample, variant))
+        if upstream is None:
+            continue
+        if upstream.status == BLOCKED:
+            row.status = BLOCKED
+            row.reason = (f"upstream step '{wire.source_id}' is blocked: "
+                          f"{upstream.reason}")
+            return row
+        if upstream.status in _NEW:
+            row.status = NEW_UPSTREAM_RERUNS
+    return row
+
+
 @workflow(purpose="Predict what a pipeline document would do if it ran now: prepare "
                   "and load it as a run does, walk the engine's target expansion in "
                   "order, predict each key with the claim's key core over the "
@@ -321,7 +352,12 @@ def cache_status(document: Mapping[str, Any]) -> CacheStatusReport:
         PipelineRefusedError: The validator refuses the document, the same
             verdict validate, submit and run-pipeline give it.
     """
-    from ..graph import expand_step_combos, resolve_variant_model, topo_sort_steps
+    from ..graph import (
+        draft_owners,
+        expand_step_combos,
+        resolve_variant_model,
+        topo_sort_steps,
+    )
     from .composer import DatabaseUnreachableError, load_pipeline_from_document
     from .prepare import prepare_document
     from .validation import PipelineRefusedError
@@ -346,12 +382,20 @@ def cache_status(document: Mapping[str, Any]) -> CacheStatusReport:
                      "are already predicted when its own key is composed")
     report = CacheStatusReport()
     predicted: dict[tuple[str, str, str], CacheStatusRow] = {}
+    draft_mode = draft_owners(prepared)
     for step, combo in targets:
         sample, variant = combo["sample"], combo["variant"]
         params = tables.get(step.node_id, {}).get(variant, step.params)
-        口 = Step(step_num=2.1, name="Predict one target",
-                 purpose="Key core over predicted upstream keys, then the hit rule")
-        row = _predict_row(prepared, step, sample, variant, params, predicted)
+        if step.node_id in draft_mode:
+            口 = Step(step_num=2.1, name="A draft-mode target is new",
+                     purpose="A draft and every step below it always run: no "
+                             "key is composed and the cache is never looked up",
+                     critical="Draft mode never looks up or writes the cache")
+            row = _draft_mode_row(prepared, step, sample, variant, predicted)
+        else:
+            口 = Step(step_num=2.2, name="Predict one target",
+                     purpose="Key core over predicted upstream keys, then the hit rule")
+            row = _predict_row(prepared, step, sample, variant, params, predicted)
         predicted[(step.node_id, sample, variant)] = row
         report.rows.append(row)
     return report

@@ -7,19 +7,97 @@ no Docker, no wfc, no pandas.
 import json
 
 import pytest
+from axiom_annotations import workflow
 
 import wfc_client as wfc
 from wfc_client.context import RESULTS_FILENAME, RunContext
 
 
-def _set_env(monkeypatch, run_dir, *, input_paths=None, params=None):
+def _set_env(monkeypatch, run_dir, *, input_paths=None, params=None, declared=None):
     monkeypatch.setenv("WFC_RUN_DIR", str(run_dir))
     monkeypatch.setenv("WFC_INPUT_PATHS", json.dumps(input_paths or {}))
     monkeypatch.setenv("WFC_PARAMS", json.dumps(params or {}))
+    if declared is None:
+        monkeypatch.delenv("WFC_DECLARED_NAMES", raising=False)
+    else:
+        monkeypatch.setenv("WFC_DECLARED_NAMES", json.dumps(declared))
 
 
-def test_input_resolves_slot_paths(tmp_path, monkeypatch):
-    """ctx.input(slot) returns the WFC_INPUT_PATHS entries as Path objects."""
+_DECLARED = {
+    "inputs": {"data": {"multiple": False, "optional": False},
+               "many": {"multiple": True, "optional": False},
+               "extra": {"multiple": False, "optional": True}},
+    "outputs": ["clean"],
+}
+
+
+@workflow(purpose="A single input reaches the script as one path that also "
+                  "answers [0] with one step-log note; a multiple input is a "
+                  "list; an optional unwired single input is None")
+def test_input_shape_follows_the_declaration(tmp_path, monkeypatch, capsys):
+    from pathlib import Path
+
+    a, b, c = (str(tmp_path / n) for n in ("a.csv", "b.csv", "c.csv"))
+    raw = {"data": [a], "many": [b, c]}
+    _set_env(monkeypatch, tmp_path, input_paths=raw, declared=_DECLARED)
+    ctx = RunContext()
+
+    single = ctx.input("data")
+    assert isinstance(single, Path) and single == Path(a)
+    assert single[0] == single and list(single) == [single]
+    ctx.input("data")[0]
+    notes = [ln for ln in capsys.readouterr().err.splitlines() if "[0]" in ln]
+    assert len(notes) == 1 and "'data'" in notes[0]
+
+    assert ctx.input("many") == [Path(b), Path(c)]
+    assert ctx.input("extra") is None
+    # WFC_INPUT_PATHS keeps its list shape for raw readers.
+    assert json.loads(__import__("os").environ["WFC_INPUT_PATHS"]) == raw
+
+
+@workflow(purpose="Case 19: wfc_client.__version__ is the packaged version, and a "
+                  "single-file input is the public InputPath (a Path that also "
+                  "indexes as [0])")
+def test_version_and_the_public_input_path(tmp_path, monkeypatch):
+    """Case 19: ``wfc_client.__version__`` is the packaged version, and a
+    single-file input is the public ``InputPath`` (``_SinglePath`` its alias)."""
+    import re
+    from pathlib import Path
+
+    from wfc_client.context import _SinglePath
+
+    pyproject = (Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    assert re.search(r'^version = "([^"]+)"', pyproject, re.M).group(1) == wfc.__version__
+
+    a = str(tmp_path / "a.csv")
+    _set_env(monkeypatch, tmp_path, input_paths={"data": [a]}, declared=_DECLARED)
+    single = RunContext().input("data")
+    assert isinstance(single, wfc.InputPath) and isinstance(single, Path)
+    assert single[0] == Path(a)
+    assert _SinglePath is wfc.InputPath and "InputPath" in wfc.__all__
+
+
+@workflow(purpose="A computed undeclared name is caught at the call: ctx.input "
+                  "raises listing the declared inputs, save_artifact warns in "
+                  "the step log naming the declared outputs")
+def test_undeclared_names_at_the_call(tmp_path, monkeypatch, capsys):
+    _set_env(monkeypatch, tmp_path, declared=_DECLARED)
+    ctx = RunContext()
+
+    with pytest.raises(KeyError) as exc:
+        ctx.input("dta")
+    assert "'data', 'many', 'extra'" in str(exc.value)
+
+    out = ctx.workdir / "x.csv"
+    out.write_text("x")
+    ctx.save_artifact("clen", out)
+    err = capsys.readouterr().err
+    assert "'clen'" in err and "Declared outputs: 'clean'" in err
+    assert ctx._outputs == {"clen": "_workdir/x.csv"}
+
+
+def test_input_without_declared_names_keeps_lists(tmp_path, monkeypatch):
+    """Started by a wfc that sends no declared names, every input is a list."""
     a = tmp_path / "a.csv"
     b = tmp_path / "b.csv"
     _set_env(monkeypatch, tmp_path, input_paths={"data": [str(a), str(b)]})

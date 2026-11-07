@@ -8,7 +8,7 @@
    * `kind` picks the concept colour (method, version, env); `color` sets
    * any other colour, which the tag's border and key take; with neither,
    * the tag takes the `--c` its parent sets (grey when none). `module` fills
-   * the key half with the colour (the module's own, from `getModuleColor`)
+   * the key half with the colour (the module's own, from `moduleColor`)
    * and bolds the value. Any other attribute (a test id, data attributes, a
    * title) lands on the tag's root element.
    */
@@ -50,7 +50,7 @@
   }
   .v {
     min-width: 0; overflow: hidden; text-overflow: ellipsis;
-    padding: 0 5px; background: rgba(255, 255, 255, 0.04); color: #c8ccd8;
+    padding: 0 5px; background: rgba(255, 255, 255, 0.04); color: var(--version-older);
     border-radius: 0 2px 2px 0;
   }
   .k-method { --c: #c2a77e; }

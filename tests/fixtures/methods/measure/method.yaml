@@ -1,0 +1,31 @@
+# tests/fixtures/methods/measure/method.yaml
+# Copy the rows, add a `{stat}_value` column and a `note_source` column.
+# Its output declares every option form the picker shows: fixed names, a
+# name built from a parameter, and a pattern.
+inputs:
+  data:
+    type: .csv
+    required: true
+    description: "Input CSV with a numeric 'value' column"
+
+outputs:
+  output:
+    type: .csv
+    required: true
+    description: "Input rows plus the measured column and a note"
+    options:
+      fixed: [id, value]
+      from_params:
+        - params: [stat]
+          pattern: "{}_value"
+      patterns: ["note_*"]
+
+params:
+  stat:
+    type: str
+    required: false
+    default: "mean"
+    description: "Statistic name; the added column is `{stat}_value`"
+
+executor: python
+env: fixture-env

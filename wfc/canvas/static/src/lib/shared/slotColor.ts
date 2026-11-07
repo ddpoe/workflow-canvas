@@ -4,25 +4,27 @@
  * The method-contract `type` field IS the file extension (the leading dot
  * is optional: `.h5ad` and `h5ad` are the same type), or the directory
  * marker `dir` / `directory`. `type` is open-ended, so colour is derived
- * client-side: a small curated map for
- * common extensions, with a deterministic HSL-hash fallback (mirroring
- * `historyUtils.ts::getModuleColor`) for anything else.
+ * client-side: a small curated map for common extensions, with a hash into
+ * the module palette for anything else. A slot type carries no run state,
+ * so every colour here is a palette colour, never a protected one (SOP
+ * Canvas Colours, The Governing Rule).
  */
+import { paletteColorFor, paletteHex } from './palette.js';
 
 const CURATED: Record<string, string> = {
-  csv: '#F39C12',
-  tsv: '#F39C12',
-  parquet: '#9B59B6',
-  json: '#4A90D9',
-  txt: '#95A5A6',
-  png: '#E74C3C',
-  jpg: '#E74C3C',
-  jpeg: '#E74C3C',
-  svg: '#E74C3C',
-  pkl: '#E9A847',
-  h5ad: '#50C878',
-  dir: '#1ABC9C',
-  directory: '#1ABC9C',
+  csv: paletteHex('olive'),
+  tsv: paletteHex('olive'),
+  parquet: paletteHex('indigo'),
+  json: paletteHex('steel'),
+  txt: paletteHex('dusk'),
+  png: paletteHex('raspberry'),
+  jpg: paletteHex('raspberry'),
+  jpeg: paletteHex('raspberry'),
+  svg: paletteHex('raspberry'),
+  pkl: paletteHex('mauve'),
+  h5ad: paletteHex('magenta'),
+  dir: paletteHex('petrol'),
+  directory: paletteHex('petrol'),
 };
 
 /**
@@ -38,30 +40,53 @@ export function displaySlotType(slotType: string | null | undefined): string {
 }
 
 /**
- * Deterministic string -> hue HSL colour (same scheme as getModuleColor).
- */
-function hashColor(value: string): string {
-  let hash = 0;
-  for (let i = 0; i < value.length; i++) {
-    hash = value.charCodeAt(i) + ((hash << 5) - hash);
-    hash = hash & hash;
-  }
-  const hue = ((hash % 360) + 360) % 360;
-  return `hsl(${hue}, 55%, 55%)`;
-}
-
-/**
  * Resolve a slot `type` / extension string to a stable display colour.
  *
- * Curated common extensions get a fixed colour; everything else gets a
- * deterministic hash colour so distinct extensions stay visually distinct
- * across renders. Lookups are case-insensitive and dot-insensitive
- * (`csv` and `.csv` resolve to the same colour).
+ * Curated common extensions get a fixed palette colour; everything else
+ * gets a palette colour picked by a hash of the type, so it is stable across
+ * renders. Lookups are case-insensitive and dot-insensitive (`csv` and
+ * `.csv` resolve to the same colour). A missing type is neutral grey.
  */
 export function slotColor(slotType: string | null | undefined): string {
   if (!slotType) return '#888';
   const key = displaySlotType(slotType).toLowerCase();
-  return CURATED[key] ?? hashColor(key);
+  return CURATED[key] ?? paletteColorFor(key);
+}
+
+/** Curated colours for env and artifact kinds; keys are lowercase. */
+const KIND_CURATED: Record<string, string> = {
+  // Contract (artifact) kinds.
+  input: paletteHex('steel'),
+  output: paletteHex('indigo'),
+  metric: paletteHex('petrol'),
+  // Env backends and package sources.
+  pixi: paletteHex('cobalt'),
+  conda: paletteHex('moss'),
+  pip: paletteHex('rosewood'),
+  uv: paletteHex('plum'),
+  byo: paletteHex('dusk'),
+  // The env spec chip itself.
+  env: paletteHex('iris'),
+};
+
+/**
+ * The colour of a kind that carries no run state: an env backend, a
+ * package source, an artifact (contract) kind.
+ *
+ * Like slot types, kinds take a palette colour and never a protected one
+ * (SOP Canvas Colours, The Governing Rule). Known kinds have a fixed colour;
+ * any other kind gets a stable palette colour from a hash of its name.
+ *
+ * Args:
+ *     kind: The kind's name, e.g. ``"pixi"`` or ``"output"``.
+ *
+ * Returns:
+ *     A palette ``#RRGGBB`` hex; neutral grey for an empty kind.
+ */
+export function kindColor(kind: string | null | undefined): string {
+  if (!kind) return '#888';
+  const key = kind.trim().toLowerCase();
+  return KIND_CURATED[key] ?? paletteColorFor(key);
 }
 
 /**

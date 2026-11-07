@@ -24,6 +24,28 @@ class UnknownVariableError(KeyError):
         self.name = name
 
 
+def param_sets_refusal(document: dict[str, Any]) -> str | None:
+    """Why a document's top-level ``param_sets`` cannot be read, if it cannot.
+
+    ``param_sets`` maps a node id to that node's variants. Absent (or
+    ``null``) is no variants; anything other than a mapping is refused by
+    name, here and by the load and structural validation, so no reader of
+    its entries meets a list or a string.
+
+    Args:
+        document: The pipeline document.
+
+    Returns:
+        The refusal naming the key, or ``None`` when the shape is readable.
+    """
+    param_sets = document.get("param_sets")
+    if param_sets is None or isinstance(param_sets, dict):
+        return None
+    return (f"'param_sets' must be a mapping of node id to variants, not "
+            f"{type(param_sets).__name__}: write it as "
+            f'{{"<node id>": {{"<variant>": {{<params>}}}}}}, or leave it out.')
+
+
 def _is_var_ref(v: Any) -> bool:
     """Return True iff ``v`` is a ``{"$var": <str>}`` whole-value ref."""
     return (
@@ -74,8 +96,12 @@ def resolve_variables(pipeline: dict[str, Any]) -> dict[str, Any]:
 
     Raises:
         UnknownVariableError: a ref names a variable not in ``variables``.
-        ValueError: a variable's value is itself a ``{$var}`` ref.
+        ValueError: a variable's value is itself a ``{$var}`` ref, or the
+            top-level ``param_sets`` is not a mapping (``param_sets_refusal``).
     """
+    refusal = param_sets_refusal(pipeline)
+    if refusal is not None:
+        raise ValueError(refusal)
     out = dict(pipeline)  # shallow copy
     raw_vars = out.pop("variables", None) or {}
 

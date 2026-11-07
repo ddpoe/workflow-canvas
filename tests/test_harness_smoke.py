@@ -522,10 +522,10 @@ def test_bundle_records_the_database_it_observed(git_project, monkeypatch):
     assert obs.database_url == database_url(obs.project.root)
 
 
-@workflow(purpose="A node's declared output columns block reaches the registered "
+@workflow(purpose="A node's declared output options block reaches the registered "
                   "contract through the harness's method.yaml, so a reader over "
                   "the contract sees exactly what the node declared")
-def test_build_project_stores_a_declared_output_columns_block(git_project, monkeypatch):
+def test_build_project_stores_a_declared_output_options_block(git_project, monkeypatch):
     """The block is written beneath the output slot and registration keeps it.
 
     ``build_project`` writes the declaration; production's parser validates
@@ -539,26 +539,26 @@ def test_build_project_stores_a_declared_output_columns_block(git_project, monke
     from tests.harness.scenario import SELECTOR_ID
     from wfc.persistence import Method, MethodContract, get_session
 
-    columns = {"strict": ["label", "area"],
+    options = {"fixed": ["label", "area"],
                "from_params": [{"params": ["channels"], "pattern": "mean_{}"}],
-               "patterns": ["^texture_.*"]}
+               "patterns": ["texture_*"]}
     scn = Scenario(nodes=[
         selector(),
-        node("cols", inputs=[wire(SELECTOR_ID)],
+        node("opts", inputs=[wire(SELECTOR_ID)],
              outputs={"table": ".csv", "plain": ".csv"},
-             output_columns={"table": columns}),
+             output_options={"table": options}),
     ])
 
     build_project(scn, root=git_project, monkeypatch=monkeypatch)
 
     with get_session() as session:
-        method = session.exec(select(Method).where(Method.name == "cols")).one()
+        method = session.exec(select(Method).where(Method.name == "opts")).one()
         contract = session.exec(
             select(MethodContract).where(MethodContract.method_id == method.id)
         ).one()
-    assert contract.output_slots["table"]["columns"] == columns
+    assert contract.output_slots["table"]["options"] == options
     assert contract.output_slots["table"]["type"] == ".csv"
-    assert "columns" not in contract.output_slots["plain"]
+    assert "options" not in contract.output_slots["plain"]
 
 
 def test_build_project_registers_a_declared_module_description_and_contracts(

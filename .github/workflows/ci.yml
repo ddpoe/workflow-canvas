@@ -70,11 +70,17 @@ jobs:
   client:
     # wfc-client runs inside users' method containers and supports Python 3.9+.
     name: wfc-client (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    # setup-python publishes no Python 3.9 build for ubuntu-latest (26.04):
+    # 3.9 is past end of life. The 3.9 leg runs on the newest image that has one.
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.13"]
+        include:
+          - python-version: "3.9"
+            os: ubuntu-24.04
+          - python-version: "3.13"
+            os: ubuntu-latest
     defaults:
       run:
         working-directory: wfc-client
@@ -133,6 +139,10 @@ jobs:
           cache: npm
           cache-dependency-path: wfc/canvas/static/package-lock.json
       - run: npm ci
+      # svelte-check type-checks every .ts and .svelte file under tsconfig.json;
+      # it fails on errors, and prints the a11y and Svelte warnings without failing.
+      - name: Type check
+        run: npm run check
       - run: npm test
 
   integration:

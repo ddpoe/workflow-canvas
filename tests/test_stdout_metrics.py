@@ -172,24 +172,24 @@ def test_rule_uses_shell_not_run_block(wfc_root):
 
 
 # =============================================================================
-# 4. complete_run CLI stores metrics in Run.metrics
+# 4. complete_run stores metrics in Run.metrics
 # =============================================================================
 
 @workflow(
-    purpose="When complete_run receives a --metrics JSON argument it stores "
-            "the dict in Run.metrics")
-def test_complete_run_stores_metrics_in_db(cli):
-    """complete_run --metrics '{"n_cells": 980}' → Run.metrics == {"n_cells": 980}."""
+    purpose="When complete_run receives a metrics dict it stores it in "
+            "Run.metrics")
+def test_complete_run_stores_metrics_in_db(tmp_project):
+    """complete_run(metrics={"n_cells": 980}) → Run.metrics == {"n_cells": 980}."""
+    from wfc.execution.claim import register_run
+    from wfc.execution.record import complete_run
+
     口 = Step(step_num=1, name="Seed module and method",
              purpose="Register the minimum DB fixtures needed for a run")
     _register_feature_qc()
 
     口 = Step(step_num=2, name="Register a run",
              purpose="Create a Run row in status='running'")
-    r = cli("register_run", "--method", "feature_qc", "--module", "data_preprocessing",
-            "--sample", "Rep2", "--params", "{}")
-    assert r.returncode == 0, r.stderr
-    run_id = r.stdout.strip()
+    run_id = register_run("feature_qc", "data_preprocessing", "Rep2", params={})
 
     口 = Step(step_num=3, name="Create a fake archive output",
              purpose="Write the archive file and the RunOutput row the collect "
@@ -209,11 +209,9 @@ def test_complete_run_stores_metrics_in_db(cli):
         session.commit()
 
     口 = Step(step_num=4, name="Complete the run with metrics",
-             purpose="Pass a JSON metrics dict to complete_run via --metrics")
-    metrics_payload = json.dumps({"n_cells_before": 1200, "n_cells_after": 980})
-    r = cli("complete_run", "--run-id", run_id, "--status", "completed",
-            "--output", output_path, "--metrics", metrics_payload)
-    assert r.returncode == 0, r.stderr
+             purpose="Pass a metrics dict to complete_run")
+    complete_run(run_id=run_id, status="completed", output_files=[output_path],
+                 metrics={"n_cells_before": 1200, "n_cells_after": 980})
 
     口 = Step(step_num=5, name="Verify metrics stored in DB",
              purpose="Query the Run row and confirm Run.metrics matches what was passed")

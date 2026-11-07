@@ -5,15 +5,17 @@ project. Registration plans before it writes: one of three messages
 (registers v1, adds vN naming what changed, matches the newest version),
 then ``Proceed? [y/N]`` for a new method or a new version. ``--yes`` skips
 the question; with no terminal and no ``--yes`` the registration is refused
-having changed nothing. pytest's stdin is not a terminal; the two answers
-typed at a terminal ("n" and an empty answer) go through the registered
-``stub_terminal`` / ``stub_interactive_prompt`` fakes.
+having changed nothing. The no-terminal refusal runs ``wfc`` as a real
+process whose stdin is the null device, as a script that redirects it does;
+the two answers typed at a terminal ("n" and an empty answer) go through the
+registered ``stub_terminal`` / ``stub_interactive_prompt`` fakes.
 """
 
 from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -166,9 +168,20 @@ def test_yes_skips_the_question_and_still_prints(project, source, capsys, monkey
     assert _state(project)[5] == [1]
 
 
-@workflow(purpose="With no terminal and no --yes, a new version is refused "
-                  "naming --yes, exit non-zero, nothing changed; the same-as-newest "
-                  "outcome under the same conditions prints its message and exits 0")
+def _scripted(source: Path, cwd: Path) -> subprocess.CompletedProcess:
+    """``wfc register-method`` as a real process, stdin from the null device."""
+    return subprocess.run(
+        [sys.executable, "-m", "wfc", "register-method", str(source),
+         "--module", MODULE],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        cwd=cwd, timeout=120,
+    )
+
+
+@workflow(purpose="Run as a real process with stdin from the null device and no "
+                  "--yes, a new version is refused naming --yes without asking, "
+                  "exit 1, nothing changed; the same-as-newest outcome under the "
+                  "same conditions prints its message and exits 0")
 def test_no_terminal_without_yes_refuses_a_new_version_only(project, source, capsys):
     assert _cli(source, "--yes") == 0
     script = source / f"{METHOD}.py"
@@ -177,20 +190,22 @@ def test_no_terminal_without_yes_refuses_a_new_version_only(project, source, cap
     before = _state(project)
     capsys.readouterr()
 
-    口 = Step(step_num=1, name="A new version, no terminal, no --yes",
-             purpose="Refused before anything is written")
-    assert _cli(source) == 1
-    captured = capsys.readouterr()
-    assert "this adds v2" in captured.out
-    assert "--yes" in captured.err
-    assert "Nothing was registered" in captured.err
+    口 = Step(step_num=1, name="A new version, stdin from the null device, no --yes",
+             purpose="Refused naming --yes, nothing asked, before anything is written")
+    result = _scripted(source, project)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "this adds v2" in result.stdout
+    assert "Proceed?" not in result.stdout
+    assert "--yes" in result.stderr
+    assert "Nothing was registered" in result.stderr
     assert _state(project) == before
 
-    口 = Step(step_num=2, name="The newest content, no terminal, no --yes",
+    口 = Step(step_num=2, name="The newest content, stdin from the null device, no --yes",
              purpose="Nothing to confirm: the message prints and it exits 0")
     script.write_text(original)
-    assert _cli(source) == 0
-    assert "matches its newest version v1; no version is added." in capsys.readouterr().out
+    result = _scripted(source, project)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "matches its newest version v1; no version is added." in result.stdout
     assert _state(project)[5] == [1]
 
 

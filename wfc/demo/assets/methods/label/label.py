@@ -17,7 +17,7 @@ import wfc_client as wfc
 
 @wfc.method
 def label(ctx):
-    with open(ctx.input("data")[0], newline="") as f:
+    with open(ctx.input("data"), newline="") as f:
         rows = list(csv.DictReader(f))
 
     threshold = float(ctx.params["threshold"])

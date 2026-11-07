@@ -4,23 +4,29 @@
  * What the Inspector panels compute or write without rendering it: the
  * per-sample override and variant edits, the orphan-override scan and strip
  * behind the Input Selector's confirmation dialog, the parameter constraint
- * hint, and the `column_of_input` lookup that calls `./api.ts`.
+ * hint, and the `options_from` lookup that calls `./api.ts`.
  *
  * Every function takes the selected node (or the store snapshots a
  * derivation already read) as an argument rather than closing over a
  * component's state. Nothing here is reactive: the `$derived` and `$effect`
- * that drive the column lookup live in `MethodPanel.svelte`, where their
+ * that drive the options lookup live in `MethodPanel.svelte`, where their
  * dependencies are read.
  */
 import { get } from 'svelte/store';
 import type { Edge, Node } from '@xyflow/svelte';
-import { nodes, edges, updateNodeData } from '../builder/stores.js';
-import type { CanvasNodeData, ParamDef } from '../shared/types.js';
+import { nodes, updateNodeData } from '../builder/stores.js';
+import { compilePipelineToJSON, isVarRef } from '../builder/compile.js';
+import { collectBoundVariables, pendingBoundVariables } from '../builder/pipeline.js';
+import { isDraftNode } from '../builder/nodeData.js';
+import type {
+  CanvasNodeData, ParamDef, PipelineJSON, PipelineVariables,
+} from '../shared/types.js';
 import {
-  fetchRunReferenceOutputColumns,
-  fetchMethodOutputColumns,
-  type ColumnOptionsResp,
+  fetchOutputOptions, RUN_REFERENCE_METHOD, type OutputOptionsRequest,
 } from './api.js';
+import {
+  optionsFromInputs, type OutputOptions, type ParamOptions, type UpstreamOptions,
+} from './options.js';
 
 /** A canvas node as the Inspector receives it. */
 export type CanvasNode = Node<CanvasNodeData>;
@@ -249,109 +255,238 @@ export function stripOrphanOverrides(removedSamples: string[]): void {
   });
 }
 
-// ── column_of_input resolution ────────────────────────────────────────────
+// ── options_from lookup ───────────────────────────────────────────────────
+
+/** One upstream the lookup asks about, and the request it sends (none: not asked). */
+export interface UpstreamLookup extends Omit<UpstreamOptions, 'options'> {
+  /** The route's path method: `module.method`, or the Run Reference placeholder. */
+  methodFull: string;
+  request: OutputOptionsRequest | null;
+}
+
+/** One `options_from` param's lookup: the inputs it lists and every upstream wired to them. */
+export interface ParamLookup {
+  inputs: string[];
+  /** In `options_from` order, then edge order within an input. */
+  upstreams: UpstreamLookup[];
+}
+
+/** Every `options_from` param's lookup on one node, by param name. */
+export type OptionsLookupPlan = Record<string, ParamLookup>;
 
 /**
- * Fingerprint the current "what needs column resolution?" set.
+ * Compile the canvas the way a run would, for the lookup to read the
+ * upstreams' value sets from.
  *
- * Includes each upstream's identity and its current params, so a sweep on an
- * upstream's chmap re-resolves downstream. The stores are passed in rather
- * than read here: the caller reads them inside a `$derived`, which is what
- * makes the key recompute.
+ * The rows bound to a pipeline variable are the ones the param editors
+ * hold, plus those a loaded document marked that no editor has picked up
+ * yet. The stores are passed in so the caller's `$derived` tracks them.
+ *
+ * Args:
+ *     nodeList: The canvas nodes.
+ *     edgeList: The canvas edges.
+ *     vars: The pipeline variables.
+ *
+ * Returns:
+ *     The compiled document: each node's base params and its `param_sets`.
+ */
+export function lookupPipeline(
+  nodeList: CanvasNode[],
+  edgeList: Edge[],
+  vars: PipelineVariables,
+): PipelineJSON {
+  return compilePipelineToJSON({
+    name: '',
+    nodes: nodeList,
+    edges: edgeList,
+    samples: [],
+    pipelineVariables: vars,
+    boundVariables: { ...get(pendingBoundVariables), ...collectBoundVariables() },
+  });
+}
+
+/**
+ * Every value set an upstream node would run with: its base values first,
+ * then each sweep variant's and per-sample override's, in the order compile
+ * emits them. A pipeline variable's ref is replaced by the variable's value;
+ * repeated sets are sent once.
+ *
+ * Args:
+ *     pipeline: The compiled canvas (`lookupPipeline`).
+ *     nodeId: The upstream node.
+ *
+ * Returns:
+ *     The value sets; empty for a node the document does not hold.
+ */
+export function upstreamParamSets(
+  pipeline: PipelineJSON,
+  nodeId: string,
+): Record<string, unknown>[] {
+  const node = pipeline.nodes.find(n => n.id === nodeId);
+  if (!node) return [];
+  const vars = pipeline.variables ?? {};
+  const resolve = (set: Record<string, unknown>): Record<string, unknown> => {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(set)) {
+      if (!isVarRef(v)) { out[k] = v; continue; }
+      const value = vars[v.$var]?.value;
+      if (value !== undefined && value !== null && value !== '') out[k] = value;
+    }
+    return out;
+  };
+  const sets = [node.params ?? {}, ...Object.values(pipeline.param_sets?.[nodeId] ?? {})];
+  const seen = new Set<string>();
+  const result: Record<string, unknown>[] = [];
+  for (const set of sets.map(resolve)) {
+    const fp = JSON.stringify(Object.keys(set).sort().map(k => [k, set[k]]));
+    if (seen.has(fp)) continue;
+    seen.add(fp);
+    result.push(set);
+  }
+  return result;
+}
+
+/** The lookup for one edge into an `options_from` input. */
+function upstreamLookup(
+  input: string,
+  edge: Edge,
+  upstream: CanvasNode,
+  pipeline: PipelineJSON,
+): UpstreamLookup {
+  const ud = upstream.data;
+  const slot = edge.sourceHandle ?? '';
+  const base = {
+    input, nodeId: upstream.id, slot,
+    nodeLabel: ud.label || ud.method || upstream.id,
+    module: '', method: '',
+  };
+  if (ud.nodeType === 'run_reference') {
+    const runId = ud.selectedRunId;
+    return {
+      ...base, kind: 'run_reference', runId, methodFull: RUN_REFERENCE_METHOD,
+      request: runId ? { slot, run_id: runId } : null,
+    };
+  }
+  if ((ud.nodeType && ud.nodeType !== 'method') || !ud.module || !ud.method) {
+    return { ...base, kind: 'system', methodFull: '', request: null };
+  }
+  const method = { kind: 'method' as const, module: ud.module, method: ud.method,
+    methodFull: `${ud.module}.${ud.method}` };
+  // A draft (pinned to the draft, or a method with no registered version
+  // yet) is not asked: the route answers registered versions only, so its
+  // options appear once it is registered. The draft-only test reads
+  // `versions` and `draft` off the node together, so it relies on
+  // `methodNodeData` (builder/nodeData.ts) copying both from the method:
+  // node data carrying `draft` without `versions` would read as draft-only
+  // here and never be asked.
+  if (isDraftNode(ud) || (!ud.versions?.length && !!ud.draft)) {
+    return { ...base, ...method, draft: true, request: null };
+  }
+  const request: OutputOptionsRequest = { slot, param_sets: upstreamParamSets(pipeline, upstream.id) };
+  // A pinned upstream offers its own version's options.
+  if (ud.version) request.version = ud.version;
+  return { ...base, ...method, request };
+}
+
+/**
+ * Plan the lookup for every `options_from` param on a node.
+ *
+ * For each such param, every input it lists in order, and every edge into
+ * that input in edge order, names one upstream: a method upstream is asked
+ * with its pin and its value sets, a Run Reference with its run id, and a
+ * system node, a run reference with no run, or a draft method (marked
+ * `draft`) is listed but not asked.
  *
  * Args:
  *     node: The selected node.
  *     data: The selected node's data.
  *     edgeList: The canvas edges.
  *     nodeList: The canvas nodes.
+ *     pipeline: The compiled canvas (`lookupPipeline`).
  *
  * Returns:
- *     A stable key, or ``''`` when nothing needs resolving.
+ *     One entry per `options_from` param; empty for a non-method node.
  */
-export function columnResolutionKey(
-  node: CanvasNode | undefined,
+export function optionsLookupPlan(
+  node: CanvasNode | null | undefined,
   data: CanvasNodeData | undefined,
   edgeList: Edge[],
-  nodeList: CanvasNode[]
-): string {
-  if (!node || data?.nodeType !== 'method') return '';
-  const params = data?.params ?? [];
-  const parts: string[] = [];
-  for (const p of params) {
-    if (!p.column_of_input || p.new_column) continue;
-    const slot = p.column_of_input;
-    const edge = edgeList.find(e => e.target === node.id && e.targetHandle === slot);
-    if (!edge) { parts.push(`${p.name}:NONE`); continue; }
-    const upstream = nodeList.find(n => n.id === edge.source);
-    if (!upstream) { parts.push(`${p.name}:GONE`); continue; }
-    const ud = upstream.data as CanvasNodeData;
-    // Run-reference upstream → key by run_id.
-    if (ud.nodeType === 'run_reference') {
-      parts.push(`${p.name}:RR:${ud.selectedRunId ?? ''}:${edge.sourceHandle ?? ''}`);
-      continue;
+  nodeList: CanvasNode[],
+  pipeline: PipelineJSON,
+): OptionsLookupPlan {
+  if (!node || data?.nodeType !== 'method') return {};
+  const plan: OptionsLookupPlan = {};
+  for (const p of data.params ?? []) {
+    const inputs = optionsFromInputs(p.options_from);
+    if (inputs.length === 0) continue;
+    const upstreams: UpstreamLookup[] = [];
+    for (const input of inputs) {
+      for (const edge of edgeList) {
+        if (edge.target !== node.id || edge.targetHandle !== input) continue;
+        const upstream = nodeList.find(n => n.id === edge.source);
+        if (upstream) upstreams.push(upstreamLookup(input, edge, upstream, pipeline));
+      }
     }
-    // Method upstream → key by module/method/source slot/params hash.
-    const paramHash = JSON.stringify(ud.paramValues ?? {});
-    parts.push(`${p.name}:M:${ud.module}/${ud.method}:${edge.sourceHandle ?? ''}:${paramHash}`);
+    plan[p.name] = { inputs, upstreams };
   }
-  return parts.join('|');
+  return plan;
 }
 
 /**
- * Resolve one parameter's column options against its upstream node.
+ * Fingerprint a lookup plan: the wiring and every request it would send.
+ *
+ * It changes when an edge into a listed input, an upstream's values,
+ * variants, overrides or pin, or a referenced run changes, and not when the
+ * selected node's own values do.
  *
  * Args:
- *     node: The selected node.
- *     p: The parameter carrying `column_of_input`.
+ *     plan: The node's lookup plan.
  *
  * Returns:
- *     The options, or ``null`` for a failed lookup, no upstream or no
- *     contract — which the caller renders as a plain input.
+ *     A stable key, or ``''`` when the node has no `options_from` param.
  */
-export async function resolveColumnsFor(
-  node: CanvasNode,
-  p: ParamDef
-): Promise<ColumnOptionsResp | null> {
-  if (!p.column_of_input || p.new_column) return null;
-  const slot = p.column_of_input;
-  const edge = get(edges).find(e => e.target === node.id && e.targetHandle === slot);
-  if (!edge) return null;
-  const upstream = get(nodes).find(n => n.id === edge.source);
-  if (!upstream) return null;
-  const ud = upstream.data as CanvasNodeData;
-  const sourceSlot = edge.sourceHandle ?? '';
-
-  if (ud.nodeType === 'run_reference') {
-    if (!ud.selectedRunId) return null;
-    return fetchRunReferenceOutputColumns(sourceSlot, ud.selectedRunId);
-  }
-  if (!ud.module || !ud.method) return null;
-  return fetchMethodOutputColumns(
-    `${ud.module}.${ud.method}`,
-    sourceSlot,
-    ud.paramValues ?? {},
-    // A pinned upstream declares its own version's columns.
-    ud.version,
-  );
+export function optionsLookupKey(plan: OptionsLookupPlan): string {
+  const entries = Object.entries(plan);
+  if (entries.length === 0) return '';
+  return JSON.stringify(entries.map(([name, l]) => [
+    name, l.inputs, l.upstreams.map(u => [u.input, u.nodeId, u.slot, u.methodFull, u.request]),
+  ]));
 }
 
 /**
- * Resolve every column-bound parameter on a node, in declaration order.
+ * Send a plan's requests and pair each upstream with its answer.
+ *
+ * A request two upstreams share is sent once. A failed lookup, or an
+ * upstream not asked, answers ``null``.
  *
  * Args:
- *     node: The selected node.
- *     targets: The parameters carrying `column_of_input`.
+ *     plan: The node's lookup plan.
  *
  * Returns:
- *     One entry per target, `null` where the lookup did not resolve.
+ *     Each param's inputs and its upstreams with their options.
  */
-export async function resolveColumnOptions(
-  node: CanvasNode,
-  targets: ParamDef[]
-): Promise<Record<string, ColumnOptionsResp | null>> {
-  const next: Record<string, ColumnOptionsResp | null> = {};
-  for (const p of targets) {
-    next[p.name] = await resolveColumnsFor(node, p);
+export async function resolveOptionsLookup(
+  plan: OptionsLookupPlan,
+): Promise<Record<string, ParamOptions>> {
+  const asked = new Map<string, Promise<OutputOptions | null>>();
+  const ask = (u: UpstreamLookup): Promise<OutputOptions | null> => {
+    if (!u.request) return Promise.resolve(null);
+    const key = JSON.stringify([u.methodFull, u.request]);
+    let pending = asked.get(key);
+    if (!pending) {
+      pending = fetchOutputOptions(u.methodFull, u.request);
+      asked.set(key, pending);
+    }
+    return pending;
+  };
+  const result: Record<string, ParamOptions> = {};
+  for (const [name, lookup] of Object.entries(plan)) {
+    const upstreams = await Promise.all(lookup.upstreams.map(async u => {
+      const { methodFull: _path, request: _request, ...upstream } = u;
+      return { ...upstream, options: await ask(u) };
+    }));
+    result[name] = { inputs: lookup.inputs, upstreams };
   }
-  return next;
+  return result;
 }
+

@@ -87,14 +87,15 @@ class TestReadConfigDvc:
         assert cfg["dvc"]["remote_path"] == "/tmp/dvc-storage"
         assert cfg["dvc"]["auto_init"] is True
 
-    def test_returns_only_the_environment_roots_dvc_integrity_and_registry(
+    def test_returns_only_the_environment_roots_dvc_integrity_registry_and_previews(
             self, tmp_project):
-        """One call answers five keys: the environment roots, [dvc], [integrity]
-        and [registry].
+        """One call answers six keys: the environment roots, [dvc], [integrity],
+        [registry] and [previews].
 
         The file carries a ``[database]`` table and a project name; neither
         a database URL nor the name comes back. ``registry`` is ``None``
-        until ``[registry] url`` is set, then ``{"url": ...}``.
+        until ``[registry] url`` is set, then ``{"url": ...}``; ``previews``
+        holds its defaults while the file has no ``[previews]`` table.
         """
         _write_config(tmp_project, textwrap.dedent("""
             [dvc]
@@ -104,8 +105,10 @@ class TestReadConfigDvc:
         from wfc.persistence import read_config
         cfg = read_config(tmp_project)
 
-        assert set(cfg) == {"pixi_root", "conda_root", "dvc", "integrity", "registry"}
+        assert set(cfg) == {"pixi_root", "conda_root", "dvc", "integrity",
+                            "registry", "previews"}
         assert cfg["registry"] is None
+        assert cfg["previews"] == {"memory_mb": 1024, "cache_mb": 500}
 
         _write_config(tmp_project, textwrap.dedent("""
             [dvc]
@@ -116,7 +119,8 @@ class TestReadConfigDvc:
         """))
         cfg = read_config(tmp_project)
 
-        assert set(cfg) == {"pixi_root", "conda_root", "dvc", "integrity", "registry"}
+        assert set(cfg) == {"pixi_root", "conda_root", "dvc", "integrity",
+                            "registry", "previews"}
         assert cfg["registry"] == {"url": "ghcr.io/lab/project"}
 
     def test_dvc_section_absent(self, tmp_project):

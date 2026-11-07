@@ -254,10 +254,6 @@ def test_restore_sample_pulls_a_local_miss(tmp_project, monkeypatch):
 # Tier 3: DAG advance is genuinely async w.r.t. push
 # =============================================================================
 
-# run_pipeline's wfc_root is unused (kept for its frozen signature); the
-# framework root is passed so the call matches the CLI's shape.
-_WFC_ROOT = Path(__file__).resolve().parent.parent
-
 
 @pytest.mark.integration
 @requires_docker
@@ -354,7 +350,6 @@ def test_async_push_does_not_block_dag_advance(
     run_pipeline(
         pipeline_path=str(pipeline_path),
         project_root=str(project_dir),
-        wfc_root=str(_WFC_ROOT),
         cores=1,
         archive=True,
     )

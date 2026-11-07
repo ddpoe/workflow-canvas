@@ -11,18 +11,19 @@ import type { Artifact } from './historyApi.js';
 /** The artifact grouping buckets, in no particular order. */
 export type CatKey = 'data' | 'images' | 'directories' | 'other';
 
-// The grouping sets. IMAGE_EXTS is deliberately WIDER than the backend's
-// `is_image` flag: it includes pdf/tif/tiff, which group visually with
-// images but which an <img> cannot paint, so they never get an inline
-// preview. See the preview gate in ArtifactList.svelte.
+// The grouping sets. They decide a header, never a viewer: which viewer opens
+// a file is the server's `viewer` field. IMAGE_EXTS groups pdf with images,
+// which the server gives the pdf viewer.
 const IMAGE_EXTS = new Set(['png','jpg','jpeg','gif','svg','webp','pdf','tif','tiff']);
 const DATA_EXTS  = new Set(['h5ad','h5','hdf5','parquet','csv','tsv','json','pkl','npy','npz','arrow','feather']);
 
 /**
  * Bucket an artifact for the artifact list's grouped rendering.
  *
- * Directories win over any extension; otherwise the lowercased extension
- * picks the bucket, falling back to "other".
+ * Directories win over any extension; a file the server gives the image
+ * viewer is always an image, so the Images header's show all reaches every
+ * image; otherwise the lowercased extension picks the bucket, falling back
+ * to "other".
  *
  * Args:
  *     a: The artifact to categorise.
@@ -32,10 +33,57 @@ const DATA_EXTS  = new Set(['h5ad','h5','hdf5','parquet','csv','tsv','json','pkl
  */
 export function categoryOf(a: Artifact): CatKey {
   if (deriveArtifactType(a) === 'dir') return 'directories';
+  if (a.viewer === 'image') return 'images';
   const ext = (a.extension || '').toLowerCase();
   if (IMAGE_EXTS.has(ext)) return 'images';
   if (DATA_EXTS.has(ext)) return 'data';
   return 'other';
+}
+
+/** The colour family of a file's type pill. */
+export type PillKind = 'image' | 'data' | 'other';
+
+/**
+ * Pick a file's type pill colour family: images and PDFs (by the server's
+ * viewer), data files (by the Data grouping set), anything else grey.
+ *
+ * Args:
+ *     file: A file row or folder member, with the server's `viewer` and its
+ *         `extension`.
+ *
+ * Returns:
+ *     The pill's colour family.
+ */
+export function pillKind(file: { viewer?: string | null; extension?: string | null }): PillKind {
+  if (file.viewer === 'image' || file.viewer === 'pdf') return 'image';
+  if (DATA_EXTS.has((file.extension || '').toLowerCase())) return 'data';
+  return 'other';
+}
+
+/** A name longer than this is cut in the middle where the row is too narrow. */
+export const NAME_CUT_MIN = 16;
+/** How many of a cut name's last characters always show. */
+export const NAME_TAIL = 10;
+
+/**
+ * Split a file name for a middle cut: a head that may shrink behind an
+ * ellipsis and a tail that always shows, so the end and the extension stay
+ * readable (`cluster_assig…ments.csv`). Where the cut falls is the row's
+ * width (CSS); this only decides what the tail keeps.
+ *
+ * Args:
+ *     name: The file or folder name as listed.
+ *
+ * Returns:
+ *     `head + tail === name`; a name of at most `NAME_CUT_MIN` characters is
+ *     all head, with an empty tail.
+ */
+export function splitNameForCut(name: string): { head: string; tail: string } {
+  // By code point, so a character outside the BMP is never split in two.
+  const chars = Array.from(name);
+  if (chars.length <= NAME_CUT_MIN) return { head: name, tail: '' };
+  const cut = chars.length - NAME_TAIL;
+  return { head: chars.slice(0, cut).join(''), tail: chars.slice(cut).join('') };
 }
 
 /**

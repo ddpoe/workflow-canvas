@@ -1,8 +1,11 @@
 <script lang="ts">
   import { modules } from './stores.js';
-  import { fetchModuleRegistry, moduleDefsFromRegistry } from './api.js';
+  import { refreshPalette } from './api.js';
   import type { MethodDef } from '../shared/types.js';
+  import type { DraftNodePayload } from './nodeData.js';
   import PipelineVariablesPanel from './PipelineVariablesPanel.svelte';
+  import { moduleColor } from '../shared/moduleColor.svelte.js';
+  import { displaySlotType, slotColor } from '../shared/slotColor.js';
 
   let searchQuery = $state('');
   let expandedMethods = $state<Record<string, boolean>>({});
@@ -17,6 +20,34 @@
       ),
     })).filter(mod => mod.methods.length > 0)
   );
+
+  function matches(name: string, mod: string): boolean {
+    const q = searchQuery.toLowerCase();
+    return name.toLowerCase().includes(q) || mod.toLowerCase().includes(q);
+  }
+
+  // The Drafts group: every module's drafts, grouped by module, after the
+  // module groups. The search filters them like methods.
+  let draftGroups = $derived(
+    $modules.map(mod => ({
+      name: mod.name,
+      drafts: (mod.drafts ?? []).filter(m => m.draft && matches(m.name, mod.name)),
+    })).filter(g => g.drafts.length > 0)
+  );
+  let draftCount = $derived(draftGroups.reduce((n, g) => n + g.drafts.length, 0));
+  let draftsOpen = $state(true);
+
+  function onDraftDragStart(event: DragEvent, method: MethodDef) {
+    if (!event.dataTransfer) return;
+    const payload: DraftNodePayload = { _draft: true, method };
+    event.dataTransfer.setData('application/json', JSON.stringify(payload));
+    event.dataTransfer.effectAllowed = 'move';
+  }
+
+  /** The reasons an invalid draft can't run, for the ⚠ INVALID hover. */
+  function invalidTitle(method: MethodDef): string {
+    return (method.draft?.reasons ?? []).join('\n') || 'This draft’s Registration check fails.';
+  }
 
   function onDragStart(event: DragEvent, method: MethodDef) {
     if (!event.dataTransfer) return;
@@ -33,14 +64,8 @@
     return method.versions?.find(v => v.newest)?.label;
   }
 
-  async function fetchModules() {
-    try {
-      const raw = await fetchModuleRegistry();
-      if (raw) modules.set(moduleDefsFromRegistry(raw));
-    } catch { /* dev mode — modules may not be available */ }
-  }
-
-  $effect(() => { fetchModules(); });
+  // Dev mode may have no modules route: refreshPalette keeps what it had.
+  $effect(() => { refreshPalette(); });
 </script>
 
 <div class="sidebar">
@@ -58,7 +83,7 @@
         }}
       >
         <div class="system-icon-small">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#1ABC9C" stroke-width="2">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
             <polyline points="7 10 12 15 17 10"/>
             <line x1="12" y1="15" x2="12" y2="3"/>
@@ -76,7 +101,7 @@
         }}
       >
         <div class="system-icon-small">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#1ABC9C" stroke-width="2">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="16 3 21 3 21 8"/>
             <line x1="4" y1="20" x2="21" y2="3"/>
             <polyline points="21 16 21 21 16 21"/>
@@ -107,7 +132,7 @@
       <div class="module-group">
         <div class="module-header">
           <div class="module-label">
-            <div class="color-bar" style="background: {mod.color};"></div>
+            <div class="color-bar" style="background: {moduleColor(mod.name)};"></div>
             <span class="module-name">{mod.name}</span>
           </div>
           <span class="module-count">{mod.methods.length}</span>
@@ -136,7 +161,7 @@
                     <div class="slot-section-label">Inputs</div>
                     <div class="slot-badges">
                       {#each method.inputs as inp}
-                        <span class="slot-badge" style="color: #F39C12; border-color: rgba(243,156,18,0.2); background: rgba(243,156,18,0.12);">{inp.name}</span>
+                        <span class="slot-badge" data-testid="palette-slot" style="--chip: {slotColor(inp.type)};" title={displaySlotType(inp.type)}>{inp.name}</span>
                         {#if inp.multi}<span class="multi-badge">MULTI</span>{/if}
                       {/each}
                     </div>
@@ -145,7 +170,7 @@
                     <div class="slot-section-label">Outputs</div>
                     <div class="slot-badges">
                       {#each method.outputs as out}
-                        <span class="slot-badge" style="color: #F39C12; border-color: rgba(243,156,18,0.2); background: rgba(243,156,18,0.12);">{out.name}</span>
+                        <span class="slot-badge" data-testid="palette-slot" style="--chip: {slotColor(out.type)};" title={displaySlotType(out.type)}>{out.name}</span>
                       {/each}
                     </div>
                   {/if}
@@ -156,6 +181,49 @@
         </div>
       </div>
     {/each}
+    {#if draftCount > 0}
+      <div class="module-group drafts-group" data-testid="palette-drafts">
+        <button type="button" class="module-header drafts-header" onclick={() => { draftsOpen = !draftsOpen; }}>
+          <div class="module-label">
+            <div class="color-bar" style="background: var(--dash-neutral);"></div>
+            <span class="module-name">{draftsOpen ? '▾' : '▸'} Drafts</span>
+          </div>
+          <span class="module-count">{draftCount}</span>
+        </button>
+        {#if draftsOpen}
+          {#each draftGroups as group}
+            <div class="draft-sub"><i style="background: {moduleColor(group.name)};"></i>{group.name}</div>
+            <div class="method-list">
+              {#each group.drafts as method}
+                <div
+                  class="method-item draft-item"
+                  draggable="true"
+                  data-testid="palette-draft"
+                  data-method={method.name}
+                  ondragstart={(e: DragEvent) => onDraftDragStart(e, method)}
+                >
+                  <div class="method-header">
+                    <div class="method-label">
+                      <span class="expand-icon">{'▶'}</span>
+                      <span class="method-name-text" title={method.name}>{method.name}</span>
+                      {#if method.draft && !method.draft.valid}
+                        <span class="inv" title={invalidTitle(method)}>{'⚠'} INVALID</span>
+                      {/if}
+                    </div>
+                    <div class="method-meta">
+                      <button class="info-btn" onclick={(e: MouseEvent) => { e.stopPropagation(); detailMethod = method; }}>i</button>
+                    </div>
+                  </div>
+                  <div class="draft-chip-row">
+                    <span class="vch"><span class="v">DRAFT</span><span class="l">{method.draft?.kind ?? 'version'}</span></span>
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {/each}
+        {/if}
+      </div>
+    {/if}
   </div>
 
   <!-- Detail panel -->
@@ -178,7 +246,7 @@
 
 <style>
   .sidebar {
-    background: #252526;
+    background: var(--bg-panel);
     border-right: 1px solid var(--border);
     display: flex;
     flex-direction: column;
@@ -193,10 +261,10 @@
   .search-bar input {
     width: 100%;
     padding: 6px 10px;
-    background: #1e1e1e;
+    background: var(--bg-input);
     border: 1px solid var(--border);
     border-radius: 4px;
-    color: #ccc;
+    color: var(--text-primary);
     font-size: 13px;
     outline: none;
   }
@@ -223,18 +291,18 @@
     border-radius: 2px;
   }
   .module-name {
-    color: #ccc;
+    color: var(--text-primary);
     font-size: 13px;
     font-weight: 500;
   }
   .module-count {
-    color: #666;
+    color: var(--text-muted);
     font-size: 11px;
   }
   .method-list { padding: 0 12px 0 20px; }
   .method-item {
     margin: 2px 0;
-    background: #1e1e1e;
+    background: var(--bg-input);
     border-radius: 4px;
     cursor: grab;
   }
@@ -253,7 +321,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    color: #ccc;
+    color: var(--text-primary);
     font-size: 13px;
     /* flex: 1 + min-width: 0 let the label occupy remaining width and
        shrink below its intrinsic content size so long method names can
@@ -282,7 +350,7 @@
        never compress, so every row's icon stays in the same column. */
     flex-shrink: 0;
   }
-  .version { color: #666; font-size: 10px; }
+  .version { color: var(--text-muted); font-size: 10px; }
   .info-btn {
     color: var(--accent);
     font-size: 11px;
@@ -304,7 +372,7 @@
   }
   .slot-section-label {
     font-size: 9px;
-    color: #888;
+    color: var(--text-secondary);
     text-transform: uppercase;
     margin-bottom: 4px;
   }
@@ -318,19 +386,22 @@
     font-size: 10px;
     padding: 2px 6px;
     border-radius: 3px;
-    border: 1px solid;
+    /* A slot type's palette colour (shared/slotColor.ts), as the node chips use it. */
+    color: color-mix(in srgb, var(--chip, #808080), #fff 45%);
+    background: color-mix(in srgb, var(--chip, #808080) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--chip, #808080) 40%, transparent);
   }
   .multi-badge {
     font-size: 9px;
-    color: #1e1e1e;
-    background: #E9A847;
+    color: var(--bg-input);
+    background: var(--marker-light);
     padding: 2px 5px;
     border-radius: 3px;
     font-weight: 600;
   }
   .detail-panel {
     border-top: 1px solid var(--border);
-    background: #2d2d30;
+    background: var(--bg-header);
     flex-shrink: 0;
   }
   .detail-header {
@@ -341,9 +412,9 @@
   }
   .back-btn {
     background: none; border: none;
-    color: #888; font-size: 12px; cursor: pointer;
+    color: var(--text-secondary); font-size: 12px; cursor: pointer;
   }
-  .detail-name { color: #666; font-size: 11px; }
+  .detail-name { color: var(--text-muted); font-size: 11px; }
   .detail-desc {
     padding: 6px 12px 10px;
     font-size: 12px;
@@ -351,16 +422,16 @@
     line-height: 1.4;
   }
   .detail-params { padding: 4px 12px 8px; }
-  .detail-label { font-size: 10px; color: #888; }
-  .detail-param { font-size: 11px; color: #ccc; margin-right: 5px; }
-  .required { font-size: 10px; color: #E74C3C; }
+  .detail-label { font-size: 10px; color: var(--text-secondary); }
+  .detail-param { font-size: 11px; color: var(--text-primary); margin-right: 5px; }
+  .required { font-size: 10px; color: var(--status-failed-ink); }
   /* System nodes section */
   .system-section {
     padding: 10px 12px;
   }
   .system-section-label {
     font-size: 10px;
-    color: #888;
+    color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 0.5px;
     margin-bottom: 8px;
@@ -375,21 +446,78 @@
     align-items: center;
     gap: 8px;
     padding: 7px 10px;
-    background: #1e1e1e;
+    background: var(--bg-input);
     border-radius: 4px;
-    border: 1px solid rgba(26, 188, 156, 0.2);
+    border: 1px solid color-mix(in srgb, var(--system-ink) 20%, transparent);
     cursor: grab;
-    color: #ccc;
+    color: var(--text-primary);
     font-size: 13px;
   }
   .system-item:hover {
-    border-color: rgba(26, 188, 156, 0.5);
-    background: rgba(26, 188, 156, 0.08);
+    border-color: color-mix(in srgb, var(--system-ink) 50%, transparent);
+    background: color-mix(in srgb, var(--system-ink) 8%, transparent);
   }
   .system-icon-small {
     display: flex;
     align-items: center;
     justify-content: center;
+    flex-shrink: 0;
+    /* System nodes draw in the system ink (SOP Canvas Colours). */
+    color: var(--system-ink);
+  }
+  .drafts-header {
+    width: 100%;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font: inherit;
+    text-align: left;
+  }
+  .draft-sub {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 2px 0 4px 18px;
+    font-size: 11.5px;
+    color: var(--text-secondary);
+  }
+  .draft-sub i {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    display: inline-block;
+  }
+  .draft-chip-row { padding: 0 10px 6px 25px; }
+  .vch {
+    display: inline-flex;
+    border-radius: 3px;
+    border: 1px solid var(--marker-dark);
+    font-family: Consolas, monospace;
+    font-size: 9.5px;
+    line-height: 14px;
+    white-space: nowrap;
+  }
+  .vch .v {
+    padding: 0 7px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--marker-light);
+    background: var(--bg-canvas);
+    border-radius: 2px 0 0 2px;
+  }
+  .vch .l {
+    padding: 0 6px;
+    color: var(--text-secondary);
+    background: var(--bg-header);
+    border-radius: 0 2px 2px 0;
+  }
+  .inv {
+    color: var(--status-failed-ink);
+    font-weight: 700;
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    cursor: help;
+    white-space: nowrap;
     flex-shrink: 0;
   }
   .sidebar-divider {

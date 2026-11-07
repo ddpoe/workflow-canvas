@@ -27,7 +27,7 @@ if __name__ == "__main__":
 
 | Member | Purpose |
 |---|---|
-| `ctx.input(slot)` | Resolved input paths (`list[Path]`) for an input slot. |
+| `ctx.input(slot)` | The file connected to an input, as a `Path` (`None` when an optional input has nothing connected). For an input declared `multiple: true`, a `list[Path]`. A single path also answers `[0]`, so scripts written for the list keep working. Naming an input the method does not declare raises an error that lists the declared inputs. |
 | `ctx.params` | Parsed params dict. |
 | `ctx.workdir` | Scratch dir at `WFC_RUN_DIR/_workdir/` (auto-created). |
 | `ctx.run_dir` | `WFC_RUN_DIR` (advanced). |

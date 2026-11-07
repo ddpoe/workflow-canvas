@@ -14,8 +14,40 @@ composer.
   (``discovery``, ``ast_scanner``), checks its saves against the contract
   (``method_ast``), commits the method directory to git (``git_commit``) and
   writes the source snapshot (``snapshot``).
+- Module colours: ``check_color`` is the one implementation of the colour
+  standard's six tests (``color_standard``: the hue guards, the nearest
+  passing shade and its CSS name); ``module_color`` keeps
+  ``.wfc/registry/modules.json``: ``assign_module_colors`` stores a
+  default for every module missing from it, in registration order, and
+  commits once (``register_module`` and the Registry's module list call
+  it); ``set_module_color`` is a Colour change, its own commit;
+  ``read_module_colors`` reads the store.
+- Drafts (``draft``): a method folder tried as one of a module's methods
+  before it is registered. ``plan_draft`` / ``add_draft`` (module first;
+  a DRAFT version or a DRAFT method, with the dialog's sentence),
+  ``read_draft`` / ``list_drafts``, ``draft_status`` (the stat snapshot:
+  only ``method.yaml`` marks a draft stale, for display; nothing refuses
+  it), ``reread_draft`` (``method.yaml`` read again plus the Registration
+  check; the writing form every draft run makes stores the contract on the
+  pointer, the read-only form Validate makes writes nothing),
+  ``update_draft`` (the writing re-read, with no run), ``remove_draft`` and
+  ``delete_draft_outputs`` (keeps the pointer). ``check_method_folder`` /
+  ``check_draft`` is the Registration check: every refusal registration
+  would make, as a ✓/✗ list, with no snapshot restore and no write.
+  ``unread_param_warnings`` warns about a declared param the script never
+  reads by a literal ``ctx.params`` name (registration and the check print
+  it as a ``WARNING:`` line; never a refusal).
+  ``plan_draft_registration`` / ``register_draft`` register through the
+  ordinary plan and apply, then remove the draft folder. The contract map
+  offers each draft's contract as ``versions["draft"]``: its
+  ``method.yaml`` read now (``draft_contract_now``), not the pointer's copy.
 - ``register_sample``: refuse, hand the bytes to Storage's sample store, and
   write the sample row.
+- Listing (``listing``): ``list_methods`` (each method's env, versions and
+  registered ``method.yaml``), ``list_modules`` (contracts, method count,
+  stored colour; never writes the colour store) and ``list_samples``, the
+  one owner of what the Registry routes and the CLI's list verbs show. Run
+  counts are the caller's to merge, on the listed row ids and names.
 - ``load_contract_map``: every registered method version's contract (one
   per version, keyed by its content identity, the newest named), for the
   enrichment pass.
@@ -62,12 +94,51 @@ from ``wfc.environments``, Environments & containers' package surface.
 """
 
 from .ast_scanner import FunctionInfo, ParamInfo, ScriptInfo, scan_script
+from .color_standard import ColorCheck, check_color
 from .contract_map import load_contract_map
+from .discovery import snapshot_selected_script
+from .draft import (
+    CheckLine,
+    DraftNotFoundError,
+    DraftPlan,
+    DraftPointer,
+    DraftRefusedError,
+    DraftReread,
+    DraftStatus,
+    RegistrationCheck,
+    add_draft,
+    check_draft,
+    check_method_folder,
+    delete_draft_outputs,
+    draft_contract_now,
+    draft_run_refusal,
+    draft_status,
+    folder_snapshot,
+    list_drafts,
+    plan_draft,
+    plan_draft_registration,
+    read_draft,
+    register_draft,
+    remove_draft,
+    reread_draft,
+    update_draft,
+)
 from .env_references import (
     methods_referencing_env,
     methods_whose_newest_version_uses_env,
     version_fingerprints_recording_env,
     versions_recording_env,
+)
+from .listing import (
+    ListedContract,
+    ListedMethod,
+    ListedModule,
+    ListedSample,
+    ListedVersion,
+    list_methods,
+    list_modules,
+    list_samples,
+    listed_module,
 )
 from .method import (
     MethodRegistration,
@@ -78,7 +149,7 @@ from .method import (
     plan_method_registration,
     register_method,
 )
-from .method_ast import validate_save_artifacts
+from .method_ast import unread_param_warnings, validate_save_artifacts
 from .method_version import (
     VersionEntry,
     read_version_list,
@@ -86,6 +157,14 @@ from .method_version import (
     write_version_list,
 )
 from .module import register_module
+from .module_color import (
+    ColorWrite,
+    ModuleColor,
+    ModuleColorRefusedError,
+    assign_module_colors,
+    read_module_colors,
+    set_module_color,
+)
 from .registered_code import (
     MalformedMethodRecordError,
     MethodCode,
@@ -148,6 +227,7 @@ __all__ = [
     "changed_copy_files",
     "drop_copy_stamp",
     "resolve_method_code",
+    "snapshot_selected_script",
     "verify_registered_snapshot",
     "SampleHealth",
     "SampleManifestError",
@@ -177,8 +257,50 @@ __all__ = [
     "RegistrationConfirmationRequired",
     "RegistrationPlanChangedError",
     "register_module",
+    "ColorCheck",
+    "ColorWrite",
+    "ModuleColor",
+    "ModuleColorRefusedError",
+    "assign_module_colors",
+    "check_color",
+    "read_module_colors",
+    "set_module_color",
+    "CheckLine",
+    "DraftNotFoundError",
+    "DraftPlan",
+    "DraftPointer",
+    "DraftRefusedError",
+    "DraftStatus",
+    "DraftReread",
+    "RegistrationCheck",
+    "add_draft",
+    "check_draft",
+    "check_method_folder",
+    "delete_draft_outputs",
+    "draft_contract_now",
+    "draft_run_refusal",
+    "draft_status",
+    "folder_snapshot",
+    "list_drafts",
+    "plan_draft",
+    "plan_draft_registration",
+    "read_draft",
+    "register_draft",
+    "remove_draft",
+    "reread_draft",
+    "update_draft",
+    "ListedContract",
+    "ListedMethod",
+    "ListedModule",
+    "ListedSample",
+    "ListedVersion",
+    "list_methods",
+    "list_modules",
+    "list_samples",
+    "listed_module",
     "register_sample",
     "scan_script",
+    "unread_param_warnings",
     "validate_save_artifacts",
     "version_fingerprints_recording_env",
     "versions_recording_env",

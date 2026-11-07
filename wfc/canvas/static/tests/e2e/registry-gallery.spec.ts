@@ -64,7 +64,7 @@ const DETAIL = {
       subtype: { type: 'str', default: LONG, required: false,
                  description: 'The cohort subtype the plot is limited to; the notebook used the two largest groups' },
       top: { type: 'int', default: 30, required: false, constraints: { min: 1, max: 200 } },
-      label_col: { type: 'str', column_of_input: 'tf_acts', new_column: 'label' },
+      label_col: { type: 'str', options_from: 'tf_acts' },
       title: { type: 'str', default: '', required: false },
       minimum_normalised_expression_threshold_per_sample: {
         type: 'float', default: 0.25, required: false,
@@ -111,7 +111,7 @@ const NEW_PLAN = {
     code: { changed: [], added: ['volcano_plot.py'], removed: [] },
     slots: [
       { name: 'deseq2_results', kind: 'input', change: 'added', before: null,
-        after: { type: '.csv', required: true, columns: { strict: ['log2FoldChange', 'padj'] } } },
+        after: { type: '.csv', required: true } },
       { name: 'volcano', kind: 'output', change: 'added', before: null, after: { type: '.pdf' } },
       { name: 'top_genes', kind: 'output', change: 'added', before: null, after: { type: '.csv' } },
     ],

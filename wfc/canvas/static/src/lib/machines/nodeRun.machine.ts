@@ -12,8 +12,9 @@
  *
  * Tests in `__tests__/nodeRun.test.ts` cover every transition.
  */
-import { setup, assign, fromCallback, type ActorRefFrom } from 'xstate';
+import { setup, assign, fromCallback, type ActorRefFrom, type CallbackActorLogic, type EventObject } from 'xstate';
 import type { RunTally } from '../shared/types';
+import type { makeStreamingMachine, StreamingInput } from './streaming.machine';
 
 // ── Context ────────────────────────────────────────────────────────────
 //
@@ -75,18 +76,23 @@ export type NodeRunEvent =
 // a no-op callback *slot* here; tests inject a callback stub via
 // `.provide`, and `root.ts` injects the real streaming machine via
 // `.provide`. xstate v5's setup actor map is structurally typed — the
-// slot is replaced wholesale at provide time, so the slot type just
-// needs to be *some* actor logic; the runtime substitution can be a
-// machine, callback, promise, etc. Invocation is scoped to `running`,
-// so the child is torn down when the parent leaves that state.
+// slot is replaced wholesale at provide time, and `.provide` accepts
+// any logic assignable to the slot's declared type, so the slot is
+// declared as `StreamingActorLogic`: a callback stub or the streaming
+// machine. Invocation is scoped to `running`, so the child is torn down
+// when the parent leaves that state.
 //
 // The InspectorPanel reads the streaming machine's snapshot via
-// `nodeRunSnap.children.streaming`. Because the slot is statically a
-// `fromCallback`, TypeScript can't see that the runtime value is a
+// `nodeRunSnap.children.streaming`. Because the slot may statically be
+// a callback, TypeScript can't see that the runtime value is a
 // machine actor — consumers cast through `unknown` and call
 // `getSnapshot().value` directly.
 
-const streamingActorSlot = fromCallback(() => {
+export type StreamingActorLogic =
+  | CallbackActorLogic<EventObject, StreamingInput>
+  | ReturnType<typeof makeStreamingMachine>;
+
+const streamingActorSlot: StreamingActorLogic = fromCallback<EventObject, StreamingInput>(() => {
   return () => {};
 });
 

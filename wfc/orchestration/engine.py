@@ -14,6 +14,7 @@ calls nothing in Execution and touches no database.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import subprocess
 import sys
@@ -23,7 +24,7 @@ from typing import NamedTuple
 
 from axiom_annotations import AutoStep, Step, workflow
 
-from ..graph import PipelineDef
+from ..graph import PipelineDef, draft_owners
 from .snakemake import generate_snakefile
 
 
@@ -101,10 +102,15 @@ def invoke_engine(
     # The generated rules hand `wfc run-step` no --params: it reads the
     # node's params from WFC_PIPELINE_JSON, so that must be the frozen
     # (substituted) document, never the caller's file with its refs.
+    # Graph's draft-mode rule over the frozen document: those rules run
+    # their step as a draft step.
+    draft_steps = frozenset(draft_owners(
+        json.loads(frozen_doc.read_text(encoding="utf-8"))))
     content = generate_snakefile(
         pipeline, project_root, pipeline_id=pipeline_id,
         pipeline_json_path=str(frozen_doc.resolve()),
         sample_hashes=sample_hashes,
+        draft_steps=draft_steps,
     )
 
     口 = Step(step_num=2, name="Write the Snakefile",

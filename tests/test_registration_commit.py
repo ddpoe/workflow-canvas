@@ -535,7 +535,7 @@ def test_a_reader_finds_old_or_new_bytes_never_a_partial_or_missing_file(
 def _lose_history(root: Path, before: str, tree: str) -> None:
     """Remove the registration's commit from history and garbage-collect its tree."""
     _git(root, "reset", "-q", "--soft", before)
-    _git(root, "rm", "-r", "-q", "--cached", ".wfc/registry")
+    _git(root, "rm", "-r", "-q", "--cached", ".wfc/registry/methods")
     _git(root, "commit", "-q", "--allow-empty", "-m", "history rewritten")
     _git(root, "update-ref", "-d", "ORIG_HEAD", check=False)
     _git(root, "reflog", "expire", "--expire=now", "--all")
@@ -770,6 +770,63 @@ def test_two_processes_registering_one_method_get_distinct_labels(module, tmp_pa
         code = resolve_method_code(MODULE, METHOD, root, version=entry.identity)
         assert code.script.read_bytes() == (sources[name] / f"{METHOD}.py").read_bytes()
     assert _registry_status(root) == ""
+
+
+def _author(root: Path) -> str:
+    return _git(root, "log", "-1", "--format=%an <%ae>").strip()
+
+
+@workflow(purpose="method.commit-author: a wfc commit is authored as the user's "
+                  "git identity when git names one for the repository, and as "
+                  "wfc <wfc@wfc> when it names none; method registration "
+                  "(commit_over_head) through production register_method, and "
+                  "wfc init's commit (commit_paths, the path module and env "
+                  "registration take) through production init_project")
+def test_a_registration_commit_is_authored_as_the_user_or_as_wfc(
+        module, tmp_path, monkeypatch):
+    from wfc.init import init_project
+    from wfc.registration import register_method, register_module
+
+    root = module
+    # Only the repository's own config names an identity: no global or
+    # system config is read.
+    no_global = tmp_path / "global.gitconfig"
+    no_global.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(no_global))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+    口 = Step(step_num=1, name="The user has a git identity",
+             purpose="Method registration commits as the user")
+    _git(root, "config", "user.name", "Ada Lovelace")
+    _git(root, "config", "user.email", "ada@example.org")
+    before = _git(root, "rev-parse", "HEAD")
+    _register(_source(tmp_path))
+    assert _git(root, "rev-parse", "HEAD") != before
+    assert _author(root) == "Ada Lovelace <ada@example.org>"
+
+    口 = Step(step_num=2, name="git names no identity",
+             purpose="The next registration commit is authored as wfc <wfc@wfc>")
+    _git(root, "config", "--unset", "user.name")
+    _git(root, "config", "--unset", "user.email")
+    register_module(name="other", contracts=[])
+    before = _git(root, "rev-parse", "HEAD")
+    register_method(method_dir=_source(tmp_path, "src-other"),
+                    module_name="other", assume_yes=True)
+    assert _git(root, "rev-parse", "HEAD") != before
+    assert _author(root) == "wfc <wfc@wfc>"
+
+    口 = Step(step_num=3, name="wfc init's commit, with and without an identity",
+             purpose="The pathspec commit follows the same rule")
+    named = tmp_path / "named"
+    named.mkdir()
+    _git(named, "init", "-q")
+    _git(named, "config", "user.name", "Ada Lovelace")
+    _git(named, "config", "user.email", "ada@example.org")
+    init_project(named, archive=str(tmp_path / "named-archive"), assume_yes=True)
+    assert _author(named) == "Ada Lovelace <ada@example.org>"
+    unnamed = tmp_path / "unnamed"
+    init_project(unnamed, archive=str(tmp_path / "unnamed-archive"), assume_yes=True)
+    assert _author(unnamed) == "wfc <wfc@wfc>"
 
 
 def test_commit_over_head_refuses_while_a_merge_is_in_progress(git_project):

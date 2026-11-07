@@ -154,7 +154,10 @@ def _refuse_at_commit(project: Path, source: Path) -> None:
 def test_late_refusal_leaves_nothing(clean_project, outside_source, refuse):
     from sqlmodel import select
     from wfc.persistence import get_session, Method, MethodContract
+    from wfc.registration import register_module
 
+    # The module is registered first: its own commit, with its colour.
+    register_module(name="mod", contracts=[])
     head = _head(clean_project)
     with pytest.raises((ValueError, RuntimeError)):
         refuse(clean_project, outside_source)
@@ -216,10 +219,12 @@ def test_register_module_commits_module_yaml(clean_project):
                   "clean and a user's same-named method and its list intact")
 def test_demo_remove_commits_the_snapshot_deletion(clean_project, outside_source):
     from wfc.demo.remove import remove_demo
-    from wfc.demo.scaffold import DEMO_ENV, DEMO_MODULE, write_demo_stamp
+    from wfc.demo.scaffold import DEMO_ENV, DEMO_MODULES, write_demo_stamp
     from wfc.layout import tree
     from wfc.registration import register_method, register_module
     from wfc.version import get_git_commit
+
+    DEMO_MODULE = next(iter(DEMO_MODULES))  # one of the demo's modules
 
     # The demo's env, committed as register-env's own commit would.
     write_env_record(clean_project, DEMO_ENV, image="local/wfc-demo-env")
@@ -237,7 +242,7 @@ def test_demo_remove_commits_the_snapshot_deletion(clean_project, outside_source
         demo_yaml.read_text("utf-8").replace("fixture-env", DEMO_ENV), "utf-8")
     register_method(
         method_dir=demo_source, module_name=DEMO_MODULE,
-        method_name=f"{DEMO_MODULE}transform", script_name="transform.py",
+        method_name="__demo__transform", script_name="transform.py",
         allow_reserved=True,
         assume_yes=True,
     )
@@ -246,7 +251,7 @@ def test_demo_remove_commits_the_snapshot_deletion(clean_project, outside_source
     demo_rel = tree.module_methods_dir(clean_project, DEMO_MODULE) \
         .relative_to(clean_project).as_posix()
     demo_list = tree.method_versions_path(
-        clean_project, DEMO_MODULE, f"{DEMO_MODULE}transform")
+        clean_project, DEMO_MODULE, "__demo__transform")
     user_list = tree.method_versions_path(clean_project, "mod", "transform")
     demo_list_rel = demo_list.relative_to(clean_project).as_posix()
     assert _git(clean_project, "ls-files", "--", demo_rel) != ""

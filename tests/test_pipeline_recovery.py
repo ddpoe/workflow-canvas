@@ -285,7 +285,10 @@ def test_a_cut_off_pipeline_is_closed_out(tmp_project, monkeypatch, processes):
 def test_a_close_out_takes_the_user_s_reason_from_the_record_s_cancel_flag(
         tmp_project, monkeypatch, processes):
     """A cancel flag set on the record (a `wfc cancel` the owner never acted
-    on) makes the close-out's walk say user, though its caller did not."""
+    on, or one still waiting for the close-out lock) makes the close-out end
+    the pipeline for the user, though its caller did not ask: the running row
+    is cancelled for the user, not failed as interrupted, and the walk says
+    user."""
     from wfc.execution.pipeline_record import request_cancel
 
     pid = "recover-close-out-flag"
@@ -293,15 +296,14 @@ def test_a_close_out_takes_the_user_s_reason_from_the_record_s_cancel_flag(
     root = obs.project.root
     write_pipeline_record(root, pid, ENTRY_POINT_CANVAS, owner=_ended(processes))
     assert request_cancel(root, pid).cancel_requested
-    a_s1 = obs.runs[A_S1].run_id
 
     done = close_out_pipeline(root, pid, user_cancelled=False)
 
-    assert done.user_cancelled and done.runs_failed == [a_s1] and done.rows_written == 3
-    walked = {t: (r.status, r.cancel_reason) for t, r in _by_target(pid).items()
-              if t != ("a", "S1")}
-    assert walked == {t: ("cancelled", "user")
-                      for t in (("a", "S2"), ("b", "S1"), ("b", "S2"))}
+    assert done.user_cancelled and done.rows_written == 3
+    assert (done.runs_failed, done.runs_cancelled) == ([], 1)
+    assert {t: (r.status, r.cancel_reason) for t, r in _by_target(pid).items()} == {
+        t: ("cancelled", "user")
+        for t in (("a", "S1"), ("a", "S2"), ("b", "S1"), ("b", "S2"))}
     assert read_pipeline_record(root, pid) is None
 
 
@@ -362,7 +364,7 @@ def test_a_cancel_with_the_owner_alive_leaves_the_walk_to_the_owner(git_project,
     fakes.stub_docker_image_inspect(monkeypatch, _IMAGE_PRESENT)
     with gen_patch, popen_patch, pytest.raises(RuntimeError):
         run_pipeline(pipeline_path=str(project.pipeline_json),
-                     project_root=str(project.root), wfc_root=str(project.root),
+                     project_root=str(project.root),
                      pipeline_id=pid)
 
     outcome = seen["outcome"]
@@ -403,4 +405,301 @@ def test_a_cancel_with_the_owner_gone_closes_the_pipeline_out(tmp_project, monke
 
     with pytest.raises(UnknownPipelineError):
         cancel_recorded_pipeline(root, pid)
+    late = close_out_pipeline(root, pid)
+    assert (late.closed, late.rows_written, late.record_removed) == (False, 0, False), (
+        "a close-out after the cancel closed it finds nothing to close")
     assert len(_rows(pid)) == 4
+
+
+# --------------------------------------------------------------------------
+# Two processes, one pipeline: the close-out lock file
+# --------------------------------------------------------------------------
+
+#: One closer in its own process: ``wfc cancel <pid> --yes`` through the CLI,
+#: or the recovery's close-out. It counts the release of in-use records and
+#: the record removals it makes, writes ``ready`` just before it starts, and
+#: writes what it did as JSON.
+_CLOSER = """
+import json, sys
+from pathlib import Path
+role, root, pid, out, ready = sys.argv[1:6]
+from wfc.execution import recovery
+counts = {"releases": 0, "removals": 0}
+real_release, real_remove = recovery.release_finished_runs, recovery.remove_pipeline_record
+def release(*a, **k):
+    counts["releases"] += 1
+    return real_release(*a, **k)
+def remove(*a, **k):
+    gone = real_remove(*a, **k)
+    counts["removals"] += int(gone)
+    return gone
+recovery.release_finished_runs, recovery.remove_pipeline_record = release, remove
+Path(ready).write_text("ready", encoding="utf-8")
+if role == "cancel":
+    from wfc.cli import cli_main
+    result = {"code": cli_main(["cancel", pid, "--yes"])}
+else:
+    done = recovery.close_out_pipeline(root, pid)
+    result = {"closed": done.closed, "rows_written": done.rows_written}
+result.update(counts)
+Path(out).write_text(json.dumps(result), encoding="utf-8")
+"""
+
+
+def _start_closer(role: str, root, pid: str, scratch):
+    """Start one closer process; returns (process, its result file, its ready file)."""
+    import subprocess
+    import sys
+
+    out, ready = scratch / f"{role}.json", scratch / f"{role}.ready"
+    proc = subprocess.Popen([sys.executable, "-c", _CLOSER, role, str(root), pid,
+                             str(out), str(ready)], cwd=str(root),
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    return proc, out, ready
+
+
+def _finish(proc, out) -> tuple[dict, str]:
+    """Wait for a closer; returns what it did and its stdout."""
+    import json
+
+    stdout, stderr = proc.communicate(timeout=120)
+    assert proc.returncode == 0, f"the closer failed:\n{stdout}\n{stderr}"
+    return json.loads(out.read_text(encoding="utf-8")), stdout
+
+
+def _wait_for(condition, what: str, timeout: float = 60.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not condition():
+        assert time.monotonic() < deadline, f"timed out waiting for {what}"
+        time.sleep(0.02)
+
+
+def _dead_cli_pipeline(tmp_project, monkeypatch, processes, pid: str):
+    """A `wfc run-pipeline` pipeline cut off with S1's a in flight, its owner and engine gone."""
+    obs = _cut_off(tmp_project, monkeypatch, pid)
+    root = obs.project.root
+    write_pipeline_record(root, pid, ENTRY_POINT_CLI, owner=_ended(processes))
+    record_engine(root, pid, _ended(processes).pid)
+    return root
+
+
+def _flagged(root, pid: str) -> bool:
+    record = read_pipeline_record(root, pid)
+    return bool(record is not None and record.cancel_requested)
+
+
+@workflow(purpose="`wfc cancel` and the recovery's close-out of one dead "
+                  "`wfc run-pipeline` pipeline, started at once in two processes, "
+                  "close it once: one release of the in-use records, one record "
+                  "removal, one row per target, and every row says the user "
+                  "cancelled it, whichever process takes the lock first")
+def test_a_cancel_and_a_close_out_in_two_processes_close_the_pipeline_once(
+        tmp_project, monkeypatch, processes, tmp_path_factory):
+    from wfc.execution.recovery import close_out_lock
+
+    pid = "recover-two-closers"
+    scratch = tmp_path_factory.mktemp("closers")
+    口 = Step(step_num=1, name="Cut a `wfc run-pipeline` pipeline off",
+             purpose="Its running row left behind, its owner and engine gone")
+    root = _dead_cli_pipeline(tmp_project, monkeypatch, processes, pid)
+
+    口 = Step(step_num=2, name="Start both closers while the lock is held",
+             purpose="The test holds the close-out lock until the cancel has set "
+                     "its flag and the close-out is about to ask for the lock, "
+                     "so both wait on it together; then lets go")
+    with close_out_lock(root, pid):
+        cancel, cancel_out, _ = _start_closer("cancel", root, pid, scratch)
+        close, close_out, close_ready = _start_closer("close-out", root, pid, scratch)
+        _wait_for(lambda: _flagged(root, pid), "the cancel's flag")
+        _wait_for(close_ready.exists, "the close-out to start")
+
+    口 = Step(step_num=3, name="Both finish; the pipeline was closed once",
+             purpose="One release, one record removal; the one that came second "
+                     "found nothing left to close")
+    cancelled, _ = _finish(cancel, cancel_out)
+    closed, _ = _finish(close, close_out)
+    assert cancelled["code"] == 0
+    assert cancelled["releases"] + closed["releases"] == 1, (cancelled, closed)
+    assert cancelled["removals"] + closed["removals"] == 1, (cancelled, closed)
+
+    口 = Step(step_num=4, name="Every row says the user cancelled it",
+             purpose="The running row and the three targets the walk wrote")
+    rows = _by_target(pid)
+    assert set(rows) == {("a", "S1"), ("a", "S2"), ("b", "S1"), ("b", "S2")}
+    assert {(r.status, r.cancel_reason) for r in rows.values()} == {("cancelled", "user")}
+    assert read_pipeline_record(root, pid) is None
+    assert _records() == []
+
+
+def test_a_cancel_that_waits_on_a_close_out_gets_its_reason_and_says_it_ended(
+        tmp_project, monkeypatch, processes, tmp_path_factory):
+    """The close-out takes the lock first: it reads the flag the waiting cancel
+    set, so it ends the pipeline for the user; the cancel then finds it ended
+    and says so, releasing and removing nothing."""
+    from wfc.execution.recovery import close_out_lock
+
+    pid = "recover-close-out-first"
+    scratch = tmp_path_factory.mktemp("closers")
+    root = _dead_cli_pipeline(tmp_project, monkeypatch, processes, pid)
+
+    with close_out_lock(root, pid):
+        cancel, cancel_out, _ = _start_closer("cancel", root, pid, scratch)
+        _wait_for(lambda: _flagged(root, pid), "the cancel's flag")
+        done = close_out_pipeline(root, pid)
+
+    assert done.user_cancelled and done.runs_cancelled == 1 and done.rows_written == 3
+    cancelled, stdout = _finish(cancel, cancel_out)
+    assert (cancelled["code"], cancelled["releases"], cancelled["removals"]) == (0, 0, 0)
+    assert f"Pipeline {pid} ended before the cancel reached it" in stdout
+    assert {(r.status, r.cancel_reason) for r in _by_target(pid).values()} == {
+        ("cancelled", "user")}
+
+
+def test_a_lock_file_left_by_a_gone_process_is_taken_over(tmp_path, processes):
+    import json
+    import os
+
+    from wfc.execution.pipeline_record import hold_lock_file
+
+    lock = tmp_path / "close-out.lock"
+    lock.write_text(json.dumps(_ended(processes).to_json()), encoding="utf-8")
+
+    with hold_lock_file(lock):
+        assert json.loads(lock.read_text(encoding="utf-8"))["pid"] == os.getpid()
+    assert not lock.exists()
+
+
+def test_a_release_refused_while_a_waiter_reads_the_lock_still_removes_it(
+        tmp_path, monkeypatch):
+    """Windows refuses to remove a file a waiter has open (WinError 32); the
+    release retries, so the lock never stays behind naming a holder that left."""
+    from wfc.execution.pipeline_record import hold_lock_file
+
+    lock = tmp_path / "close-out.lock"
+    refused = fakes.refuse_path_unlink_once(monkeypatch, lock)
+    with hold_lock_file(lock):
+        pass
+    assert refused == [lock]
+    assert not lock.exists()
+
+
+def test_a_stale_lock_is_removed_by_one_waiter_and_never_once_retaken(
+        tmp_path, processes):
+    """Two waiters can both read a dead holder; only one at a time decides and
+    removes, deciding again first, so a lock retaken in between is left."""
+    import json
+    import os
+
+    from wfc.execution.pipeline_record import _take_over_stale_lock, _this_process
+
+    lock = tmp_path / "close-out.lock"
+    guard = tmp_path / "close-out.lock.takeover"
+    dead = json.dumps(_ended(processes).to_json())
+
+    # A second waiter arriving after the first retook the lock: it is left.
+    live = json.dumps(_this_process().to_json())
+    lock.write_text(live, encoding="utf-8")
+    assert _take_over_stale_lock(lock) is True
+    assert lock.read_text(encoding="utf-8") == live and not guard.exists()
+
+    # Another waiter is deciding right now: this one leaves the lock to it.
+    lock.write_text(dead, encoding="utf-8")
+    guard.write_text("", encoding="utf-8")
+    assert _take_over_stale_lock(lock) is False
+    assert lock.exists()
+
+    # The one deciding waiter removes the dead holder's lock, then its guard.
+    os.remove(guard)
+    assert _take_over_stale_lock(lock) is True
+    assert not lock.exists() and not guard.exists()
+
+
+def test_a_waiter_behind_another_waiters_takeover_sleeps_until_it_leaves(
+        tmp_path, processes, monkeypatch):
+    """A waiter behind another waiter's takeover polls instead of spinning.
+
+    A dead holder's lock and another waiter inside its takeover: this waiter
+    sleeps a poll between tries, and enters once that waiter's takeover file
+    is gone.
+    """
+    import json
+    import threading
+
+    from wfc.execution.pipeline_record import _LOCK_POLL_SECONDS, hold_lock_file
+
+    lock = tmp_path / "close-out.lock"
+    guard = tmp_path / "close-out.lock.takeover"
+    lock.write_text(json.dumps(_ended(processes).to_json()), encoding="utf-8")
+    guard.write_text("", encoding="utf-8")
+    polls = fakes.takeover_left_after_polls(monkeypatch, guard, after=3)
+
+    entered = threading.Event()
+
+    def wait_for_the_lock() -> None:
+        with hold_lock_file(lock):
+            entered.set()
+
+    waiter = threading.Thread(target=wait_for_the_lock, daemon=True)
+    waiter.start()
+    try:
+        assert entered.wait(timeout=5), \
+            "the waiter never entered: it spun without polling, so the takeover stayed"
+    finally:
+        guard.unlink(missing_ok=True)
+        waiter.join(timeout=60)
+    assert polls[:3] == [_LOCK_POLL_SECONDS] * 3
+    assert not lock.exists() and not guard.exists()
+
+
+def test_a_stale_takeover_is_claimed_before_removal_and_a_fresh_one_is_kept(
+        tmp_path, monkeypatch):
+    """A stale takeover file is claimed by rename before it is removed.
+
+    A takeover file left by a waiter that stopped inside it is removed by the
+    waiter that claims it; when the file it claimed turns out fresh (another
+    waiter's, made after it judged the old one stale), it is put back.
+    """
+    import json
+    import os
+
+    from wfc.execution.pipeline_record import (
+        _UNNAMED_LOCK_STALE_SECONDS,
+        _take_over_stale_lock,
+        _this_process,
+    )
+
+    lock = tmp_path / "close-out.lock"
+    guard = tmp_path / "close-out.lock.takeover"
+    lock.write_text(json.dumps(_this_process().to_json()), encoding="utf-8")
+    long_ago = time.time() - 2 * _UNNAMED_LOCK_STALE_SECONDS
+
+    guard.write_text("stale", encoding="utf-8")
+    os.utime(guard, (long_ago, long_ago))
+    assert _take_over_stale_lock(lock) is False
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["close-out.lock"]
+
+    guard.write_text("stale", encoding="utf-8")
+    os.utime(guard, (long_ago, long_ago))
+    claims = fakes.takeover_renewed_before_claim(monkeypatch, guard, fresh="fresh")
+    assert _take_over_stale_lock(lock) is False
+    assert claims == [guard]
+    assert guard.read_text(encoding="utf-8") == "fresh"
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "close-out.lock", "close-out.lock.takeover"]
+
+
+def test_a_close_out_whose_run_dir_another_holder_removed_makes_it_again(
+        tmp_project, monkeypatch):
+    """A holder in another process removes the run dir it made when it leaves;
+    a waiter whose lock file's folder went that way makes it again."""
+    from wfc.execution import recovery
+
+    root, pid = tmp_project, "pipe-gone-dir"
+    run_dir = layout.pipeline_run_dir(root, pid)
+    lock = layout.pipeline_close_out_lock_path(root, pid)
+    holds = fakes.run_dir_removed_at_first_lock(monkeypatch, run_dir)
+    entered = []
+    with recovery.close_out_lock(root, pid):
+        entered.append(run_dir.is_dir())
+    assert holds == [lock, lock] and entered == [True]
+    assert not run_dir.exists()

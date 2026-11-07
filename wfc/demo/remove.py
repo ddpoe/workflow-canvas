@@ -1,6 +1,6 @@
 """Teardown logic for ``wfc demo --remove``.
 
-Deletes ONLY by the ``__demo__`` tag / module cascade — never by matching
+Deletes ONLY by the ``__demo__`` tag / modules cascade — never by matching
 method names against whatever is present. Because the reserved-prefix guard
 means no user-driven path can create a ``__demo__`` name, the tag is proof
 of demo ownership. Deletion runs in dependency-safe order (SQLite FK
@@ -9,14 +9,16 @@ enforcement is OFF here — nothing at the storage layer catches mistakes):
     run children (RunInput / RunOutput / RunAnnotation)
     -> runs -> null surviving runs' FKs into the deleted set
     -> MethodContract / TrackedFunction (+ParamDef) / MethodVersion
-    -> methods -> ModuleContract -> module -> samples -> env -> files.
+    -> methods -> ModuleContract -> modules -> samples -> env -> files.
 
-The files are the demo module's whole snapshot directory under
-``.wfc/registry/methods/`` (which holds each demo method's snapshot and
-its version list, ``<method>.versions.json``), the demo's sample workspace directories, the
+The demo's modules are every ``__demo__``-prefixed module: the three this wfc
+registers and an older wfc's single ``__demo__``. The files are each demo
+module's whole snapshot directory under ``.wfc/registry/methods/`` (which
+holds each demo method's snapshot and its version list,
+``<method>.versions.json``), the demo's sample workspace directories, the
 pipeline document, the demo schema stamp (``.wfc/demo.json``), and each
 demo env's build and captures folders. The demo's envs are found through the
-demo module, never by name: the demo env plus every env the demo module's
+demo modules, never by name: the demo env plus every env the demo modules'
 methods name (their rows and every entry of their version lists), read before
 anything is deleted, so an older wfc's demo env goes too. The deletions and
 the env manifest's change are then committed by pathspec, so the tree is
@@ -33,13 +35,16 @@ import sys
 from pathlib import Path
 
 from .. import layout
+from ..confirm import ConfirmationRequired, confirm
 from .scaffold import (
     DEMO_IMAGE_TAG,
-    DEMO_MODULE,
     DEMO_PIPELINE_FILENAME,
+    DEMO_PREFIX,
     DemoError,
     _project_env,
+    demo_modules,
     demo_owned_envs,
+    demo_snapshot_dirs,
 )
 
 
@@ -56,11 +61,14 @@ def remove_demo(
     Args:
         target_dir: Project directory (default: cwd).
         purge_image: Also delete the ``local/wfc-demo-env`` Docker image.
-        assume_yes: Skip the confirmation prompt.
+        assume_yes: ``--yes``: remove without asking. Otherwise the removal
+            list is printed and ``Proceed?`` asked through
+            :mod:`wfc.confirm`; with no terminal nothing is removed and the
+            refusal names ``--yes``.
 
     Returns:
-        0 on success or nothing-to-do; 1 when the user declines the
-        confirmation.
+        0 on success or nothing-to-do; 1 when the user declines, or when
+        there is no terminal to ask on and no ``assume_yes``.
 
     Raises:
         DemoError: If *target_dir* is not an initialised project.
@@ -95,15 +103,14 @@ def remove_demo(
 
         # ---- Compute the demo-owned set from the DB (tag / cascade only) ----
         with get_session() as session:
-            module = session.exec(
-                select(Module).where(Module.name == DEMO_MODULE)
-            ).first()
-            module_id = module.id if module is not None else None
+            modules = demo_modules(session)
+            module_ids = [m.id for m in modules]
+            module_names = {m.id: m.name for m in modules}
             methods = (
                 session.exec(
-                    select(Method).where(Method.module_id == module_id)
+                    select(Method).where(col(Method.module_id).in_(module_ids))
                 ).all()
-                if module_id is not None
+                if module_ids
                 else []
             )
             method_ids = [m.id for m in methods]
@@ -121,7 +128,7 @@ def remove_demo(
             # user samples like 'mydemo__x'.
             samples = session.exec(
                 select(Sample).where(
-                    col(Sample.name).startswith(DEMO_MODULE, autoescape=True)
+                    col(Sample.name).startswith(DEMO_PREFIX, autoescape=True)
                 )
             ).all()
             sample_names = [s.name for s in samples]
@@ -144,22 +151,20 @@ def remove_demo(
         present_envs = [e for e in owned_envs if e in manifest.get("envs", {})]
         env_present = bool(present_envs)
 
-        # Files: the demo module's snapshot directory as a whole. Snapshots
-        # are module-qualified, so it holds every demo method (and any
+        # Files: each demo module's snapshot directory as a whole. Snapshots
+        # are module-qualified, so they hold every demo method (and any
         # partial-scaffold residue) and nothing of another module's; no
         # method directory is chosen by name.
-        snapshot_dir = layout.module_methods_dir(target, DEMO_MODULE)
+        snapshot_dirs = demo_snapshot_dirs(target)
         samples_root = layout.samples_dir(target)
         sample_dirs = sorted(
-            p for p in samples_root.glob(f"{DEMO_MODULE}*")
+            p for p in samples_root.glob(f"{DEMO_PREFIX}*")
             if p.is_dir()
         ) if samples_root.exists() else []
         pipeline_file = target / DEMO_PIPELINE_FILENAME
         stamp_file = layout.demo_stamp_path(target)
 
-        file_targets: list[Path] = []
-        if snapshot_dir.exists():
-            file_targets.append(snapshot_dir)
+        file_targets: list[Path] = list(snapshot_dirs)
         file_targets.extend(sample_dirs)
         for f in (pipeline_file, stamp_file):
             if f.exists():
@@ -176,16 +181,17 @@ def remove_demo(
                 file_targets.append(captures_dir)
                 captures_dirs.append(captures_dir)
 
-        nothing_in_db = module_id is None and not samples and not env_present
+        nothing_in_db = not module_ids and not samples and not env_present
         if nothing_in_db and not file_targets:
             print("No demo state found in this project — nothing to remove.")
             return 0
 
         # ---- Print the removal list ----
         print("wfc demo --remove will delete:")
-        if module_id is not None:
-            print(f"  module {DEMO_MODULE} with {len(methods)} method(s): "
-                  + ", ".join(method_names))
+        for module_id, module_name in module_names.items():
+            names = [m.name for m in methods if m.module_id == module_id]
+            print(f"  module {module_name} with {len(names)} method(s)"
+                  + (": " + ", ".join(names) if names else ""))
         print(f"  {len(run_ids)} demo run(s) and their input/output/annotation rows")
         for s in sample_names:
             print(f"  sample {s}")
@@ -201,9 +207,10 @@ def remove_demo(
             from ..registration import methods_referencing_env
 
             for env in present_envs:
+                # `module/method`: a demo module's methods are the demo's.
                 refs = [
                     r for r in methods_referencing_env(env)
-                    if not r.startswith(f"{DEMO_MODULE}/")
+                    if r.split("/", 1)[0] not in module_names.values()
                 ]
                 if refs:
                     print(
@@ -212,11 +219,18 @@ def remove_demo(
                         file=sys.stderr,
                     )
 
-        if not assume_yes:
-            answer = input("Proceed? [y/N] ").strip().lower()
-            if answer not in ("y", "yes"):
+        try:
+            if not confirm("Proceed?", assume_yes=assume_yes,
+                           refusal=ConfirmationRequired(
+                               "wfc demo --remove: removing the demo needs "
+                               "confirmation and there is no terminal to ask "
+                               "on. Nothing was removed. Re-run with --yes to "
+                               "remove it as listed above.")):
                 print("Aborted — nothing removed.")
                 return 1
+        except ConfirmationRequired as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
 
         # ---- Delete DB rows in dependency-safe order ----
         with get_session() as session:
@@ -297,21 +311,22 @@ def remove_demo(
                     session.delete(m)
                 session.commit()
 
-            if module_id is not None:
+            if module_ids:
                 for mc in session.exec(
                     select(ModuleContract).where(
-                        ModuleContract.module_id == module_id
+                        col(ModuleContract.module_id).in_(module_ids)
                     )
                 ).all():
                     session.delete(mc)
-                mod = session.get(Module, module_id)
-                if mod is not None:
-                    session.delete(mod)
+                for module_id in module_ids:
+                    mod = session.get(Module, module_id)
+                    if mod is not None:
+                        session.delete(mod)
                 session.commit()
 
             for s in session.exec(
                 select(Sample).where(
-                    col(Sample.name).startswith(DEMO_MODULE, autoescape=True)
+                    col(Sample.name).startswith(DEMO_PREFIX, autoescape=True)
                 )
             ).all():
                 session.delete(s)
@@ -355,7 +370,7 @@ def remove_demo(
             removed_files.append(f)
 
         # ---- Commit the removal ----
-        # The snapshot directory was committed at registration and the env
+        # The snapshot directories were committed at registration and the env
         # manifest at env registration; deleting either without a commit
         # leaves a dirty tree, which the next run's commit check refuses.
         # Each demo env's captures folder was committed with its record, and
@@ -363,12 +378,11 @@ def remove_demo(
         # paths are named: nothing else the user staged is swept in.
         from ..version import commit_paths
 
-        committed = [snapshot_dir, pipeline_file, stamp_file, *captures_dirs]
+        committed = [*snapshot_dirs, pipeline_file, stamp_file, *captures_dirs]
         if env_present:
             committed.append(layout.env_manifest_path(target))
         sha = commit_paths(
-            target, committed, f"Remove demo module {DEMO_MODULE}",
-            require_repo=False,
+            target, committed, "Remove the wfc demo", require_repo=False,
         )
         if sha is not None:
             print(f"  git: committed the removal as {sha[:12]}")

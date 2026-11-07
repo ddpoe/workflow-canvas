@@ -9,7 +9,7 @@
    * The dialog lives here, a sibling of `.inspector`, rather than in the
    * panel that raises it.
    */
-  import { selectedNode, nodes, updateNodeData, deleteNodes } from '../builder/stores.js';
+  import { selectedNode, nodes, edges, updateNodeData, deleteNodes } from '../builder/stores.js';
   import type { CanvasNodeData } from '../shared/types.js';
   import { onDestroy } from 'svelte';
   import InputSelectorPanel from './InputSelectorPanel.svelte';
@@ -17,7 +17,10 @@
   import MethodPanel from './MethodPanel.svelte';
   import { stripOrphanOverrides, type OrphanRequest } from './nodeEdits.js';
   import { RenderTick } from './renderTick.svelte.js';
-  import { nodeVersion, undeclaredParams, versionSwitch, versionTitle, withoutParam } from '../builder/nodeData.js';
+  import { moduleColor } from '../shared/moduleColor.svelte.js';
+  import { DRAFT_VERSION, isDraftNode, nodeVersion, undeclaredParams, versionSwitch, versionTitle, withoutParam } from '../builder/nodeData.js';
+  import { REVIEW_IN_REGISTRY, downstreamHelp, draftBanner, draftModeOf, stepsAfter } from '../builder/drafts.js';
+  import { openDraftInRegistry, openVersionInRegistry } from '../shared/draftLinks.js';
 
   // The canvas `nodes` store, whose deep field changes `updateNodeData`
   // makes in place (see `data` below). `renderTick.svelte.ts` owns the
@@ -49,10 +52,29 @@
    */
   function switchVersion(label: string) {
     if (!node || !data) return;
+    if (label === DRAFT_VERSION) {
+      updateNodeData(node.id, versionSwitch(data, DRAFT_VERSION));
+      return;
+    }
     const picked = data.versions?.find(v => String(v.label) === label);
     if (!picked) return;
     updateNodeData(node.id, versionSwitch(data, picked.identity));
   }
+
+  /** Open the version the node runs (its draft included) in the Registry. */
+  function openRunningInRegistry() {
+    if (!data) return;
+    if (isDraftNode(data)) {
+      openDraftInRegistry(data.module, data.method);
+      return;
+    }
+    const running = nodeVersion(data);
+    openVersionInRegistry(data.module, data.method, running?.identity ?? null, running ? `v${running.label}` : null);
+  }
+
+  // The selected node's place in draft mode, for the banner under the header.
+  let draftMode = $derived(node ? draftModeOf($nodes, $edges).get(node.id) : undefined);
+  let draftOwner = $derived(draftMode ? ($nodes.find(n => n.id === draftMode!.ownerId)?.data ?? null) : null);
 
   /** Remove a parameter the node's version does not declare. */
   function removeParam(name: string) {
@@ -103,14 +125,16 @@
     <!-- Header: the node's own colour, its name, what it runs, and Delete -->
     {@const isSystem = data.nodeType === 'input_selector' || data.nodeType === 'run_reference'}
     {@const running = isSystem ? undefined : nodeVersion(data)}
+    {@const asDraft = !isSystem && isDraftNode(data)}
+    {@const env = running?.env ?? (asDraft ? data.draft?.env : undefined)}
     <div class="inspector-header" class:system-header={isSystem}
-      style={isSystem ? '' : `background: ${data.color};`}>
+      style={isSystem ? '' : `background: ${moduleColor(data.module)};`}>
       <span class="inspector-title">{data.label}</span>
       {#if !isSystem}
         <div class="inspector-meta">
           <span class="meta-chip"><span class="meta-key">Module</span><span class="meta-val">{data.module}</span></span>
-          {#if running?.env}
-            <span class="meta-chip"><span class="meta-key">Env</span><span class="meta-val">{running.env}</span></span>
+          {#if env}
+            <span class="meta-chip"><span class="meta-key">Env</span><span class="meta-val">{env}</span></span>
           {/if}
         </div>
       {/if}
@@ -119,28 +143,41 @@
           <span class="system-label">
             {data.nodeType === 'input_selector' ? 'Input Selector' : 'Run Reference'}
           </span>
-        {:else if data.versions?.length}
-          <span class="version-tag" class:version-tag-newest={running?.newest}>
-            <i class="version-dot"></i>
-            <span class="version-label">{running ? `v${running.label}` : 'unregistered'}</span>
-            {#if running}
-              <span class="version-state">{running.newest ? 'latest' : 'pinned'}</span>
+        {:else if data.versions?.length || data.draft || asDraft}
+          <span class="version-tag" class:version-tag-newest={running?.newest} class:version-tag-draft={asDraft}>
+            {#if asDraft}
+              <span class="version-label">&#9679; DRAFT</span>
+            {:else}
+              <i class="version-dot"></i>
+              <span class="version-label">{running ? `v${running.label}` : 'unregistered'}</span>
+              {#if running}
+                <span class="version-state">{running.newest ? 'latest' : 'pinned'}</span>
+              {/if}
             {/if}
             <span class="version-caret" aria-hidden="true">&#9660;</span>
             <select
               class="inspector-version"
               title={versionTitle(data)}
-              value={running ? String(running.label) : ''}
+              value={asDraft ? DRAFT_VERSION : running ? String(running.label) : ''}
               onchange={(e) => switchVersion((e.currentTarget as HTMLSelectElement).value)}
             >
-              {#if !running}
+              {#if !running && !asDraft}
                 <option value="" disabled>unregistered version</option>
               {/if}
-              {#each data.versions as v (v.label)}
+              {#each data.versions ?? [] as v (v.label)}
                 <option value={String(v.label)}>v{v.label}</option>
               {/each}
+              {#if data.draft}
+                {#if data.versions?.length}
+                  <option value="__divider__" disabled>──────────</option>
+                {/if}
+                <option value={DRAFT_VERSION}>&#9679; DRAFT</option>
+              {/if}
             </select>
           </span>
+          <button type="button" class="open-in-registry" data-testid="open-in-registry"
+                  title={asDraft ? `Opens ${data.method}’s Draft run tab in the Registry` : 'Opens this version in the Registry'}
+                  onclick={openRunningInRegistry}>Open in Registry &#8599;</button>
         {/if}
         <button class="inspector-delete-btn" onclick={handleDeleteNode} title="Delete node" aria-label="Delete node">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -151,18 +188,39 @@
       </div>
     </div>
 
+    {#if draftMode && draftOwner}
+      <div class="draft-banner" data-testid="draft-banner">
+        {#if draftMode.isDraft}
+          {draftBanner(stepsAfter(draftModeOf($nodes, $edges), draftMode.ownerId))}
+        {:else}
+          {downstreamHelp(draftMode.owner)}
+        {/if}
+        <button type="button" class="lnk" title="Opens {draftOwner.method}’s Draft run tab in the Registry"
+                onclick={() => openDraftInRegistry(draftOwner!.module, draftOwner!.method)}>{REVIEW_IN_REGISTRY}</button>
+      </div>
+    {/if}
+
     {#if data.nodeType === 'input_selector'}
       <InputSelectorPanel {node} {data} onOrphans={(request) => { orphanRequest = request; }} />
     {:else if data.nodeType === 'run_reference'}
       <RunReferencePanel {node} {data} />
     {:else}
+      {#if data.refusals?.length}
+        <div class="refusal-box" data-testid="inspector-refusals">
+          <div class="refusal-head">&#10007; The server refused this step</div>
+          <ul>
+            {#each data.refusals as line (line)}<li>{line}</li>{/each}
+          </ul>
+          <div class="refusal-hint">Fix it in the pipeline, or in the method's files if the message says so, then Validate or Run again.</div>
+        </div>
+      {/if}
       {@const undeclared = undeclaredParams(data)}
       {#if undeclared.length}
         {@const label = nodeVersion(data)?.label}
         <ul class="undeclared-params">
           {#each undeclared as name (name)}
             <li class="undeclared-param">
-              <span><code>{name}</code> is not in v{label}, remove it</span>
+              <span><code>{name}</code> is not in {asDraft ? 'the draft' : `v${label}`}, remove it</span>
               <button class="undeclared-remove" onclick={() => removeParam(name)}>Remove</button>
             </li>
           {/each}
@@ -231,8 +289,24 @@
 {/if}
 
 <style>
+  /* The server's refusals of this node: a side-panel error box (SOP
+     canvas-colours, The Governing Rule): 8% failed tint, 3px failed rule. */
+  .refusal-box {
+    margin: 8px 12px 0;
+    padding: 8px 10px;
+    font-size: 12px;
+    color: var(--text-primary);
+    background: color-mix(in srgb, var(--status-failed) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--status-failed) 30%, transparent);
+    border-left: 3px solid var(--status-failed);
+    border-radius: 4px;
+  }
+  .refusal-head { color: var(--status-failed-ink); font-weight: 600; margin-bottom: 4px; }
+  .refusal-box ul { margin: 0; padding-left: 16px; }
+  .refusal-box li { margin: 2px 0; overflow-wrap: anywhere; }
+  .refusal-hint { margin-top: 4px; color: var(--text-secondary); }
   .inspector {
-    background: #252526;
+    background: var(--bg-panel);
     border-left: 1px solid var(--border);
     display: flex;
     flex-direction: column;
@@ -242,7 +316,7 @@
   }
   .inspector-header {
     padding: 12px 12px 10px;
-    background: #2d2d30;
+    background: var(--bg-header);
     border-bottom: 1px solid var(--border);
     display: flex;
     flex-direction: column;
@@ -315,9 +389,9 @@
     height: 7px;
     border-radius: 50%;
     flex-shrink: 0;
-    background: #F5D547;
+    border: 1px solid var(--version-older);
   }
-  .version-tag-newest .version-dot { background: #7CFC9A; }
+  .version-tag-newest .version-dot { background: var(--status-ok); }
   .version-tag:focus-within {
     outline: 2px solid var(--accent);
     outline-offset: 1px;
@@ -333,10 +407,46 @@
     cursor: pointer;
     font: inherit;
   }
-  .inspector-version option { background: #1e1e1e; color: #ccc; }
+  .inspector-version option { background: var(--bg-input); color: var(--text-primary); }
   .version-state { color: #aaa; font-weight: 400; font-size: 10px; }
   .version-tag-newest .version-state { color: #9fd9b3; }
-  .version-caret { color: #888; font-size: 9px; }
+  .version-caret { color: var(--text-secondary); font-size: 9px; }
+  /* A draft node's tag: ● DRAFT with a light outline. */
+  .version-tag-draft { border-color: var(--marker-light); }
+  .version-tag-draft .version-label { font-weight: 700; letter-spacing: 0.06em; }
+  .open-in-registry {
+    align-self: center;
+    background: none;
+    border: none;
+    padding: 0 2px;
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 11px;
+    text-decoration: underline;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .draft-banner {
+    margin: 10px 12px 0;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--dash-neutral);
+    color: var(--text-primary);
+    border-radius: 6px;
+    padding: 9px 10px;
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  .lnk {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--accent);
+    font: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .lnk:hover { text-decoration: underline; }
   .inspector-delete-btn {
     margin-left: auto;
     width: 24px;
@@ -355,14 +465,14 @@
   }
   .inspector-delete-btn:hover {
     color: #fff;
-    border-color: #E74C3C;
-    background: #E74C3C;
+    border-color: var(--status-failed);
+    background: var(--status-failed);
   }
   .undeclared-params {
     list-style: none;
     margin: 0;
     padding: 6px 12px;
-    background: rgba(231, 76, 60, 0.1);
+    background: color-mix(in srgb, var(--status-failed) 10%, transparent);
     border-bottom: 1px solid var(--border);
     flex-shrink: 0;
   }
@@ -371,15 +481,15 @@
     align-items: center;
     justify-content: space-between;
     gap: 6px;
-    color: #E74C3C;
+    color: var(--status-failed-ink);
     font-size: 11px;
     padding: 2px 0;
   }
   .undeclared-remove {
     background: none;
-    border: 1px solid #E74C3C;
+    border: 1px solid var(--status-failed);
     border-radius: 3px;
-    color: #E74C3C;
+    color: var(--status-failed-ink);
     font-size: 11px;
     cursor: pointer;
     padding: 1px 6px;
@@ -387,13 +497,13 @@
   .no-selection {
     padding: 20px 10px;
     text-align: center;
-    color: #666;
+    color: var(--text-muted);
     font-size: 13px;
   }
   /* System node inspector styles: the header takes the system node's own
      gradient, as its canvas card does. */
   .system-header {
-    background: linear-gradient(135deg, var(--color-system), #16A085);
+    background: var(--fill-system);
   }
   .system-label {
     color: rgba(255, 255, 255, 0.85);
@@ -412,7 +522,7 @@
     z-index: 1000;
   }
   .orphan-modal {
-    background: #252526;
+    background: var(--bg-panel);
     border: 1px solid var(--border);
     border-radius: 8px;
     width: 420px;
@@ -429,20 +539,20 @@
   .orphan-modal-title {
     font-size: 14px;
     font-weight: 600;
-    color: #ccc;
+    color: var(--text-primary);
   }
   .orphan-modal-body {
     padding: 14px 16px;
     overflow-y: auto;
     font-size: 13px;
-    color: #ccc;
+    color: var(--text-primary);
     line-height: 1.45;
   }
   .orphan-modal-body p {
     margin: 0 0 8px 0;
   }
   .orphan-modal-body strong {
-    color: #E9A847;
+    color: var(--text-primary);
     font-weight: 600;
   }
   .orphan-list {
@@ -482,8 +592,8 @@
   }
   .orphan-btn-neutral:hover { background: #3a80c9; }
   .orphan-btn-cancel {
-    background: #2d2d30;
-    color: #ccc;
+    background: var(--bg-header);
+    color: var(--text-primary);
   }
   .orphan-btn-cancel:hover { border-color: var(--accent); }
 </style>

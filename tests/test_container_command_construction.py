@@ -84,7 +84,7 @@ def test_build_docker_command(tmp_path, gpus, use_windows_paths):
         image_ref=IMAGE_REF,
         project_root=project_root,
         dvc_cache_dir=dvc_cache_dir,
-        run_step_argv=RUN_STEP_ARGV,
+        inner_argv=RUN_STEP_ARGV,
         uid=uid,
         gid=gid,
         gpus=gpus,
@@ -148,7 +148,7 @@ def test_build_apptainer_command(tmp_path, gpus):
         image_ref=IMAGE_REF,
         project_root=str(proj),
         dvc_cache_dir=str(cache),
-        run_step_argv=RUN_STEP_ARGV,
+        inner_argv=RUN_STEP_ARGV,
         gpus=gpus,
     )
 

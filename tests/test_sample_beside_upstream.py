@@ -23,6 +23,7 @@ engine in real containers.
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from axiom_annotations import Step, workflow
@@ -49,6 +50,8 @@ from tests.harness import (
     selector_beside_method_and_reference,
     wire,
 )
+from tests.harness.scenario import DEFAULT_MODULE
+from wfc.layout import method_versions_path
 
 Q = ("quantify", "s1", "default")
 
@@ -294,14 +297,38 @@ def test_a_missing_or_empty_sample_directory_is_refused_by_name(
 # A refused step is visibly a failure
 # =============================================================================
 
+#: mid's version list, relative to the project root, where Layout puts it.
+_MID_VERSION_LIST = method_versions_path(Path("."), DEFAULT_MODULE, "mid").as_posix()
+
+
 def _refused_mid_chain() -> Scenario:
-    """Head -> mid -> tail, where mid's link names an output head does not declare."""
+    """Head -> mid -> tail, where head deletes mid's version list as it runs.
+
+    The load reads the pipeline document and the registry before any step
+    runs, so it accepts the project; only mid's claim reads mid's version
+    list afterwards, and refuses because it is gone. A test whose engine is
+    mocked runs no method, so the deletion never happens there.
+    """
     return Scenario(nodes=[
         selector(),
-        node("head", inputs=[wire("sel")], output_files={"data": "data.csv"}),
-        node("mid", inputs=[wire("head", source_slot="nope")]),
+        node("head", inputs=[wire("sel")], output_files={"data": "data.csv"},
+             behavior=Behavior(delete_paths=(_MID_VERSION_LIST,))),
+        node("mid", inputs=[wire("head")]),
         node("tail", inputs=[wire("mid")]),
     ])
+
+
+def _refusal_words(obs, message: str) -> str:
+    """A refusal message with that run's project root written ``<root>``."""
+    return message.replace(str(obs.project.root), "<root>")
+
+
+def _assert_mid_refusal_words(words: str) -> None:
+    """Assert root-normalised words are mid's missing-version-list refusal."""
+    assert words.startswith(
+        f"Method '{DEFAULT_MODULE}/mid' has no version list (<root>")
+    assert "mid.versions.json), so its record is incomplete" in words
+    assert "Register the method again with `wfc register-method`" in words
 
 
 @workflow(purpose="A pipeline whose middle step is refused at the claim ends "
@@ -314,7 +341,8 @@ def test_a_claim_refusal_is_a_visible_failure(git_project, monkeypatch):
     from wfc.execution.lifecycle import _write_cancelled_rows, summarize_pipeline
 
     口 = Step(step_num=1, name="Run the pipeline and its pipeline-end walk",
-             purpose="The refused step writes no row; the walk writes its "
+             purpose="Head deletes mid's version list, so mid's claim refuses "
+                     "and the refused step writes no row; the walk writes its "
                      "failed row after the fact")
     obs = run_scenario(_refused_mid_chain(), root=git_project, monkeypatch=monkeypatch)
 
@@ -325,7 +353,7 @@ def test_a_claim_refusal_is_a_visible_failure(git_project, monkeypatch):
                      "the pipeline is the head's own read of its sample")
     [mid] = obs.rows_for_node("mid")
     assert mid["status"] == "failed"
-    assert "'nope'" in mid["error_message"]
+    _assert_mid_refusal_words(_refusal_words(obs, mid["error_message"]))
     assert mid["version_id"] is None and mid["cache_key"] is None
     assert mid["node_id"] == "mid"
     head_runs = {r["id"] for r in obs.rows_for_node("head")}
@@ -354,7 +382,8 @@ def test_a_claim_refusal_is_a_visible_failure(git_project, monkeypatch):
                                        thread_alive=False, error="engine failed",
                                        log_dir=None)
     assert status.overall_status == "completed_with_failures"
-    assert "'nope'" in status.node_states["mid"]["error"]
+    _assert_mid_refusal_words(
+        _refusal_words(obs, status.node_states["mid"]["error"]))
     assert status.node_states["tail"]["cancelled_due_to_run_id"] == str(mid["id"])
     assert status.node_states["tail"]["upstream_run_id"] == str(mid["id"])
     assert status.node_states["tail"]["upstream_node_id"] == "mid"
@@ -383,8 +412,9 @@ def test_a_lineage_of_a_run_that_never_ran_is_refused_saying_so(git_project,
     from wfc.persistence import reset_engine
 
     口 = Step(step_num=1, name="Run the pipeline whose middle step is refused",
-             purpose="The pipeline-end walk writes mid's failed row and "
-                     "tail's cancelled row, neither with a start time")
+             purpose="Head deletes mid's version list, so mid's claim "
+                     "refuses; the pipeline-end walk writes mid's failed row "
+                     "and tail's cancelled row, neither with a start time")
     obs = run_scenario(_refused_mid_chain(), root=git_project, monkeypatch=monkeypatch)
     [mid] = obs.rows_for_node("mid")
     [tail] = obs.rows_for_node("tail")
@@ -448,7 +478,7 @@ def test_run_pipeline_reports_a_failed_pipeline_as_an_error_line(
     with gen_patch, popen_patch:
         rc = cli_main(["run-pipeline", "--pipeline", str(project.pipeline_json),
                        "--project-root", str(project.root),
-                       "--wfc-root", str(project.root), "--cores", "1",
+                       "--cores", "1",
                        "--no-archive"])
 
     口 = Step(step_num=3, name="One ERROR line, exit 1, no traceback",
@@ -535,9 +565,11 @@ def test_a_claim_refusal_agrees_across_rungs(git_project, tmp_path_factory,
                                              monkeypatch, fixture_container_image):
     from tests.harness.drivers import _ancestor_map, _blocked_by
 
-    口 = Step(step_num=1, name="Run the refused-mid-chain pipeline on both rungs",
-             purpose="One declaration; the stub rung sequences it itself, "
-                     "the engine rung hands it to Snakemake")
+    口 = Step(step_num=1, name="Run the pipeline on both rungs",
+             purpose="One declaration: head deletes mid's version list as it "
+                     "runs, after the load has accepted the project; the stub "
+                     "rung sequences it itself, the engine rung hands it to "
+                     "Snakemake and runs each method in a container")
     scn = replace(_refused_mid_chain(), env_name=FIXTURE_ENV_NAME)
     stub = run_scenario(scn, root=git_project, monkeypatch=monkeypatch)
     engine = run_scenario(scn, root=tmp_path_factory.mktemp("engine_refused"),
@@ -545,12 +577,15 @@ def test_a_claim_refusal_agrees_across_rungs(git_project, tmp_path_factory,
                           image_digest=fixture_container_image)
 
     口 = Step(step_num=2, name="The engine's per-target verdict",
-             purpose="The refused step exits 1 and leaves its failed outcome "
-                     "sidecar; the head ran clean; the tail never ran")
+             purpose="Mid's claim finds no version list, so mid exits 1 and "
+                     "leaves a failed outcome sidecar at the claim phase; the "
+                     "head ran clean; the tail never ran")
     head, mid, tail = (("head", "s1", "default"), ("mid", "s1", "default"),
                        ("tail", "s1", "default"))
     assert _verdicts(engine) == {head: "ran", mid: "failed", tail: "skipped"}
-    assert engine.outcomes[mid]["status"] == "failed"
+    for obs in (stub, engine):
+        assert obs.outcomes[mid]["status"] == "failed"
+        assert obs.outcomes[mid]["phase"] == "claim"
 
     口 = Step(step_num=3, name="The stub rung and its blocking model agree",
              purpose="The stub rung's skip rule is a model of the engine's "
@@ -564,12 +599,17 @@ def test_a_claim_refusal_agrees_across_rungs(git_project, tmp_path_factory,
 
     口 = Step(step_num=4, name="Both rungs leave the same rows",
              purpose="The pipeline-end walk ran on each: one failed row for "
-                     "the refused step with its message, the tail cancelled "
-                     "against it")
+                     "mid carrying the same missing-version-list refusal, the "
+                     "tail cancelled against it")
+    words = []
     for obs in (stub, engine):
         [mid_row] = obs.rows_for_node("mid")
         [tail_row] = obs.rows_for_node("tail")
-        assert mid_row["status"] == "failed" and "'nope'" in mid_row["error_message"]
+        assert mid_row["status"] == "failed"
+        words.append(_refusal_words(obs, mid_row["error_message"]))
         assert tail_row["status"] == "cancelled"
         assert tail_row["cancelled_due_to_run_id"] == mid_row["id"]
         assert [r["status"] for r in obs.rows_for_node("head")] == ["completed"]
+    stub_words, engine_words = words
+    assert stub_words == engine_words
+    _assert_mid_refusal_words(stub_words)

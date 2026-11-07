@@ -305,7 +305,7 @@ def completed_run(
             when ``scenario`` is given. Defaults to ``method`` and
             ``sample`` otherwise.
         **node_kwargs: Any other :class:`NodeSpec` field for the keyword
-            declaration (``behavior``, ``output_files``, ``input_columns``,
+            declaration (``behavior``, ``output_files``, ``output_options``,
             ...).
 
     Returns:
@@ -443,3 +443,31 @@ def _resolve_declaration(*, scenario, target, method, module, sample, samples,
         pipeline_id=pipeline_id, name=name, node_kwargs=node_kwargs,
     )
     return scn, (method, sample or DEFAULT_SAMPLE, DEFAULT_VARIANT)
+
+
+def cache_hit(method: str, module: str, sample: str, params: dict | None = None,
+              parents: list[str] | None = None) -> int | None:
+    """The run the claim phase would reuse for a step, or None.
+
+    The claim's own key recipe over the newest version
+    (``candidate_cache_key``) and its one hit lookup (``lookup_cache_hit``),
+    called directly.
+
+    Args:
+        method: The method's name.
+        module: The module that registered it.
+        sample: The sample the step runs on.
+        params: The step's params, as given (checked and filled as the
+            claim does).
+        parents: Parent entries (``input:output:run`` or ``input:run``).
+
+    Returns:
+        The completed run's id, or None on a miss.
+
+    Raises:
+        ValueError: As ``candidate_cache_key`` refuses the step.
+    """
+    from wfc.execution.claim import candidate_cache_key, lookup_cache_hit
+
+    key = candidate_cache_key(method, module, sample, params, parents)
+    return lookup_cache_hit(method, module, sample, key)

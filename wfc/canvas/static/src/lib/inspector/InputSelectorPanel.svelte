@@ -18,7 +18,7 @@
   import { findOrphanOverrides, type OrphanRequest } from './nodeEdits.js';
 
   let { node, data, onOrphans }: {
-    node: Node<CanvasNodeData> | undefined;
+    node: Node<CanvasNodeData> | null;
     data: CanvasNodeData;
     onOrphans: (request: OrphanRequest) => void;
   } = $props();
@@ -207,13 +207,13 @@
   }
   .param-form { display: flex; flex-direction: column; gap: 10px; }
   .field { display: flex; flex-direction: column; gap: 3px; }
-  .field label { font-size: 12px; color: #888; }
+  .field label { font-size: 12px; color: var(--text-secondary); }
   .field input {
-    background: #1e1e1e;
+    background: var(--bg-input);
     border: 1px solid var(--border);
     border-radius: 3px;
     padding: 6px 8px !important;
-    color: #ccc;
+    color: var(--text-primary);
     font-size: 13px;
     outline: none;
     width: 100%;
@@ -243,7 +243,7 @@
     left: 2px; top: 2px;
     transition: 0.2s;
   }
-  .toggle input:checked + .toggle-slider { background: #50C878; }
+  .toggle input:checked + .toggle-slider { background: var(--status-ok); }
   .toggle input:checked + .toggle-slider::before { left: 16px; }
   /* ── System node tabs ── */
   .sys-tabs {
@@ -256,7 +256,7 @@
     padding: 7px;
     text-align: center;
     font-size: 12px;
-    color: #666;
+    color: var(--text-muted);
     background: none;
     border: none;
     border-bottom: 2px solid transparent;
@@ -275,36 +275,36 @@
   .card-search-input {
     flex: 1;
     padding: 7px 10px;
-    background: #1e1e1e;
+    background: var(--bg-input);
     border: 1px solid var(--border);
     border-radius: 4px;
-    color: #ccc;
+    color: var(--text-primary);
     font-size: 13px;
     outline: none;
   }
   .card-filter-btn {
     padding: 7px 8px;
-    background: #1e1e1e;
+    background: var(--bg-input);
     border: 1px solid var(--border);
     border-radius: 4px;
     font-size: 12px;
-    color: #888;
+    color: var(--text-secondary);
     cursor: pointer;
   }
   .card-filter-btn:hover {
-    color: #ccc;
+    color: var(--text-primary);
     border-color: var(--accent);
   }
   .card-count {
     font-size: 11px;
-    color: #666;
+    color: var(--text-muted);
     margin-bottom: 6px;
   }
   /* ── Shared card wrap ── */
   .card-wrap {
     position: relative;
     padding: 8px 10px 8px 28px;
-    background: #1e1e1e;
+    background: var(--bg-input);
     border: 1px solid var(--border);
     border-radius: 4px;
     margin-bottom: 4px;
@@ -312,7 +312,7 @@
     font-size: 13px;
   }
   .card-wrap:hover {
-    border-color: rgba(74, 144, 217, 0.3);
+    border-color: color-mix(in srgb, var(--accent) 30%, transparent);
   }
   .corner-check {
     position: absolute;
@@ -322,10 +322,10 @@
     height: 12px;
     cursor: pointer;
   }
-  .corner-check-input { accent-color: #E9A847; }
+  .corner-check-input { accent-color: var(--marker-light); }
   .card-checked-input {
-    background: rgba(233, 168, 71, 0.08);
-    border-color: rgba(233, 168, 71, 0.3);
+    background: color-mix(in srgb, var(--marker-light) 6%, transparent);
+    border-color: color-mix(in srgb, var(--marker-light) 35%, transparent);
   }
   .card-row {
     display: flex;
@@ -335,11 +335,11 @@
   .card-name {
     font-weight: 600;
     font-size: 13px;
-    color: #ccc;
+    color: var(--text-primary);
   }
   .card-file {
     font-size: 11px;
-    color: #666;
+    color: var(--text-muted);
     margin-top: 2px;
     font-family: Consolas, monospace;
   }
@@ -350,7 +350,7 @@
   }
   .card-meta {
     font-size: 11px;
-    color: #666;
+    color: var(--text-muted);
     margin-top: 2px;
   }
   /* ── Type badges ── */
@@ -364,18 +364,18 @@
   }
   .type-badge-blue {
     color: var(--accent);
-    border-color: rgba(74, 144, 217, 0.3);
-    background: rgba(74, 144, 217, 0.1);
+    border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
   }
   /* ── Selected summary ── */
   .selected-summary {
     margin-top: 8px;
     padding: 6px 8px;
-    background: rgba(233, 168, 71, 0.08);
-    border: 1px solid rgba(233, 168, 71, 0.2);
+    background: color-mix(in srgb, var(--marker-light) 6%, transparent);
+    border: 1px solid color-mix(in srgb, var(--marker-light) 25%, transparent);
     border-radius: 4px;
     font-size: 12px;
-    color: #E9A847;
+    color: var(--marker-light);
   }
   /* ── Accept button ── */
   .accept-btn {
@@ -395,14 +395,14 @@
   .fanout-toggle {
     margin-top: 8px;
     padding: 6px 8px;
-    background: #1e1e1e;
+    background: var(--bg-input);
     border: 1px solid var(--border);
     border-radius: 4px;
     display: flex;
     justify-content: space-between;
     align-items: center;
   }
-  .fanout-label-text { font-size: 12px; color: #ccc; font-weight: 600; }
+  .fanout-label-text { font-size: 12px; color: var(--text-primary); font-weight: 600; }
   .fanout-text { display: flex; flex-direction: column; gap: 2px; }
   .fanout-help { font-size: 10px; color: #777; line-height: 1.3; }
   .empty-hint {

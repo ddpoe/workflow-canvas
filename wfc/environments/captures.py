@@ -17,11 +17,14 @@ backend, in the same commit as the env's record:
   solved, its full pip freeze, and ``host.json`` with the host platform,
   conda version and capture time).
 - ``pushed.json``, added after a successful push (:func:`write_pushed`):
-  the registry digest, the tag and the push time (:class:`PushedRecord`).
+  the registry digest, the tag, the push time and the base the image was
+  pushed to (:class:`PushedRecord`).
 
 A folder is written once: a temporary sibling is filled, then renamed into
 place, and a folder that already exists for the fingerprint is left as it
-is. Callers ask this module about an image by ``(env, fingerprint)``
+is. ``pushed.json`` is the one file that changes after: a base switch
+names the old base in it, and a push to the new base replaces it. Callers
+ask this module about an image by ``(env, fingerprint)``
 (:func:`image_info`, :func:`capture_exists`) and about an env's current
 package list (:func:`verified_package_list`); nothing else reads the folder.
 A folder changed outside wfc (:func:`intact_image_info` refuses it) is
@@ -407,16 +410,39 @@ class PushedRecord:
         tag: The tag pushed (``fp-<12 hex>``).
         pushed_at: When the push finished, ISO 8601 UTC. Informational:
             nothing orders by it.
+        base: The registry base the image was pushed to. ``None`` in a
+            record that names none, which is at the project's base
+            (:meth:`pushed_to`).
     """
 
     digest: str
     tag: str
     pushed_at: str
+    base: str | None = None
+
+    def pushed_to(self, project_base: str | None) -> str | None:
+        """Return the base the image was pushed to: the one named, else the project's.
+
+        A push records its base (:func:`write_pushed`). A record that names
+        none is at the project's base, and a base switch names the old one
+        in every such record before it moves the project's
+        (:func:`name_pushed_bases`).
+
+        Args:
+            project_base: The project's ``[registry] url``, or ``None``.
+
+        Returns:
+            The base, or ``None`` when the record names none and the project
+            sets none.
+        """
+        return self.base or project_base
 
     def to_json(self) -> str:
         """Return the ``pushed.json`` text: sorted keys, two-space indent, LF."""
         payload = {"digest": self.digest, "tag": self.tag,
                    "pushed_at": self.pushed_at}
+        if self.base is not None:
+            payload["base"] = self.base
         return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
     @classmethod
@@ -431,7 +457,8 @@ class PushedRecord:
 
         Raises:
             ValueError: The text is not a JSON object with a ``sha256:``
-                digest, a tag and a push time.
+                digest, a tag and a push time, or its ``base`` is not a
+                non-empty string.
         """
         data = json.loads(text)
         if not isinstance(data, dict):
@@ -443,23 +470,30 @@ class PushedRecord:
         if not _DIGEST_RE.match(data["digest"]):
             raise ValueError(f"pushed.json's digest {data['digest']!r} is not "
                              f"a sha256 digest")
+        base = data.get("base")
+        if base is not None and (not isinstance(base, str) or not base):
+            raise ValueError(f"pushed.json's base {base!r} is not a registry base")
         return cls(digest=data["digest"], tag=data["tag"],
-                   pushed_at=data["pushed_at"])
+                   pushed_at=data["pushed_at"], base=base)
 
 
 @task(purpose="Record a successful push in an image's captures folder: "
-              "pushed.json with the registry digest, the tag and the push "
-              "time, written once as LF bytes; an existing record is kept",
-      inputs="project root, env name, env fingerprint, the pushed digest and tag",
+              "pushed.json with the registry digest, the tag, the push time "
+              "and the base pushed to, written as LF bytes; an existing "
+              "record at that base is kept, one at another base is replaced",
+      inputs="project root, env name, env fingerprint, the pushed digest, "
+             "tag and base",
       outputs="(the record on disk, whether this call wrote it)")
 def write_pushed(project_dir: Path, env: str, fingerprint: str, *,
-                 digest: str, tag: str) -> tuple[PushedRecord, bool]:
+                 digest: str, tag: str, base: str) -> tuple[PushedRecord, bool]:
     """Add ``pushed.json`` to ``.wfc/captures/<env>/<fingerprint>/``.
 
-    Called only after a push succeeded. The folder's other files are never
-    touched. When the folder already holds a ``pushed.json`` it is kept as
-    it is: two pushes of one image name the same image, and the first
-    record stands.
+    Called only after a push succeeded, and a push goes to the project's
+    base. The folder's other files are never touched. A ``pushed.json``
+    already at *base* (:meth:`PushedRecord.pushed_to`) is kept as it is:
+    two pushes of one image to one base name the same image, and the first
+    record stands. One at another base, which the project has moved away
+    from, is replaced.
 
     Args:
         project_dir: The project root.
@@ -467,19 +501,23 @@ def write_pushed(project_dir: Path, env: str, fingerprint: str, *,
         fingerprint: The image's ``env_fingerprint``.
         digest: The registry digest of the pushed tag (``sha256:<hex>``).
         tag: The tag pushed.
+        base: The registry base pushed to, the project's.
 
     Returns:
         ``(record, created)``: the record now on disk, and ``False`` when
-        one was already there and was kept.
+        one at *base* was already there and was kept.
 
     Raises:
-        ValueError: *digest* is not a sha256 digest, or *tag* is empty.
+        ValueError: *digest* is not a sha256 digest, or *tag* or *base* is
+            empty.
         CaptureMissingError: The image has no captures folder.
     """
     if not _DIGEST_RE.match(digest or ""):
         raise ValueError(f"not a registry digest: {digest!r}")
     if not tag:
         raise ValueError("a push record needs the tag pushed")
+    if not base:
+        raise ValueError("a push record needs the base pushed to")
     folder = (layout.env_capture_dir(project_dir, env, fingerprint)
               if _is_fingerprint(fingerprint) else None)
     if folder is None or not folder.is_dir():
@@ -487,10 +525,16 @@ def write_pushed(project_dir: Path, env: str, fingerprint: str, *,
             f"env {env!r} has no captures folder for image {fingerprint!r}; "
             f"a push is recorded beside the image's captures")
     existing = pushed_record(env, fingerprint, project_dir)
-    if existing is not None:
+    if existing is not None and existing.pushed_to(base) == base:
         return existing, False
     pushed_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    record = PushedRecord(digest=digest, tag=tag, pushed_at=pushed_at)
+    record = PushedRecord(digest=digest, tag=tag, pushed_at=pushed_at, base=base)
+    _replace_pushed(folder, record)
+    return record, True
+
+
+def _replace_pushed(folder: Path, record: PushedRecord) -> None:
+    """Write *record* as *folder*'s ``pushed.json`` through a temporary sibling."""
     target = folder / layout.CAPTURE_PUSHED_FILENAME
     fd, tmp = tempfile.mkstemp(prefix=".pushed.", suffix=".tmp", dir=folder)
     try:
@@ -500,7 +544,52 @@ def write_pushed(project_dir: Path, env: str, fingerprint: str, *,
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
-    return record, True
+
+
+@task(purpose="Before the project's registry base moves, name the base it "
+              "moves from in every push record that names none, so each "
+              "record keeps saying where its image is; a record naming a "
+              "base already keeps it",
+      inputs="project root, the base the project is moving from",
+      outputs="every pushed.json that names that base afterwards")
+def name_pushed_bases(project_dir: Path, base: str) -> list[Path]:
+    """Write *base* into every ``pushed.json`` under the captures root that names none.
+
+    A record that names no base is at the project's base
+    (:meth:`PushedRecord.pushed_to`); once the project's base moves, it has
+    to say where its image is. Every env's folders are covered, not only the
+    images a push names, since every record would otherwise move with the
+    base. The digest, tag and push time are kept.
+
+    Args:
+        project_dir: The project root.
+        base: The project's base before the switch.
+
+    Returns:
+        Every ``pushed.json`` that names *base* afterwards, sorted: the ones
+        rewritten and the ones that named it already, so a switch commits
+        them all even when an earlier switch run wrote them and stopped.
+
+    Raises:
+        CaptureMismatchError: A ``pushed.json`` is unreadable; the records
+            named before it name the base they were already at.
+        OSError: A record could not be written.
+    """
+    captures = layout.captures_dir(project_dir)
+    if not captures.is_dir():
+        return []
+    named: list[Path] = []
+    for path in sorted(captures.glob(f"*/*/{layout.CAPTURE_PUSHED_FILENAME}")):
+        env, fingerprint = path.parent.parent.name, path.parent.name
+        record = pushed_record(env, fingerprint, project_dir)
+        if record is None or record.base not in (None, base):
+            continue
+        if record.base is None:
+            _replace_pushed(path.parent, PushedRecord(
+                digest=record.digest, tag=record.tag,
+                pushed_at=record.pushed_at, base=base))
+        named.append(path)
+    return named
 
 
 def pushed_record(env: str, fingerprint: str | None,

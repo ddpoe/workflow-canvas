@@ -25,7 +25,6 @@ function seedFixture(key: string): void {
   const fixtureMethod = (params: ParamDef[] = []): MethodDef => ({
     name: 'fixture_method',
     module: 'fixture_module',
-    color: '#2ecc71',
     inputs: [],
     outputs: [{ name: 'output', type: 'csv' }],
     params,
@@ -75,7 +74,7 @@ function seedFixture(key: string): void {
     // layer (variables + binding marker → chip) without exercising
     // the History UI or the JSON parser path.
     seeded = [mk('method_a', 'Method A', 100,
-      fixtureMethod([{ name: 'mapping', type: 'dict', required: false }]),
+      fixtureMethod([{ name: 'mapping', type: 'dict', contractType: 'dict', required: false }]),
       { paramValues: { mapping: { p27: 'X' } } })];
     // Prime the variables store + bound-variable marker. Lazy-import
     // to avoid pulling pipeline.ts into the App module-init path.

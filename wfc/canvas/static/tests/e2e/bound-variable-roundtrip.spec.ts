@@ -1,14 +1,18 @@
 /**
  * Bound-variable load-roundtrip smoke.
  *
- * Two tests covering the full flow:
+ * Three tests covering the full flow:
  *
  *   - Test 1 (direct-rehydration smoke): Drives loadPipeline via
  *     the `?fixture=bound-variable` bootstrap. Proves the rehydration-and-
  *     rendering layer in isolation: variables panel, bind chip, resolved
  *     value display.
  *
- *   - Test 2 (full click→fetch→parse path):
+ *   - Test 2 (binding outlives the rows): on the same fixture, binds the
+ *     row through the picker, clears the selection so the Inspector's rows
+ *     go, opens the node again and finds the row still bound.
+ *
+ *   - Test 3 (full click→fetch→parse path):
  *     Mocks /api/workflow/{pipeline_id}/editable + history runs, navigates
  *     to History tab via `?fixture=bound-variable-history`, clicks
  *     "Open pipeline in Canvas" on a PipelineRow, switches to Builder,
@@ -20,30 +24,32 @@
  */
 import { expect, test, type Page } from '@playwright/test';
 
+/** Stub the /api/wfc/* endpoints so the dev toolbar and status banners don't block startup. */
+async function stubStartup(page: Page): Promise<void> {
+  await page.route('**/api/wfc/runs', async (r) => r.fulfill({
+    status: 200, contentType: 'application/json', body: '[]',
+  }));
+  await page.route('**/api/wfc/modules', async (r) => r.fulfill({
+    status: 200, contentType: 'application/json', body: '[]',
+  }));
+  await page.route('**/api/wfc/methods', async (r) => r.fulfill({
+    status: 200, contentType: 'application/json', body: '[]',
+  }));
+  await page.route('**/api/wfc/status', async (r) => r.fulfill({
+    status: 200, contentType: 'application/json',
+    body: JSON.stringify({ loaded: true, path: '/x', modules: 0, runs: 0 }),
+  }));
+  await page.route('**/api/dev/status', async (r) => r.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({ dev: false }),
+  }));
+  await page.route('**/api/wfc/samples', async (r) => r.fulfill({
+    status: 200, contentType: 'application/json', body: '[]',
+  }));
+}
+
 test.describe('Bound variable round-trip (smoke)', () => {
   test('loadPipeline with variables + $var ref renders bound chip in Inspector and variable in panel', async ({ page }) => {
-    // Stub /api/wfc/* endpoints so the dev toolbar / status banners
-    // don't block startup.
-    await page.route('**/api/wfc/runs', async (r) => r.fulfill({
-      status: 200, contentType: 'application/json', body: '[]',
-    }));
-    await page.route('**/api/wfc/modules', async (r) => r.fulfill({
-      status: 200, contentType: 'application/json', body: '[]',
-    }));
-    await page.route('**/api/wfc/methods', async (r) => r.fulfill({
-      status: 200, contentType: 'application/json', body: '[]',
-    }));
-    await page.route('**/api/wfc/status', async (r) => r.fulfill({
-      status: 200, contentType: 'application/json',
-      body: JSON.stringify({ loaded: true, path: '/x', modules: 0, runs: 0 }),
-    }));
-    await page.route('**/api/dev/status', async (r) => r.fulfill({
-      status: 200, contentType: 'application/json', body: JSON.stringify({ dev: false }),
-    }));
-    await page.route('**/api/wfc/samples', async (r) => r.fulfill({
-      status: 200, contentType: 'application/json', body: '[]',
-    }));
-
+    await stubStartup(page);
     await page.goto('/?fixture=bound-variable');
 
     // Pipeline Variables panel: column_map is rendered with its value.
@@ -59,6 +65,29 @@ test.describe('Bound variable round-trip (smoke)', () => {
     await expect(chip).toContainText('→ column_map');
     // Resolved value displayed in the chip is the dict (stringified).
     await expect(chip).toContainText('"p27":"X"');
+  });
+
+  test('a row bound in the Inspector is still bound after another selection and back', async ({ page }) => {
+    await stubStartup(page);
+    await page.goto('/?fixture=bound-variable');
+    const chip = page.locator('[data-testid="bound-row"]');
+    await expect(chip).toBeVisible({ timeout: 10_000 });
+
+    // Unbind the seeded binding, then bind the row again through the picker.
+    await page.locator('[data-testid="unbind"]').click();
+    await expect(chip).toHaveCount(0);
+    await page.locator('[data-testid="open-bind-picker"]').click();
+    await page.locator('[data-testid="bind-picker-item"][data-variable-name="column_map"]').click();
+    await expect(chip).toContainText('→ column_map');
+
+    // Clear the selection (the Inspector's rows go), then open the node again.
+    await page.locator('.svelte-flow__pane').click({ position: { x: 20, y: 20 } });
+    await expect(page.locator('[data-testid="open-bind-picker"]')).toHaveCount(0);
+    await expect(chip).toHaveCount(0);
+    await page.locator('[data-id="method_a"]').click();
+
+    await expect(chip).toBeVisible({ timeout: 10_000 });
+    await expect(chip).toContainText('→ column_map');
   });
 
   // Full click → fetch → parse path. Mocks the

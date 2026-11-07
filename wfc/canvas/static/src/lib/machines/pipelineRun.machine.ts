@@ -30,9 +30,16 @@ import {
   fromCallback,
   fromPromise,
   type ActorRefFrom,
+  type EventObject,
 } from 'xstate';
-import { makeNodeRunMachine, type NodeRunActor } from './nodeRun.machine';
-import type { RunTally, PipelineError } from '../shared/types';
+import {
+  makeNodeRunMachine,
+  type NodeRunActor,
+  type StreamingActorLogic,
+} from './nodeRun.machine';
+import type { RunTally, PipelineError, PipelineJSON } from '../shared/types';
+import type { SubmitInput, SubmitOutput, PollInput } from './services';
+import type { StreamingInput } from './streaming.machine';
 
 // ── Input / Context ────────────────────────────────────────────────────
 
@@ -134,16 +141,18 @@ export type PipelineRunEvent =
 // Real implementations live in `services.ts`. Tests provide stubs that
 // resolve immediately or are driven by a sendBack handle.
 
-const submitPipelineSlot = fromPromise<{ jobId: string }, unknown>(async () => ({
+const submitPipelineSlot = fromPromise<SubmitOutput, SubmitInput>(async () => ({
   jobId: 'unset',
 }));
 
-const pollNodeStatusSlot = fromCallback(() => () => {});
+const pollNodeStatusSlot = fromCallback<EventObject, PollInput>(() => () => {});
 
 // `streamingActor` slot — the spawned `nodeRunActor` invokes this
 // inside its `running` state. We forward the slot here so `.provide`
 // at this level cascades to children created via `spawnChild`.
-const streamingActorSlot = fromCallback(() => () => {});
+const streamingActorSlot: StreamingActorLogic = fromCallback<EventObject, StreamingInput>(
+  () => () => {},
+);
 
 // `awaitAllCommitted` slot — the preflight state invokes this to fan
 // COMMIT out to every registered paramEditorActor / variantActor and
@@ -393,7 +402,10 @@ export function makePipelineRunMachine() {
         invoke: {
           id: 'submit',
           src: 'submitPipeline',
-          input: ({ context }) => ({ pipeline: context.pipeline }),
+          // `PipelinePayload` is the loose shape the machine carries; every
+          // production sender (dispatchRun, dispatchAttach) passes a full
+          // `PipelineJSON`, which `submitPipeline` takes.
+          input: ({ context }) => ({ pipeline: context.pipeline as PipelineJSON }),
           onDone: {
             target: 'polling',
             actions: [
@@ -433,7 +445,10 @@ export function makePipelineRunMachine() {
                 const eo = (err && typeof err === 'object') ? err as Record<string, unknown> : {};
                 const kind = typeof eo.kind === 'string' ? eo.kind : 'unknown';
                 const hint = typeof eo.hint === 'string' ? eo.hint : undefined;
-                return { message, kind, hint };
+                // A refusal the server listed entry by entry keeps its
+                // lines, so the banner bullets them under the header.
+                const items = Array.isArray(eo.items) ? eo.items.map(String) : undefined;
+                return items ? { message, kind, hint, items } : { message, kind, hint };
               },
             }),
           },

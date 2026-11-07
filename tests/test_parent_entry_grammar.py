@@ -102,8 +102,7 @@ def test_a_list_of_entries_after_one_flag_is_an_argparse_error(capsys):
 
     with pytest.raises(SystemExit) as exit_info:
         build_parser().parse_args([
-            "check_cache", "--method", "align", "--module", "reads_mod",
-            "--sample", "s1",
+            "run-step", "--node-id", "align", "--sample", "s1",
             "--parent-run-id", "reads:bam:412", "reads:bam:413",
         ])
 

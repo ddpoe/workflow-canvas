@@ -1,12 +1,10 @@
-"""Canvas API route tests: the builder's node palette and a slot's output columns.
+"""Canvas API route tests: the builder's node palette and a slot's output options.
 
 Catalog cases in ``docs/system/canvas-api/catalog.json``: ``builder-module-palette``
-and ``columns-output-columns``.
+and the output-options cases.
 """
 
 from __future__ import annotations
-
-import json
 
 import pytest
 from axiom_annotations import workflow
@@ -90,6 +88,10 @@ def test_palette_lists_each_methods_versions_with_their_contracts(
               "params_schema": {}, "executor": "nextflow"}
 
     resp = canvas_client.get("/api/modules")
+    # Each module's colour is the one the Registry lists (its stored colour).
+    colors = {m["name"]: m["color"] for m in
+              canvas_client.get("/api/registry/modules").json()["modules"]}
+    assert all(c and c.startswith("#") for c in colors.values()), colors
 
     assert resp.status_code == 200, resp.text
     assert resp.json() == {
@@ -116,9 +118,13 @@ def test_palette_lists_each_methods_versions_with_their_contracts(
                         newest=True)],
                 },
             },
+            "color": colors["segmentation"],
+            "drafts": {},
         },
         "export": {
             "description": "export",
+            "color": colors["export"],
+            "drafts": {},
             "methods": {
                 "to_csv": {
                     **to_csv,
@@ -132,105 +138,187 @@ def test_palette_lists_each_methods_versions_with_their_contracts(
     }
 
 
-#: The slot declaration every columns case resolves against.
-COLUMNS = {
-    "strict": ["label", "area"],
-    "from_params": [{"params": ["channels"], "pattern": "mean_{}"}],
-    "patterns": ["^texture_.*"],
-}
+#: The output options every run case declares: one fixed name and one name
+#: built from the ``channels`` parameter. The second version renames both.
+RUN_OPTIONS_V1 = {"fixed": ["label"],
+                  "from_params": [{"params": ["channels"], "pattern": "mean_{}"}]}
+RUN_OPTIONS_V2 = {"fixed": ["label", "perimeter"],
+                  "from_params": [{"params": ["channels"], "pattern": "median_{}"}]}
 
 
 @pytest.fixture
-def columns_run_id(tmp_project, monkeypatch):
-    """Register ``features.regionprops`` with a column-declaring slot and one completed run.
+def options_run_id(tmp_project, monkeypatch):
+    """Complete a ``features.regionprops`` run on v1, then register and run v2.
+
+    Both runs go through production's own phases. The second declares
+    different output options, so registering it mints v2 and the first run
+    stays on v1.
 
     Returns:
-        The id of the completed run, whose recorded params name one channel.
+        The id of the run on v1, whose recorded params name one channel.
     """
-    return completed_run(
+    first = completed_run(
         tmp_project, monkeypatch=monkeypatch, method="regionprops",
         module="features", sample="s1", params={"channels": ["cy5"]},
-        outputs={"table": ".csv"}, output_columns={"table": COLUMNS},
-    ).run_id
-
-
-@pytest.mark.parametrize(
-    "query, expected_all",
-    [
-        pytest.param({"params": json.dumps({"channels": ["dapi", "gfp"]})},
-                     ["area", "label", "mean_dapi", "mean_gfp"], id="literal-params"),
-        pytest.param({"run_id": "{run_id}"}, ["area", "label", "mean_cy5"], id="run-id",
-                     marks=pytest.mark.xfail(
-                         strict=True,
-                         reason="The run_id branch builds the method name from "
-                                "run.module and run.method; Run has no module field, "
-                                "so a valid run_id answers 500")),
-        pytest.param({}, ["area", "label"], id="neither"),
-    ],
-)
-@workflow(
-    purpose="A slot's declared columns come back as strict, from_params and "
-            "patterns, with all the sorted union resolved from literal params, "
-            "from a referenced run's recorded params and its own method, or from "
-            "no params",
-)
-def test_output_columns_resolve_from_params_a_run_or_neither(
-    canvas_client, columns_run_id, monkeypatch, query, expected_all
-):
-    bind_provider(monkeypatch, object())
-    query = {k: v.replace("{run_id}", str(columns_run_id)) for k, v in query.items()}
-
-    resp = canvas_client.get(
-        "/api/contracts/features.regionprops/output_columns",
-        params={"slot": "table", **query},
+        outputs={"table": ".csv"}, output_options={"table": RUN_OPTIONS_V1},
     )
+    completed_run(
+        tmp_project, monkeypatch=monkeypatch, method="regionprops",
+        module="features", sample="s1", params={"channels": ["gfp"]},
+        outputs={"table": ".csv"}, output_options={"table": RUN_OPTIONS_V2},
+        pipeline_id="options-v2", name="options-v2",
+    )
+    return first.run_id
+
+
+@workflow(
+    purpose="A Run Reference upstream's options are the options its run's own "
+            "version declares, built from the params the run ran with: a run "
+            "completed on v1 answers v1's names after v2 is registered, "
+            "whatever method the path names, and names the run's module and "
+            "method for the picker's header, while the method itself answers "
+            "v2's",
+)
+def test_a_run_reference_answers_its_runs_version_options(
+        canvas_client, options_run_id, monkeypatch):
+    bind_provider(monkeypatch, object())
+
+    from_run = canvas_client.post(
+        "/api/contracts/__run_reference__/output_options",
+        json={"slot": "table", "run_id": str(options_run_id)})
+    newest = canvas_client.post(
+        "/api/contracts/features.regionprops/output_options",
+        json={"slot": "table", "param_sets": [{"channels": ["cy5"]}]})
+
+    assert from_run.status_code == 200, from_run.text
+    assert from_run.json() == {
+        "fixed": ["label"],
+        "built": [{"params": ["channels"], "names": ["mean_cy5"]}],
+        "patterns": [],
+        "all": ["label", "mean_cy5"],
+        "module": "features",
+        "method": "regionprops",
+    }
+    assert newest.status_code == 200, newest.text
+    assert newest.json()["all"] == ["label", "perimeter", "median_cy5"]
+
+
+def _options_yaml(options: str, params: str = "") -> str:
+    """A ``features.regionprops`` method.yaml with one ``table`` output.
+
+    Args:
+        options: The output's ``options`` block, already indented under it.
+        params: The ``params`` block, or empty for none.
+    """
+    return ("inputs:\n  image:\n    type: .tif\n"
+            "outputs:\n  table:\n    type: .csv\n    options:\n"
+            f"{options}{params}env: seg\n")
+
+
+#: Two parameters with defaults, and an options block that builds names from
+#: one of them alone and from both together.
+_BUILT_PARAMS = ("params:\n"
+                 "  channel:\n    type: str\n    default: dapi\n"
+                 "  stat:\n    type: str\n    default: mean\n")
+_BUILT_OPTIONS = ("      fixed: [label, area]\n"
+                  "      from_params:\n"
+                  "        - params: [channel]\n          pattern: 'mean_{}'\n"
+                  "        - params: [stat, channel]\n          pattern: '{}_{}'\n"
+                  "      patterns: ['texture_*', 'texture_*']\n")
+
+
+@pytest.fixture
+def built_options_method(tmp_project, tmp_path_factory):
+    """Register ``features.regionprops`` declaring ``_BUILT_OPTIONS`` and its params."""
+    write_env_record(tmp_project, "seg")
+    src = tmp_path_factory.mktemp("options-sources")
+    _register_palette_method(tmp_project, src, "features", "regionprops",
+                             _options_yaml(_BUILT_OPTIONS, _BUILT_PARAMS))
+
+
+_OPTIONS_URL = "/api/contracts/features.regionprops/output_options"
+
+
+@workflow(
+    purpose="An upstream left at its declared defaults (no param sets) still "
+            "answers built names: the defaults are filled before the options "
+            "are expanded",
+)
+def test_declared_defaults_alone_build_names(canvas_client, built_options_method):
+    resp = canvas_client.post(_OPTIONS_URL, json={"slot": "table"})
 
     assert resp.status_code == 200, resp.text
     assert resp.json() == {
-        "strict": COLUMNS["strict"],
-        "from_params": COLUMNS["from_params"],
-        "patterns": COLUMNS["patterns"],
-        "all": expected_all,
+        "fixed": ["label", "area"],
+        "built": [{"params": ["channel"], "names": ["mean_dapi"]}],
+        "patterns": ["texture_*"],
+        "all": ["label", "area", "mean_dapi"],
     }
 
 
-def _columns_yaml(strict: list[str]) -> str:
-    return ("inputs:\n  image:\n    type: .tif\n"
-            "outputs:\n  table:\n    type: .csv\n    columns:\n"
-            f"      strict: [{', '.join(strict)}]\n"
-            "env: seg\n")
+@workflow(
+    purpose="An upstream's base values, two variants and a per-sample override "
+            "answer each name once: every set is filled with the declared "
+            "defaults, each from_params entry is its own built group in "
+            "first-seen order, a name a group already gave is not repeated, "
+            "all is fixed then built in that order, and patterns come back "
+            "literal",
+)
+def test_every_param_set_contributes_and_each_name_appears_once(
+        canvas_client, built_options_method):
+    param_sets = [
+        {"channel": "dapi"},              # base values
+        {"channel": "gfp"},               # variant a
+        {"channel": ["gfp", "cy5"]},      # variant b
+        {"stat": "max"},                  # a sample's override; channel defaults
+    ]
+
+    resp = canvas_client.post(_OPTIONS_URL,
+                              json={"slot": "table", "param_sets": param_sets})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "fixed": ["label", "area"],
+        "built": [
+            {"params": ["channel"], "names": ["mean_dapi", "mean_gfp", "mean_cy5"]},
+            {"params": ["stat", "channel"], "names": ["max_dapi"]},
+        ],
+        "patterns": ["texture_*"],
+        "all": ["label", "area", "mean_dapi", "mean_gfp", "mean_cy5", "max_dapi"],
+    }
 
 
 @workflow(
-    purpose="A column_of_input dropdown fed by a pinned upstream node reads "
-            "that version's output columns: the route takes the upstream "
-            "node's version, answers the newest version's columns without "
-            "one, and refuses a version no entry carries with a 404 naming it",
+    purpose="An options picker fed by a pinned upstream node reads that "
+            "version's output options: the route takes the upstream node's "
+            "version, answers the newest version's options without one, and "
+            "refuses a version no entry carries with a 404 naming it",
 )
-def test_output_columns_are_the_pinned_upstream_versions(
+def test_output_options_are_the_pinned_upstream_versions(
         canvas_client, tmp_project, tmp_path_factory):
     from wfc.registration.method_version import read_version_list
 
     write_env_record(tmp_project, "seg")
-    src = tmp_path_factory.mktemp("columns-sources")
+    src = tmp_path_factory.mktemp("options-sources")
     _register_palette_method(tmp_project, src, "features", "regionprops",
-                             _columns_yaml(["label", "area"]))
+                             _options_yaml("      fixed: [label, area]\n"))
     (src / "features" / "regionprops" / "method.yaml").write_text(
-        _columns_yaml(["label", "perimeter"]), encoding="utf-8")
-    # Only the output's columns change: that alone mints v2.
+        _options_yaml("      fixed: [label, perimeter]\n"), encoding="utf-8")
+    # Only the output's options change: that alone mints v2.
     register_test_method(tmp_project, module_name="features",
                          method_dir=src / "features" / "regionprops")
     versions = read_version_list(tmp_project, "features", "regionprops")
     assert len(versions) == 2
     v1, _ = versions
-    url = "/api/contracts/features.regionprops/output_columns"
 
-    pinned = canvas_client.get(url, params={"slot": "table", "version": v1.identity})
-    newest = canvas_client.get(url, params={"slot": "table"})
-    unknown = canvas_client.get(url, params={"slot": "table", "version": "f" * 64})
+    pinned = canvas_client.post(_OPTIONS_URL,
+                                json={"slot": "table", "version": v1.identity})
+    newest = canvas_client.post(_OPTIONS_URL, json={"slot": "table"})
+    unknown = canvas_client.post(_OPTIONS_URL,
+                                 json={"slot": "table", "version": "f" * 64})
 
     assert pinned.status_code == 200, pinned.text
-    assert pinned.json()["all"] == ["area", "label"]
+    assert pinned.json()["all"] == ["label", "area"]
     assert newest.status_code == 200, newest.text
     assert newest.json()["all"] == ["label", "perimeter"]
     assert unknown.status_code == 404, unknown.text
@@ -238,29 +326,33 @@ def test_output_columns_are_the_pinned_upstream_versions(
 
 
 @pytest.mark.parametrize(
-    "method_full, query, expected_status",
+    "method_full, body, expected_status",
     [
-        pytest.param("regionprops", {}, 400, id="no-dot"),
-        pytest.param("features.regionprops", {"params": "{not json"}, 400, id="params-not-json"),
-        pytest.param("features.regionprops", {"run_id": "abc"}, 400, id="run-id-not-integer"),
-        pytest.param("imaging.regionprops", {}, 404, id="unknown-module"),
-        pytest.param("features.watershed", {}, 404, id="unknown-method"),
-        pytest.param("features.regionprops", {"run_id": "999999"}, 404, id="unknown-run"),
+        pytest.param("regionprops", {"slot": "table"}, 400, id="no-dot"),
+        pytest.param("features.regionprops", {"slot": "table", "run_id": "abc"},
+                     400, id="run-id-not-integer"),
+        pytest.param("imaging.regionprops", {"slot": "table"}, 404, id="unknown-module"),
+        pytest.param("features.watershed", {"slot": "table"}, 404, id="unknown-method"),
+        pytest.param("features.regionprops", {"slot": "table", "run_id": "999999"},
+                     404, id="unknown-run"),
+        pytest.param("features.regionprops", {"param_sets": []}, 422, id="no-slot"),
+        pytest.param("features.regionprops", {"slot": "table", "param_sets": "x"},
+                     422, id="param-sets-not-a-list"),
     ],
 )
 @workflow(
-    purpose="The columns route refuses a method name with no dot, params that are "
-            "not JSON and a non-integer run id with 400, and an unknown module, "
-            "method or run with 404",
+    purpose="The options route refuses a method name with no dot and a "
+            "non-integer run id with 400, an unknown module, method or run "
+            "with 404, and a body with no slot or with param sets that are "
+            "not a list of objects with 422",
 )
-def test_output_columns_refuse_malformed_and_unknown_inputs(
-    canvas_client, columns_run_id, monkeypatch, method_full, query, expected_status
+def test_output_options_refuse_malformed_and_unknown_inputs(
+    canvas_client, built_options_method, monkeypatch, method_full, body,
+    expected_status
 ):
     bind_provider(monkeypatch, object())
 
-    resp = canvas_client.get(
-        f"/api/contracts/{method_full}/output_columns",
-        params={"slot": "table", **query},
-    )
+    resp = canvas_client.post(f"/api/contracts/{method_full}/output_options",
+                              json=body)
 
     assert resp.status_code == expected_status, resp.text

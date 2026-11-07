@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 import yaml
 from axiom_annotations import Step, workflow
 
@@ -23,36 +24,10 @@ from tests.harness import Scenario, build_project, node, selector, wire
 from tests.harness.project import method_source_dir
 from tests.harness.scenario import DEFAULT_MODULE, SELECTOR_ID
 
+from tests.fixtures.pipeline_verbs import TYPED_PARAMS, malformed_document
+
 M = DEFAULT_MODULE
 
-#: The params the second version of ``fit`` declares.
-_TYPED_PARAMS = {
-    "count": {"type": "int", "required": True,
-              "constraints": {"min": 1, "max": 10}},
-    "mode": {"type": "str", "required": False,
-             "constraints": {"enum": ["fast", "slow"]}},
-    "ratio": {"type": "float", "required": False},
-}
-
-
-def _malformed_document() -> dict:
-    """A canvas-form document with one of each refusal the validator gives."""
-    def method(node_id: str, params: dict, **extra) -> dict:
-        return {"id": node_id, "type": "method", "module": M, "method": "fit",
-                "params": params, **extra}
-    return {
-        "name": "doors", "bogus_top": 1, "samples": ["S1"],
-        "nodes": [
-            {"id": "sel", "type": "input_selector", "fan_mode": "out",
-             "samples": ["S1"]},
-            method("fit", {"extra": 1, "mode": "medium", "ratio": True},
-                   colour="red"),
-            method("fit2", {"count": True}),
-            method("fit3", {"count": 11}),
-        ],
-        "links": [{"source": "sel", "target": t, "targetHandle": "data"}
-                  for t in ("fit", "fit2", "fit3")],
-    }
 
 
 _EXPECTED = [
@@ -87,9 +62,9 @@ def test_one_malformed_document_gets_the_same_verdict_at_every_door(
         samples=["S1"], pipeline_id="doors", name="doors",
     )
     project = build_project(scenario, root=tmp_project, monkeypatch=monkeypatch)
-    register_again_with_params(project.root, scenario.node_by_id("fit"), _TYPED_PARAMS)
+    register_again_with_params(project.root, scenario.node_by_id("fit"), TYPED_PARAMS)
     stub_readiness_probes(monkeypatch, docker="ok")
-    document = _malformed_document()
+    document = malformed_document()
     client = canvas_client(project.root, monkeypatch)
 
     口 = Step(step_num=2, name="Canvas validate",
@@ -123,6 +98,116 @@ def test_one_malformed_document_gets_the_same_verdict_at_every_door(
     assert [line.strip() for line in lines[1:]] == _EXPECTED
 
 
+@workflow(purpose="A method registered through register-method whose method.yaml "
+                  "declares a second required input `ref`: a document that "
+                  "connects only `data` is refused with one line naming the "
+                  "node, the method, the input and the fix at canvas validate, "
+                  "canvas submit, the runs preview, CLI run-pipeline and CLI "
+                  "check-pipeline; the canvas paths answer 200 and carry the "
+                  "line (validate's verdict, the run job's error, the "
+                  "preview's blocked reason), nothing is launched and no run "
+                  "row is written")
+def test_an_unwired_required_input_gets_the_same_verdict_at_every_door(
+        tmp_project, monkeypatch, tmp_path):
+    from sqlmodel import select
+
+    from wfc.canvas.state import _active_jobs
+    from wfc.execution.validation import document_verdict
+    from wfc.persistence import Run, get_session
+    from wfc.registration import register_method
+
+    from tests.fixtures.fakes.engine import fake_engine_process
+
+    口 = Step(step_num=1, name="Register fit again with a second required input",
+             purpose="Production registration of a method.yaml whose inputs "
+                     "add `ref` (required: true) beside `data`; the newest "
+                     "version declares both")
+    scenario = Scenario(
+        nodes=[selector(), node("fit", inputs=[wire(SELECTOR_ID)])],
+        samples=["S1"], pipeline_id="unwired", name="unwired",
+    )
+    project = build_project(scenario, root=tmp_project, monkeypatch=monkeypatch)
+    spec = scenario.node_by_id("fit")
+    method_dir = method_source_dir(project.root, spec)
+    contract = yaml.safe_load((method_dir / "method.yaml").read_text(encoding="utf-8"))
+    contract["inputs"] = {**(contract.get("inputs") or {}),
+                          "ref": {"type": ".csv", "required": True}}
+    (method_dir / "method.yaml").write_text(
+        yaml.safe_dump(contract, sort_keys=False), encoding="utf-8")
+    register_method(method_dir=method_dir, module_name=spec.module, assume_yes=True)
+    stub_readiness_probes(monkeypatch, docker="ok")
+    document = {
+        "name": "unwired", "samples": ["S1"],
+        "nodes": [{"id": "sel", "type": "input_selector", "fan_mode": "out",
+                   "samples": ["S1"]},
+                  {"id": "fit", "type": "method", "module": M, "method": "fit",
+                   "params": {}}],
+        "links": [{"source": "sel", "target": "fit", "targetHandle": "data"}],
+    }
+    slots = ", ".join(f"'{name}'" for name in contract["inputs"])
+    expected = [
+        f"Node 'fit': {M}.fit declares input 'ref', which nothing is connected "
+        f"to (its inputs: {slots}). Connect a link to 'ref', or declare it "
+        f"`required: false` in the method's method.yaml."]
+    client = canvas_client(project.root, monkeypatch)
+
+    口 = Step(step_num=2, name="Canvas validate",
+             purpose="Not valid; the one error is the unwired input")
+    resp = client.post("/api/workflow/validate", json=document)
+    assert resp.status_code == 200, resp.text
+    verdict = resp.json()
+    assert verdict["valid"] is False
+    assert verdict["errors"] == expected
+    assert document_verdict(document, project.root) == verdict
+
+    口 = Step(step_num=3, name="Canvas submit",
+             purpose="The run route hands the document to the run, whose load "
+                     "refuses it before the engine starts: the job's error "
+                     "carries the same line")
+    launched: list = []
+    with fake_engine_process(only_snakemake=True,
+                             launch=lambda argv, **_: launched.append(argv)):
+        resp = client.post("/api/workflow/run", json=document)
+        assert resp.status_code == 200, resp.text
+        job = _active_jobs[resp.json()["job_id"]]
+        job["thread"].join(timeout=15)
+    _active_jobs.clear()
+    assert expected[0] in json.dumps(job["error"]), job["error"]
+    assert launched == [], "the engine must not be launched"
+
+    口 = Step(step_num=4, name="The runs preview",
+             purpose="Its load refuses the document: no rows, and the "
+                     "blocked reason is the same line")
+    resp = client.post("/api/wfc/cache-status", json=document)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["rows"] == []
+    assert resp.json()["blocked_reason"] == expected[0]
+
+    口 = Step(step_num=5, name="CLI run-pipeline",
+             purpose="Its load refuses the document: exit 1 and the same line "
+                     "as its one ERROR: line, before the engine starts")
+    path = tmp_path / "unwired.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with fake_engine_process(only_snakemake=True,
+                             launch=lambda argv, **_: launched.append(argv)):
+        result = run_cli("run-pipeline", "--pipeline", str(path))
+    assert result.returncode == 1, result.stderr
+    assert result.stderr.strip().splitlines() == [f"ERROR: {expected[0]}"]
+    assert launched == [], "the engine must not be launched"
+
+    口 = Step(step_num=6, name="CLI check-pipeline",
+             purpose="The verdict refuses the document: exit 1 and the same "
+                     "line as its one ERROR: line")
+    result = run_cli("check-pipeline", "--pipeline", str(path))
+    assert result.returncode == 1, result.stderr
+    assert result.stderr.strip().splitlines() == [f"ERROR: {expected[0]}"]
+
+    口 = Step(step_num=7, name="No run row",
+             purpose="No door wrote a Run row")
+    with get_session() as session:
+        assert session.exec(select(Run)).all() == []
+
+
 @workflow(purpose="A param_sets variant runs in place of its node's params, so "
                   "it is checked against the node's version like the params: "
                   "a variant with a fractional int and an undeclared parameter "
@@ -145,7 +230,7 @@ def test_a_param_sets_variant_is_checked_against_its_nodes_version(
         samples=["S1"], pipeline_id="variants", name="variants",
     )
     project = build_project(scenario, root=tmp_project, monkeypatch=monkeypatch)
-    register_again_with_params(project.root, scenario.node_by_id("fit"), _TYPED_PARAMS)
+    register_again_with_params(project.root, scenario.node_by_id("fit"), TYPED_PARAMS)
     stub_readiness_probes(monkeypatch, docker="ok")
     client = canvas_client(project.root, monkeypatch)
 
@@ -323,7 +408,7 @@ def test_one_value_spelled_two_ways_prepares_and_keys_as_one(
         samples=["S1"], pipeline_id="spelled", name="spelled",
     )
     project = build_project(scenario, root=tmp_project, monkeypatch=monkeypatch)
-    register_again_with_params(project.root, scenario.node_by_id("fit"), _TYPED_PARAMS)
+    register_again_with_params(project.root, scenario.node_by_id("fit"), TYPED_PARAMS)
     stub_readiness_probes(monkeypatch, docker="ok")
     floaty, inty = _spelled_document(3.0, 1), _spelled_document(3, 1.0)
 
@@ -365,3 +450,49 @@ def test_one_value_spelled_two_ways_prepares_and_keys_as_one(
     fit = next(n for n in json.loads(frozen)["nodes"] if n["id"] == "fit")
     assert fit["params"] == {"count": 3, "ratio": 1.0}
     assert '"count": 3,' in frozen and '"ratio": 1.0' in frozen
+
+
+@workflow(purpose="A document whose param_sets is a list, not a mapping, is "
+                  "refused at the canvas run route (400) and at the runs "
+                  "preview (no rows, the blocked reason) with canvas Validate's "
+                  "line; nothing is launched and no job is started")
+def test_a_non_mapping_param_sets_is_refused_at_the_canvas_run_and_the_preview(
+        tmp_project, monkeypatch):
+    from wfc.canvas.state import _active_jobs
+    from wfc.execution.validation import document_verdict
+
+    from tests.fixtures.fakes.engine import fake_engine_process
+    from tests.fixtures.pipeline_verbs import docker_up_project, fit_document
+
+    口 = Step(step_num=1, name="A project running fit; a document with a listed param_sets",
+             purpose="Docker said to be up, so only the document can refuse; "
+                     "canvas Validate's one error for it is the expectation")
+    project = docker_up_project(tmp_project, monkeypatch,
+                                node("fit", inputs=[wire(SELECTOR_ID)]))
+    document = fit_document(param_sets=["wide"])
+    expected = document_verdict(document, project.root)["errors"]
+    assert len(expected) == 1, expected
+    assert expected[0].startswith("'param_sets' must be a mapping"), expected
+    client = canvas_client(project.root, monkeypatch)
+
+    口 = Step(step_num=2, name="The canvas run route",
+             purpose="HTTP 400 whose detail is the line; no engine launch and "
+                     "no job")
+    launched: list = []
+    with fake_engine_process(only_snakemake=True,
+                             launch=lambda argv, **_: launched.append(argv)):
+        resp = client.post("/api/workflow/run", json=document)
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"].split("\n") == expected
+    assert launched == [] and not _active_jobs
+
+    口 = Step(step_num=3, name="The runs preview",
+             purpose="Its load refuses the document: no rows, the blocked "
+                     "reason is the line, and no engine launch")
+    with fake_engine_process(only_snakemake=True,
+                             launch=lambda argv, **_: launched.append(argv)):
+        resp = client.post("/api/wfc/cache-status", json=document)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["rows"] == []
+    assert resp.json()["blocked_reason"] == expected[0]
+    assert launched == []

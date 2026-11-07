@@ -144,7 +144,7 @@ def build_docker_command(
     image_ref: str,
     project_root: str | Path,
     dvc_cache_dir: str | Path,
-    run_step_argv: Sequence[str],
+    inner_argv: Sequence[str],
     *,
     uid: int,
     gid: int,
@@ -160,7 +160,7 @@ def build_docker_command(
                    -v <dvc_cache_dir>:/dvc-cache
                    [--gpus all]
                    <image_ref>
-                   <run_step_argv...>
+                   <inner_argv...>
 
     Args:
         image_ref: The ref the run-time rule returned
@@ -176,7 +176,7 @@ def build_docker_command(
             (typically ``<project_root>/.dvc/cache``). Mounted at
             ``/dvc-cache`` so input paths that point into the cache resolve
             inside the container.
-        run_step_argv: The command line that runs *inside* the container.
+        inner_argv: The command line that runs *inside* the container.
             For a method run it is ``[<env interpreter>, <script path>]``:
             the script runs directly under the env's own interpreter, with
             no wfc inside the image. The dev-loop commands (shell, exec,
@@ -212,7 +212,7 @@ def build_docker_command(
     if gpus:
         cmd.extend(["--gpus", "all"])
     cmd.append(image_ref)
-    cmd.extend(list(run_step_argv))
+    cmd.extend(list(inner_argv))
     return cmd
 
 
@@ -222,7 +222,7 @@ def build_apptainer_command(
     image_ref: str,
     project_root: str | Path,
     dvc_cache_dir: str | Path,
-    run_step_argv: Sequence[str],
+    inner_argv: Sequence[str],
     *,
     gpus: bool = False,
     code_copy: str | Path | None = None,
@@ -246,7 +246,7 @@ def build_apptainer_command(
             bare ref as stored in the manifest.
         project_root: Absolute host path; bound at ``/work``.
         dvc_cache_dir: Absolute host path; bound at ``/dvc-cache``.
-        run_step_argv: Inner command line, appended verbatim after the
+        inner_argv: Inner command line, appended verbatim after the
             image URI.
         gpus: When true, inject ``--nv`` (Apptainer's NVIDIA passthrough).
         code_copy: The run's extracted code copy, bound last at its own
@@ -263,5 +263,5 @@ def build_apptainer_command(
     if gpus:
         cmd.append("--nv")
     cmd.append(f"docker://{image_ref}")
-    cmd.extend(list(run_step_argv))
+    cmd.extend(list(inner_argv))
     return cmd

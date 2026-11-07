@@ -22,11 +22,9 @@ import type {
   CanvasNodeData, MethodDef, MethodVersionDef, NodeType, SlotDef,
 } from '../shared/types.js';
 
-/** Every system node wears the same teal. */
-const SYSTEM_COLOR = '#1ABC9C';
-
-/** What a method node wears when its module declares no colour. */
-const DEFAULT_METHOD_COLOR = '#2ecc71';
+// No writer here records a colour: a method node's header colour is its
+// module's, read through `moduleColor` when the node renders, and a system
+// node's header is the system fill.
 
 /** Where a node lands, in flow coordinates. */
 export interface NodePosition {
@@ -54,8 +52,10 @@ export interface MethodNodeOpts {
   variants?: Record<string, Record<string, unknown>>;
   sampleOverrides?: Record<string, Record<string, unknown>>;
   sampleVariants?: Record<string, Record<string, Record<string, unknown>>>;
-  /** The document's pin: a version's content identity. */
+  /** The document's pin: a version's content identity, or `"draft"`. */
   version?: string;
+  /** A draft node's folder, as its document names it. */
+  folder?: string;
 }
 
 /**
@@ -96,8 +96,32 @@ function resolvePin(
  * method lists no versions (or the pin names none of them).
  */
 export function nodeVersion(data: CanvasNodeData): MethodVersionDef | undefined {
+  if (isDraftNode(data)) return undefined;
   if (data.version) return versionByIdentity(data.versions, data.version);
   return data.versions?.find(v => v.newest);
+}
+
+/** The `version` a node that runs its method's draft holds. */
+export const DRAFT_VERSION = 'draft';
+
+/** True for a method node that runs its method's draft folder. */
+export function isDraftNode(data: CanvasNodeData): boolean {
+  return data.version === DRAFT_VERSION && (!data.nodeType || data.nodeType === 'method');
+}
+
+/**
+ * Why a draft node cannot run, or ``''`` when it can: the last snapshot
+ * check's message for an invalid or missing folder, else the draft's failed
+ * Registration check lines. A draft the palette no longer lists says so.
+ */
+export function draftInvalidReason(data: CanvasNodeData): string {
+  if (!isDraftNode(data)) return '';
+  if ((data.draftState === 'invalid' || data.draftState === 'missing') && data.draftMessage) {
+    return data.draftMessage;
+  }
+  if (!data.draft) return `${data.method}: this draft is no longer in the Registry.`;
+  if (!data.draft.valid) return data.draft.reasons.map(r => `${data.method}: ${r}`).join('\n');
+  return '';
 }
 
 /**
@@ -106,6 +130,7 @@ export function nodeVersion(data: CanvasNodeData): MethodVersionDef | undefined 
  * version says so; a node of a method with no versions gets none.
  */
 export function versionTitle(data: CanvasNodeData): string {
+  if (isDraftNode(data)) return 'Runs the method draft: its folder as it is now';
   const running = nodeVersion(data);
   if (!running) return data.version ? 'Pinned to a version this method does not list' : '';
   if (running.newest) return `Latest method version (v${running.label})`;
@@ -125,8 +150,18 @@ export function versionTitle(data: CanvasNodeData): string {
  *     identity: The picked version's content identity.
  */
 export function versionSwitch(data: CanvasNodeData, identity: string): Partial<CanvasNodeData> {
+  if (identity === DRAFT_VERSION) {
+    if (!data.draft) return {};
+    return {
+      version: DRAFT_VERSION,
+      folder: data.draft.folder,
+      inputs: data.draft.inputs,
+      outputs: data.draft.outputs,
+      params: data.draft.params,
+    };
+  }
   const { version, contract } = resolvePin(data.versions, identity);
-  const update: Partial<CanvasNodeData> = { version };
+  const update: Partial<CanvasNodeData> = { version, folder: undefined, draftState: undefined, draftMessage: undefined };
   if (contract) {
     update.inputs = contract.inputs;
     update.outputs = contract.outputs;
@@ -144,7 +179,7 @@ export function versionSwitch(data: CanvasNodeData, identity: string): Partial<C
  */
 export function undeclaredParams(data: CanvasNodeData): string[] {
   if (data.nodeType && data.nodeType !== 'method') return [];
-  if (!nodeVersion(data)) return [];
+  if (!nodeVersion(data) && !(isDraftNode(data) && data.draft)) return [];
   const declared = new Set((data.params ?? []).map(p => p.name));
   const held = [
     ...Object.keys(data.paramValues ?? {}),
@@ -184,7 +219,12 @@ export function withoutParam(data: CanvasNodeData, name: string): Partial<Canvas
 
 /** A method node's data, from the contract of the version it runs. */
 export function methodNodeData(method: MethodDef, opts: MethodNodeOpts = {}): CanvasNodeData {
-  const { version, contract } = resolvePin(method.versions, opts.version);
+  // A draft node keeps `version: "draft"` and its folder whether or not the
+  // palette still lists the draft; it draws the draft's contract when it does.
+  const asDraft = opts.version === DRAFT_VERSION;
+  const { version, contract } = asDraft
+    ? { version: DRAFT_VERSION, contract: method.draft }
+    : resolvePin(method.versions, opts.version);
   return {
     label: opts.label ?? method.name,
     method: method.name,
@@ -193,7 +233,8 @@ export function methodNodeData(method: MethodDef, opts: MethodNodeOpts = {}): Ca
     // carries none, and the compiler writes one only for an older version.
     version,
     versions: method.versions,
-    color: method.color ?? DEFAULT_METHOD_COLOR,
+    draft: method.draft,
+    folder: asDraft ? (opts.folder ?? method.draft?.folder) : undefined,
     inputs: contract?.inputs ?? method.inputs,
     outputs: contract?.outputs ?? method.outputs,
     params: contract?.params ?? method.params,
@@ -231,7 +272,6 @@ export function inputSelectorNodeData(opts: InputSelectorNodeOpts = {}): CanvasN
     label: 'Input Selector',
     method: '',
     module: '',
-    color: SYSTEM_COLOR,
     inputs: [],
     outputs: placeholderOutputs(),
     params: [],
@@ -279,7 +319,6 @@ export function runReferenceNodeData(
     // optional, so the field is blank rather than absent.
     method: '',
     module: '',
-    color: SYSTEM_COLOR,
     inputs: [],
     outputs: opts.outputs ?? placeholderOutputs(),
     params: [],
@@ -345,6 +384,13 @@ interface SystemNodePayload {
   name: string;
 }
 
+/** What the palette's Drafts group puts on the DataTransfer for one draft. */
+export interface DraftNodePayload {
+  _draft: true;
+  /** The method the draft belongs to, carrying its `draft`. */
+  method: MethodDef;
+}
+
 /**
  * The node a dropped sidebar item becomes.
  *
@@ -358,6 +404,9 @@ export function nodeFromDragPayload(
   position: NodePosition,
   payload: unknown,
 ): Node<CanvasNodeData> {
+  if ((payload as DraftNodePayload)?._draft) {
+    return methodNode(id, position, (payload as DraftNodePayload).method, { version: DRAFT_VERSION });
+  }
   if ((payload as SystemNodePayload)?._systemNode) {
     const system = payload as SystemNodePayload;
     if (system.nodeType === 'run_reference') {

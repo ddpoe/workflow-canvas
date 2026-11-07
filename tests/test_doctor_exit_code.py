@@ -2,8 +2,8 @@
 
 `wfc doctor` is the one command that exits non-zero on a failing run-readiness
 check. A WARN (e.g. missing DVC) does not flip the gate. The
-run-step / register-env / pre_run CLI reframes turn the specific git-gate and
-Docker-down shapes into the friendly "run `wfc doctor`" message.
+run-step / register-env CLI reframes turn the Docker-down shape into the
+friendly "run `wfc doctor`" message.
 """
 
 from __future__ import annotations
@@ -53,32 +53,6 @@ def test_run_step_docker_down_reframed(monkeypatch, capsys):
     stub_readiness_probes(monkeypatch, git=None, docker="fail")
     rc = cli.cli_main([
         "run-step", "--node-id", "n1", "--sample", "s1",
-    ])
-    err = capsys.readouterr().err
-    assert rc == 1
-    assert "wfc doctor" in err
-    assert "isn't ready to run" in err
-
-
-@workflow(purpose="pre_run reframes the git no-commit gate into the one-door message")
-def test_pre_run_git_gate_reframed(tmp_path, monkeypatch, capsys):
-    """A real git repo with NO commits drives the real ``get_git_commit``
-    inside ``pre_run`` (step 1, before any method lookup) to raise the
-    ``git rev-parse HEAD failed`` shape, which the CLI reframes into the
-    one-door message — exercising both sides of the version.py <-> cli.py
-    string contract for real instead of fabricating it."""
-    import subprocess
-
-    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
-    (tmp_path / ".wfc").mkdir(parents=True, exist_ok=True)
-    (tmp_path / ".wfc" / "wf-canvas.toml").write_text("", encoding="utf-8")
-    monkeypatch.setenv("WFC_PROJECT_ROOT", str(tmp_path))
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / '.wfc' / 'wfc.db'}")
-    from wfc.persistence import reset_engine
-    reset_engine()
-
-    rc = cli.cli_main([
-        "pre_run", "--method", "m", "--module", "mod", "--sample", "s",
     ])
     err = capsys.readouterr().err
     assert rc == 1

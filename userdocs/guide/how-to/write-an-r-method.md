@@ -1,12 +1,12 @@
-<!-- generated from pm_mvp::docs/consumer/how-to/write-an-r-method @ a544701b5fa8; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/how-to/write-an-r-method @ 7ba7f314b679; do not edit -->
 
-# How-to: Write an R Method
+# Write a Method in R
 
 ## Write an R Method
 
 An R method is an R script and a `method.yaml` in a method folder. wfc runs the script with `Rscript` inside the method's environment. The script reads its input paths and parameters from environment variables and writes its outputs into the run directory.
 
-This page writes the `filter_data` method from [Writing a Method in Python](../tutorials/authoring-a-method-script.md) in R: it keeps the rows of a CSV whose `score` is above a threshold, and also writes one CSV per value of its `group` column. It assumes a project with the module `my_analysis` registered; [Your First Pipeline](../tutorials/getting-started.md) sets one up.
+This page writes the `filter_data` method from [Write a Method in Python](../tutorials/authoring-a-method-script.md) in R: it keeps the rows of a CSV whose `score` is above a threshold, and also writes one CSV per value of its `group` column. It assumes a project with the module `my_analysis` registered; [Your First Pipeline](../tutorials/getting-started.md) sets one up.
 
 
 ## Build an R environment
@@ -34,16 +34,27 @@ Give each rebuild a new tag (`:2`, `:3`). Each method version runs the image it 
 
 ### From a pixi project
 
-pixi installs packages from conda-forge, which carries CRAN packages under an `r-` prefix (`dplyr` is `r-dplyr`) and Bioconductor packages as `bioconductor-*`. Add `python` and `pip` next to R, because the image build installs the project's pip packages with them:
+pixi installs packages from conda-forge, which carries CRAN packages under an `r-` prefix (`dplyr` is `r-dplyr`) and Bioconductor packages as `bioconductor-*`. Create a project with R and your packages, then register it from its lock file:
 
 ```bash
 pixi init r-env --platform linux-64 --platform win-64
-pixi add --manifest-path r-env/pixi.toml r-base r-jsonlite python pip
+pixi add --manifest-path r-env/pixi.toml r-base r-jsonlite
 wfc register-env default --backend pixi --from r-env/pixi.lock \
   --interpreter /opt/.pixi/envs/default/bin/Rscript
 ```
 
-The env's name is the pixi environment in the lock, `default` for a new project, so the method's `method.yaml` says `env: default`. [Registering an Environment](../tutorials/registering-an-environment.md) covers every backend.
+The env's name is the pixi environment in the lock, `default` for a new project, so the method's `method.yaml` says `env: default`.
+
+### From a conda environment
+
+conda-forge carries the same `r-` and `bioconductor-` packages for conda. Create a conda env from conda-forge with R and your packages, then capture it:
+
+```bash
+conda create -n r-analysis -c conda-forge --override-channels r-base r-jsonlite
+wfc register-env r-analysis conda:r-analysis --interpreter /opt/conda/bin/Rscript
+```
+
+[Register an Environment](../tutorials/registering-an-environment.md) covers every backend.
 
 
 ## Declare the slots
@@ -169,5 +180,4 @@ Add the method to a pipeline in the canvas, or in a `pipeline.json` as in [Your 
 
 - Every variable wfc sets and the results file: [Method Script Contract](../reference/method-script-contract.md).
 - Every `method.yaml` key: [method.yaml Schema](../reference/method-yaml-schema.md).
-- Column declarations and column pickers: [Writing Contracts](../tutorials/writing-contracts.md).
-
+- Output options and options pickers: [Let Users Pick Columns in the Canvas](pick-columns-in-the-canvas.md).

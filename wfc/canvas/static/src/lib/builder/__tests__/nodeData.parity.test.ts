@@ -122,7 +122,6 @@ const DRAGGED_METHOD: MethodDef = {
   name: 'norm',
   module: 'mod_a',
   versions: [V1, V2],
-  color: '#4A90D9',
   inputs: V2.inputs,
   outputs: V2.outputs,
   params: V2.params,
@@ -150,7 +149,7 @@ describe('a dropped node is the same node as a loaded one', () => {
   });
 
   it('a pin is compiled for an older version only, and a reload keeps both', () => {
-    modules.set([{ name: 'mod_a', color: '#4A90D9', methods: [DRAGGED_METHOD] }]);
+    modules.set([{ name: 'mod_a', methods: [DRAGGED_METHOD] }]);
     const doc = (pin?: string): PipelineJSON => ({
       name: 'p',
       samples: [],
@@ -226,7 +225,7 @@ describe('a dropped node is the same node as a loaded one', () => {
     // The registry is the only source of a version, and it is also where the
     // sidebar the method was dragged from gets its methods, so a loaded node
     // and a dropped one read the same contract.
-    modules.set([{ name: 'mod_a', color: '#4A90D9', methods: [DRAGGED_METHOD] }]);
+    modules.set([{ name: 'mod_a', methods: [DRAGGED_METHOD] }]);
     loadPipeline({
       name: 'p',
       samples: [],

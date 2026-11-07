@@ -40,6 +40,7 @@ import shutil
 import stat
 import sys
 import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -1179,6 +1180,19 @@ def _verified_manifest(project_dir: Path, md5: str, setting: str) -> list[tuple[
     return read_manifest(project_dir, md5) or []
 
 
+#: One lock per checkout destination, so readers in one process never build
+#: the same checkout at once (see :func:`checkout`).
+_checkout_locks: dict[str, threading.Lock] = {}
+_checkout_locks_guard = threading.Lock()
+
+
+def _checkout_lock(dest: Path) -> threading.Lock:
+    """The lock that serialises building the checkout at ``dest`` in this process."""
+    key = os.path.normcase(os.path.abspath(dest))
+    with _checkout_locks_guard:
+        return _checkout_locks.setdefault(key, threading.Lock())
+
+
 @task(purpose="The one checkout: turn a directory entry into a real directory, "
               "after its manifest object passes the one check, building it "
               "with the hashing copy and stamping it only after every member "
@@ -1200,7 +1214,11 @@ def checkout(md5: str, dest: Path | str, project_dir: Path | str,
     beside the checkout and renamed over its path, and what the manifest
     does not name is removed. The old checkout is never deleted first.
     The checkout's directories are read-only; there is no writable
-    checkout.
+    checkout. Within one process, builds of one destination run one at a
+    time: a reader whose check finds the destination not yet whole waits
+    for any build in flight, then (``check_dest``) checks it again, so a
+    reader that waited on a build finds it done. Reading a checkout that is
+    already whole takes no lock. Two processes are not serialised.
 
     With a ``stamp`` (a read-only checkout that readers hit repeatedly),
     ``dest`` is asked the one integrity check: under ``stat-then-hash`` a
@@ -1233,44 +1251,57 @@ def checkout(md5: str, dest: Path | str, project_dir: Path | str,
              purpose="A complete entry only; with a stamp, the one check "
                      "against the destination; without one, the destination "
                      "is compared with the checked manifest; a caller that "
-                     "found it changed skips the check")
+                     "found it changed skips the check",
+             critical="One build of a destination at a time in this process: "
+                      "a destination not found whole is checked again under "
+                      "its lock before anything is built")
     project_dir = Path(project_dir)
     dest = Path(dest)
     stamp = Path(stamp) if stamp is not None else None
     setting = _setting(project_dir, setting)
     if not entry_is_complete(project_dir, md5):
         return False
+    # A whole, stamped checkout is read without the lock, so concurrent reads
+    # of a built checkout never queue (under ``hash`` each re-hashes it).
     if check_dest and stamp is not None:
         if check_entry(dest, recorded_hash=md5, stamp=stamp, setting=setting).intact:
             return True
-    entries = _verified_manifest(project_dir, md5, setting)
-    if check_dest and stamp is None and _checkout_verifies(dest, entries):
+    # One build of a destination at a time in this process: readers that ask
+    # at once (a gallery's image requests) would otherwise each rename every
+    # member into a folder another has just made read-only, and each rewrite
+    # the stamp. A reader that waited checks again and finds the build done.
+    with _checkout_lock(dest):
+        if check_dest and stamp is not None:
+            if check_entry(dest, recorded_hash=md5, stamp=stamp, setting=setting).intact:
+                return True
+        entries = _verified_manifest(project_dir, md5, setting)
+        if check_dest and stamp is None and _checkout_verifies(dest, entries):
+            return True
+        _drop_stamp(stamp)
+
+        口 = Step(step_num=2, name="Check every member object",
+                 purpose="Each member object passes the one check against its own "
+                         "address and stamp before any is viewed",
+                 critical="A changed member leaves the destination as it was and "
+                          "nothing stamped")
+        members = list(dict.fromkeys(m for _rel, m in entries))
+        changed = [m for m in members
+                   if _check_object(project_dir, m, setting).status != INTACT]
+        if changed:
+            raise ChangedEntryError(md5, changed)
+
+        口 = Step(step_num=3, name="View the members in place",
+                 purpose="Remove what the manifest does not name, then make each "
+                         "member a view renamed over its path, member by member")
+        _place_members(dest, entries, project_dir, setting)
+
+        口 = Step(step_num=4, name="Protect and stamp",
+                 purpose="The checkout's directories read-only (its files are "
+                         "already), then the stamp from the checkout as it sits")
+        protect_dirs(dest)
+        if stamp is not None:
+            write_stamp(stamp, entry_record(dest), md5)
         return True
-    _drop_stamp(stamp)
-
-    口 = Step(step_num=2, name="Check every member object",
-             purpose="Each member object passes the one check against its own "
-                     "address and stamp before any is viewed",
-             critical="A changed member leaves the destination as it was and "
-                      "nothing stamped")
-    members = list(dict.fromkeys(m for _rel, m in entries))
-    changed = [m for m in members
-               if _check_object(project_dir, m, setting).status != INTACT]
-    if changed:
-        raise ChangedEntryError(md5, changed)
-
-    口 = Step(step_num=3, name="View the members in place",
-             purpose="Remove what the manifest does not name, then make each "
-                     "member a view renamed over its path, member by member")
-    _place_members(dest, entries, project_dir, setting)
-
-    口 = Step(step_num=4, name="Protect and stamp",
-             purpose="The checkout's directories read-only (its files are "
-                     "already), then the stamp from the checkout as it sits")
-    protect_dirs(dest)
-    if stamp is not None:
-        write_stamp(stamp, entry_record(dest), md5)
-    return True
 
 
 def local_path(project_dir: Path | str, md5: str,

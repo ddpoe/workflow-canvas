@@ -36,6 +36,8 @@ from tests.test_push_env import _Docker
 from wfc.reserved import DEMO_ENV_NAME
 
 OLD_DEMO_ENV = "__demo__env"
+#: The single module an older wfc's demo registered all five methods in.
+OLD_DEMO_MODULE = "__demo__"
 OLDER_WFC = "this demo project was made by an older wfc"
 
 
@@ -115,7 +117,7 @@ def _old_demo_project(tmp_path: Path, monkeypatch) -> Path:
     renamed, as the older wfc shipped it).
     """
     from wfc import environments as envs_mod
-    from wfc.demo.scaffold import ASSETS_DIR, DEMO_MODULE
+    from wfc.demo.scaffold import ASSETS_DIR
     from wfc.persistence import use_project
     from wfc.registration import register_method, register_module
 
@@ -130,9 +132,9 @@ def _old_demo_project(tmp_path: Path, monkeypatch) -> Path:
         envs_mod.register(name=OLD_DEMO_ENV, backend="byo",
                           source={"image": "docker://local/wfc-demo-env:old"},
                           project_dir=target, allow_reserved=True)
-        register_module(name=DEMO_MODULE, contracts=[], allow_reserved=True)
-        register_method(method_dir=method_dir, module_name=DEMO_MODULE,
-                        method_name=f"{DEMO_MODULE}preprocess",
+        register_module(name=OLD_DEMO_MODULE, contracts=[], allow_reserved=True)
+        register_method(method_dir=method_dir, module_name=OLD_DEMO_MODULE,
+                        method_name="__demo__preprocess",
                         script_name="preprocess.py",
                         allow_reserved=True, assume_yes=True)
     assert OLD_DEMO_ENV in _envs(target)
@@ -148,7 +150,7 @@ def _old_demo_project(tmp_path: Path, monkeypatch) -> Path:
                   "stamp is current and the tree is clean")
 def test_demo_force_over_an_older_demo_leaves_nothing_naming_the_old_env(
         tmp_path, monkeypatch, capsys):
-    from wfc.demo.scaffold import DEMO_MODULE, DEMO_SCHEMA
+    from wfc.demo.scaffold import DEMO_MODULES, DEMO_SCHEMA
     from wfc.registration import read_version_list
 
     target = _old_demo_project(tmp_path, monkeypatch)
@@ -160,12 +162,14 @@ def test_demo_force_over_an_older_demo_leaves_nothing_naming_the_old_env(
     assert OLD_DEMO_ENV not in envs and DEMO_ENV_NAME in envs
     assert not (target / ".wfc" / "captures" / OLD_DEMO_ENV).exists()
     assert not (target / ".wfc" / "build" / OLD_DEMO_ENV).exists()
-    lists = sorted((target / ".wfc" / "registry" / "methods" / DEMO_MODULE)
-                   .glob("*.versions.json"))
+    methods_root = target / ".wfc" / "registry" / "methods"
+    assert not (methods_root / OLD_DEMO_MODULE).exists()
+    lists = [(module, path) for module in DEMO_MODULES
+             for path in sorted((methods_root / module).glob("*.versions.json"))]
     assert len(lists) == 5
-    for path in lists:
+    for module, path in lists:
         method = path.name[: -len(".versions.json")]
-        entries = read_version_list(target, DEMO_MODULE, method)
+        entries = read_version_list(target, module, method)
         assert [e.env_name for e in entries] == [DEMO_ENV_NAME]
     registry = target / ".wfc" / "registry"
     assert not any(OLD_DEMO_ENV in p.read_text("utf-8", errors="replace")

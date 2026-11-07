@@ -18,7 +18,7 @@ import {
   behaviorCatalog,
   type BehaviorRow,
 } from '../../__fixtures__/timelines';
-import { runStatusToNodeState, type RunStatusEvent } from '../services';
+import { runStatusToNodeState, type BackendNodeState, type RunStatusEvent } from '../services';
 
 describe('behavior catalog — bridge layer', () => {
   for (const [name, row] of Object.entries(behaviorCatalog)) {
@@ -45,7 +45,10 @@ describe('behavior catalog — bridge layer', () => {
         ).toBe(expectedFrame.length);
 
         entries.forEach(([nodeId, raw], nodeIdx) => {
-          const got = runStatusToNodeState(raw);
+          // The same boundary narrowing the polling bridge makes
+          // (services.ts: `raw as BackendNodeState`): the contract types
+          // `tally` as a plain number map.
+          const got = runStatusToNodeState(raw as BackendNodeState);
           expect(
             got,
             `${name} frame ${frameIdx} node "${nodeId}"`,

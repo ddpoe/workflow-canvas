@@ -27,3 +27,37 @@
 .bd-article dl.option-list > dd {
     margin-left: 1.5rem;
 }
+
+/* A link marked {.download-button} in a page: drawn as a button, still a plain link. */
+.bd-article a.download-button,
+.bd-article .download-button a {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5em;
+    margin: 0.25rem 0;
+    padding: 0.5em 1.1em;
+    border-radius: 0.4rem;
+    background: #0d9488;
+    color: #ffffff;
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.bd-article a.download-button::before,
+.bd-article .download-button a::before {
+    content: "\2913";  /* a downward arrow to a bar: download */
+    font-weight: 700;
+}
+
+.bd-article a.download-button:hover,
+.bd-article .download-button a:hover {
+    background: #0f766e;
+    color: #ffffff;
+    text-decoration: none;
+}
+
+/* A product name marked {.product-name}, such as the AI-agent tutorial's tables. */
+.bd-article .product-name {
+    font-weight: 700;
+    color: var(--pst-color-primary);
+}

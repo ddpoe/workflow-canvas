@@ -1,12 +1,12 @@
 [tool.poetry]
 name = "workflow-canvas"
-version = "0.7.0"
+version = "0.8.0b2"
 description = "Reproducible computational pipelines with containerized methods, content-addressed caching, run lineage, and a visual pipeline builder; compiles to Snakemake"
 authors = ["Dante <dantepoe@noboundssolutions.com>"]
 license = "BSD-3-Clause"
 readme = "README.md"
-homepage = "https://workflow-canvas.readthedocs.io"
-documentation = "https://workflow-canvas.readthedocs.io"
+homepage = "https://workflow-canvas.readthedocs.io/en/latest/"
+documentation = "https://workflow-canvas.readthedocs.io/en/latest/"
 repository = "https://github.com/ddpoe/workflow-canvas"
 keywords = [
   "workflow",
@@ -32,6 +32,11 @@ classifiers = [
   "Topic :: System :: Distributed Computing",
 ]
 packages = [{include = "wfc"}]
+# The canvas ships built: nothing under static/ but dist/ is read at run time.
+# An `include` entry is added even when `exclude` matches it.
+exclude = [
+  "wfc/canvas/static/**/*",
+]
 include = [
   { path = "wfc/canvas/static/dist/**/*", format = ["sdist", "wheel"] },
   { path = "wfc/demo/assets/**/*", format = ["sdist", "wheel"] }
@@ -46,12 +51,9 @@ python = ">=3.12,<3.13"
 sqlmodel = ">=0.0.14"
 pydantic = ">=2.0.0"
 snakemake = ">=8.0"
-pandas = ">=2.0"
-numpy = ">=1.24"
-pyarrow = ">=14.0"
 axiom-annotations = "^0.1.0"
 dvc = "^3.67.1"
-wfc-client = ">=0.2.0,<0.3.0"
+wfc-client = ">=0.3.0,<0.4.0"
 # The canvas is a default dependency: `pip install workflow-canvas` then
 # `wfc canvas` works.
 fastapi = ">=0.110"
@@ -59,6 +61,8 @@ uvicorn = {version = ">=0.27", extras = ["standard"]}
 psutil = ">=5.9"
 # Environments reads a uv.lock's markers and wheel tags for the image's target.
 packaging = ">=23.0"
+# The canvas converts image outputs (TIFF, 16-bit, large) to PNG previews.
+pillow = "^12.2"
 # DVC's remote plugins, each behind its own extra (a local remote needs none).
 dvc-s3 = {version = "*", optional = true}
 dvc-ssh = {version = "*", optional = true}
@@ -73,12 +77,8 @@ azure = ["dvc-azure"]
 remotes = ["dvc-s3", "dvc-ssh", "dvc-gs", "dvc-azure"]
 
 [tool.poetry.group.dev.dependencies]
-axiom-graph = {version = "^3.0.0", extras = ["viz", "js"]}
+axiom-graph = {version = "^3.1.0", extras = ["viz", "js"]}
 pytest = ">=9.0.2,<10"
-pytest-html = ">=4.0"
-mkdocs = "^1.6.1"
-mkdocs-material = "^9.7.6"
-matplotlib = "^3.10.8"
 moto = {version = ">=5.0", extras = ["server"]}
 ruff = ">=0.6"
 mypy = ">=1.11"
@@ -115,9 +115,6 @@ addopts = [
     "--tb=short",
     "-m", "not slow and not integration and not ghcr",
 ]
-
-# pytest-html report defaults (override with CLI flags)
-# Run:  pytest tests/e2e/ --html=reports/e2e_dashboard.html --self-contained-html
 
 # Linting: `poetry run ruff check` (add `--fix` to apply the safe fixes).
 # Docstrings follow the Google convention and are checked by the D rules.

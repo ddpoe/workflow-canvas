@@ -1,0 +1,25 @@
+# tests/fixtures/methods/pick_column/method.yaml
+# Keep one column of the input. `column` takes its options from the
+# upstream wired into `data`.
+inputs:
+  data:
+    type: .csv
+    required: true
+    description: "Input CSV, typically measure's output"
+
+outputs:
+  output:
+    type: .csv
+    required: true
+    description: "The chosen column alone"
+
+params:
+  column:
+    type: str
+    required: false
+    default: "value"
+    options_from: data
+    description: "Column to keep"
+
+executor: python
+env: fixture-env

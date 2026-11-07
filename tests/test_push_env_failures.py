@@ -130,6 +130,40 @@ def test_a_base_that_cannot_be_written_is_reported_not_raised(
     assert "Traceback" not in err
 
 
+@workflow(purpose="A switch whose commit git refuses leaves the new base and "
+                  "the push records written, and the failure names every file "
+                  "to commit, the config with the records")
+def test_a_switch_whose_commit_fails_names_the_config_to_commit(
+        tmp_project, monkeypatch, capsys, tmp_path_factory):
+    口 = Step(step_num=1, name="e1 pushed to the base, then a hook that refuses",
+             purpose="A pre-commit hook makes git refuse the next commit")
+    _, fingerprints = _setup(tmp_project, monkeypatch, tmp_path_factory, ["e1"])
+    assert _push_env("e1", "--yes") == 0
+    hooks = tmp_project / _git(tmp_project, "rev-parse", "--git-path", "hooks")
+    hooks.mkdir(parents=True, exist_ok=True)
+    (hooks / "pre-commit").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8",
+                                      newline="\n")
+    # POSIX git skips a hook that is not executable; Windows runs it regardless.
+    (hooks / "pre-commit").chmod(0o755)
+    head = _git(tmp_project, "rev-parse", "HEAD")
+
+    口 = Step(step_num=2, name="push-env e1 --registry <another base> --yes",
+             purpose="The push succeeds; the commit is refused")
+    capsys.readouterr()
+    assert _push_env("e1", "--registry", "registry.lab.example/tools", "--yes") == 1
+    err = capsys.readouterr().err
+
+    口 = Step(step_num=3, name="Written, not committed, and named",
+             purpose="The config holds the new base; the failure names it and "
+                     "e1's record as the files to commit")
+    from wfc.persistence import read_config
+    assert read_config(tmp_project)["registry"] == {"url": "registry.lab.example/tools"}
+    assert _git(tmp_project, "rev-parse", "HEAD") == head
+    record = f".wfc/captures/e1/{fingerprints['e1']}/pushed.json"
+    assert "not committed" in err
+    assert ".wfc/wf-canvas.toml" in err and record in err
+
+
 def test_a_never_pushed_demo_image_names_wfc_demo_to_recreate_it(tmp_path):
     """The demo env is recreated by `wfc demo --force`, not register-env."""
     from wfc.environments import IMAGE_MISSING, PushItem, PushPlan, unpushable_lines
@@ -150,11 +184,15 @@ def test_a_pushed_image_with_no_base_names_how_to_set_it(
     import pytest
 
     from wfc.environments import pullable_ref
-    from wfc.environments.captures import write_pushed
+    from wfc.environments.captures import PushedRecord
 
     _, fingerprints = _setup(tmp_project, monkeypatch, tmp_path_factory, ["e1"])
-    write_pushed(tmp_project, "e1", fingerprints["e1"], digest=FAKE_PUSHED_DIGEST,
-                 tag=f"fp-{fingerprints['e1'][:12]}")
+    # A record naming no base, in the format wfc wrote before push records
+    # named their base: only such a record leans on [registry] url.
+    folder = tmp_project / ".wfc" / "captures" / "e1" / fingerprints["e1"]
+    (folder / "pushed.json").write_bytes(PushedRecord(
+        digest=FAKE_PUSHED_DIGEST, tag=f"fp-{fingerprints['e1'][:12]}",
+        pushed_at="2026-10-20T10:00:00Z").to_json().encode("utf-8"))
 
     with pytest.raises(ValueError) as exc:
         pullable_ref("e1", fingerprints["e1"], _record(tmp_project, "e1")["container"],

@@ -24,15 +24,12 @@ from pathlib import Path
 
 from axiom_annotations import AutoStep, Step, workflow
 
-from ..graph import UnknownVariableError
-
 # Re-exported for init's ignore list (init may not import the engine layer).
 from ..orchestration import ENGINE_STATE_DIR_NAME as ENGINE_STATE_DIR_NAME
 
 # From their defining modules, so the AutoStep edges resolve.
 from ..orchestration.engine import invoke_engine
-from ..persistence import get_session
-from ..persistence import project_root as get_project_root
+from ..persistence import get_session, require_project_root
 from ..registration.sample_health import preflight_sample_content
 from .composer import load_pipeline_from_document
 from .lifecycle import (
@@ -45,6 +42,7 @@ from .lifecycle import (
     stop_push_worker,
 )
 from .node_env import preflight_pipeline_envs
+from .pipeline_outcome import discard_pipeline_launch, store_pipeline_outcome
 from .pipeline_record import (
     ENTRY_POINT_CLI,
     PipelineRecordError,
@@ -57,6 +55,7 @@ from .prepare import (
     FilledDefaults,
     filled_defaults,
     prepare_document,
+    read_pipeline_document,
     unpinned_resolutions,
 )
 
@@ -100,7 +99,6 @@ def _defaults_line(entry: FilledDefaults) -> str:
 def run_pipeline(
     pipeline_path: str,
     project_root: str | None = None,
-    wfc_root: str | None = None,
     cores: int = 4,
     snakefile_path: str | None = None,
     pipeline_id: str | None = None,
@@ -125,10 +123,8 @@ def run_pipeline(
     Args:
         pipeline_path: Path to the pipeline JSON file.
         project_root: Root of the wfc project (git repo with method commits).
-            Defaults to the current working directory.
-        wfc_root: Unused.  Kept so the signature and the ``--wfc-root`` flag
-            stay as they are; nothing reads it.  The generated file finds
-            ``wfc`` through the interpreter that runs Snakemake.
+            Defaults to the process's project root; when given it must
+            be that root (any spelling that resolves to it).
         cores: Number of Snakemake cores (default: 4).
         snakefile_path: Where to write the generated Snakefile.  Defaults to
             the pipeline's log directory
@@ -188,8 +184,14 @@ def run_pipeline(
         PipelineRecordError: The pipeline record could not be written.
             Raised after ``prepare_launch`` and before the engine starts, so
             no run row was written.  (A ``RuntimeError``.)
-        ValueError: The document uses a variable its ``variables`` block
-            does not declare.
+        PipelineDocumentError: The preparation or the load refuses the
+            document: the file is missing or is not a JSON object, a
+            variable is undeclared, ``param_sets`` is not a mapping, a
+            method is not registered, the validator refuses it
+            (``PipelineRefusedError``) or Graph's load does; the message
+            names the node and the field where it has one. Raised before
+            ``prepare_launch``, so no run row was written.  (A
+            ``ValueError``.)
         UnreachableSampleError: One or more of the pipeline's samples name
             content that is in neither the local cache nor the archive.
             Raised before ``prepare_launch``, so no run row was written;
@@ -203,8 +205,14 @@ def run_pipeline(
             the commands that recreate it.  (A ``RuntimeError``.)
         DatabaseUnreachableError: The composer could not reach the project
             database; nothing was launched.
+        ProjectMismatchError: ``project_root`` is not the process's
+            project root; the message names both. Nothing was read or
+            written.  (A ``RuntimeError``.)
     """
-    _project_root = str(Path(project_root).resolve() if project_root else get_project_root())
+    # One project per process: a root that is not the process's project
+    # (whose database every read and write below uses) is refused.
+    _bound_root = require_project_root(project_root or None)
+    _project_root = str(_bound_root.resolve() if project_root else _bound_root)
 
     口 = Step(step_num=1, name="Prepare, then load",
              purpose="Prepare the document as the canvas does -- resolve its "
@@ -221,14 +229,8 @@ def run_pipeline(
                      "Execution's composer (references, contract map and "
                      "sample hashes fetched in one session, Graph load pure); "
                      "an unreachable database fails here, before the launch")
-    _document = json.loads(Path(pipeline_path).read_text(encoding="utf-8"))
-    try:
-        _substituted = prepare_document(_document)
-    except UnknownVariableError as _unknown:
-        raise ValueError(
-            f"Unknown pipeline variable: '{_unknown.name}' -- the document's "
-            f"'variables' block declares no such name"
-        ) from _unknown
+    _document = read_pipeline_document(pipeline_path)
+    _substituted = prepare_document(_document)
     # The version each node the document left unpinned resolved to; the
     # canvas's frozen copy is pinned throughout, so its path prints none.
     for _resolved in unpinned_resolutions(_document, _substituted):
@@ -264,9 +266,16 @@ def run_pipeline(
                      "version's recorded image): present, else pulled once "
                      "by its recorded digest and its content checked, else "
                      "the pipeline is refused naming the command that "
-                     "recreates the env and wfc register-method",
+                     "recreates the env and wfc register-method; a draft "
+                     "node runs its env's current image, made runnable here "
+                     "too, after the draft preflight reads each draft again "
+                     "(its method.yaml stored on the pointer, no Update "
+                     "needed); a draft whose check fails, whose params or "
+                     "links no longer match the contract read now, or whose "
+                     "draft run is still running refuses the pipeline naming "
+                     "every reason",
              inputs="The loaded pipeline's steps' modules and methods",
-             outputs="Nothing, or EnvNotRunnableError",
+             outputs="Nothing, EnvNotRunnableError or DraftLaunchRefusedError",
              critical="runs before prepare_launch, so a refusal lands "
                       "before any run row is written and the pull happens "
                       "once, before the engine starts; nothing is built, and "
@@ -278,6 +287,8 @@ def run_pipeline(
          for step in loaded.pipeline.steps],
         _project_root,
     )
+    from .draft import preflight_drafts as _preflight_drafts
+    _preflight_drafts(_substituted, _project_root, pipeline_id=pipeline_id)
 
     口 = AutoStep(step_num=4, name="Prepare the launch")
     _launch = prepare_launch(
@@ -298,10 +309,13 @@ def run_pipeline(
              outputs="The record, or PipelineRecordError",
              critical="A record that cannot be written refuses the pipeline "
                       "here, before the push worker and the engine start and "
-                      "before any run row: a pipeline never runs unrecorded")
+                      "before any run row: a pipeline never runs unrecorded; "
+                      "the launch's pipeline_runs row is then removed")
     try:
         write_pipeline_record(_project_root, _launch.pipeline_id, entry_point)
     except PipelineRecordError as _record_exc:
+        # Nothing ran: the launch's pipeline_runs row goes with it.
+        discard_pipeline_launch(_launch.pipeline_id)
         raise PipelineRecordError(
             f"{_record_exc}; the pipeline was not started") from _record_exc
 
@@ -387,8 +401,15 @@ def run_pipeline(
             except Exception as _remove_exc:
                 print(f"[run_pipeline] could not remove the pipeline record: "
                       f"{_remove_exc}", file=sys.stderr)
+            try:
+                口 = AutoStep(step_num=11, name="Store the pipeline's status and "
+                                               "end once the record is gone")
+                store_pipeline_outcome(_project_root, _launch.pipeline_id)
+            except Exception as _store_exc:
+                print(f"[run_pipeline] could not store the pipeline's status: "
+                      f"{_store_exc}", file=sys.stderr)
         if _push is not None:
-            口 = Step(step_num=11, name="Stop the push worker the endings did not",
+            口 = Step(step_num=12, name="Stop the push worker the endings did not",
                      purpose="On every ending, stop a push worker still "
                              "running: an engine or an archive pass that "
                              "raised reached no drain, so drain it here (not "

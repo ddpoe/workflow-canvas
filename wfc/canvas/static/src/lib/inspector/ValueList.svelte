@@ -25,7 +25,8 @@
    */
   import type { ContractType, ParamDef } from '../shared/types.js';
   import { onDestroy, untrack } from 'svelte';
-  import type { ParamEditorType } from '../machines/paramEditor.machine.js';
+  import type { ParamEditorActor, ParamEditorType } from '../machines/paramEditor.machine.js';
+  import type { VariantActor } from '../machines/variant.machine.js';
   import {
     spawnBaseActor,
     spawnVariantActor,
@@ -38,6 +39,8 @@
   import { pipelineVariables } from '../builder/stores.js';
   import { RenderTick } from './renderTick.svelte.js';
   import { get } from 'svelte/store';
+  import OptionsPicker from './OptionsPicker.svelte';
+  import { optionsFromInputs, type ParamOptions } from './options.js';
 
   let {
     nodeId,
@@ -48,7 +51,7 @@
     onVariantsChange,
     singleValue = false,
     dirtyKeySuffix = '',
-    columnOptions = null,
+    options,
   }: {
     nodeId: string;
     param: ParamDef;
@@ -61,20 +64,12 @@
     /** Disambiguate dirty-state keys when the same (node, param) is rendered twice (e.g. per-sample tab). */
     dirtyKeySuffix?: string;
     /**
-     * `column_of_input` combobox options. When the
-     * inspector resolves the upstream slot's declared columns, it passes
-     * the response here. Shape: `{strict, from_params, patterns, all}`.
-     * When `null`, the row renders as a plain string input.
-     * When non-null AND non-empty, the editing widget for a
-     * string row renders as a `<datalist>`-backed combobox. When
-     * non-null AND empty, a hint chip is shown next to the row.
+     * The lookup answer of an `options_from` param: its inputs and every
+     * upstream wired to them with what each offers. A string row whose
+     * param declares `options_from` renders the options picker over it;
+     * absent while the lookup is pending.
      */
-    columnOptions?: {
-      strict: string[];
-      from_params: string[];
-      patterns: string[];
-      all: string[];
-    } | null;
+    options?: ParamOptions;
   } = $props();
 
   let ct = $derived<ContractType>((param.contractType ?? 'unknown') as ContractType);
@@ -87,6 +82,8 @@
   let isNumber = $derived(editorType === 'int' || editorType === 'float');
   let isJson = $derived(editorType === 'list' || editorType === 'dict');
   let isString = $derived(editorType === 'string');
+  // A string row whose param picks from an upstream's options.
+  let isOptionsRow = $derived(isString && optionsFromInputs(param.options_from).length > 0);
   let listDictDisabled = $derived(ct === 'list' || ct === 'dict');
 
   let variantOrder = $derived(singleValue ? [] : Object.keys(variants).sort(lexVariantCmp));
@@ -137,6 +134,25 @@
   // mutates. The counter and its teardown live in `renderTick.svelte.ts`.
   const actors: Record<string, RowActor> = {};
   const actorTick = new RenderTick();
+
+  // A base row holds a ParamEditorActor and a variant row a VariantActor
+  // (see `RowActor` in rowActors.ts), so the row says which machine's
+  // events its actor takes. These narrow the map's union by the row.
+  function isBaseRowActor(row: Row, a: RowActor): a is ParamEditorActor {
+    return row.isBase;
+  }
+  function baseActorFor(row: Row): ParamEditorActor | undefined {
+    const a = actors[row.id];
+    return a && isBaseRowActor(row, a) ? a : undefined;
+  }
+  function variantActorFor(row: Row): VariantActor | undefined {
+    const a = actors[row.id];
+    return a && !isBaseRowActor(row, a) ? a : undefined;
+  }
+  // Only a variant machine has a `noVariants` state.
+  function isVariantInNoVariants(a: RowActor): a is VariantActor {
+    return a.getSnapshot().value === 'noVariants';
+  }
   let prevIdentity = '';
   let prevRowIds: string[] = [];
 
@@ -299,8 +315,7 @@
     for (const rowId of Object.keys(freshlyAdded)) {
       const a = actors[rowId];
       if (!a) continue;
-      const snap = a.getSnapshot();
-      if (snap.value === 'noVariants') {
+      if (isVariantInNoVariants(a)) {
         a.send({ type: 'ADD_VARIANT' });
         delete freshlyAdded[rowId];
       } else {
@@ -323,20 +338,21 @@
   // The picker is opened by sending OPEN_BIND_PICKER to the row's actor;
   // we read context.bindPickerOpen / context.boundVariable from the
   // snapshot via snapForRow's extended return. NO local Svelte state.
+  // Binding is base-row only: the template offers it on base rows alone.
   function openBindPicker(row: Row): void {
-    actors[row.id]?.send({ type: 'OPEN_BIND_PICKER' });
+    baseActorFor(row)?.send({ type: 'OPEN_BIND_PICKER' });
   }
   function closeBindPicker(row: Row): void {
-    actors[row.id]?.send({ type: 'CLOSE_BIND_PICKER' });
+    baseActorFor(row)?.send({ type: 'CLOSE_BIND_PICKER' });
   }
   function bindToVariable(row: Row, name: string): void {
-    actors[row.id]?.send({ type: 'BIND_VARIABLE', name });
+    baseActorFor(row)?.send({ type: 'BIND_VARIABLE', name });
   }
   function unbindRow(row: Row): void {
-    actors[row.id]?.send({ type: 'UNBIND_VARIABLE' });
+    baseActorFor(row)?.send({ type: 'UNBIND_VARIABLE' });
   }
   function unbindAndEdit(row: Row): void {
-    actors[row.id]?.send({ type: 'UNBIND_VARIABLE' });
+    baseActorFor(row)?.send({ type: 'UNBIND_VARIABLE' });
     actors[row.id]?.send({ type: 'EDIT' });
   }
   /**
@@ -434,7 +450,7 @@
   function startEdit(row: Row): void {
     const a = actors[row.id];
     if (!a) return;
-    if (row.isBase) {
+    if (isBaseRowActor(row, a)) {
       a.send({ type: 'EDIT' });
     } else {
       // Variant: EDIT re-opens a committed (or merged) row for editing.
@@ -460,8 +476,7 @@
    */
   function broadcastSiblings(updated: Record<string, unknown>): void {
     for (const r of rows) {
-      if (r.isBase) continue;
-      const a = actors[r.id];
+      const a = variantActorFor(r);
       if (!a) continue;
       const others: unknown[] = [];
       for (const [vn, v] of Object.entries(updated)) {
@@ -493,7 +508,7 @@
    */
   function ackMerge(row: Row): void {
     if (row.isBase) return;
-    actors[row.id]?.send({ type: 'ACK_MERGE' });
+    variantActorFor(row)?.send({ type: 'ACK_MERGE' });
   }
 
   /**
@@ -504,12 +519,12 @@
    */
   function requestDeleteVariant(row: Row): void {
     if (row.isBase || !onVariantsChange) return;
-    actors[row.id]?.send({ type: 'DELETE' });
+    variantActorFor(row)?.send({ type: 'DELETE' });
   }
 
   function confirmDeleteVariant(row: Row): void {
     if (row.isBase || !onVariantsChange) return;
-    const a = actors[row.id];
+    const a = variantActorFor(row);
     if (!a) return;
     const variantName = row.variantName!;
     // Subscribe one-shot to detect the actor reaching the `deleted`
@@ -533,7 +548,7 @@
 
   function cancelDeleteVariant(row: Row): void {
     if (row.isBase) return;
-    actors[row.id]?.send({ type: 'CANCEL_DELETE' });
+    variantActorFor(row)?.send({ type: 'CANCEL_DELETE' });
   }
 
   function nextVariantName(): string {
@@ -607,13 +622,14 @@
       {@const isBound = !!boundName}
       {@const pickerOpen = snap.bindPickerOpen}
       {@const _vt = varsTick.count /* re-render chip when pipelineVariables changes */}
-      {@const resolvedVal = isBound ? (_vt, get(pipelineVariables))[boundName!]?.value : undefined}
+      {@const resolvedVal = isBound ? (void _vt, get(pipelineVariables))[boundName!]?.value : undefined}
       <div class="row"
            class:editing={isEditing}
            class:invalid={!!rowError}
            class:merging={isMerging}
            class:confirming-delete={isConfirmingDelete}
-           class:bound={isBound}>
+           class:bound={isBound}
+           class:options-row={isOptionsRow}>
         <div class="gutter" title={isEditing ? 'unlocked' : 'locked in'}>
           {isEditing ? '🔓' : '🔒'}
         </div>
@@ -676,6 +692,16 @@
               {:else}
                 <span class="readonly">{rowValueForDisplay(row) || '—'}</span>
               {/if}
+            {:else if isOptionsRow}
+              <!-- options_from row: the box plus the picker's chevron and
+                   list. Locked, the box is read-only and the chevron dims. -->
+              <OptionsPicker
+                value={isEditing ? (localStr ?? '') : rowValueForDisplay(row)}
+                locked={!isEditing}
+                {options}
+                placeholder={param.default !== undefined ? displayValue(param.default) : 'option'}
+                onInput={(v) => changeRow(row, v)}
+                onKeydown={(e) => handleKeydown(row, e)} />
             {:else if isString && isExpanded}
               {#if isEditing}
                 <textarea class="multi"
@@ -688,50 +714,13 @@
               {/if}
             {:else}
               {#if isEditing}
-                {#if columnOptions && !param.new_column && isString}
-                  <!-- column_of_input combobox.
-                       Datalist-backed input — dropdown of declared columns
-                       with free-text fallback. Empty `all` falls through
-                       to the plain input below via the `all.length > 0`
-                       guard. patterns are shown as a hint chip. -->
-                  {#if columnOptions.all.length > 0}
-                    <input class="text" type="text"
-                      list="cols-{nodeId}-{param.name}-{row.id}"
-                      value={localStr}
-                      data-testid="column-combobox"
-                      oninput={(e) => changeRow(row, (e.currentTarget as HTMLInputElement).value)}
-                      onkeydown={(e) => handleKeydown(row, e)}
-                      placeholder={param.default !== undefined ? displayValue(param.default) : 'column'}
-                      autofocus />
-                    <datalist id="cols-{nodeId}-{param.name}-{row.id}">
-                      {#each columnOptions.all as col}
-                        <option value={col}></option>
-                      {/each}
-                    </datalist>
-                    {#if columnOptions.patterns.length > 0}
-                      <span class="pattern-hint" data-testid="column-pattern-hint"
-                        title={`patterns: ${columnOptions.patterns.join(', ')}`}>
-                        ⓘ {columnOptions.patterns.length}
-                      </span>
-                    {/if}
-                  {:else}
-                    <input class="text" type="text"
-                      value={localStr}
-                      data-testid="column-combobox-empty"
-                      oninput={(e) => changeRow(row, (e.currentTarget as HTMLInputElement).value)}
-                      onkeydown={(e) => handleKeydown(row, e)}
-                      placeholder="no columns declared upstream — free text"
-                      autofocus />
-                  {/if}
-                {:else}
-                  <input class="text"
-                    type={isNumber ? 'number' : 'text'}
-                    value={localStr}
-                    oninput={(e) => changeRow(row, (e.currentTarget as HTMLInputElement).value)}
-                    onkeydown={(e) => handleKeydown(row, e)}
-                    placeholder={param.default !== undefined ? displayValue(param.default) : (isNumber ? 'number' : 'value')}
-                    autofocus />
-                {/if}
+                <input class="text"
+                  type={isNumber ? 'number' : 'text'}
+                  value={localStr}
+                  oninput={(e) => changeRow(row, (e.currentTarget as HTMLInputElement).value)}
+                  onkeydown={(e) => handleKeydown(row, e)}
+                  placeholder={param.default !== undefined ? displayValue(param.default) : (isNumber ? 'number' : 'value')}
+                  autofocus />
               {:else}
                 <input class="text" readonly value={rowValueForDisplay(row)} />
               {/if}
@@ -739,7 +728,7 @@
           </div>
 
           <div class="actions">
-            {#if isString}
+            {#if isString && !isOptionsRow}
               <button type="button" class="act expand" onclick={() => toggleExpand(row)}
                 title={isExpanded ? 'collapse' : 'expand to multi-line'}>{isExpanded ? '⤡' : '⤢'}</button>
             {/if}
@@ -839,7 +828,7 @@
     border: 1px solid var(--border);
     border-radius: 4px;
     overflow: hidden;
-    background: #1e1e1e;
+    background: var(--bg-input);
   }
 
   .row {
@@ -848,9 +837,9 @@
     align-items: stretch;
   }
   .multi-box .row + .row { border-top: 1px solid #2a2a2d; }
-  .row.invalid .gutter { color: #E74C3C; }
+  .row.invalid .gutter { color: var(--status-failed-ink); }
   .row.merging .gutter { color: #C68E17; }
-  .row.confirming-delete .gutter { color: #E74C3C; }
+  .row.confirming-delete .gutter { color: var(--status-failed-ink); }
 
   .gutter {
     display: flex; align-items: center; justify-content: center;
@@ -869,7 +858,7 @@
   }
 
   .widget.confirm-prompt {
-    color: #E74C3C; font-family: inherit; font-size: 12px;
+    color: var(--status-failed-ink); font-family: inherit; font-size: 12px;
   }
   .confirm-text { color: #ddd; }
 
@@ -895,14 +884,14 @@
   textarea.multi:read-only { color: #aaa; }
 
   select.enum {
-    background: #1e1e1e; border: 1px solid #2a2a2d; outline: none;
+    background: var(--bg-input); border: 1px solid #2a2a2d; outline: none;
     color: #ddd; width: 100%; padding: 5px 8px; min-height: 30px;
     font-family: Consolas, monospace; font-size: 12px;
     appearance: none; -webkit-appearance: none;
     padding-right: 22px;
     background-image:
-      linear-gradient(45deg, transparent 50%, #888 50%),
-      linear-gradient(135deg, #888 50%, transparent 50%);
+      linear-gradient(45deg, transparent 50%, var(--text-secondary) 50%),
+      linear-gradient(135deg, var(--text-secondary) 50%, transparent 50%);
     background-position: calc(100% - 12px) 50%, calc(100% - 7px) 50%;
     background-size: 5px 5px; background-repeat: no-repeat;
   }
@@ -918,12 +907,12 @@
   span.toggle.locked { cursor: default; }
   .toggle .knob {
     position: absolute; top: 2px; left: 2px;
-    width: 14px; height: 14px; background: #888;
+    width: 14px; height: 14px; background: var(--text-secondary);
     border-radius: 50%; transition: .15s;
   }
   .toggle.on .knob { left: 16px; background: #6aa84f; }
   .toggle-label {
-    color: #ccc; font-size: 12px; font-family: Consolas, monospace;
+    color: var(--text-primary); font-size: 12px; font-family: Consolas, monospace;
   }
 
   .actions {
@@ -932,93 +921,100 @@
   .act {
     display: flex; align-items: center; justify-content: center;
     background: transparent; border: none; cursor: pointer;
-    font-size: 12px; color: #888; width: 28px; padding: 0;
+    font-size: 12px; color: var(--text-secondary); width: 28px; padding: 0;
   }
   .act.edit:hover { color: var(--accent); }
   .act.commit { color: #6aa84f; font-size: 13px; }
   .act.commit:hover { color: #88c864; }
   .act.delete { color: #555; font-size: 14px; }
-  .act.delete:hover { color: #E74C3C; }
+  .act.delete:hover { color: var(--status-failed-ink); }
   .act.expand:hover { color: var(--accent); }
   .act.ack-merge { color: #C68E17; font-size: 13px; }
   .act.ack-merge:hover { color: #E0B040; }
-  .act.confirm-yes { color: #E74C3C; font-size: 13px; }
+  .act.confirm-yes { color: var(--status-failed-ink); font-size: 13px; }
   .act.confirm-yes:hover { color: #ff6b5b; }
-  .act.confirm-no { color: #888; font-size: 14px; }
-  .act.confirm-no:hover { color: #ccc; }
+  .act.confirm-no { color: var(--text-secondary); font-size: 14px; }
+  .act.confirm-no:hover { color: var(--text-primary); }
   .act-spacer { width: 28px; }
 
   .row-error {
     padding: 4px 8px 6px 36px;
-    font-size: 11px; color: #E74C3C;
-    background: #1e1e1e; border-top: 1px solid #2a2a2d;
+    font-size: 11px; color: var(--status-failed-ink);
+    background: var(--bg-input); border-top: 1px solid #2a2a2d;
   }
   .row-merge-notice {
     padding: 4px 8px 6px 36px;
     font-size: 11px; color: #C68E17;
-    background: #1e1e1e; border-top: 1px solid #2a2a2d;
+    background: var(--bg-input); border-top: 1px solid #2a2a2d;
   }
 
   .add-variant-btn {
-    margin-top: 6px; background: transparent; color: #888;
+    margin-top: 6px; background: transparent; color: var(--text-secondary);
     border: 1px dashed var(--border); border-radius: 4px;
     width: 100%; padding: 6px 8px; font-size: 11px;
     cursor: pointer; font-family: inherit;
   }
-  .add-variant-btn:hover:not(:disabled) { color: #ccc; border-color: #555; }
+  .add-variant-btn:hover:not(:disabled) { color: var(--text-primary); border-color: #555; }
   .add-variant-btn:disabled { color: #444; border-color: #2a2a2d; cursor: not-allowed; }
 
   .add-variant-inline {
-    width: 100%; padding: 6px 8px; background: transparent; color: #888;
+    width: 100%; padding: 6px 8px; background: transparent; color: var(--text-secondary);
     border: none; border-top: 1px dashed var(--border);
     font-size: 11px; cursor: pointer; font-family: inherit; text-align: center;
   }
-  .add-variant-inline:hover:not(:disabled) { color: #ccc; background: #202022; }
+  .add-variant-inline:hover:not(:disabled) { color: var(--text-primary); background: #202022; }
   .add-variant-inline:disabled { color: #444; cursor: not-allowed; }
 
   /* Bind chip + picker */
   .row.bound .gutter { color: var(--accent); }
   .bound-widget { gap: 8px; }
   .bound-chip {
-    background: rgba(74,144,217,0.15);
-    color: var(--accent); border: 1px solid rgba(74,144,217,0.4);
+    background: color-mix(in srgb, var(--accent) 15%, transparent);
+    color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
     padding: 2px 6px; border-radius: 3px; font-size: 11px;
     font-family: Consolas, monospace;
   }
-  .bound-resolved { color: #888; font-size: 11px; font-family: Consolas, monospace; }
+  .bound-resolved { color: var(--text-secondary); font-size: 11px; font-family: Consolas, monospace; }
   .act.bind:hover { color: var(--accent); }
-  .act.unbind:hover { color: #E74C3C; }
+  .act.unbind:hover { color: var(--status-failed-ink); }
 
   .bind-picker {
     background: #1b1b1d; border: 1px solid var(--accent); border-radius: 3px;
     padding: 4px; margin: 4px 0;
   }
   .bind-picker-empty {
-    color: #888; font-size: 11px; padding: 8px; font-style: italic;
+    color: var(--text-secondary); font-size: 11px; padding: 8px; font-style: italic;
   }
   .bind-picker-list { display: flex; flex-direction: column; gap: 2px; }
   .bind-picker-item {
     display: grid; grid-template-columns: 1fr auto auto; gap: 8px;
-    background: transparent; border: none; color: #ccc;
+    background: transparent; border: none; color: var(--text-primary);
     text-align: left; padding: 4px 8px; cursor: pointer; font-size: 11px;
     font-family: Consolas, monospace;
   }
   .bind-picker-item:hover:not(:disabled) { background: #094771; }
   .bind-picker-item.incompatible { color: #555; cursor: not-allowed; }
   .bind-picker-item.incompatible:hover { background: transparent; }
-  .picker-type { color: #888; font-size: 10px; }
+  .picker-type { color: var(--text-secondary); font-size: 10px; }
   .picker-value { color: #6aa84f; font-size: 10px; max-width: 80px; overflow: hidden; text-overflow: ellipsis; }
   .bind-picker-cancel {
     margin-top: 4px; width: 100%;
-    background: transparent; border: 1px solid var(--border); color: #888;
+    background: transparent; border: 1px solid var(--border); color: var(--text-secondary);
     padding: 4px; border-radius: 3px; cursor: pointer; font-size: 11px;
   }
-  .bind-picker-cancel:hover { color: #ccc; border-color: #555; }
+  .bind-picker-cancel:hover { color: var(--text-primary); border-color: #555; }
 
-  /* Patterns hint chip on column_of_input combobox */
-  .pattern-hint {
-    color: #C68E17; font-size: 10px; padding: 0 4px;
-    border: 1px solid var(--border); border-radius: 2px;
-    cursor: help;
+  /* An options row anchors the picker's list, which spans the value box;
+     while the list is open the box lets it overflow. */
+  .row.options-row { position: relative; }
+  /* The value column takes the width left over, never the box's own text
+     width, so the actions stay inside a narrow Inspector. */
+  .row.options-row { grid-template-columns: 28px minmax(0, 1fr) auto; }
+  .row.options-row .widget { min-width: 0; }
+  /* The value box takes the controls blue while its picker is open or its
+     options box has focus. */
+  .single-box:has(:global(.opts-picker.focus)), .multi-box:has(:global(.opts-picker.focus)) {
+    border-color: var(--accent);
   }
+  .single-box:has(:global(.opts-list)), .multi-box:has(:global(.opts-list)) { overflow: visible; }
 </style>

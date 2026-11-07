@@ -209,25 +209,25 @@
     white-space: nowrap;
   }
   .badge.busy {
-    background: rgba(74, 144, 217, 0.15);
-    border-color: rgba(74, 144, 217, 0.5);
+    background: color-mix(in srgb, var(--accent) 15%, transparent);
+    border-color: color-mix(in srgb, var(--accent) 50%, transparent);
     color: var(--accent);
   }
   .badge.warn {
-    background: rgba(230, 175, 60, 0.12);
-    border-color: rgba(230, 175, 60, 0.5);
-    color: #E6AF3C;
+    background: color-mix(in srgb, var(--marker-light) 10%, transparent);
+    border-color: color-mix(in srgb, var(--marker-light) 50%, transparent);
+    color: var(--marker-light);
   }
   .badge.done {
-    background: rgba(80, 200, 120, 0.12);
-    border-color: rgba(80, 200, 120, 0.5);
-    color: #50C878;
+    background: color-mix(in srgb, var(--status-ok) 12%, transparent);
+    border-color: color-mix(in srgb, var(--status-ok) 50%, transparent);
+    color: var(--status-ok);
   }
   .spin {
     display: inline-block;
     width: 11px;
     height: 11px;
-    border: 2px solid rgba(74, 144, 217, 0.3);
+    border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
     border-top-color: var(--accent);
     border-radius: 50%;
     animation: sp 1s linear infinite;
@@ -239,7 +239,7 @@
     top: calc(100% + 8px);
     right: 0;
     width: 285px;
-    background: #252526;
+    background: var(--bg-panel);
     border: 1px solid var(--border);
     border-radius: 8px;
     box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
@@ -253,7 +253,7 @@
   .bar {
     height: 7px;
     border-radius: 999px;
-    background: #1e1e1e;
+    background: var(--bg-input);
     overflow: hidden;
     margin: 7px 0 4px;
     border: 1px solid var(--border);
@@ -308,8 +308,8 @@
     text-align: left;
   }
   .run-count { flex-shrink: 0; }
-  .run-count.ok { color: #50C878; }
-  .caret { color: #666; margin-right: 4px; }
+  .run-count.ok { color: var(--status-ok); }
+  .caret { color: var(--text-muted); margin-right: 4px; }
   .outs {
     margin: 4px 0 2px 14px;
     border-left: 1px solid var(--border);
@@ -326,10 +326,10 @@
   }
   .oname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ostatus { flex-shrink: 0; }
-  .ostatus.ok { color: #50C878; }
+  .ostatus.ok { color: var(--status-ok); }
   .ostatus.busy { color: var(--accent); }
-  .ostatus.pend { color: #666; }
-  .ostatus.bad { color: #E74C3C; }
+  .ostatus.pend { color: var(--text-muted); }
+  .ostatus.bad { color: var(--status-failed-ink); }
   .archive-now {
     margin-top: 8px;
     padding: 5px 12px;

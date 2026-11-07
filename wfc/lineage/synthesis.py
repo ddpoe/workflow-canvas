@@ -35,7 +35,7 @@ from typing import Any, Protocol
 
 from axiom_annotations import AutoStep, task, workflow
 
-from wfc.contracts import COLLAPSED_SAMPLE
+from wfc.contracts import COLLAPSED_SAMPLE, DRAFT_PIN
 from wfc.lineage.relation import RunRecord
 
 __all__ = [
@@ -261,6 +261,10 @@ def _mint_nodes(
             "params": dict(run.inputs or {}),
             "version": run.versionIdentity,
         }
+        folder = getattr(run, "folder", None)
+        if run.versionIdentity == DRAFT_PIN and folder:
+            # A draft step runs from its draft's folder.
+            method_node["folder"] = folder
         if run.nid:
             method_node["label"] = run.nid
         nodes.append(method_node)

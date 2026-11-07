@@ -29,6 +29,8 @@ NODE_KEYS = frozenset({
     "id", "type", "label", "position",
     # method nodes
     "module", "method", "params", "version", "output_ext",
+    # a node pinned to its method's draft names the draft's folder
+    "folder",
     # what enrichment writes into the frozen copy, and the env alias
     "slot_outputs", "slot_types", "env", "env_strategy",
     # system nodes (input_selector, run_reference); a selector's

@@ -29,14 +29,12 @@ inputs:
   data:
     type: .csv
     description: the table to read
-    columns:
-      strict: [a, b]
 outputs:
   table:
     type: .csv
     description: the table written
-    columns:
-      strict: [x]
+    options:
+      fixed: [x, y]
 params:
   count:
     type: int
@@ -50,14 +48,14 @@ params:
     default: 1.0
   col:
     type: str
-    column_of_input: data
+    options_from: data
 """
 
 #: The baseline with every mapping's keys in another order and the comments moved.
 REORDERED = """\
 params:
   col:
-    column_of_input: data
+    options_from: data
     type: str
   ratio:
     default: 1.0
@@ -71,14 +69,12 @@ params:
     type: int
 outputs:
   table:
-    columns:
-      strict: [x]
     description: the table written
+    options:
+      fixed: [x, y]
     type: .csv
 inputs:
   data:
-    columns:
-      strict: [a, b]
     description: the table to read
     type: .csv
 gpus: false
@@ -103,10 +99,9 @@ EDITS = {
                        True),
     "param-default": (_edit("    default: 1\n", "    default: 2\n"), True),
     "param-constraint": (_edit("      max: 5\n", "      max: 6\n"), True),
-    "param-column-of-input": (_edit("    column_of_input: data\n",
-                                    "    column_of_input: data\n    new_column: true\n"),
-                              True),
-    "param-column-of-input-removed": (_edit("    column_of_input: data\n", ""), True),
+    "param-options-from": (_edit("    options_from: data\n",
+                                 "    options_from: [data, other]\n"), True),
+    "param-options-from-removed": (_edit("    options_from: data\n", ""), True),
     "param-other-key": (_edit("    default: 1.0\n", "    default: 1.0\n    widget: slider\n"),
                         True),
     "param-added": (BASELINE + "  extra:\n    type: bool\n", True),
@@ -118,14 +113,13 @@ EDITS = {
                                    "    description: the table to read\n"
                                    "    required: false\n"), True),
     "input-type": (_edit("  data:\n    type: .csv\n", "  data:\n    type: .tsv\n"), True),
-    "input-columns": (_edit("      strict: [a, b]\n", "      strict: [a, c]\n"), True),
-    "input-columns-list-order": (_edit("      strict: [a, b]\n", "      strict: [b, a]\n"),
-                                 True),
     # --- an output slot's declaration ---
     "output-required": (_edit("    description: the table written\n",
                               "    description: the table written\n"
                               "    required: false\n"), True),
-    "output-columns": (_edit("      strict: [x]\n", "      strict: [x, y]\n"), True),
+    "output-options": (_edit("      fixed: [x, y]\n", "      fixed: [x, z]\n"), True),
+    "output-options-list-order": (_edit("      fixed: [x, y]\n", "      fixed: [y, x]\n"),
+                                  True),
     "output-contents": (_edit("    description: the table written\n",
                               "    description: the table written\n"
                               "    contents: [part.csv]\n"), True),

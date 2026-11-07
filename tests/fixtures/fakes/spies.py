@@ -9,6 +9,7 @@ proves nothing less than the unpatched call would, which is why its
 from __future__ import annotations
 
 import pathlib
+import threading
 
 from ._entry import spy
 
@@ -284,3 +285,156 @@ def spy_pull_again(monkeypatch) -> list[str]:
 
     monkeypatch.setattr(resolve, "pull_again", pulling)
     return pulled
+
+
+class ConversionLog:
+    """What ``spy_image_conversions`` saw: the conversions in flight, and a hold on them.
+
+    Attributes:
+        started: The displayed names converted, in the order they started.
+        running: Conversions in flight now.
+        peak_running: The most conversions ever in flight at once.
+    """
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.started: list[str] = []
+        self.running = 0
+        self.peak_running = 0
+        self._turn = threading.Condition(self.lock)
+        # How many held conversions may still go on; ``None`` while nothing is held.
+        self._permits: int | None = None
+
+    def hold(self) -> None:
+        """Stop every conversion that starts from now on before it decodes."""
+        with self._turn:
+            self._permits = 0
+
+    def let(self, count: int = 1) -> None:
+        """Let ``count`` held conversions go on, whichever reach their turn first."""
+        with self._turn:
+            self._permits = (self._permits or 0) + count
+            self._turn.notify_all()
+
+    def release(self) -> None:
+        """Let every held conversion go on, and hold none from now on."""
+        with self._turn:
+            self._permits = None
+            self._turn.notify_all()
+
+    def _wait_turn(self) -> None:
+        with self._turn:
+            self._turn.wait_for(lambda: self._permits is None or self._permits > 0,
+                                timeout=30)
+            if self._permits:
+                self._permits -= 1
+
+
+@spy(
+    boundary="wfc.canvas.previews.convert_image -- every conversion the image "
+             "route runs, called on the conversion pool's threads in its turn",
+    preserves="everything: each conversion runs; the spy counts the "
+              "conversions in flight and the order they start in and, while "
+              "the log holds them, stops each one before it decodes until "
+              "the test lets it go",
+    not_proven="the process's real peak memory during a decode (measured "
+               "once outside the suite)",
+    backed_by="pm_mvp::tests.test_artifact_image_gate::"
+              "test_no_more_than_two_conversions_run_at_once",
+)
+def spy_image_conversions(monkeypatch) -> ConversionLog:
+    """Record every image conversion in flight, and hold them on demand.
+
+    Considered: ``spy_claim_resolutions``'s call-through pattern, which this
+    follows (the real conversion still runs); no existing entry stands at
+    the conversion pool's boundary or can hold a conversion while others
+    queue.
+
+    Args:
+        monkeypatch: An active ``pytest.MonkeyPatch``.
+
+    Returns:
+        The log the conversions are recorded in.
+    """
+    from wfc.canvas import previews
+
+    log = ConversionLog()
+    real = previews.convert_image
+
+    def converting(path, name, size, memory_mb):
+        with log.lock:
+            log.started.append(name)
+            log.running += 1
+            log.peak_running = max(log.peak_running, log.running)
+        try:
+            log._wait_turn()
+            return real(path, name, size, memory_mb)
+        finally:
+            with log.lock:
+                log.running -= 1
+
+    monkeypatch.setattr(previews, "convert_image", converting)
+    return log
+
+
+class CheckoutBuildLog:
+    """What ``spy_checkout_builds`` saw: the checkout builds in flight.
+
+    Attributes:
+        lock: Guards the counts, which the building threads update.
+        builds: How many times a checkout's members were placed.
+        running: Builds in flight now.
+        peak_running: The most builds ever in flight at once.
+    """
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.builds = 0
+        self.running = 0
+        self.peak_running = 0
+
+
+@spy(
+    boundary="wfc.storage.cache._place_members -- the step of the one checkout "
+             "that writes a directory entry's members into its destination",
+    preserves="everything: each build places every member; the spy counts the "
+              "builds and the builds in flight, and keeps each one in flight "
+              "for ``hold_s`` seconds before it places, so that overlapping "
+              "builds of one destination are seen on every OS",
+    not_proven="which interleaving of two unserialised builds fails, and how "
+               "(on POSIX with reflinked or copied views, a rename into a "
+               "directory another build has just made read-only)",
+    backed_by="pm_mvp::tests.test_views::"
+              "test_concurrent_first_reads_of_a_directory_build_its_checkout_once",
+)
+def spy_checkout_builds(monkeypatch, hold_s: float = 0.2) -> CheckoutBuildLog:
+    """Count every checkout build and the builds in flight at once.
+
+    Args:
+        monkeypatch: An active ``pytest.MonkeyPatch``.
+        hold_s: How long each build stays in flight before it places its members.
+
+    Returns:
+        The log the builds are recorded in.
+    """
+    import time
+
+    from wfc.storage import cache
+
+    log = CheckoutBuildLog()
+    real = cache._place_members
+
+    def placing(*args, **kwargs):
+        with log.lock:
+            log.builds += 1
+            log.running += 1
+            log.peak_running = max(log.peak_running, log.running)
+        try:
+            time.sleep(hold_s)
+            return real(*args, **kwargs)
+        finally:
+            with log.lock:
+                log.running -= 1
+
+    monkeypatch.setattr(cache, "_place_members", placing)
+    return log

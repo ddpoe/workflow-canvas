@@ -62,11 +62,13 @@
       <LabelTag kind="env" label="env" value={env} title={env} />
     {/if}
   </span>
+  <!-- The Update column: a draft row's, empty on a method row so the two line up. -->
+  <span class="cell"></span>
   <span class="cell end">
     <button type="button" class="kebab" class:on={menuOpen} data-testid="method-menu-button"
             aria-label={`${method.name} actions`} aria-haspopup="menu" aria-expanded={menuOpen}
             onclick={(e) => { e.stopPropagation(); onMenu(e.currentTarget as HTMLElement); }}
-            onkeydown={(e) => e.stopPropagation()}>⋯</button>
+            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation(); }}>⋯</button>
   </span>
 </div>
 

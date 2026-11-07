@@ -9,12 +9,26 @@
  *   3. Sibling-failure cascades into cancelled.becauseUpstream on the spawned nodeRunActor
  */
 import { describe, expect, it, vi } from 'vitest';
-import { createActor, fromCallback, fromPromise, type EventObject } from 'xstate';
-import { makePipelineRunMachine } from '../pipelineRun.machine';
+import {
+  createActor,
+  fromCallback,
+  fromPromise,
+  type CallbackActorLogic,
+  type EventObject,
+  type PromiseActorLogic,
+} from 'xstate';
+import { makePipelineRunMachine, type PipelineRunEvent } from '../pipelineRun.machine';
+import type { PollInput, SubmitInput, SubmitOutput } from '../services';
+import type { StreamingInput } from '../streaming.machine';
 
 // Trivial no-op SSE stub the spawned nodeRunActors can invoke when they
 // hit `running`. We don't care about streaming in pipelineRun tests.
-const noopSSE = fromCallback(() => () => {});
+const noopSSE = fromCallback<EventObject, StreamingInput>(() => () => {});
+// A poller that never reports: the default when a test drives no ticks.
+const noopPoll = fromCallback<EventObject, PollInput>(() => () => {});
+
+type SubmitLogic = PromiseActorLogic<SubmitOutput, SubmitInput>;
+type PollLogic = CallbackActorLogic<EventObject, PollInput>;
 
 function startWith({
   submit,
@@ -22,8 +36,8 @@ function startWith({
   pipeline,
   onCommitAll,
 }: {
-  submit?: ReturnType<typeof fromPromise>;
-  poll?: ReturnType<typeof fromCallback>;
+  submit?: SubmitLogic;
+  poll?: PollLogic;
   pipeline: { nodes: Array<{ id: string }> };
   onCommitAll?: () => void;
 }) {
@@ -31,9 +45,9 @@ function startWith({
     actors: {
       submitPipeline:
         submit ??
-        (fromPromise(async () => ({ jobId: 'job-1' })) as never),
-      pollNodeStatus: (poll ?? noopSSE) as never,
-      streamingActor: noopSSE as never,
+        fromPromise<SubmitOutput, SubmitInput>(async () => ({ jobId: 'job-1' })),
+      pollNodeStatus: poll ?? noopPoll,
+      streamingActor: noopSSE,
       // The `preflight → submitting` transition is gated on this actor
       // resolving. Tests that just want submit to fire pass an
       // immediate-resolve.
@@ -49,9 +63,9 @@ function startWith({
 
 describe('pipelineRunActor', () => {
   it('happy path: idle → preflight → submitting → polling → done', async () => {
-    let pollSendBack: ((evt: EventObject) => void) | null = null;
-    const submit = fromPromise(async () => ({ jobId: 'job-7' }));
-    const poll = fromCallback<EventObject, EventObject>(({ sendBack }) => {
+    let pollSendBack: ((evt: PipelineRunEvent) => void) | null = null;
+    const submit = fromPromise<SubmitOutput, SubmitInput>(async () => ({ jobId: 'job-7' }));
+    const poll = fromCallback<EventObject, PollInput>(({ sendBack }) => {
       pollSendBack = sendBack;
       return () => {};
     });
@@ -121,9 +135,9 @@ describe('pipelineRunActor', () => {
   });
 
   it('double-click RUN_CLICKED is a no-op while not in idle', async () => {
-    const submit = fromPromise(async () => ({ jobId: 'job-1' }));
+    const submit = fromPromise<SubmitOutput, SubmitInput>(async () => ({ jobId: 'job-1' }));
     let calls = 0;
-    const wrappedSubmit = fromPromise(async () => {
+    const wrappedSubmit = fromPromise<SubmitOutput, SubmitInput>(async () => {
       calls += 1;
       return { jobId: 'job-1' };
     });
@@ -147,9 +161,9 @@ describe('pipelineRunActor', () => {
   });
 
   it('UPSTREAM_FAILED from sibling cascades into a cancelled.becauseUpstream child', async () => {
-    let pollSendBack: ((evt: EventObject) => void) | null = null;
-    const submit = fromPromise(async () => ({ jobId: 'job-1' }));
-    const poll = fromCallback<EventObject, EventObject>(({ sendBack }) => {
+    let pollSendBack: ((evt: PipelineRunEvent) => void) | null = null;
+    const submit = fromPromise<SubmitOutput, SubmitInput>(async () => ({ jobId: 'job-1' }));
+    const poll = fromCallback<EventObject, PollInput>(({ sendBack }) => {
       pollSendBack = sendBack;
       return () => {};
     });
@@ -274,6 +288,27 @@ describe('pipelineRunActor', () => {
     expect(snap.context.pipelineError?.kind).toBe('not_runnable_docker');
     expect(snap.context.pipelineError?.hint).toBe('Start Docker Desktop and try again.');
     expect(snap.context.pipelineError?.message).toContain('daemon is not running');
+    expect(snap.context.pipelineError?.items).toBeUndefined();
+    actor.stop();
+  });
+
+  it('a refused Run with listed refusals reaches the banner as its header and one item per refusal', async () => {
+    const param = "Node 'a': parameter 'label_column' is not declared by draft; remove it";
+    const unwired = "Node 'a': declares input 'mask', which nothing is connected to.";
+    const submit = fromPromise(async () => {
+      throw { message: 'Cannot run — validation errors:', items: [param, unwired], validationErrors: [param, unwired] };
+    });
+    const actor = startWith({ submit: submit as never, pipeline: { nodes: [{ id: 'a' }] } });
+
+    actor.send({ type: 'RUN_CLICKED' });
+    await new Promise(r => setTimeout(r, 0));
+    await new Promise(r => setTimeout(r, 0));
+
+    const snap = actor.getSnapshot();
+    expect(snap.value).toBe('idle');
+    expect(snap.context.pipelineError).toEqual({
+      message: 'Cannot run — validation errors:', kind: 'unknown', hint: undefined, items: [param, unwired],
+    });
     actor.stop();
   });
 

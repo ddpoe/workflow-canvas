@@ -1,7 +1,7 @@
 """
-Unit Tests: the check_cache verb answers with the run the claim phase would reuse
+Unit Tests: the cache lookup answers with the run the claim phase would reuse
 
-Validates the verb's cache answer, given through the claim phase's one
+Validates the cache answer (``cache_hit``: the claim's key recipe), given through the claim phase's one
 cache-hit lookup (identical code, params, env and inputs; archive present):
   - ``pre_run`` stores slot names in ``RunInput.input_name``
   - the exact fan-in is a hit; a subset of the parents is a miss
@@ -17,6 +17,7 @@ import shutil
 from axiom_annotations import workflow, Step
 
 from tests.fixtures.routes import completed_run
+from tests.fixtures.routes.runs import cache_hit
 from tests.harness import Scenario, node, selector, wire
 from tests.harness.scenario import SELECTOR_ID
 
@@ -55,7 +56,7 @@ def _fan_in_scenario():
 
 
 def _run_id(driven) -> str:
-    """The run id as the CLI prints it."""
+    """The run id, as text."""
     return str(driven.run_id)
 
 
@@ -63,8 +64,8 @@ def _run_id(driven) -> str:
 # Tests
 # =============================================================================
 
-def test_fan_in_matching(cli, tmp_project, monkeypatch):
-    """The claim stores the slot names of its parents; check_cache finds
+def test_fan_in_matching(tmp_project, monkeypatch):
+    """The claim stores the slot names of its parents; the lookup finds
     the exact fan-in and rejects a subset of the parents."""
 
     scn = _fan_in_scenario()
@@ -91,30 +92,22 @@ def test_fan_in_matching(cli, tmp_project, monkeypatch):
         assert actual == {("sources", int(run_a)), ("sources", int(run_b))}
 
     # ── Exact match → cache hit ───────────────────────────────────────────
-    r = cli("check_cache", "--method", "csv_merge",
-            "--module", "csv_tools", "--sample", "S1",
-            "--params", "{}",
-            "--parent-run-id", f"sources:{run_a}",
-            "--parent-run-id", f"sources:{run_b}")
-    assert r.stdout.strip() == merge_id
+    r = cache_hit("csv_merge", "csv_tools", "S1", {},
+                  [f"sources:{run_a}", f"sources:{run_b}"])
+    assert str(r) == merge_id
 
     # ── Subset of parents → miss ──────────────────────────────────────────
-    r = cli("check_cache", "--method", "csv_merge",
-            "--module", "csv_tools", "--sample", "S1",
-            "--params", "{}",
-            "--parent-run-id", f"sources:{run_a}")
-    assert r.stdout.strip() == "NONE"
+    r = cache_hit("csv_merge", "csv_tools", "S1", {},
+                  [f"sources:{run_a}"])
+    assert r is None
 
     # ── Reversed order → still a hit (the input fingerprint is sorted) ────
-    r = cli("check_cache", "--method", "csv_merge",
-            "--module", "csv_tools", "--sample", "S1",
-            "--params", "{}",
-            "--parent-run-id", f"sources:{run_b}",
-            "--parent-run-id", f"sources:{run_a}")
-    assert r.stdout.strip() == merge_id
+    r = cache_hit("csv_merge", "csv_tools", "S1", {},
+                  [f"sources:{run_b}", f"sources:{run_a}"])
+    assert str(r) == merge_id
 
 
-def test_params_mismatch(cli, tmp_project, monkeypatch):
+def test_params_mismatch(tmp_project, monkeypatch):
     """Same method+sample+parents but different params → cache miss."""
 
     run_id = _run_id(completed_run(
@@ -122,19 +115,15 @@ def test_params_mismatch(cli, tmp_project, monkeypatch):
         sample=_SAMPLE, params={"column": "condition"}))
 
     # Exact params → hit
-    r = cli("check_cache", "--method", "csv_merge",
-            "--module", "csv_tools", "--sample", "S1",
-            "--params", '{"column": "condition"}')
-    assert r.stdout.strip() == run_id
+    r = cache_hit("csv_merge", "csv_tools", "S1", {"column": "condition"})
+    assert str(r) == run_id
 
     # Different params → miss
-    r = cli("check_cache", "--method", "csv_merge",
-            "--module", "csv_tools", "--sample", "S1",
-            "--params", '{"column": "replicate"}')
-    assert r.stdout.strip() == "NONE"
+    r = cache_hit("csv_merge", "csv_tools", "S1", {"column": "replicate"})
+    assert r is None
 
 
-def test_no_parents_returns_newest(cli, tmp_project, monkeypatch):
+def test_no_parents_returns_newest(tmp_project, monkeypatch):
     """Two identical parentless runs, both readable → cache returns the newer one."""
     from pathlib import Path
 
@@ -172,23 +161,19 @@ def test_no_parents_returns_newest(cli, tmp_project, monkeypatch):
     archive_outputs(Path(tmp_project), run_id=newer.run_id)
     assert archived_hashes(newer) == hashes
 
-    r = cli("check_cache", "--method", "csv_merge",
-            "--module", "csv_tools", "--sample", "S1",
-            "--params", "{}")
-    assert r.stdout.strip() == _run_id(newer)
+    r = cache_hit("csv_merge", "csv_tools", "S1", {})
+    assert str(r) == _run_id(newer)
 
 
-def test_missing_archive_is_cache_miss(cli, tmp_project, monkeypatch):
+def test_missing_archive_is_cache_miss(tmp_project, monkeypatch):
     """Completed run exists in DB but archive deleted → cache miss."""
     run = completed_run(tmp_project, monkeypatch=monkeypatch, method=_METHOD,
                         module=_MODULE, sample=_SAMPLE)
     run_id = _run_id(run)
 
     # Verify it's a hit first
-    r = cli("check_cache", "--method", "csv_merge",
-            "--module", "csv_tools", "--sample", "S1",
-            "--params", "{}")
-    assert r.stdout.strip() == run_id
+    r = cache_hit("csv_merge", "csv_tools", "S1", {})
+    assert str(r) == run_id
 
     # Delete the archive
     from wfc.storage.cache import _make_writable
@@ -196,10 +181,8 @@ def test_missing_archive_is_cache_miss(cli, tmp_project, monkeypatch):
     shutil.rmtree(run.archive_dir)
 
     # Now it's a miss
-    r = cli("check_cache", "--method", "csv_merge",
-            "--module", "csv_tools", "--sample", "S1",
-            "--params", "{}")
-    assert r.stdout.strip() == "NONE"
+    r = cache_hit("csv_merge", "csv_tools", "S1", {})
+    assert r is None
 
 
 @workflow(
@@ -207,7 +190,7 @@ def test_missing_archive_is_cache_miss(cli, tmp_project, monkeypatch):
             "entries — the same method run with different params for different "
             "samples has no false cache hits and no cross-sample contamination"
 )
-def test_differential_qc_cache(cli, tmp_project, monkeypatch):
+def test_differential_qc_cache(tmp_project, monkeypatch):
     """Differential QC scenario: Rep2 uses threshold 2.5 (standard), Rep3 uses
     threshold 2.3 (dim_corrected). Each sample must cache independently — a
     query with the wrong params or wrong sample must always miss."""
@@ -249,38 +232,28 @@ def test_differential_qc_cache(cli, tmp_project, monkeypatch):
         purpose="Confirm that querying each sample with the other sample's params "
                 "returns no match — different thresholds must never share a cache entry")
     # Rep3 query with Rep2's params → miss (correct sample, wrong params)
-    r = cli("check_cache", "--method", "feature_qc",
-            "--module", "data_preprocessing", "--sample", "Rep3_siRNA",
-            "--params", params_standard)
-    assert r.stdout.strip() == "NONE", (
+    r = cache_hit("feature_qc", "data_preprocessing", "Rep3_siRNA", json.loads(params_standard))
+    assert r is None, (
         "Rep3 with standard threshold should not match the Rep2 run"
     )
 
     # Rep2 query with Rep3's params → miss (correct sample, wrong params)
-    r = cli("check_cache", "--method", "feature_qc",
-            "--module", "data_preprocessing", "--sample", "Rep2_siRNA",
-            "--params", params_dim_corrected)
-    assert r.stdout.strip() == "NONE", (
+    r = cache_hit("feature_qc", "data_preprocessing", "Rep2_siRNA", json.loads(params_dim_corrected))
+    assert r is None, (
         "Rep2 with dim-corrected threshold should not match the Rep3 run"
     )
 
     # Rep2 query with Rep2's params but Rep3 sample → miss (wrong sample)
-    r = cli("check_cache", "--method", "feature_qc",
-            "--module", "data_preprocessing", "--sample", "Rep3_siRNA",
-            "--params", params_dim_corrected)
-    assert r.stdout.strip() == run_rep3
+    r = cache_hit("feature_qc", "data_preprocessing", "Rep3_siRNA", json.loads(params_dim_corrected))
+    assert str(r) == run_rep3
 
     口 = Step(
         step_num=5,
         name="Verify same-run cache hit",
         purpose="Confirm that querying each sample with its own params returns "
                 "the correct run — no spurious misses after the cross-sample checks")
-    r = cli("check_cache", "--method", "feature_qc",
-            "--module", "data_preprocessing", "--sample", "Rep2_siRNA",
-            "--params", params_standard)
-    assert r.stdout.strip() == run_rep2
+    r = cache_hit("feature_qc", "data_preprocessing", "Rep2_siRNA", json.loads(params_standard))
+    assert str(r) == run_rep2
 
-    r = cli("check_cache", "--method", "feature_qc",
-            "--module", "data_preprocessing", "--sample", "Rep3_siRNA",
-            "--params", params_dim_corrected)
-    assert r.stdout.strip() == run_rep3
+    r = cache_hit("feature_qc", "data_preprocessing", "Rep3_siRNA", json.loads(params_dim_corrected))
+    assert str(r) == run_rep3

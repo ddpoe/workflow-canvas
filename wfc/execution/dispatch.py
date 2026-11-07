@@ -321,23 +321,16 @@ def run_dispatch(
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "_run_context.json").write_text(json.dumps(context, indent=2, default=str))
 
-    # Set WFC_* env vars
+    # The step's WFC_* values, host-side (WFC_INPUT_PATHS keeps every slot a
+    # list). The container's variables are built from them by the one
+    # builder at the argv step; the host process that launches the
+    # container gets the same values untranslated.
+    from .container_vars import container_variables, step_variables
+    step_env = step_variables(
+        run_id=run_id, run_dir=str(run_dir.resolve()), sample=sample,
+        params=params, node_id=node_id, pipeline_id=pipeline_id,
+        variant=variant, slot_paths=slot_paths)
     wfc_env = os.environ.copy()
-    wfc_env.update({
-        "WFC_RUN_ID": str(run_id),
-        "WFC_RUN_DIR": str(run_dir.resolve()),
-        "WFC_SAMPLE": sample,
-        "WFC_PARAMS": json.dumps(params),
-        "WFC_NODE_ID": node_id,
-        "WFC_PIPELINE_ID": pipeline_id,
-        "WFC_VARIANT": variant,
-    })
-    # Fan-in: expose all parent outputs grouped by slot so method.py can
-    # load multi-input dicts via WFC_INPUT_PATHS.
-    if slot_paths:
-        wfc_env["WFC_INPUT_PATHS"] = json.dumps(slot_paths)
-
-    wfc_env["PYTHONUNBUFFERED"] = "1"
 
     口 = Step(step_num=2, name="Resolve container image",
              purpose="Read the version's list entry: its env (through the one "
@@ -346,7 +339,7 @@ def run_dispatch(
                      "(a claimed version the list no longer holds ends "
                      "changed-since-claim); read executor and gpus from the "
                      "copy's method.yaml, and enforce container-only execution")
-    from ..contracts import WFC_ENV_VARS, parse_method_yaml
+    from ..contracts import declared_names, parse_method_yaml
     from ..registration import version_entry
     from .node_env import resolve_node_env
 
@@ -357,6 +350,7 @@ def run_dispatch(
     # method.yaml: the directory the claim's resolver answered with.
     method_executor = "local"
     method_gpus = False
+    declared: dict | None = None
     contract_dir = (Path(code_dir) if code_dir is not None
                     else Path(script_path).resolve().parent)
     try:
@@ -364,8 +358,12 @@ def run_dispatch(
         if contract is not None:
             method_executor = contract.get("executor") or "local"
             method_gpus = bool(contract.get("gpus", False))
+            declared = declared_names(contract.get("inputs"), contract.get("outputs"))
     except Exception:
         pass
+    # The launching host process: its own environment plus the step's
+    # variables, host-side (no PATH: the host's own stays).
+    wfc_env.update(container_variables(step=step_env, declared=declared))
 
     # The node's env, by the rule the pre-flights share: the env the method
     # is registered in, the one its cache key is over. A document's env and
@@ -433,12 +431,10 @@ def run_dispatch(
                 "error_message": error_msg, "error_traceback": error_msg}
 
     口 = Step(step_num=3, name="Build docker run command",
-             purpose="Set up per-run log paths, verify the method script exists on "
-                     "the host, and assemble the docker run argv: bind mounts, image "
-                     "ref, the env-interpreter + script inner command, and -e WFC_* "
+             purpose="Verify the method script exists on the host, and assemble "
+                     "the docker run argv: bind mounts, image ref, the "
+                     "env-interpreter + script inner command, and -e WFC_* "
                      "forwarding with host→container path translation")
-    stdout_log = run_dir / "stdout.log"
-    stderr_log = run_dir / "stderr.log"
 
     # SLURM carve-out: dispatch is local-only, so the slurm executor
     # ends here without starting anything. Exit-WITHOUT-record: no row
@@ -469,52 +465,22 @@ def run_dispatch(
         return {"ok": False, "ending": "script-missing",
                 "error_message": error_msg, "error_traceback": error_msg}
 
-    from ..environments import build_docker_command
-
-    # UID/GID: ``os.getuid()`` doesn't exist on Windows. Docker Desktop
-    # on Windows/macOS ignores ``--user`` anyway; on Linux stock Docker
-    # this is what keeps bind-mount writes from landing as root:root.
-    _uid = getattr(os, "getuid", lambda: 0)()
-    _gid = getattr(os, "getgid", lambda: 0)()
-
-    # DVC cache dir: <project_root>/.dvc/cache. The helper mounts it at
-    # /dvc-cache inside the container so input paths that point into the
-    # content-addressed store resolve there as they do on the host.
-    dvc_cache_dir = layout.dvc_cache_dir(project_root)
-    # The version's copy is bound read-only at its own /work path (the
-    # nested row), so the script path keeps its form under translation.
-    mounts = layout.mount_table(project_root, dvc_cache_dir, code_copy=code_dir)
-    from ..environments import accepts_read_only_binds
-    copy_writable = code_dir is not None and not accepts_read_only_binds("docker")
-
-    # Inner command: the method script runs DIRECTLY under the interpreter
-    # of the image the version recorded — the image needs nothing
-    # wfc-related. The outer host run-step remains sole owner of run-state
-    # (DB rows, cache keys, output collection); the container's only job is
-    # to execute the script with the WFC_* env vars forwarded below.
-    #
-    # Interpreter: Environments answers for the version's (env,
-    # env_fingerprint), from that image's captures; the env's current record
-    # is not read for it, so a version pinned to an older image keeps its
-    # interpreter after the env is re-registered. The pre-flights refused a
-    # version with no captures; one gone since ends here, never falling
-    # back to a bare ``python``. The value is a CONTAINER path — it must
-    # NOT go through translate_host_path below.
-    #
-    # Script-path translation: the snapshot script under the host project
-    # root becomes the same relative path under ``/work``, the bind-mount
-    # of ``project_root`` (Layout's mount table does the join).
-    script_in_container = layout.translate_host_path(str(_script_host), mounts)
-
-    from ..environments import CaptureError, version_interpreter
+    from ..environments import CaptureError, version_bin_dir, version_interpreter
     if entry is None:
         # A container node is dispatched only with its version entry; this
         # names the gap instead of an AttributeError below.
         raise RuntimeError(f"node '{node_id}': no method version entry to "
                            f"read the env image's interpreter from")
+    # Interpreter: Environments answers for the version's (env,
+    # env_fingerprint), from that image's captures; the env's current record
+    # is not read for it, so a version pinned to an older image keeps its
+    # interpreter after the env is re-registered. The pre-flights refused a
+    # version with no captures; one gone since ends here, never falling
+    # back to a bare ``python``.
     try:
         env_python = version_interpreter(env_name, entry.env_fingerprint,
                                          project_root)
+        env_bin = version_bin_dir(env_name, entry.env_fingerprint, project_root)
     except CaptureError as exc:
         error_msg = (
             f"node '{node_id}': version v{entry.label} of method "
@@ -527,158 +493,181 @@ def run_dispatch(
         )
         return {"ok": False, "ending": "no-container",
                 "error_message": error_msg, "error_traceback": error_msg}
-    inner_argv = [env_python, script_in_container]
 
+    def _claim_ties(invocation: dict) -> dict | None:
+        """The run row's two ties at the launch: the claimed code, the invocation record.
+
+        Immediately before the launch (and after script-missing, which keeps
+        its own ending), refuse to run code other than what the run row was
+        claimed under; then write the invocation record, so a method that
+        fails keeps it. A record that cannot be written stops the launch.
+        """
+        changed = _changed_since_claim(module_name, method_name, _script_host,
+                                       version, run_id, Path(project_root))
+        if changed is not None:
+            return {"ok": False, "ending": "changed-since-claim",
+                    "error_message": changed, "error_traceback": changed}
+        try:
+            _record_invocation(run_id, invocation)
+        except Exception as exc:
+            message = (f"could not record run {run_id}'s invocation, so the "
+                       f"method was not launched: {exc}")
+            return {"ok": False, "ending": "launch-failure",
+                    "launch_attempted": False, "error_message": message,
+                    "error_traceback": _tb.format_exc()}
+        return None
+
+    口 = AutoStep(step_num=4, name="Launch the method in its container")
+    launched = launch_container(
+        image_ref=container_image_ref, interpreter=env_python, env_bin=env_bin,
+        script=_script_host, project_root=Path(project_root), run_dir=run_dir,
+        step_env=step_env, declared=declared, host_env=wfc_env,
+        code_dir=code_dir, gpus=method_gpus, notes=notes,
+        before_launch=_claim_ties, copy_entry=entry)
+    return launched
+
+
+@task(purpose="Launch a method in its container and report how it ended: build "
+              "the docker argv over Layout's mount table with every container "
+              "variable from the one builder, hand the invocation to the "
+              "caller's pre-launch check, start the step log, run, re-check a "
+              "writable code copy and read the exit",
+      inputs="image ref, interpreter and env bin, the host script, the run "
+             "directory, the step's WFC_* values, the declared names, the code "
+             "copy, the step log's warnings, an optional pre-launch check",
+      outputs="success, or the failure ending (changed-since-claim / "
+              "launch-failure / method-failed, or the check's own) with its error",
+      critical="Knows no run id: a recorded run's ties to its row (the claim "
+               "check and the invocation record) arrive as the pre-launch "
+               "check, so the draft step shares this launch without them")
+def launch_container(*, image_ref: str, interpreter: str, env_bin: str | None,
+                     script: Path, project_root: Path, run_dir: Path,
+                     step_env: dict, declared: dict | None, host_env: dict,
+                     code_dir: str | None = None, gpus: bool = False,
+                     notes: list[str] | None = None,
+                     before_launch=None, copy_entry=None) -> dict:
+    """Run a method script in its env's container, writing the step's logs to *run_dir*.
+
+    Args:
+        image_ref: The image reference handed to Docker.
+        interpreter: The image's interpreter, a container path.
+        env_bin: The image's ``bin`` directory for ``PATH``, or ``None``.
+        script: The method script on the host, under the project root.
+        project_root: The project root, bound at ``/work``.
+        run_dir: Where ``stdout.log`` and ``stderr.log`` go (the step's
+            output directory).
+        step_env: The step's WFC_* values, host-side (``step_variables``).
+        declared: The method's declared names, or ``None``.
+        host_env: The environment of the host process that runs Docker.
+        code_dir: The code copy bound read-only at its own ``/work`` path,
+            or ``None``.
+        gpus: Whether to pass ``--gpus all``.
+        notes: Warnings that head the step log.
+        before_launch: ``before_launch(invocation) -> dict | None``, called
+            with the invocation record right before the launch; a dict it
+            returns is the ending and nothing starts.
+        copy_entry: The version's list entry, for dropping a written copy's
+            stamp; ``None`` for a copy no version owns.
+
+    Returns:
+        ``{"ok": True}`` when the method exits 0, else the failure ending.
+    """
+    import traceback as _tb
+
+    from ..environments import accepts_read_only_binds, build_docker_command
+    from .container_vars import container_variables
+    from .container_vars import env_flags as _env_flags
+
+    口 = Step(step_num=1, name="Build the docker run command",
+             purpose="Bind mounts from Layout's table (the code copy read-only "
+                     "when the backend allows it), the interpreter + translated "
+                     "script inner command, and every container variable from "
+                     "the one builder as -e flags")
+    stdout_log = run_dir / "stdout.log"
+    stderr_log = run_dir / "stderr.log"
+    # UID/GID: ``os.getuid()`` doesn't exist on Windows. Docker Desktop
+    # on Windows/macOS ignores ``--user`` anyway; on Linux stock Docker
+    # this is what keeps bind-mount writes from landing as root:root.
+    _uid = getattr(os, "getuid", lambda: 0)()
+    _gid = getattr(os, "getgid", lambda: 0)()
+    dvc_cache_dir = layout.dvc_cache_dir(project_root)
+    mounts = layout.mount_table(project_root, dvc_cache_dir, code_copy=code_dir)
+    copy_writable = code_dir is not None and not accepts_read_only_binds("docker")
+    # The script runs directly under the image's interpreter (a container
+    # path, never translated); the script itself is translated through the
+    # same table the binds are rendered from.
+    script_in_container = layout.translate_host_path(str(script), mounts)
     cmd = build_docker_command(
-        image_ref=container_image_ref,
-        project_root=project_root,
+        image_ref=image_ref, project_root=project_root,
         dvc_cache_dir=dvc_cache_dir,
-        run_step_argv=inner_argv,
-        uid=_uid,
-        gid=_gid,
-        gpus=method_gpus,
-        code_copy=code_dir,
+        inner_argv=[interpreter, script_in_container],
+        uid=_uid, gid=_gid, gpus=gpus, code_copy=code_dir,
     )
-
-    # Forward WFC_* env vars via -e flags. Do NOT forward PYTHONPATH
-    # into the container (host venv leakage is the entire reason for
-    # the container barrier).
-    #
-    # Path translation: WFC_RUN_DIR is a host absolute path, and
-    # WFC_INPUT_PATHS is a JSON dict/list of host absolute paths. The
-    # in-container method script reads these env vars; the project tree
-    # is bind-mounted at ``/work`` and the DVC cache at ``/dvc-cache``,
-    # so host paths under those roots must be rewritten before
-    # forwarding (otherwise the container hits nonexistent paths).
-    # Translation is Layout's one function over the same mount table the
-    # argv builder rendered its binds from.
-    env_flags: list[str] = []
-    for k in WFC_ENV_VARS:
-        if k not in wfc_env:
-            continue
-        value = wfc_env[k]
-        if k == "WFC_RUN_DIR":
-            value = layout.translate_host_path(value, mounts)
-        elif k == "WFC_INPUT_PATHS":
-            # JSON dict/list of paths -- decode, translate each leaf, re-encode.
-            try:
-                decoded = json.loads(value)
-            except (TypeError, ValueError):
-                decoded = None
-            if isinstance(decoded, dict):
-                translated: dict = {}
-                for slot, slot_paths_value in decoded.items():
-                    if isinstance(slot_paths_value, list):
-                        translated[slot] = [
-                            layout.translate_host_path(p, mounts) if isinstance(p, str) else p
-                            for p in slot_paths_value
-                        ]
-                    elif isinstance(slot_paths_value, str):
-                        translated[slot] = layout.translate_host_path(slot_paths_value, mounts)
-                    else:
-                        translated[slot] = slot_paths_value
-                value = json.dumps(translated)
-            elif isinstance(decoded, list):
-                value = json.dumps([
-                    layout.translate_host_path(p, mounts) if isinstance(p, str) else p
-                    for p in decoded
-                ])
-            # else: leave value as-is (unparseable -- preserve original).
-        env_flags.extend(["-e", f"{k}={value}"])
-    # A backend that cannot bind the copy read-only binds it read-write;
-    # the interpreter is told not to write bytecode there, and the copy is
-    # re-checked after the run.
-    if copy_writable:
-        env_flags.extend(["-e", "PYTHONDONTWRITEBYTECODE=1"])
+    # Nothing else from the host (PYTHONPATH in particular) crosses the
+    # container barrier. A backend that cannot bind the copy read-only binds
+    # it read-write; the interpreter is told not to write bytecode there,
+    # and the copy is re-checked after the run.
+    container_env = container_variables(
+        step=step_env, declared=declared, env_bin=env_bin, mounts=mounts,
+        write_bytecode=not copy_writable)
+    env_flags = _env_flags(container_env)
     # Splice -e flags right after "docker run --rm" for readability.
-    # Find the position after the last "-v ... -w /work -v ..." bind
-    # block but before --gpus / image. Simplest: insert after "--rm".
     rm_idx = cmd.index("--rm") + 1
     cmd = cmd[:rm_idx] + env_flags + cmd[rm_idx:]
     # What the launch is handed, container-side, from the values above.
     invocation = _invocation_record(
-        image_ref=container_image_ref, interpreter=env_python,
+        image_ref=image_ref, interpreter=interpreter,
         script=script_in_container, mounts=mounts,
         copy_writable=copy_writable, env_flags=env_flags,
-        uid=_uid, gid=_gid, gpus=method_gpus, cmd=cmd,
+        uid=_uid, gid=_gid, gpus=gpus, cmd=cmd,
     )
 
-    # Immediately before the launch (and after script-missing, which keeps
-    # its own ending): refuse to run code other than what the run row was
-    # claimed under.
-    口 = AutoStep(step_num=4, name="Check the code and env are what the step was claimed under")
-    changed = _changed_since_claim(module_name, method_name, _script_host,
-                                   version, run_id, Path(project_root))
-    if changed is not None:
-        return {"ok": False, "ending": "changed-since-claim",
-                "error_message": changed, "error_traceback": changed}
+    口 = Step(step_num=2, name="The caller's pre-launch check",
+             purpose="A recorded run checks its code is what it was claimed "
+                     "under and records the invocation on its row; an ending "
+                     "it returns stops the launch")
+    if before_launch is not None:
+        refused = before_launch(invocation)
+        if refused is not None:
+            return refused
 
-    # Written before the launch, so a method that then fails keeps it. A
-    # record that cannot be written stops the launch: every run dispatch
-    # launches has one.
-    try:
-        口 = AutoStep(step_num=5, name="Record the invocation on the run row")
-        _record_invocation(run_id, invocation)
-    except Exception as exc:
-        message = (f"could not record run {run_id}'s invocation, so the method "
-                   f"was not launched: {exc}")
-        return {"ok": False, "ending": "launch-failure", "launch_attempted": False,
-                "error_message": message, "error_traceback": _tb.format_exc()}
-
-    口 = Step(step_num=6, name="Run method subprocess",
+    口 = Step(step_num=3, name="Run method subprocess",
              purpose="Start stderr.log (the step log) fresh with materialize's "
                      "warnings (a log that cannot be started fails the step "
                      "as a launch failure), then run the assembled docker "
-                     "command with "
-                     "stdout/stderr tee'd to per-run logs, the method's stderr "
-                     "appended after the warnings; on a non-zero exit, lift the "
-                     "method's real error from what it wrote and report the "
-                     "method-failed ending")
-    # Run the assembled ``docker run`` command.  stdout/stderr are tee'd to
-    # per-run log files (.wfc/runs/<run_id>/{stdout,stderr}.log) while also being
-    # forwarded to the parent's std streams so Snakemake's pipeline-level
-    # capture still sees method output.
+                     "command with stdout/stderr tee'd to the step's logs")
     copy_before: dict[str, str] = {}
     if copy_writable:
         from ..registration import copy_file_digests
         assert code_dir is not None  # copy_writable implies a copy
         copy_before = copy_file_digests(Path(code_dir))
-    # Materialize's warnings head the step log before the method starts;
-    # the method's stderr is appended after them. A log that cannot be
-    # started fresh fails the step before the launch, so the method never
-    # appends to a log some earlier write left there.
     try:
         noted = _start_step_log(stderr_log, notes)
     except OSError as exc:
-        # No launch was tried: the console line is the message alone.
         message = (f"could not start the step log {stderr_log}, so the method "
                    f"was not launched: {exc}")
         return {"ok": False, "ending": "launch-failure", "launch_attempted": False,
                 "error_message": message, "error_traceback": _tb.format_exc()}
     try:
         result = _run_method_subprocess(
-            cmd,
-            cwd=str(project_root),
-            env=wfc_env,
-            stdout_log=stdout_log,
-            stderr_log=stderr_log,
+            cmd, cwd=str(project_root), env=host_env,
+            stdout_log=stdout_log, stderr_log=stderr_log,
         )
     except Exception as exc:
-        # Subprocess launch failure
         return {"ok": False, "ending": "launch-failure",
                 "error_message": str(exc), "error_traceback": _tb.format_exc()}
 
-    口 = AutoStep(step_num=7, name="Re-check a writable copy after the run")
-    written = _copy_written_during_run(copy_before, code_dir, entry,
+    口 = AutoStep(step_num=4, name="Re-check a writable copy after the run")
+    written = _copy_written_during_run(copy_before, code_dir, copy_entry,
                                        project_root, writable=copy_writable)
     if written is not None:
         return {"ok": False, "ending": "method-failed",
                 "error_message": written, "error_traceback": written}
 
+    口 = Step(step_num=5, name="Read the exit",
+             purpose="On a non-zero exit, lift the method's real error from "
+                     "what it wrote after wfc's warnings")
     if result.returncode != 0:
-        # Lift the real error from stderr.log so the
-        # structured error_message / error_traceback fields carry the actual
-        # ValueError (or whatever) instead of "Method exited with code N".
         stderr_text: str | None = None
         if stderr_log.exists():
             try:
@@ -691,7 +680,6 @@ def run_dispatch(
         error_msg, error_tb = interpret_method_exit(result.returncode, stderr_text)
         return {"ok": False, "ending": "method-failed",
                 "error_message": error_msg, "error_traceback": error_tb}
-
     return {"ok": True}
 
 

@@ -69,30 +69,30 @@
     padding: 16px; z-index: 100;
   }
   .confirm-card {
-    background: var(--bg-header, #2d2d30); border: 1px solid var(--border, #3e3e42);
+    background: var(--bg-header); border: 1px solid var(--border);
     border-radius: 4px; padding: 14px 16px; width: 100%; max-width: 520px;
-    max-height: 80vh; overflow: auto; color: var(--text-primary, #ccc);
+    max-height: 80vh; overflow: auto; color: var(--text-primary);
   }
   .confirm-title { font-size: 13px; font-weight: 600; margin-bottom: 10px; }
   .section { margin-bottom: 12px; font-size: 12px; }
   .section-title { color: #9aa0a6; font-weight: 600; margin-bottom: 4px; }
   .section ul { margin: 0; padding-left: 18px; }
-  .failed { color: #E74C3C; }
+  .failed { color: var(--status-failed-ink); }
   .hint { color: #c07070; font-size: 11px; margin-top: 4px; }
-  .empty { color: #666; font-style: italic; }
+  .empty { color: var(--text-muted); font-style: italic; }
   table { border-collapse: collapse; width: 100%; }
   th, td { text-align: left; padding: 2px 8px 2px 0; border-bottom: 1px solid #333; }
-  th { color: #888; font-weight: 600; font-size: 11px; }
+  th { color: var(--text-secondary); font-weight: 600; font-size: 11px; }
   .val { font-family: Consolas, monospace; color: #F39C12; }
   .confirm-actions { display: flex; gap: 8px; justify-content: flex-end; }
   .footer-btn {
-    padding: 6px 14px; background: var(--bg-header, #2d2d30);
-    border: 1px solid var(--border, #3e3e42); color: var(--text-primary, #ccc);
+    padding: 6px 14px; background: var(--bg-header);
+    border: 1px solid var(--border); color: var(--text-primary);
     border-radius: 3px; font-size: 12px; font-family: inherit; cursor: pointer;
   }
-  .footer-btn:hover { border-color: var(--accent, #4A90D9); }
+  .footer-btn:hover { border-color: var(--accent); }
   .footer-btn.primary {
-    background: var(--accent, #4A90D9); border-color: var(--accent, #4A90D9);
+    background: var(--accent); border-color: var(--accent);
     color: #fff; font-weight: 600;
   }
   .footer-btn:disabled { opacity: 0.6; cursor: wait; }

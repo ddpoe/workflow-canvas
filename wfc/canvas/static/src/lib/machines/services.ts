@@ -26,6 +26,7 @@ import { fromCallback, fromPromise } from 'xstate';
 import { get } from 'svelte/store';
 import { nodes } from '../builder/stores';
 import type { PipelineJSON, RunTally, PipelineError, RunStatus } from '../shared/types';
+import { refusalsByNode, showRefusals, type NodeRefusal } from '../builder/nodeRefusals';
 import type { components } from '../types/api';
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -38,6 +39,12 @@ export interface SubmitOutput {
 }
 export interface SubmitError {
   message: string;
+  /**
+   * The server's refusals, one per entry it sent, under `message` as their
+   * header: the pipeline-error banner lists them as bullets. Absent for a
+   * single-message error.
+   */
+  items?: string[];
   validationErrors?: string[];
   status?: number;
   // Run-readiness rejections carry a kind-tagged payload so the
@@ -63,6 +70,8 @@ export type BackendNodeState = Omit<ApiNodeRunState, 'tally'> & {
 export interface ValidateResult {
   valid: boolean;
   errors?: string[];
+  /** Each draft node that cannot run, naming its node. */
+  draftRefusals?: NodeRefusal[];
 }
 
 /**
@@ -115,10 +124,13 @@ export const submitPipeline = fromPromise<SubmitOutput, SubmitInput>(
     try {
       const vResult = await validatePipeline(pipeline);
       if (!vResult.valid) {
+        // A refusal naming a node shows on it and in the Inspector.
+        showRefusals(refusalsByNode(vResult.errors ?? [], vResult.draftRefusals ?? []));
+        // The banner lists each refusal under the header, as Validate does.
+        // `errors` already holds each draft refusal's message.
         const err: SubmitError = {
-          message:
-            'Cannot run — validation errors:\n' +
-            (vResult.errors ?? []).join('\n'),
+          message: 'Cannot run — validation errors:',
+          items: vResult.errors ?? [],
           validationErrors: vResult.errors ?? [],
         };
         throw err;
@@ -161,10 +173,20 @@ export const submitPipeline = fromPromise<SubmitOutput, SubmitInput>(
       // other failures send a plain string detail. Preserve the kind/hint so
       // the pipeline-error card renders the Docker/git readiness affordance.
       const detail = result?.detail;
+      // A draft refusal lists each refusing node: each shows on its node,
+      // and the banner lists each under a header.
+      let refusalLines: string[] = [];
+      if (detail && typeof detail === 'object' && detail.kind === 'draft_refused') {
+        const refusals: NodeRefusal[] = detail.refusals ?? [];
+        showRefusals(refusalsByNode([], refusals));
+        refusalLines = refusals.map(r => r.message);
+      }
       const err: SubmitError =
         detail && typeof detail === 'object'
           ? {
-              message: detail.message ?? `Run request failed (HTTP ${resp.status})`,
+              ...(refusalLines.length > 0
+                ? { message: 'Cannot run — drafts refused:', items: refusalLines }
+                : { message: detail.message ?? `Run request failed (HTTP ${resp.status})` }),
               kind: detail.kind,
               hint: detail.hint,
               status: resp.status,

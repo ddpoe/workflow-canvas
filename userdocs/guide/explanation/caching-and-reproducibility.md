@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/explanation/caching-and-reproducibility @ ded7ab0e511a; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/explanation/caching-and-reproducibility @ 97ecf9b12526; do not edit -->
 
 # Caching & Reproducibility
 
@@ -9,7 +9,7 @@ Workflow Canvas records enough about every step to know when it has already comp
 - The **cache key** decides whether a step runs or reuses an earlier result.
 - **Lineage** links each run to the runs and samples it consumed.
 
-To find and read a run's outputs, use the History tab ([Build, Run and Inspect in the Canvas](../how-to/canvas.md)) or `wfc export` ([Run and Inspect from the Command Line](../how-to/run-and-inspect-results.md)). To hand a result to someone who can check it, `wfc export-run` packages runs as a zip they can rerun with `python rerun.py` ([Share runs as a bundle anyone can rerun](../how-to/run-and-inspect-results.md#share-runs-as-a-bundle-anyone-can-rerun)).
+To find and read a run's outputs, use the History tab ([Browse Past Runs in History](../how-to/browse-history.md)) or `wfc export` ([Export a Run's Outputs](../how-to/cli-export.md)). To hand a result to someone who can check it, `wfc export-run` packages runs, with the samples they read, as a zip they can rerun with `python rerun.py` ([Share Runs as a Bundle Anyone Can Rerun](../how-to/share-bundle.md)).
 
 ## When a step is reused (the cache key)
 
@@ -23,28 +23,30 @@ Before a step runs, wfc computes its **cache key**, a fingerprint of everything 
 
 If an earlier completed run of the same method on the same sample has the same key, and its outputs can still be read (from this machine or from the archive), the step is **reused**: no code runs, and the step's outputs are the earlier run's. Otherwise the step runs.
 
-Because each step's input fingerprint includes its upstream's cache key, a change reaches only its own step and the steps downstream of it. Edit one method and register it again (that adds a new version, so a node that follows the newest re-runs, while a node pinned to an earlier version keeps its results), change one parameter, or re-register one environment with a new image, and that step and the steps after it re-run; everything else is reused. An image that Docker has lost does not do this: wfc pulls the pushed image back, checks it is the same image, and those steps are reused. Some things never cause a re-run: a git commit that does not touch the method's files, re-registering an unchanged sample file, or wiring the same samples into a fan-in selector in a different order.
+Because each step's inputs include its upstream step's key, a change re-runs only its own step and the steps after it: edit and re-register one method, or change one parameter, and everything else is reused. Rebuilding an environment changes nothing until you register the methods that use it again; `wfc register-env` lists them.
 
-In the Canvas, **Lock All** shows each step's cache status in the Runs Preview before you run: reused from the local cache, reused from the archive, re-run because the step changed, or re-run because an upstream re-runs. A reused step shows a `cached` badge after the run.
+In the Canvas, **Lock All** shows in the Runs Preview which steps will be reused and which will run, before you run. A reused step shows a `cached` badge after the run.
 
 For where reused outputs are stored, see [Storage & Provenance](storage-and-provenance.md).
+
 
 ## Lineage: tracing how a result was produced
 
 Every run records what it consumed: each upstream run that fed one of its input slots, and each sample it read. Following those links backwards from any run gives its **lineage**, the chain of runs back to the registered samples it started from. A step that merges several inputs has several parents.
 
-A reused step is recorded too. When a step is served from the cache, wfc adds a run for it that points at the earlier run whose outputs it reused, so a re-run where every step was cached still has its own complete lineage, and you can see which original run supplied each result.
+A reused step is recorded too, pointing at the earlier run whose outputs it reused, so you can see which original run supplied each result.
 
 Together with the cache key, this answers "which inputs, code, parameters and environment produced this file?" for any output.
 
 To see it, open a run in the Canvas History tab. The Lineages view lays out each run's path from its samples, and **Open lineage in Canvas** in the run's detail panel rebuilds its ancestors as an editable pipeline, wired to the same slots, that reuses the existing results when you run it.
 
-A rerun bundle exports a run together with every run above it, so the recorded lineage travels with the result. `python rerun.py` reruns each step from the bundle and reports `same` or `DIFFERENT` for every output. A `DIFFERENT` is a difference in bytes, which is not always a different result; see [If a step says DIFFERENT](../how-to/run-and-inspect-results.md#if-a-step-says-different).
+A `DIFFERENT` is a difference in bytes, which is not always a different result; see [If a step says DIFFERENT](../how-to/share-bundle.md#if-a-step-says-different).
+
 
 ## Next steps
 
-- [Build, Run and Inspect in the Canvas](../how-to/canvas.md): find a run in the History tab and read its outputs.
-- [Run and Inspect from the Command Line](../how-to/run-and-inspect-results.md): run a pipeline and export its outputs with `wfc`.
+- [Browse Past Runs in History](../how-to/browse-history.md): find a run in the History tab and read its outputs.
+- [Use the Command Line](../how-to/cli-hub.md): run a pipeline and export its outputs with `wfc`.
 - [Storage & Provenance](storage-and-provenance.md): where output files live, the archive, and what to back up.
 - [How a Run Executes](how-a-run-executes.md): how a single run is scheduled and executed.
-- [Getting Started](../tutorials/getting-started.md): build your first pipeline.
+- [Your First Pipeline](../tutorials/getting-started.md): build your first pipeline.

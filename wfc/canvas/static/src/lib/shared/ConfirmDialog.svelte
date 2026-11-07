@@ -80,13 +80,13 @@
     z-index: 100;
   }
   .confirm-card {
-    background: var(--bg-header, #2d2d30);
-    border: 1px solid var(--border, #3e3e42);
+    background: var(--bg-header);
+    border: 1px solid var(--border);
     border-radius: 4px;
     padding: 14px 16px;
     width: 100%;
     max-width: 440px;
-    color: var(--text-primary, #ccc);
+    color: var(--text-primary);
   }
   .confirm-title {
     font-size: 13px;
@@ -95,13 +95,13 @@
   }
   .confirm-body {
     font-size: 12px;
-    color: var(--text-secondary, #888);
+    color: var(--text-secondary);
     margin-bottom: 14px;
     line-height: 1.5;
   }
   .confirm-id {
     font-family: 'Consolas', 'Courier New', monospace;
-    color: var(--text-primary, #ccc);
+    color: var(--text-primary);
   }
   .confirm-actions {
     display: flex;
@@ -110,18 +110,18 @@
   }
   .footer-btn {
     padding: 6px 14px;
-    background: var(--bg-header, #2d2d30);
-    border: 1px solid var(--border, #3e3e42);
-    color: var(--text-primary, #ccc);
+    background: var(--bg-header);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
     border-radius: 3px;
     font-size: 12px;
     font-family: inherit;
     cursor: pointer;
   }
-  .footer-btn:hover { border-color: var(--accent, #4A90D9); }
+  .footer-btn:hover { border-color: var(--accent); }
   .footer-btn.primary {
-    background: var(--accent, #4A90D9);
-    border-color: var(--accent, #4A90D9);
+    background: var(--accent);
+    border-color: var(--accent);
     color: #fff;
     font-weight: 600;
   }

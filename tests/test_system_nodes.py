@@ -27,7 +27,12 @@ from tests.fixtures.routes import canvas_client, completed_run
 
 #: The literal contract map the structural core reads for this module's
 #: shapes: align_reads registered under analysis, no slot declarations.
-ANALYSIS_CONTRACTS = {"analysis.align_reads": {"input_slots": {}, "output_slots": {}}}
+# `data` is the input the documents below link into: a link may only name a
+# slot the method declares, and a reference fan-in delivers several files.
+ANALYSIS_CONTRACTS = {"analysis.align_reads": {
+    "input_slots": {"data": {"required": False, "multiple": True}},
+    "output_slots": {},
+}}
 
 
 # =============================================================================

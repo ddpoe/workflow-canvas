@@ -1,7 +1,7 @@
 /**
  * Network calls for the Inspector.
  *
- * The column lookup behind a `column_of_input` param, the completed-runs list
+ * The options lookup behind an `options_from` param, the completed-runs list
  * the run-reference panel picks from, and the output tab's historical-log
  * stream. The Inspector panels call each of these; a failed lookup answers
  * `null` rather than throwing.
@@ -11,79 +11,45 @@
  * `builder/api.ts`.
  */
 import type { CompletedRun } from '../shared/types.js';
+import type { components } from '../types/api.js';
+import type { OutputOptions } from './options.js';
 
 /**
- * Column options for a `column_of_input` param, as
- * `/api/contracts/.../output_columns` returns them.
+ * What the options lookup asks of one upstream output slot: the slot plus
+ * the upstream's pin and param sets, or a Run Reference's run id.
  */
-export type ColumnOptionsResp = {
-  strict: string[];
-  from_params: string[];
-  patterns: string[];
-  all: string[];
-};
+export type OutputOptionsRequest = components['schemas']['OutputOptionsRequest'];
+
+/** The path segment a Run Reference's lookup names; the run names its own method. */
+export const RUN_REFERENCE_METHOD = '__run_reference__';
 
 /**
- * Look up the output columns of an upstream run reference.
- *
- * The endpoint requires `method_full` in the path, and at this point the
- * method name behind a run reference is not known here — the backend resolves
- * it by reading the run's stored method when `run_id` is given against the
- * special sentinel `__run_reference__`. If no such convention exists the
- * endpoint answers non-2xx and this returns null, which the caller renders as
- * "no options".
+ * Ask the server what one upstream output slot offers.
  *
  * Args:
- *     sourceSlot: The upstream edge's source handle.
- *     runId: The referenced run.
+ *     methodFull: The upstream's `module.method`, or `RUN_REFERENCE_METHOD`
+ *         for a request that names a run.
+ *     request: The slot and either the version and param sets or the run id.
  *
  * Returns:
- *     The column options, or ``null`` on a non-2xx response or a wire failure.
+ *     The slot's options, or ``null`` on a non-2xx response or a wire
+ *     failure; never throws.
  */
-export function fetchRunReferenceOutputColumns(
-  sourceSlot: string,
-  runId: string
-): Promise<ColumnOptionsResp | null> {
-  const url =
-    `/api/contracts/__run_reference__/output_columns` +
-    `?slot=${encodeURIComponent(sourceSlot)}&run_id=${encodeURIComponent(runId)}`;
-  return fetchOutputColumns(url);
-}
-
-/**
- * Look up the output columns an upstream method declares for one slot.
- *
- * Args:
- *     methodFull: The upstream's `module.method`.
- *     sourceSlot: The upstream edge's source handle.
- *     params: The upstream's current param values, which can change the
- *         declared columns.
- *     version: The upstream's pin (a content identity); the columns are that
- *         version's. Absent: the newest version's.
- *
- * Returns:
- *     The column options, or ``null`` on a non-2xx response or a wire failure.
- */
-export function fetchMethodOutputColumns(
+export async function fetchOutputOptions(
   methodFull: string,
-  sourceSlot: string,
-  params: Record<string, unknown>,
-  version?: string,
-): Promise<ColumnOptionsResp | null> {
-  const paramsJson = encodeURIComponent(JSON.stringify(params));
-  const pin = version ? `&version=${encodeURIComponent(version)}` : '';
-  const url =
-    `/api/contracts/${encodeURIComponent(methodFull)}/output_columns` +
-    `?slot=${encodeURIComponent(sourceSlot)}&params=${paramsJson}${pin}`;
-  return fetchOutputColumns(url);
-}
-
-/** Shared tail of the two column lookups: a failed lookup is `null`, never a throw. */
-async function fetchOutputColumns(url: string): Promise<ColumnOptionsResp | null> {
+  request: OutputOptionsRequest,
+): Promise<OutputOptions | null> {
   try {
-    const resp = await fetch(url);
+    const resp = await fetch(
+      `/api/contracts/${encodeURIComponent(methodFull)}/output_options`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     if (!resp.ok) return null;
-    return (await resp.json()) as ColumnOptionsResp;
+    return (await resp.json()) as OutputOptions;
   } catch {
     return null;
   }

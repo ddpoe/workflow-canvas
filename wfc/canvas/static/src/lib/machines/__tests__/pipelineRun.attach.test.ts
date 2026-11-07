@@ -11,7 +11,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createActor, fromCallback, fromPromise, type EventObject } from 'xstate';
-import { makePipelineRunMachine } from '../pipelineRun.machine';
+import { makePipelineRunMachine, type PipelineRunEvent } from '../pipelineRun.machine';
 import { makeNodeRunMachine } from '../nodeRun.machine';
 import { pollNodeStatus } from '../services';
 
@@ -184,7 +184,7 @@ describe('pipelineRun ATTACH (Watch in canvas)', () => {
   it('from polling: switches to the new pipeline, detaching the current one without cancelling it', async () => {
     const streams: Stream[] = [];
     const pollers: Poller[] = [];
-    let pollSendBack: ((e: EventObject) => void) | null = null;
+    let pollSendBack: ((e: PipelineRunEvent) => void) | null = null;
     const poll = fromCallback<EventObject, { jobId: string | null }>(({ input, sendBack }) => {
       const p: Poller = { jobId: input.jobId, stopped: false };
       pollers.push(p);

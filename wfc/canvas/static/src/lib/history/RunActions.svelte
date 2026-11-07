@@ -290,8 +290,8 @@
     align-items: center;
     justify-content: space-between;
     padding: 8px 12px;
-    background: var(--bg-header, #2d2d30);
-    border-bottom: 1px solid var(--border, #3e3e42);
+    background: var(--bg-header);
+    border-bottom: 1px solid var(--border);
     flex-shrink: 0;
   }
   .crumb {
@@ -299,13 +299,13 @@
     align-items: center;
     gap: 6px;
     font-size: 11px;
-    color: var(--text-secondary, #888);
+    color: var(--text-secondary);
     min-width: 0;
   }
-  .crumb-text, .crumb-sep { color: var(--text-muted, #666); }
+  .crumb-text, .crumb-sep { color: var(--text-muted); }
   .crumb-id {
     font-family: 'Consolas', 'Courier New', monospace;
-    color: var(--text-primary, #ccc);
+    color: var(--text-primary);
     background: none;
     border: none;
     padding: 0;
@@ -316,7 +316,7 @@
     white-space: nowrap;
     max-width: 180px;
   }
-  .crumb-id:hover { color: var(--accent, #4A90D9); }
+  .crumb-id:hover { color: var(--accent); }
   .header-actions { display: flex; gap: 2px; }
   .icon-btn {
     width: 26px;
@@ -324,27 +324,27 @@
     background: none;
     border: none;
     border-radius: 3px;
-    color: var(--text-muted, #666);
+    color: var(--text-muted);
     font-size: 13px;
     cursor: pointer;
     line-height: 1;
   }
-  .icon-btn:hover { color: var(--text-primary, #ccc); }
+  .icon-btn:hover { color: var(--text-primary); }
   .text-btn {
     height: 24px;
     padding: 0 8px;
     background: none;
-    border: 1px solid var(--border, #3e3e42);
+    border: 1px solid var(--border);
     border-radius: 3px;
-    color: var(--text-secondary, #888);
+    color: var(--text-secondary);
     font-size: 11px;
     font-family: inherit;
     cursor: pointer;
     white-space: nowrap;
   }
   .text-btn:hover {
-    color: var(--accent, #4A90D9);
-    border-color: var(--accent, #4A90D9);
+    color: var(--accent);
+    border-color: var(--accent);
   }
 
   /* Action row */
@@ -357,9 +357,9 @@
   }
   .fav-btn {
     width: 36px;
-    background: var(--bg-header, #2d2d30);
-    border: 1px solid var(--border, #3e3e42);
-    color: var(--text-secondary, #888);
+    background: var(--bg-header);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
     border-radius: 3px;
     cursor: pointer;
     font-size: 18px;
@@ -369,9 +369,9 @@
     justify-content: center;
   }
   .fav-btn.active {
-    color: #E9A847;
-    border-color: #E9A847;
-    background: rgba(233, 168, 71, 0.15);
+    color: var(--marker-light);
+    border-color: var(--marker-light);
+    background: color-mix(in srgb, var(--marker-light) 12%, transparent);
   }
   .rename-btn, .rename-input, .archive-btn {
     border-radius: 3px;
@@ -385,19 +385,19 @@
     justify-content: center;
     gap: 6px;
     padding: 6px 10px;
-    background: var(--bg-header, #2d2d30);
-    border: 1px solid var(--border, #3e3e42);
-    color: var(--text-primary, #ccc);
+    background: var(--bg-header);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
     font-weight: 500;
     cursor: pointer;
   }
-  .rename-btn:hover { border-color: var(--accent, #4A90D9); }
+  .rename-btn:hover { border-color: var(--accent); }
   .rename-input {
     flex: 1;
     padding: 0 10px;
-    background: var(--bg-input, #1e1e1e);
-    border: 1px solid var(--accent, #4A90D9);
-    color: var(--text-primary, #ccc);
+    background: var(--bg-input);
+    border: 1px solid var(--accent);
+    color: var(--text-primary);
     font-family: 'Consolas', 'Courier New', monospace;
     font-size: 12px;
     outline: none;
@@ -408,24 +408,24 @@
     justify-content: center;
     gap: 6px;
     padding: 6px 10px;
-    background: var(--bg-header, #2d2d30);
-    border: 1px solid var(--border, #3e3e42);
-    color: var(--text-secondary, #888);
+    background: var(--bg-header);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
     font-weight: 500;
     cursor: pointer;
   }
   .archive-btn:hover {
-    border-color: var(--accent, #4A90D9);
-    color: var(--accent, #4A90D9);
-    background: rgba(74, 144, 217, 0.10);
+    border-color: var(--accent);
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
   }
   .archive-btn.unarchive {
-    color: var(--accent, #4A90D9);
-    border-color: var(--accent, #4A90D9);
-    background: rgba(74, 144, 217, 0.10);
+    color: var(--accent);
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
   }
   .archive-btn.unarchive:hover {
-    background: rgba(74, 144, 217, 0.18);
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
   }
   .g { font-size: 12px; }
 
@@ -433,26 +433,26 @@
   .footer-btn {
     flex: 1;
     padding: 7px 10px;
-    background: var(--bg-header, #2d2d30);
-    border: 1px solid var(--border, #3e3e42);
-    color: var(--text-primary, #ccc);
+    background: var(--bg-header);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
     border-radius: 3px;
     font-size: 11px;
     font-weight: 500;
     font-family: inherit;
     cursor: pointer;
   }
-  .footer-btn:hover:not(:disabled) { border-color: var(--accent, #4A90D9); }
+  .footer-btn:hover:not(:disabled) { border-color: var(--accent); }
   .footer-btn.primary {
-    background: var(--accent, #4A90D9);
-    border-color: var(--accent, #4A90D9);
+    background: var(--accent);
+    border-color: var(--accent);
     color: #fff;
     font-weight: 600;
   }
   .footer-btn.danger {
-    border-color: var(--color-failed, #E74C3C);
-    color: var(--color-failed, #E74C3C);
-    background: rgba(231, 76, 60, 0.08);
+    border-color: var(--status-failed);
+    color: var(--status-failed-ink);
+    background: color-mix(in srgb, var(--status-failed) 8%, transparent);
   }
 
   /* Confirm dialog */
@@ -467,8 +467,8 @@
     z-index: 10;
   }
   .confirm-card {
-    background: var(--bg-header, #2d2d30);
-    border: 1px solid var(--border, #3e3e42);
+    background: var(--bg-header);
+    border: 1px solid var(--border);
     border-radius: 3px;
     padding: 14px 16px;
     width: 100%;
@@ -476,18 +476,18 @@
   .confirm-title {
     font-size: 13px;
     font-weight: 600;
-    color: var(--text-primary, #ccc);
+    color: var(--text-primary);
     margin-bottom: 8px;
   }
   .confirm-body {
     font-size: 11px;
-    color: var(--text-secondary, #888);
+    color: var(--text-secondary);
     margin-bottom: 12px;
     line-height: 1.4;
   }
   .confirm-id {
     font-family: 'Consolas', 'Courier New', monospace;
-    color: var(--text-primary, #ccc);
+    color: var(--text-primary);
   }
   .confirm-actions {
     display: flex;
@@ -502,9 +502,9 @@
     bottom: 70px;
     left: 50%;
     transform: translateX(-50%);
-    background: var(--bg-input, #1e1e1e);
-    border: 1px solid var(--border, #3e3e42);
-    color: var(--text-primary, #ccc);
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
     padding: 6px 12px;
     border-radius: 3px;
     font-size: 11px;

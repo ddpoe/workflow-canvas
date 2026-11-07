@@ -12,7 +12,11 @@ its creation time, so a reused pid never reads as the same process; and the
 cancel flag a canceller in another process sets and the owner's cancel probe
 reads. It answers liveness and the cancel flag only: the run rows stay the
 truth of each run's state. Its path is Layout's; every write replaces the
-whole file, so a reader never sees half of one.
+whole file, so a reader never sees half of one, and every read-modify-write
+(the engine, the cancel flag) and the removal hold the record's lock file
+beside it, across processes, so a flag set as the record goes never writes
+the record back. ``hold_lock_file`` is that lock: a file created
+exclusively, naming its holder, taken over only when the holder is gone.
 
 The step map a status route needs for a recorded pipeline is not stored: it
 comes from the frozen ``pipeline.json`` (``frozen_step_map``).
@@ -23,7 +27,8 @@ import json
 import os
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -116,6 +121,238 @@ def process_identity(pid: int) -> ProcessIdentity:
     except (psutil.Error, ValueError, OSError):
         created = None
     return ProcessIdentity(pid=pid, created=created)
+
+
+#: Seconds two readings of one process's creation time may differ by and
+#: still name the same process (as the recovery's probe allows).
+_LOCK_HOLDER_TOLERANCE_SECONDS = 1.0
+
+#: Seconds a lock file naming no holder (its holder stopped between creating
+#: it and writing its name into it) is waited on before it is taken.
+_UNNAMED_LOCK_STALE_SECONDS = 30.0
+
+#: How long a waiter sleeps between tries for a held lock file.
+_LOCK_POLL_SECONDS = 0.02
+
+_own_identity: ProcessIdentity | None = None
+
+
+def _this_process() -> ProcessIdentity:
+    """This process's identity, read once."""
+    global _own_identity
+    if _own_identity is None or _own_identity.pid != os.getpid():
+        _own_identity = process_identity(os.getpid())
+    return _own_identity
+
+
+def _lock_holder_gone(lock: Path) -> bool:
+    """Whether the process a lock file names is gone, so the lock may be taken.
+
+    Args:
+        lock: The lock file.
+
+    Returns:
+        True when the holder it names is no longer that live process (no
+        process has its pid, or the pid now names another process), or when
+        it names no holder and is older than ``_UNNAMED_LOCK_STALE_SECONDS``.
+        False while the holder lives, and when the file is already gone.
+    """
+    try:
+        holder: ProcessIdentity | None = ProcessIdentity.from_json(
+            json.loads(lock.read_text(encoding="utf-8")))
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError, KeyError, TypeError):
+        holder = None
+    if holder is None or holder.created is None:
+        try:
+            return time.time() - lock.stat().st_mtime > _UNNAMED_LOCK_STALE_SECONDS
+        except OSError:
+            return False
+    now = process_identity(holder.pid)
+    return (now.created is None
+            or abs(now.created - holder.created) > _LOCK_HOLDER_TOLERANCE_SECONDS)
+
+
+def _unlink_lock(lock: Path) -> None:
+    """Remove a lock file, retrying while another process holds it open.
+
+    On Windows a file another process has open (a waiter reading who holds
+    the lock) cannot be removed; the removal is retried for up to
+    ``_RETRIES * _RETRY_SECONDS`` seconds, as the record's own writes are, so
+    a release never leaves the lock naming a holder that has moved on. A
+    file already gone is left.
+
+    Raises:
+        PermissionError: The file was still held open after every retry.
+    """
+    _retrying(lambda: lock.unlink(missing_ok=True))
+
+
+def _create_exclusive(path: Path) -> bool:
+    """Create an empty file only if none exists; whether this call created it."""
+    try:
+        os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+    except (FileExistsError, PermissionError):
+        return False
+    return True
+
+
+def _guard_is_stale(path: Path) -> bool:
+    """Whether a takeover file is older than ``_UNNAMED_LOCK_STALE_SECONDS``.
+
+    Args:
+        path: The takeover file.
+
+    Returns:
+        True when it is that old; False when it is younger or already gone.
+    """
+    try:
+        return time.time() - path.stat().st_mtime > _UNNAMED_LOCK_STALE_SECONDS
+    except OSError:
+        return False
+
+
+def _remove_stale_guard(guard: Path) -> None:
+    """Remove a takeover file whose waiter stopped inside it, claiming it first.
+
+    Two waiters can judge the same takeover file stale. Each renames it to a
+    name of its own before removing it, so only one claims it, and the
+    claimed file is judged again: when another waiter removed the stale file
+    and a third made a fresh one between the first judgement and the rename,
+    the rename took that fresh file, which is put back (unless yet another
+    takeover file has appeared meanwhile) instead of being removed.
+
+    Args:
+        guard: The takeover file a waiter could not create.
+    """
+    if not _guard_is_stale(guard):
+        return
+    claimed = guard.with_name(f"{guard.name}.{os.getpid()}.{time.monotonic_ns()}")
+    try:
+        os.rename(guard, claimed)
+    except OSError:
+        return  # another waiter claimed it first, or it is gone
+    try:
+        if not _guard_is_stale(claimed):
+            try:
+                os.link(claimed, guard)
+            except OSError:
+                pass  # a newer takeover file holds the name
+        claimed.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _take_over_stale_lock(lock: Path) -> bool:
+    """Remove a lock file whose holder is gone, one waiter at a time.
+
+    Deciding that the holder is gone and removing the file are two steps, so
+    two waiters could both decide, and the second could remove the lock the
+    first has just taken. A takeover file beside the lock (created
+    exclusively) lets one waiter at a time decide and remove; the decision is
+    made again inside it, so a lock taken by another waiter in between is
+    left. A takeover file older than ``_UNNAMED_LOCK_STALE_SECONDS`` (its
+    waiter stopped inside it) is removed so the next waiter can try
+    (``_remove_stale_guard``).
+
+    Args:
+        lock: The lock file a waiter found held.
+
+    Returns:
+        True when this waiter held the takeover file and decided (whether or
+        not it removed the lock); False when another waiter holds the
+        takeover file, so the caller should wait before trying again.
+    """
+    guard = lock.with_name(lock.name + ".takeover")
+    if not _create_exclusive(guard):
+        _remove_stale_guard(guard)
+        return False
+    try:
+        if _lock_holder_gone(lock):
+            try:
+                _unlink_lock(lock)
+            except PermissionError:
+                pass  # still open elsewhere; the next try decides again
+    finally:
+        try:
+            _unlink_lock(guard)
+        except PermissionError:
+            pass  # left to age out as a stale takeover file
+    return True
+
+
+@task(
+    purpose="Hold a lock file across processes: create it exclusively naming "
+            "this process, wait while another holder lives, remove it on leaving",
+    inputs="lock: the lock file path (its folder must exist)",
+    outputs="the lock held for the block",
+    critical="A lock is taken over only when the holder it names is gone (no "
+             "live process with that pid and creation time); one waiter at a "
+             "time decides and removes it, so two waiters never both take it",
+)
+@contextmanager
+def hold_lock_file(lock: Path) -> Iterator[None]:
+    """Hold a lock file: one holder at a time, across processes and threads.
+
+    The lock is the file's existence, created exclusively (the draft run
+    store's pattern), so it needs no dependency and works on Windows and
+    POSIX alike. The file names its holder by pid and creation time; a waiter
+    takes over a lock whose holder is gone (a process that stopped while
+    holding it), never one whose holder lives, and only one waiter at a time
+    does so (``_take_over_stale_lock``). The lock is not re-entrant: a holder
+    that asks again waits on itself.
+
+    Args:
+        lock: The lock file; its folder must exist.
+
+    Yields:
+        Nothing; the lock is held until the block ends.
+
+    Raises:
+        FileNotFoundError: The lock file's folder does not exist (or was
+            removed while this caller waited).
+    """
+    payload = json.dumps(_this_process().to_json()).encode("utf-8")
+    while True:
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            if _lock_holder_gone(lock) and _take_over_stale_lock(lock):
+                continue
+            time.sleep(_LOCK_POLL_SECONDS)
+            continue
+        except PermissionError:
+            # Windows refuses to create a file another process is deleting.
+            time.sleep(_LOCK_POLL_SECONDS)
+            continue
+        try:
+            os.write(fd, payload)
+        finally:
+            os.close(fd)
+        break
+    try:
+        yield
+    finally:
+        _unlink_lock(lock)
+
+
+@contextmanager
+def _record_lock(project_root: Path | str, pipeline_id: str) -> Iterator[None]:
+    """Hold the record's lock file around a read-modify-write or a removal.
+
+    A pipeline with no run dir (or an id that is not a pipeline id) has no
+    record to change, so nothing is locked and no folder is made.
+    """
+    if not is_pipeline_id(pipeline_id):
+        yield
+        return
+    root = Path(project_root)
+    if not layout.pipeline_run_dir(root, pipeline_id).is_dir():
+        yield
+        return
+    with hold_lock_file(layout.pipeline_record_lock_path(root, pipeline_id)):
+        yield
 
 
 @dataclass(frozen=True)
@@ -337,16 +574,20 @@ def record_engine(project_root: Path | str, pipeline_id: str, pid: int) -> Pipel
     Raises:
         PipelineRecordError: The record could not be read or written.
     """
-    record = read_pipeline_record(project_root, pipeline_id)
-    if record is None:
-        return None
-    updated = replace(record, engine=process_identity(pid))
-    _store(Path(project_root), updated)
-    return updated
+    with _record_lock(project_root, pipeline_id):
+        record = read_pipeline_record(project_root, pipeline_id)
+        if record is None:
+            return None
+        updated = replace(record, engine=process_identity(pid))
+        _store(Path(project_root), updated)
+        return updated
 
 
 def request_cancel(project_root: Path | str, pipeline_id: str) -> PipelineRecord | None:
     """Set a pipeline's cancel flag, which its owner's cancel probe reads.
+
+    The read and the write hold the record's lock file, as its removal does,
+    so a flag set as the record goes never writes the record back.
 
     Args:
         project_root: The wfc project root.
@@ -358,12 +599,13 @@ def request_cancel(project_root: Path | str, pipeline_id: str) -> PipelineRecord
     Raises:
         PipelineRecordError: The record could not be read or written.
     """
-    record = read_pipeline_record(project_root, pipeline_id)
-    if record is None:
-        return None
-    updated = replace(record, cancel_requested=True)
-    _store(Path(project_root), updated)
-    return updated
+    with _record_lock(project_root, pipeline_id):
+        record = read_pipeline_record(project_root, pipeline_id)
+        if record is None:
+            return None
+        updated = replace(record, cancel_requested=True)
+        _store(Path(project_root), updated)
+        return updated
 
 
 def cancel_requested(project_root: Path | str, pipeline_id: str) -> bool:
@@ -413,7 +655,8 @@ def remove_pipeline_record(project_root: Path | str, pipeline_id: str) -> bool:
         return True
 
     try:
-        return bool(_retrying(_unlink))
+        with _record_lock(project_root, pipeline_id):
+            return bool(_retrying(_unlink))
     except OSError as exc:
         raise PipelineRecordError(f"could not remove the pipeline record {path}: {exc}") from exc
 

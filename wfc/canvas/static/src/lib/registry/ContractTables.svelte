@@ -11,7 +11,7 @@
    * row's own grid with a rule on the left and a `FIELD | VALUE` header
    * row, its `description` (or "No description in method.yaml") and then
    * each other field it declares: `required`, `multiple`, `constraints`,
-   * `columns`, any custom key. The list holds what that entry has and
+   * `options` (outputs only), any custom key. The list holds what that entry has and
    * nothing more, so a field added to the contract later shows there with
    * no change here. Values read in Python form (`registryFormat.ts`).
    *
@@ -272,7 +272,7 @@
   .details > .valbox { margin-left: 6px; }
   .dhead {
     padding: 3px 6px; background: rgba(255, 255, 255, 0.03);
-    font-size: 8.5px; text-transform: uppercase; letter-spacing: 0.5px; color: #8a8a90; font-weight: 600;
+    font-size: 8.5px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--dash-neutral); font-weight: 600;
   }
   .details > .field { padding: 3px 6px; }
   .details > .field + .field, .details > .valbox + .field { box-shadow: inset 0 1px 0 rgba(62, 62, 66, 0.5); }
@@ -290,7 +290,7 @@
   /* Declared param types: the type chip and the value share a colour (the Cache-key card's). */
   .t-str { --t: #c9917a; } .t-int { --t: #a9c49a; } .t-float { --t: #86bfae; }
   .t-bool { --t: #7ea6d6; } .t-list { --t: #cdb27a; } .t-dict { --t: #b98fb6; }
-  .t-any { --t: #9a9da5; } .t-none { --t: #ccc; }
+  .t-any { --t: #9a9da5; } .t-none { --t: var(--text-primary); }
   .tv { color: var(--t); }
   .tchip {
     display: inline-block; padding: 0 5px; border-radius: 3px; font-family: Consolas, monospace;

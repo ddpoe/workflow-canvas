@@ -105,7 +105,8 @@
         const m = n.method ?? n.id;
         seen[m] = (seen[m] ?? 0) + 1;
         const suffix = seen[m] > 1 ? ` #${seen[m]}` : '';
-        return { id: n.id, method: m, label: `${m}${suffix}` };
+        // A draft node's row carries the DRAFT pill.
+        return { id: n.id, method: m, label: `${m}${suffix}`, draft: n.version === 'draft' };
       });
   })());
 
@@ -362,7 +363,7 @@
             {@const loading = s.tally.loading > 0}
             <tr class:alt={i % 2 === 1} class="summary-row" data-method={s.id}
                 onclick={() => { selection = s.id; }}>
-              <td class="col-method">{s.label}</td>
+              <td class="col-method">{s.label}{#if s.draft} <span class="draft-pill" data-testid="draft-pill">draft</span>{/if}</td>
               <td class="col-num col-total">{s.total}</td>
               <td class="col-num col-cached-local">
                 {#if loading}<span class="loading">{placeholder}</span>{:else}{s.tally.cachedLocal}{/if}
@@ -505,9 +506,9 @@
 
 <style>
   .runs-preview-panel {
-    background: #252526;
+    background: var(--bg-panel);
     border-top: 1px solid var(--border);
-    color: #ccc;
+    color: var(--text-primary);
     max-height: 420px;
     display: flex;
     flex-direction: column;
@@ -516,13 +517,13 @@
   }
   .runs-preview-header {
     display: flex; align-items: center; gap: 14px;
-    padding: 8px 14px; background: #2d2d30; border-bottom: 1px solid var(--border);
+    padding: 8px 14px; background: var(--bg-header); border-bottom: 1px solid var(--border);
   }
-  .title { color: #ccc; font-size: 13px; font-weight: 600; }
+  .title { color: var(--text-primary); font-size: 13px; font-weight: 600; }
   .view-picker { display: flex; align-items: center; gap: 6px; }
-  .view-label { color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .view-label { color: var(--text-secondary); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
   .view-picker select {
-    background: #1e1e1e; border: 1px solid var(--border); color: #ccc;
+    background: var(--bg-input); border: 1px solid var(--border); color: var(--text-primary);
     font-size: 12px; padding: 3px 6px; border-radius: 3px; cursor: pointer;
   }
   .view-picker select:hover { border-color: #555; }
@@ -532,13 +533,13 @@
     background: none; border: 1px solid var(--border); color: #9aa0a6;
     font-size: 11px; padding: 2px 8px; border-radius: 3px; cursor: pointer;
   }
-  .toggle-reused:hover { border-color: #555; color: #ccc; }
+  .toggle-reused:hover { border-color: #555; color: var(--text-primary); }
   .close-btn {
-    margin-left: auto; background: none; border: none; color: #888;
+    margin-left: auto; background: none; border: none; color: var(--text-secondary);
     font-size: 18px; cursor: pointer; line-height: 1;
   }
-  .close-btn:hover { color: #E74C3C; }
-  .empty { padding: 14px; color: #666; font-size: 12px; font-style: italic; }
+  .close-btn:hover { color: var(--status-failed-ink); }
+  .empty { padding: 14px; color: var(--text-muted); font-size: 12px; font-style: italic; }
   .table-scroll { overflow: auto; flex: 1; min-height: 0; }
   .runs-table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: auto; }
   .runs-table th, .runs-table td {
@@ -546,53 +547,53 @@
     white-space: nowrap; vertical-align: top;
   }
   .runs-table th {
-    color: #888; font-weight: 600; font-size: 11px;
+    color: var(--text-secondary); font-weight: 600; font-size: 11px;
     text-transform: uppercase; letter-spacing: 0.04em;
-    background: #2d2d30; position: sticky; top: 0; z-index: 1;
+    background: var(--bg-header); position: sticky; top: 0; z-index: 1;
   }
   .th-num { text-align: right; width: 80px; }
   .th-action { width: 140px; }
   .runs-table tr.alt { background: #2a2a2c; }
   .summary-row { cursor: pointer; }
   .summary-row:hover { background: #2f3439; }
-  .col-drill { color: #666; font-size: 11px; }
+  .col-drill { color: var(--text-muted); font-size: 11px; }
   .summary-row:hover .col-drill { color: var(--accent); }
   .col-method { color: var(--accent); font-weight: 600; }
   .col-num { text-align: right; font-variant-numeric: tabular-nums; width: 80px; }
   .col-total { color: #F39C12; font-weight: 600; }
-  .col-cached-local { color: #888; }
+  .col-cached-local { color: var(--text-secondary); }
   .col-cached-remote { color: #7fb4e8; }
   .col-outputs-missing { color: #e8b04f; }
   .col-new { color: #7fd87f; }
-  .col-blocked { color: #E74C3C; }
+  .col-blocked { color: var(--status-failed-ink); }
   .col-num .loading { color: #555; font-style: italic; }
   .group-row { background: #1b1f27 !important; cursor: pointer; user-select: none; }
   .group-row td {
     color: #9aa0a6; font-size: 11px; letter-spacing: 0.04em; padding: 6px 12px;
   }
   .group-caret { display: inline-block; width: 14px; color: #555; }
-  .group-summary { color: #666; }
+  .group-summary { color: var(--text-muted); }
 
   /* NID column */
   .col-nid { font-family: Consolas, monospace; min-width: 180px; }
-  .nid-text { color: #ccc; }
+  .nid-text { color: var(--text-primary); }
   .nid-text.is-loading { color: #555; font-style: italic; }
   .col-status .pill {
     display: inline-block; padding: 2px 8px; border-radius: 10px;
     font-size: 10.5px; font-weight: 500;
   }
-  .pill-cached-local { background: #2a2a2a; color: #888; }
+  .pill-cached-local { background: #2a2a2a; color: var(--text-secondary); }
   .pill-cached-remote { background: #1e2a3a; color: #7fb4e8; }
   .pill-outputs-missing { background: #3a2e1a; color: #e8b04f; }
   .pill-new-step-changed, .pill-new-upstream-reruns { background: #1e3a1e; color: #7fd87f; }
-  .pill-blocked { background: #3a1e1e; color: #E74C3C; }
+  .pill-blocked { background: #3a1e1e; color: var(--status-failed-ink); }
   .status-reason {
     color: #c07070; font-size: 10.5px; margin-top: 3px;
     white-space: normal; max-width: 320px;
   }
   .col-where { color: #9aa0a6; font-size: 11px; }
   .btn-chevron {
-    background: none; border: none; cursor: pointer; color: #888;
+    background: none; border: none; cursor: pointer; color: var(--text-secondary);
     font-size: 11px; padding: 0 4px 0 0; width: 14px;
   }
   .btn-chevron:hover { color: var(--accent); }
@@ -602,9 +603,9 @@
     font-family: Consolas, monospace; font-size: 12px; text-decoration: underline dotted;
   }
   .nid-link:hover { color: var(--accent); }
-  .output-line td { background: #1f1f21; color: #888; font-size: 11px; padding: 3px 12px; }
+  .output-line td { background: #1f1f21; color: var(--text-secondary); font-size: 11px; padding: 3px 12px; }
   .output-line .out-slot { padding-left: 32px; font-family: Consolas, monospace; }
-  .out-local { color: #888; }
+  .out-local { color: var(--text-secondary); }
   .out-remote { color: #7fb4e8; }
   .out-missing { color: #e8b04f; }
   .pill-loading { background: #2a2a2a; color: #555; font-style: italic; }
@@ -612,22 +613,22 @@
   .row-reused td { color: #777; }
   .row-reused .col-variant { color: #6aa06a; }
 
-  .col-sample { color: var(--color-system); }
+  .col-sample { color: var(--system-ink); }
   .col-sample.is-collapsed {
-    color: #D89E2E;
+    color: var(--status-failed-ink);
     font-style: italic;
     font-size: 11px;
   }
   .col-variant { color: #2ECC71; font-weight: 500; }
   .col-variant.override { color: #F39C12; }
-  .col-action { color: #666; font-size: 11px; }
-  .note-err { color: #E74C3C; }
-  .note-muted { color: #666; }
+  .col-action { color: var(--text-muted); font-size: 11px; }
+  .note-err { color: var(--status-failed-ink); }
+  .note-muted { color: var(--text-muted); }
   .p-val { font-family: Consolas, monospace; }
   .p-val.p-number { color: #F39C12; }
   .p-val.p-string { color: #8FD980; }
-  .p-val.p-boolean { color: #E74C3C; }
-  .p-val.p-other { color: #888; }
+  .p-val.p-boolean { color: var(--status-failed-ink); }
+  .p-val.p-other { color: var(--text-secondary); }
 
   .footer {
     display: flex; justify-content: space-between; align-items: center;
@@ -636,15 +637,15 @@
   }
   .tally { color: #9aa0a6; display: flex; gap: 14px; }
   .tally-new { color: #7fd87f; }
-  .tally-cached-local { color: #888; }
+  .tally-cached-local { color: var(--text-secondary); }
   .tally-cached-remote { color: #7fb4e8; }
   .tally-outputs-missing { color: #e8b04f; }
-  .tally-blocked { color: #E74C3C; }
+  .tally-blocked { color: var(--status-failed-ink); }
   .tally-reused { color: #9aa0a6; }
   .footer-actions { display: flex; gap: 8px; }
   .tally-unlocked { color: #9aa0a6; font-style: italic; }
   .lock-btn {
-    background: #2d2d30; color: #ccc; border: 1px solid var(--border); padding: 6px 12px;
+    background: var(--bg-header); color: var(--text-primary); border: 1px solid var(--border); padding: 6px 12px;
     border-radius: 3px; cursor: pointer;
   }
   .lock-btn:hover { border-color: var(--accent); }
@@ -653,5 +654,22 @@
     border-radius: 3px; font-weight: 500; cursor: pointer;
   }
   .run-btn:hover:not(:disabled) { background: #5aa0e9; }
-  .run-btn:disabled { background: #2e2e32; color: #666; cursor: not-allowed; }
+  .run-btn:disabled { background: #2e2e32; color: var(--text-muted); cursor: not-allowed; }
+  /* The DRAFT pill on a draft node's row: light text, a 45% light outline,
+     no fill (style guide `.sp.draft`). */
+  .draft-pill {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 4px;
+    padding: 0 5px;
+    line-height: 14px;
+    border-radius: 3px;
+    background: transparent;
+    color: var(--marker-light);
+    border: 1px solid color-mix(in srgb, var(--marker-light) 45%, transparent);
+    font-size: 8.5px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
 </style>

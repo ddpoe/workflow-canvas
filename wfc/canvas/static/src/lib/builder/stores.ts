@@ -108,6 +108,18 @@ export function updateNodeData(nodeId: string, partial: Partial<CanvasNodeData>)
 // `machines/services.ts` sends typed NODE_* events into the actor tree.
 
 /**
+ * Which canvas is on screen: bumped when the canvas is replaced (a pipeline
+ * load, Clear). State kept for rows of the canvas before, such as an
+ * unlocked row's draft, is stale once it moves.
+ */
+export const canvasGeneration = writable(0);
+
+/** Start a new canvas generation. */
+export function newCanvasGeneration(): void {
+  canvasGeneration.update(n => n + 1);
+}
+
+/**
  * Delete nodes, every edge touching them, and the selection if it was one of
  * them.
  *

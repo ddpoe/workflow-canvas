@@ -47,6 +47,9 @@ class CacheStatusRowModel(BaseModel):
     source_run_id: int | None = None
     source_nid: str | None = None
     outputs: list[CacheStatusOutput] = []
+    #: True for a draft-mode step (a draft or a step downstream of one):
+    #: always new, never looked up in the cache.
+    draft_mode: bool = False
 
 
 class CacheStatusResponse(BaseModel):
@@ -85,6 +88,7 @@ def post_cache_status(pipeline: PipelineInput) -> CacheStatusResponse:
                 source_nid=row.source_nid,
                 outputs=[CacheStatusOutput(slot=slot, location=location)
                          for slot, location in row.outputs],
+                draft_mode=row.draft_mode,
             )
             for row in report.rows
         ],

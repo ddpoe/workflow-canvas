@@ -100,6 +100,11 @@ CELLS = [
      "/proj/.wfc/runs/pipelines/pipe-1/runs"),
     (7, "pipeline-record", lambda: layout.pipeline_record_path(ROOT, "pipe-1"),
      "/proj/.wfc/runs/pipelines/pipe-1/pipeline_record.json"),
+    (7, "pipeline-record-lock", lambda: layout.pipeline_record_lock_path(ROOT, "pipe-1"),
+     "/proj/.wfc/runs/pipelines/pipe-1/pipeline_record.json.lock"),
+    (7, "pipeline-close-out-lock",
+     lambda: layout.pipeline_close_out_lock_path(ROOT, "pipe-1"),
+     "/proj/.wfc/runs/pipelines/pipe-1/close-out.lock"),
     # 8 — Sample data dir and ready sentinel
     (8, "sample-dir", lambda: layout.sample_dir(ROOT, "s1"), "/proj/.wfc/workspace/samples/s1"),
     (8, "sample-ready-sentinel", lambda: layout.sample_ready_sentinel(ROOT, "s1"),
@@ -143,6 +148,45 @@ CELLS = [
     (16, "registry-gitattributes-line", lambda: layout.REGISTRY_GITATTRIBUTES_LINE,
      ".wfc/registry/** -text"),
     (16, "gitattributes", lambda: layout.gitattributes_path(ROOT), "/proj/.gitattributes"),
+    # 18 — The drafts tree under the artifact store: a draft's folder, its
+    # pointer and latest draft run, one step's results and code copy, and the
+    # shell/jupyter session scratch
+    (18, "drafts-dir", lambda: layout.drafts_dir(ROOT), "/proj/.wfc/runs/drafts"),
+    (18, "draft-dir", lambda: layout.draft_dir(ROOT, "imaging", "tile_export"),
+     "/proj/.wfc/runs/drafts/imaging/tile_export"),
+    (18, "draft-pointer", lambda: layout.draft_pointer_path(ROOT, "imaging", "tile_export"),
+     "/proj/.wfc/runs/drafts/imaging/tile_export/draft.json"),
+    (18, "draft-run", lambda: layout.draft_run_path(ROOT, "imaging", "tile_export"),
+     "/proj/.wfc/runs/drafts/imaging/tile_export/draft-run.json"),
+    (18, "draft-result-dir",
+     lambda: layout.draft_result_dir(ROOT, "imaging", "tile_export", "n1", "s1"),
+     "/proj/.wfc/runs/drafts/imaging/tile_export/n1/s1"),
+    (18, "draft-code-dir",
+     lambda: layout.draft_code_dir(ROOT, "imaging", "tile_export", "n1", "s1"),
+     "/proj/.wfc/runs/drafts/imaging/tile_export/.code/n1/s1"),
+    (18, "draft-session-dir", lambda: layout.draft_session_dir(ROOT, "imaging", "tile_export"),
+     "/proj/.wfc/runs/drafts/imaging/tile_export/.session"),
+    # 19 — The module colours file, beside the method registry
+    (19, "module-colors", lambda: layout.module_colors_path(ROOT),
+     "/proj/.wfc/registry/modules.json"),
+    # 20 — The preview cache: the canvas's converted images, under the
+    # state dir's cache folder
+    (20, "preview-cache-dir", lambda: layout.preview_cache_dir(ROOT),
+     "/proj/.wfc/cache/previews"),
+    # 21 — The project's own pipelines folder, outside the state dir, and the
+    # file a one-method run saves there
+    (21, "project-pipelines-dir", lambda: layout.project_pipelines_dir(ROOT),
+     "/proj/pipelines"),
+    (21, "one-method-pipeline",
+     lambda: layout.one_method_pipeline_path(ROOT, "imaging", "tile_export", "s1"),
+     "/proj/pipelines/imaging.tile_export-s1.json"),
+    (21, "one-method-pipeline-fingerprint",
+     lambda: layout.one_method_pipeline_path(ROOT, "imaging", "tile_export", "s1",
+                                             "0a1b2c3d"),
+     "/proj/pipelines/imaging.tile_export-s1-0a1b2c3d.json"),
+    (21, "named-pipeline",
+     lambda: layout.named_pipeline_path(ROOT, "try-n3"),
+     "/proj/pipelines/try-n3.json"),
 ]
 
 
@@ -177,3 +221,21 @@ def test_literal_derivations(row, derive, expected):
     result compared to a typed-out string.
     """
     assert _render(derive()) == expected, f"catalog row {row} drifted"
+
+
+@pytest.mark.parametrize("name,rule", [
+    ("", "empty"), ("   ", "empty"),
+    *[(f"a{ch}b", f"holds {ch};") for ch in '/\\<>:"|?*'],
+    ("run.", "ends with a dot or a space"), ("run ", "ends with a dot or a space"),
+])
+def test_an_unusable_pipeline_name_is_refused_naming_the_rule(name, rule):
+    """Layout's pipeline-name rule: the refusal names the rule; no path is derived."""
+    assert rule in (layout.pipeline_name_refusal(name) or "")
+    with pytest.raises(ValueError, match="pipeline name"):
+        layout.named_pipeline_path(ROOT, name)
+
+
+@pytest.mark.parametrize("name", ["try-n3", "my run.v2", "imaging.tile_export-s1"])
+def test_an_ordinary_pipeline_name_is_accepted(name):
+    """Dots, spaces and hyphens inside a name are fine."""
+    assert layout.pipeline_name_refusal(name) is None

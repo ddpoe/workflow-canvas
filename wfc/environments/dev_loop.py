@@ -26,7 +26,7 @@ import socket
 import subprocess
 import sys
 import tomllib
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from .. import layout
@@ -241,15 +241,16 @@ def _build_docker_argv(
     dvc_cache_dir: Path,
     inner_argv: Sequence[str],
     extra_flags: Sequence[str],
+    variables: Mapping[str, str] | None = None,
 ) -> list[str]:
     """Compose the full ``docker run ...`` argv for a dev-loop command.
 
     Reuses :func:`wfc.environments.argv.build_docker_command` for the base
     shape (so ``--user``, bind-mounts, and ``-w /work`` stay in sync with
-    ``wfc run-step``), then splices ``extra_flags`` into the per-subcommand
-    position. UID/GID use the same ``getattr(os, 'getuid', lambda: 0)()``
-    pattern as :mod:`wfc.execution.dispatch` so Windows/macOS callers
-    don't crash.
+    ``wfc run-step``), then splices ``extra_flags`` and one ``-e NAME=VALUE``
+    per container variable into the per-subcommand position. UID/GID use
+    the same ``getattr(os, 'getuid', lambda: 0)()`` pattern as
+    :mod:`wfc.execution.dispatch` so Windows/macOS callers don't crash.
     """
     from .argv import build_docker_command
 
@@ -263,14 +264,17 @@ def _build_docker_argv(
         uid=uid,
         gid=gid,
     )
-    return _splice_run_flags(base, extra_flags)
+    flags = list(extra_flags)
+    for name, value in (variables or {}).items():
+        flags.extend(["-e", f"{name}={value}"])
+    return _splice_run_flags(base, flags)
 
 
 # ============================================================================
 # Public entry points
 # ============================================================================
 
-def shell(env_name: str) -> int:
+def shell(env_name: str, variables: Mapping[str, str] | None = None) -> int:
     """Drop into an interactive shell inside an ephemeral container.
 
     Uses ``sh -c 'exec bash 2>/dev/null || exec sh'`` so slim images
@@ -280,6 +284,10 @@ def shell(env_name: str) -> int:
 
     Args:
         env_name: Name of the env to launch.
+        variables: The container's variables, as the CLI built them with
+            Execution's builder (``PYTHONUNBUFFERED`` and the env's ``bin``
+            first on ``PATH``); each is passed as ``-e NAME=VALUE``. ``None``
+            passes none.
 
     Returns:
         The container's exit code, or 1 on a resolution / docker error.
@@ -293,7 +301,7 @@ def shell(env_name: str) -> int:
     inner = ["sh", "-c", "exec bash 2>/dev/null || exec sh"]
     try:
         argv = _build_docker_argv(
-            image_ref, project_root, dvc_cache_dir, inner, ["-it"]
+            image_ref, project_root, dvc_cache_dir, inner, ["-it"], variables
         )
     except _DevLoopError as exc:
         print(exc.message, file=sys.stderr)
@@ -302,7 +310,8 @@ def shell(env_name: str) -> int:
     return _run_subprocess(argv)
 
 
-def exec_(env_name: str, cmd_argv: Sequence[str]) -> int:
+def exec_(env_name: str, cmd_argv: Sequence[str],
+          variables: Mapping[str, str] | None = None) -> int:
     """Run an arbitrary command inside an ephemeral container.
 
     Uses ``-i`` (no ``-t``) so the command works correctly when
@@ -313,6 +322,10 @@ def exec_(env_name: str, cmd_argv: Sequence[str]) -> int:
         env_name: Name of the env to launch.
         cmd_argv: The command to run inside the container, as a sequence
             of arguments. Empty list is treated as a usage error.
+        variables: The container's variables, as the CLI built them with
+            Execution's builder (``PYTHONUNBUFFERED`` and the env's ``bin``
+            first on ``PATH``); each is passed as ``-e NAME=VALUE``. ``None``
+            passes none.
 
     Returns:
         The container's exit code, or 1 on a resolution / docker error.
@@ -333,7 +346,8 @@ def exec_(env_name: str, cmd_argv: Sequence[str]) -> int:
 
     try:
         argv = _build_docker_argv(
-            image_ref, project_root, dvc_cache_dir, list(cmd_argv), ["-i"]
+            image_ref, project_root, dvc_cache_dir, list(cmd_argv), ["-i"],
+            variables,
         )
     except _DevLoopError as exc:
         print(exc.message, file=sys.stderr)
@@ -342,7 +356,8 @@ def exec_(env_name: str, cmd_argv: Sequence[str]) -> int:
     return _run_subprocess(argv)
 
 
-def jupyter(env_name: str, port: int | None = None) -> int:
+def jupyter(env_name: str, port: int | None = None,
+            variables: Mapping[str, str] | None = None) -> int:
     """Launch Jupyter Lab inside an ephemeral container of the env's image.
 
     The Jupyter server inside the container always binds 8888 (the inner
@@ -356,6 +371,10 @@ def jupyter(env_name: str, port: int | None = None) -> int:
         port: Optional explicit host port. When ``None``, autopick walks
             8888-8999. Explicit overrides are NOT autopicked (the user
             asked for that port; we respect it).
+        variables: The container's variables, as the CLI built them with
+            Execution's builder (``PYTHONUNBUFFERED`` and the env's ``bin``
+            first on ``PATH``); each is passed as ``-e NAME=VALUE``. ``None``
+            passes none.
 
     Returns:
         The container's exit code, or 1 on a resolution / docker error.
@@ -382,7 +401,7 @@ def jupyter(env_name: str, port: int | None = None) -> int:
     extra = ["-it", "-p", f"{resolved_port}:8888"]
     try:
         argv = _build_docker_argv(
-            image_ref, project_root, dvc_cache_dir, inner, extra
+            image_ref, project_root, dvc_cache_dir, inner, extra, variables
         )
     except _DevLoopError as exc:
         print(exc.message, file=sys.stderr)

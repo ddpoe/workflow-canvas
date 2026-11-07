@@ -2,7 +2,7 @@
 
 One project, two method nodes bound to one registered env. Node ``a`` is
 the modern shape: a ``.csv`` output beside a ``.tar.gz`` output and a
-directory output, an input ``columns`` block naming a strict column and a
+directory output, an output ``options`` block naming a fixed name and a
 parameter-derived one, and the bare env name in ``method.yaml``. Node
 ``b`` is the legacy shape: its stored ``Method.env`` row carries
 ``container:<name>``, the spelling registration refuses, and dispatch
@@ -31,7 +31,7 @@ from tests.harness import (
     selector,
     wire,
 )
-from wfc.contracts import enrich_pipeline, is_directory_slot, resolve_columns
+from wfc.contracts import enrich_pipeline, is_directory_slot, resolve_options
 from wfc.environments import get as env_record
 from wfc.persistence import Method, get_session
 from wfc.registration import load_contract_map
@@ -42,7 +42,7 @@ LEGACY_ENV = f"container:{ENV}"
 #: The manifest's image as dispatch hands it to ``docker run``: the record
 #: names the ``local/<name>`` repo, so Docker gets the bare stub image ID.
 IMAGE_REF = f"sha256:{STUB_DIGEST}"
-COLUMNS = {"strict": ["cell_id"],
+OPTIONS = {"fixed": ["cell_id"],
            "from_params": [{"params": ["marker"], "pattern": "{}_mean"}]}
 A = ("a", "s1", "default")
 B = ("b", "s1", "default")
@@ -54,13 +54,13 @@ def _stored_env(project: Project, name: str) -> str:
         return session.get(Method, project.method_ids[name]).env
 
 
-def _stored_input_columns(project: Project, name: str, slot: str) -> dict:
-    """Read the ``columns`` block registration stored for one input slot."""
+def _stored_output_options(project: Project, name: str, slot: str) -> dict:
+    """Read the ``options`` block registration stored for one output slot."""
     from wfc.registration import method_contract
     with get_session() as session:
         row = session.get(Method, project.method_ids[name])
         module = row.module.name
-    return method_contract(module, name).input_slots[slot]["columns"]
+    return method_contract(module, name).output_slots[slot]["options"]
 
 
 def _seed_legacy_env(project: Project, name: str, value: str) -> None:
@@ -82,7 +82,7 @@ def _seed_legacy_env(project: Project, name: str, value: str) -> None:
 
 
 @workflow(purpose="One env, two nodes -- a modern declaration with a directory, "
-                  "a .tar.gz and a column block, and a legacy node whose stored "
+                  "a .tar.gz and an options block, and a legacy node whose stored "
                   "row still says container:<name> -- "
                   "register, enrich, claim and dispatch through the one grammar "
                   "to the same image and the same env fingerprint, with the "
@@ -97,8 +97,8 @@ def _seed_legacy_env(project: Project, name: str, value: str) -> None:
 def test_modern_and_legacy_nodes_dispatch_to_one_image_with_one_fingerprint(
         git_project, monkeypatch):
     口 = Step(step_num=1, name="Declare the two nodes and register the project",
-             purpose="a: .csv, .tar.gz and directory outputs, a strict plus "
-                     "parameter-derived column block, the bare env name; b: "
+             purpose="a: .csv, .tar.gz and directory outputs, a fixed plus "
+                     "parameter-derived options block, the bare env name; b: "
                      "the same env. build_project writes both declarations, "
                      "registers them and freezes the document",
              outputs="A built project with both methods registered")
@@ -107,7 +107,7 @@ def test_modern_and_legacy_nodes_dispatch_to_one_image_with_one_fingerprint(
                node("a", inputs=[wire("sel")],
                     outputs={"table": ".csv", "bundle": ".tar.gz",
                              "figs": "directory"},
-                    input_columns={"data": COLUMNS},
+                    output_options={"table": OPTIONS},
                     params={"marker": "cd3"}),
                node("b", inputs=[wire("sel")])],
         samples=["s1"],
@@ -126,7 +126,7 @@ def test_modern_and_legacy_nodes_dispatch_to_one_image_with_one_fingerprint(
              purpose="The canvas's sparse document, enriched by enrich_pipeline "
                      "over load_contract_map: a's slot filenames derive from "
                      "the declared types, its directory slot is recognised, "
-                     "its stored column block resolves the strict and the "
+                     "its stored options block resolves the fixed and the "
                      "parameter-derived names, and b's legacy env passes "
                      "through untouched",
              outputs="The enriched node dicts for a and b")
@@ -151,8 +151,8 @@ def test_modern_and_legacy_nodes_dispatch_to_one_image_with_one_fingerprint(
     assert not is_directory_slot(enriched["a"], "bundle")
     assert enriched["a"]["env"] == ENV
     assert enriched["b"]["env"] == LEGACY_ENV
-    assert resolve_columns(_stored_input_columns(project, "a", "data"),
-                           {"marker": "cd3"}) == {"cell_id", "cd3_mean"}
+    assert resolve_options(_stored_output_options(project, "a", "table"),
+                           [{"marker": "cd3"}])["all"] == ["cell_id", "cd3_mean"]
 
     口 = Step(step_num=4, name="Drive both nodes through the dispatch phase",
              purpose="Claim resolves each node's env fingerprint, and "

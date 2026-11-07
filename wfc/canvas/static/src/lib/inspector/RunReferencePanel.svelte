@@ -12,9 +12,10 @@
   import { formatRelativeTime } from '../history/historyUtils.js';
   import type { CanvasNodeData, CompletedRun } from '../shared/types.js';
   import { fetchCompletedRuns as fetchCompletedRunsRequest } from './api.js';
+  import { moduleColor } from '../shared/moduleColor.svelte.js';
 
   let { node, data }: {
-    node: Node<CanvasNodeData> | undefined;
+    node: Node<CanvasNodeData> | null;
     data: CanvasNodeData;
   } = $props();
 
@@ -34,10 +35,6 @@
     )
   );
 
-  function moduleColor(moduleName: string): string {
-    const mod = $modules.find(m => m.name === moduleName);
-    return mod?.color ?? '#888';
-  }
 
   function updateLabel(value: string) {
     if (!node) return;
@@ -201,13 +198,13 @@
   }
   .param-form { display: flex; flex-direction: column; gap: 10px; }
   .field { display: flex; flex-direction: column; gap: 3px; }
-  .field label { font-size: 12px; color: #888; }
+  .field label { font-size: 12px; color: var(--text-secondary); }
   .field input {
-    background: #1e1e1e;
+    background: var(--bg-input);
     border: 1px solid var(--border);
     border-radius: 3px;
     padding: 6px 8px !important;
-    color: #ccc;
+    color: var(--text-primary);
     font-size: 13px;
     outline: none;
     width: 100%;
@@ -229,7 +226,7 @@
     padding: 7px;
     text-align: center;
     font-size: 12px;
-    color: #666;
+    color: var(--text-muted);
     background: none;
     border: none;
     border-bottom: 2px solid transparent;
@@ -248,36 +245,36 @@
   .card-search-input {
     flex: 1;
     padding: 7px 10px;
-    background: #1e1e1e;
+    background: var(--bg-input);
     border: 1px solid var(--border);
     border-radius: 4px;
-    color: #ccc;
+    color: var(--text-primary);
     font-size: 13px;
     outline: none;
   }
   .card-filter-btn {
     padding: 7px 8px;
-    background: #1e1e1e;
+    background: var(--bg-input);
     border: 1px solid var(--border);
     border-radius: 4px;
     font-size: 12px;
-    color: #888;
+    color: var(--text-secondary);
     cursor: pointer;
   }
   .card-filter-btn:hover {
-    color: #ccc;
+    color: var(--text-primary);
     border-color: var(--accent);
   }
   .card-count {
     font-size: 11px;
-    color: #666;
+    color: var(--text-muted);
     margin-bottom: 6px;
   }
   /* ── Shared card wrap ── */
   .card-wrap {
     position: relative;
     padding: 8px 10px 8px 28px;
-    background: #1e1e1e;
+    background: var(--bg-input);
     border: 1px solid var(--border);
     border-radius: 4px;
     margin-bottom: 4px;
@@ -285,7 +282,7 @@
     font-size: 13px;
   }
   .card-wrap:hover {
-    border-color: rgba(74, 144, 217, 0.3);
+    border-color: color-mix(in srgb, var(--accent) 30%, transparent);
   }
   .corner-check {
     position: absolute;
@@ -297,8 +294,8 @@
   }
   .corner-check-run { accent-color: var(--accent); }
   .card-checked-run {
-    background: rgba(74, 144, 217, 0.08);
-    border-color: rgba(74, 144, 217, 0.3);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    border-color: color-mix(in srgb, var(--accent) 30%, transparent);
   }
   .card-row {
     display: flex;
@@ -308,11 +305,11 @@
   .card-name {
     font-weight: 600;
     font-size: 13px;
-    color: #ccc;
+    color: var(--text-primary);
   }
   .card-meta {
     font-size: 11px;
-    color: #666;
+    color: var(--text-muted);
     margin-top: 2px;
   }
   /* ── Type badges ── */
@@ -346,11 +343,11 @@
   .accept-btn:disabled { opacity: 0.4; cursor: not-allowed; }
   /* ── Run card specific ── */
   .card-dot { opacity: 0.3; margin: 0 2px; }
-  .card-sample { color: #E9A847; font-size: 13px; }
-  .run-status-dot { font-size: 16px; color: #50C878; }
+  .card-sample { color: var(--system-ink); font-size: 13px; }
+  .run-status-dot { font-size: 16px; color: var(--status-ok); }
   .params-summary {
     font-size: 11px;
-    color: #666;
+    color: var(--text-muted);
     margin-top: 2px;
     white-space: nowrap;
     overflow: hidden;
@@ -359,7 +356,7 @@
   }
   .expand-params {
     font-size: 10px;
-    color: #666;
+    color: var(--text-muted);
     margin-top: 2px;
     cursor: pointer;
   }
@@ -371,8 +368,8 @@
     width: 100%;
     border-collapse: collapse;
   }
-  .params-key { color: #888; padding-right: 6px; white-space: nowrap; }
-  .params-val { color: #ccc; }
+  .params-key { color: var(--text-secondary); padding-right: 6px; white-space: nowrap; }
+  .params-val { color: var(--text-primary); }
   .output-slots-section {
     margin-top: 5px;
     padding-top: 4px;
@@ -380,7 +377,7 @@
   }
   .output-slots-label {
     font-size: 10px;
-    color: #888;
+    color: var(--text-secondary);
     text-transform: uppercase;
     margin-bottom: 3px;
   }
@@ -395,16 +392,16 @@
     grid-template-columns: auto 1fr;
     gap: 2px 8px;
     padding: 6px;
-    background: #1e1e1e;
+    background: var(--bg-input);
     border-radius: 3px;
     border: 1px solid var(--border);
   }
   .detail-label {
     font-size: 11px;
-    color: #888;
+    color: var(--text-secondary);
   }
   .detail-value {
     font-size: 11px;
-    color: #ccc;
+    color: var(--text-primary);
   }
 </style>

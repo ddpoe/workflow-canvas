@@ -34,6 +34,7 @@ from tests.fixtures.fakes import (
     stub_docker_image_inspect,
 )
 from tests.fixtures.routes import claimed_run, completed_run
+from tests.fixtures.fakes import refuse_claim_after_load
 from tests.harness import (
     Scenario,
     build_project,
@@ -246,11 +247,15 @@ def test_a_claim_writes_its_row_when_the_wfc_version_is_missing(
 
 
 def _refused_mid_chain(pipeline_id: str) -> Scenario:
-    """Head -> mid -> tail; mid's link names an output head does not declare."""
+    """Head -> mid -> tail: a document the load accepts.
+
+    The test refuses mid's claim after the load
+    (``refuse_claim_after_load``).
+    """
     return Scenario(nodes=[
         selector(),
         node("head", inputs=[wire("sel")], output_files={"data": "data.csv"}),
-        node("mid", inputs=[wire("head", source_slot="nope")]),
+        node("mid", inputs=[wire("head")]),
         node("tail", inputs=[wire("mid")]),
     ], pipeline_id=pipeline_id)
 
@@ -271,7 +276,7 @@ def _launch(project, pipeline_id: str) -> None:
         with pytest.raises(RuntimeError):
             run_pipeline(pipeline_path=str(frozen),
                          project_root=str(project.root),
-                         wfc_root=str(project.root), pipeline_id=pipeline_id)
+                         pipeline_id=pipeline_id)
 
 
 @workflow(purpose="run_pipeline over a pipeline whose middle step is refused at "
@@ -287,6 +292,7 @@ def test_every_row_of_a_launched_pipeline_names_its_document(git_project,
              purpose="head runs, mid is refused at its claim; the launch's "
                      "pipeline-end walk writes mid failed and tail cancelled")
     stub_docker_image_inspect(monkeypatch, lambda ref: ref)
+    refuse_claim_after_load(monkeypatch, "mid", "head")
     obs = run_scenario(_refused_mid_chain("doc-launch-1"), root=git_project,
                        monkeypatch=monkeypatch, pipeline_end=False)
     project = obs.project

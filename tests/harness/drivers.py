@@ -480,7 +480,8 @@ def run_scenario(
               "in for the engine's launch so the cancelled-rows walk and the "
               "canvas history readers have the frozen document they resolve",
       inputs="The built project",
-      outputs=".wfc/runs/pipelines/<pid>/pipeline.json")
+      outputs=".wfc/runs/pipelines/<pid>/pipeline.json and the pipeline's "
+              "pipeline_runs row, running")
 def _freeze_pipeline_doc(project) -> None:
     """Copy the pipeline document into the pipeline run dir, as launch does.
 
@@ -500,10 +501,18 @@ def _freeze_pipeline_doc(project) -> None:
     pipeline_dir.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(project.pipeline_json,
                     _layout().pipeline_doc_path(project.root, project.pipeline_id))
+    # The launch also writes the pipeline's pipeline_runs row, as running.
+    import json
+
+    from wfc.execution.pipeline_outcome import record_pipeline_launch
+
+    record_pipeline_launch(project.pipeline_id,
+                           json.loads(project.pipeline_json.read_text(encoding="utf-8")))
 
 
 @task(purpose="Run production's own pipeline-end cancelled-rows walk, exactly "
-              "as run_pipeline calls it on both the success and failure paths",
+              "as run_pipeline calls it on both the success and failure paths, "
+              "then store the pipeline's status and end as the endings do",
       inputs="The built project",
       outputs="Cancelled Run rows for targets that never started")
 def _pipeline_end_walk(project) -> None:
@@ -519,6 +528,10 @@ def _pipeline_end_walk(project) -> None:
     from wfc.execution import lifecycle as _lifecycle
 
     _lifecycle._write_cancelled_rows(project.pipeline_id, str(project.root))
+    # As the endings do after their last row write: store the status and end.
+    from wfc.execution.pipeline_outcome import store_pipeline_outcome
+
+    store_pipeline_outcome(project.root, project.pipeline_id)
 
 
 # =============================================================================
@@ -650,7 +663,7 @@ def _step_kwargs(project, step, key: Target) -> dict:
     refs = [f"{label}={path}"
             for label, paths in (getattr(step, "run_ref_inputs", None) or {}).items()
             for path in paths]
-    return {
+    kwargs = {
         "node_id": step.node_id,
         "sample": key[1],
         "variant": key[2],
@@ -660,6 +673,24 @@ def _step_kwargs(project, step, key: Target) -> dict:
         "collapsed_samples": (list(step.collapsed_samples)
                               if carries_sample_bundle(step) else None),
     }
+    # Draft mode is Graph's answer over the document, the one the generator
+    # reads to emit ``--draft`` on a rule; a recorded step's call is unchanged.
+    # A draft enters the document only through ``Scenario.drafts``, so a
+    # project that declares none has no draft-mode step and its document is
+    # not read. A stand-in carrying only the run identities (no scenario) is
+    # such a project.
+    scenario = getattr(project, "scenario", None)
+    if scenario is None or not scenario.drafts:
+        return kwargs
+
+    import json
+
+    from wfc.graph import draft_owners
+
+    document = json.loads(Path(project.pipeline_json).read_text(encoding="utf-8"))
+    if step.node_id in draft_owners(document):
+        kwargs["draft"] = True
+    return kwargs
 
 
 @workflow(purpose="Run each target through production run_step in schedule "
@@ -920,7 +951,7 @@ def _name_arguments(func, args: tuple, kwargs: dict) -> dict:
       outputs="record.output_rows_before / output_rows_after, and the "
               "completion-write count",
       critical="collect is the sole RunOutput writer in the execution flow; "
-               "complete_run keeps its own writer for standalone CLI-verb use "
+               "complete_run keeps its own writer for a direct caller "
                "and is handed no output_files here, so its re-upsert loop must "
                "be a no-op on every column")
 @contextmanager
@@ -928,8 +959,8 @@ def _snapshot_output_writers(record: TargetRun, monkeypatch):
     """Snapshot the output rows either side of the second writer's call.
 
     ``collect`` is the sole ``RunOutput`` writer in the execution flow;
-    ``complete_run`` keeps its own writer for its standalone CLI-verb
-    behavior and is handed no ``output_files`` here, so its re-upsert loop
+    ``complete_run`` keeps its own writer for a direct caller and is
+    handed no ``output_files`` here, so its re-upsert loop
     must be a no-op on every column. Comparing the two snapshots is the
     executable form of the pack's third invariant.
 
@@ -1245,7 +1276,6 @@ def _run_engine(project, monkeypatch, *, image_digest, waive, reason):
         run_pipeline(
             pipeline_path=str(project.pipeline_json),
             project_root=str(project.root),
-            wfc_root=str(_REPO_ROOT),
             cores=1,
             pipeline_id=project.pipeline_id,
             archive=False,

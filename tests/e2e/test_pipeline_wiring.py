@@ -22,9 +22,6 @@ from wfc.persistence import get_session, Run, RunOutput
 from tests.fixtures.conftest import create_sample_csv as _create_sample_csv
 from tests.conftest import requires_docker
 
-# wfc package root -- needed so Snakemake subprocesses can find `python -m wfc`
-WFC_ROOT = Path(__file__).resolve().parent.parent.parent
-
 # these tests execute pipelines end-to-end through the
 # container dispatch path (register_fixture_methods builds a real image).
 # Deselected from the default suite (integration) and skipped without Docker.
@@ -106,7 +103,6 @@ def test_linear_pipeline(pipeline_factory, register_fixture_methods):
     run_pipeline(
         pipeline_path=str(pipeline_path),
         project_root=str(project_dir),
-        wfc_root=str(WFC_ROOT),
         cores=1,
         archive=False,
     )
@@ -184,7 +180,6 @@ def test_fan_out_pipeline(pipeline_factory, register_fixture_methods):
     run_pipeline(
         pipeline_path=str(pipeline_path),
         project_root=str(project_dir),
-        wfc_root=str(WFC_ROOT),
         cores=1,
         archive=False,
     )
@@ -276,7 +271,6 @@ def test_fan_in_pipeline(pipeline_factory, register_fixture_methods):
     run_pipeline(
         pipeline_path=str(pipeline_path),
         project_root=str(project_dir),
-        wfc_root=str(WFC_ROOT),
         cores=1,
         archive=False,
     )
@@ -357,7 +351,6 @@ def test_fan_in_selector_pipeline(pipeline_factory, register_fixture_methods):
     run_pipeline(
         pipeline_path=str(pipeline_path),
         project_root=str(project_dir),
-        wfc_root=str(WFC_ROOT),
         cores=1,
         archive=False,
     )

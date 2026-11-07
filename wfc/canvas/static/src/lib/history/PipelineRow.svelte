@@ -34,6 +34,7 @@
     PILL_LABEL,
   } from './historyUtils.js';
   import ChildRunRow from './ChildRunRow.svelte';
+  import DraftStepRow from './DraftStepRow.svelte';
   import PopMenu from '../registry/PopMenu.svelte';
   import type { MenuItem } from '../registry/PopMenu.svelte';
   import type { PipelineRowSummary, RunBuckets } from './historyStore.js';
@@ -50,20 +51,40 @@
 
   /** Each bucket's word and colour, in the runs bar's fixed order. */
   const BUCKET_STYLE: Record<keyof RunBuckets, { word: string; color: string }> = {
-    ran: { word: 'ran', color: 'var(--color-completed)' },
-    cached: { word: 'cached', color: 'var(--color-cached)' },
-    failed: { word: 'failed', color: 'var(--color-failed)' },
-    cancelled: { word: 'cancelled', color: 'var(--color-cancelled)' },
-    running: { word: 'running', color: 'var(--color-history-running)' },
-    pending: { word: 'pending', color: 'var(--color-history-pending)' },
+    ran: { word: 'ran', color: 'var(--status-ok)' },
+    cached: { word: 'cached', color: 'var(--status-cached)' },
+    failed: { word: 'failed', color: 'var(--status-failed)' },
+    cancelled: { word: 'cancelled', color: 'var(--status-cancelled)' },
+    running: { word: 'running', color: 'var(--status-active)' },
+    pending: { word: 'pending', color: 'var(--marker-dark)' },
   };
 
-  // Only the buckets above zero are drawn and counted.
-  let parts = $derived(
-    RUN_BUCKET_ORDER
-      .filter(key => row.buckets[key] > 0)
-      .map(key => ({ key, n: row.buckets[key], ...BUCKET_STYLE[key] })),
-  );
+  // A draft step is drawn in the bar segment of its status; the counts in
+  // words name the recorded runs, then the draft steps ("9 draft") and
+  // the cleared ones ("9 cleared", a grey segment).
+  const DRAFT_BUCKET: Record<string, keyof RunBuckets> = {
+    success: 'ran', failed: 'failed', cancelled: 'cancelled', running: 'running', pending: 'running',
+  };
+  let draftBy = $derived.by(() => {
+    const by: Partial<Record<keyof RunBuckets, number>> = {};
+    for (const d of (row.draftSteps ?? [])) {
+      const k = DRAFT_BUCKET[d.status] ?? 'running';
+      by[k] = (by[k] ?? 0) + 1;
+    }
+    return by;
+  });
+  let clearedCount = $derived(row.cleared?.count ?? 0);
+  type Part = { key: string; n: number; word: string; color: string };
+  // Only the parts above zero are drawn and counted.
+  let barParts = $derived<Part[]>([
+    ...RUN_BUCKET_ORDER.map(key => ({ key, n: row.buckets[key] + (draftBy[key] ?? 0), ...BUCKET_STYLE[key] })),
+    { key: 'cleared', n: clearedCount, word: 'cleared', color: 'var(--border-node)' },
+  ].filter(p => p.n > 0));
+  let parts = $derived<Part[]>([
+    ...RUN_BUCKET_ORDER.map(key => ({ key, n: row.buckets[key], ...BUCKET_STYLE[key] })),
+    { key: 'draft', n: (row.draftSteps ?? []).length, word: 'draft', color: 'var(--text-primary)' },
+    { key: 'cleared', n: clearedCount, word: 'cleared', color: 'var(--text-secondary)' },
+  ].filter(p => p.n > 0));
   let runsText = $derived(parts.map(p => `${p.n} ${p.word}`).join(' · '));
 
   let kebab = $state<HTMLButtonElement | undefined>();
@@ -199,10 +220,11 @@
     <span class="name-cell" title={pipelineLabel}>
       <span class="caret">{expanded ? '▾' : '▸'}</span>
       <span class="pipeline-name">{pipelineLabel}</span>
+      {#if row.draftMode}<span class="draft-mode-pill" data-testid="draft-mode-pill">draft mode</span>{/if}
     </span>
     <span class="runs-cell" title={runsText}>
       <span class="runs-bar" data-testid="runs-bar">
-        {#each parts as part (part.key)}
+        {#each barParts as part (part.key)}
           <span class="seg" data-bucket={part.key}
                 style="flex: {part.n}; background: {part.color};"></span>
         {/each}
@@ -249,6 +271,14 @@
       {#each row.runs as run (run.id)}
         <ChildRunRow {run} />
       {/each}
+      {#each (row.draftSteps ?? []) as step (step.draftString)}
+        <DraftStepRow {step} />
+      {/each}
+      {#if row.cleared}
+        <div class="child-grid cleared-line" data-testid="cleared-line">
+          <span>—</span><span class="cleared-text" title={row.cleared.text}>{row.cleared.text}</span>
+        </div>
+      {/if}
     </div>
   {/if}
 </div>
@@ -260,12 +290,12 @@
 
 <style>
   .pipeline-row {
-    border: 1px solid var(--border, #3e3e42);
+    border: 1px solid var(--border);
     margin-bottom: 6px;
-    background: var(--bg-panel, #252526);
+    background: var(--bg-panel);
     border-radius: 3px;
   }
-  .pipeline-row.expanded { border-color: var(--accent, #4A90D9); }
+  .pipeline-row.expanded { border-color: var(--accent); }
   .row-head {
     padding: 8px 12px;
     background: none;
@@ -273,13 +303,13 @@
     width: 100%;
     text-align: left;
     cursor: pointer;
-    color: var(--text-primary, #ccc);
+    color: var(--text-primary);
     font-family: inherit;
     font-size: 12px;
   }
   .row-head:hover { background: rgba(255, 255, 255, 0.02); }
   .name-cell { display: flex; align-items: center; gap: 6px; }
-  .caret { color: var(--text-muted, #666); flex-shrink: 0; }
+  .caret { color: var(--text-muted); flex-shrink: 0; }
   .pipeline-name {
     font-weight: 600;
     overflow: hidden;
@@ -297,22 +327,22 @@
     width: 92px;
     flex-shrink: 0;
     padding: 1px;
-    border: 1px solid var(--border-node, #4a4a4a);
+    border: 1px solid var(--border-node);
     border-radius: 3px;
-    background: var(--bg-canvas, #1a1a1a);
+    background: var(--bg-canvas);
     box-sizing: content-box;
     overflow: hidden;
   }
   .seg { display: block; min-width: 2px; border-radius: 1px; }
   .runs-text { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .sep { color: var(--text-muted, #666); }
+  .sep { color: var(--text-muted); }
   .mono { font-family: 'Consolas', monospace; font-size: 11px; font-variant-numeric: tabular-nums; }
-  .muted { color: var(--text-muted, #666); }
+  .muted { color: var(--text-muted); }
   .actions { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
   .open-btn {
-    background: var(--bg-header, #2d2d30);
-    border: 1px solid var(--accent, #4A90D9);
-    color: var(--accent, #4A90D9);
+    background: var(--bg-header);
+    border: 1px solid var(--accent);
+    color: var(--accent);
     border-radius: 3px;
     padding: 3px 9px;
     font-size: 11px;
@@ -320,11 +350,11 @@
     font-family: inherit;
     white-space: nowrap;
   }
-  .open-btn:hover { background: rgba(74, 144, 217, 0.10); }
+  .open-btn:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
   .stop-btn {
-    background: var(--bg-header, #2d2d30);
-    border: 1px solid var(--color-failed, #d9534f);
-    color: var(--color-failed, #d9534f);
+    background: var(--bg-header);
+    border: 1px solid var(--status-failed);
+    color: var(--status-failed-ink);
     border-radius: 3px;
     padding: 3px 9px;
     font-size: 11px;
@@ -334,8 +364,8 @@
   .stop-btn:disabled { opacity: 0.5; cursor: default; }
   .kebab {
     background: none;
-    border: 1px solid var(--border, #3e3e42);
-    color: var(--text-secondary, #888);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
     border-radius: 3px;
     padding: 0 7px;
     font-size: 13px;
@@ -343,10 +373,10 @@
     cursor: pointer;
     font-family: inherit;
   }
-  .kebab:hover { color: var(--text-primary, #ccc); border-color: var(--accent, #4A90D9); }
+  .kebab:hover { color: var(--text-primary); border-color: var(--accent); }
   .children {
-    background: var(--bg-input, #1e1e1e);
-    border-top: 1px solid var(--border, #3e3e42);
+    background: var(--bg-input);
+    border-top: 1px solid var(--border);
     border-radius: 0 0 3px 3px;
   }
   .child-header {
@@ -354,9 +384,32 @@
     font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.6px;
-    color: var(--text-muted, #666);
-    background: var(--bg-header, #2d2d30);
-    border-bottom: 1px solid var(--border, #3e3e42);
+    color: var(--text-muted);
+    background: var(--bg-header);
+    border-bottom: 1px solid var(--border);
   }
   .right { text-align: right; }
+  /* The pipeline ran in draft mode: the neutral draft pill. */
+  .draft-mode-pill {
+    flex-shrink: 0;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    padding: 0 6px;
+    line-height: 15px;
+    border: 1px solid var(--marker-light);
+    border-radius: 3px;
+    color: var(--text-primary);
+  }
+  /* The one greyed line of a run whose draft steps were cleared. */
+  .cleared-line {
+    padding: 5px 12px;
+    border-top: 1px solid rgba(62, 62, 66, 0.5);
+    color: var(--text-muted);
+    font-style: italic;
+    font-size: 11px;
+    background: var(--bg-canvas);
+  }
+  .cleared-text { grid-column: 2 / span 6; }
 </style>

@@ -63,6 +63,9 @@ def test_crlf_shell_script_is_refused_before_any_write(tmp_project, tmp_path):
              purpose="The script is LF; prep.sh is a helper with CRLF endings")
     source = _source(tmp_path)
     (source / "prep.sh").write_bytes(b"#!/bin/sh\r\necho ready\r\n")
+    # The module is registered first: its own commit, with its colour.
+    from wfc.registration import register_module
+    register_module(name=MODULE, contracts=[])
     head = _git(tmp_project, "rev-parse", "HEAD")
 
     口 = Step(step_num=2, name="Register it",

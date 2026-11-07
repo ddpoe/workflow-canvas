@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 from axiom_annotations import Step, workflow
 
-from wfc.demo.scaffold import _project_env, run_demo
+from wfc.demo.scaffold import DEMO_MODULES, _project_env, run_demo
 from wfc.demo.remove import remove_demo
 
 from tests.conftest import requires_docker
@@ -62,9 +62,15 @@ def _git(proj: Path, *args: str) -> str:
     ).stdout.strip()
 
 
-def _demo_snapshot_rel(proj: Path) -> str:
-    """Return the demo module's snapshot directory, relative to *proj* (posix)."""
-    return layout.module_methods_dir(proj, "__demo__").relative_to(proj).as_posix()
+#: The demo module each demo method source is registered in.
+MODULE_OF = {src: module for module, sources in DEMO_MODULES.items()
+             for src in sources}
+
+
+def _demo_snapshot_rels(proj: Path) -> list[str]:
+    """Return the demo modules' snapshot directories, relative to *proj* (posix)."""
+    return [layout.module_methods_dir(proj, m).relative_to(proj).as_posix()
+            for m in DEMO_MODULES]
 
 
 def _q(proj: Path, sql: str) -> list[tuple]:
@@ -84,22 +90,17 @@ def test_demo_scaffold_shape(tmp_path, monkeypatch, client_image):
     _scaffold_demo(proj, monkeypatch)
 
     口 = Step(step_num=2, name="DB shape",
-             purpose="Module __demo__ with five contracted methods and three "
-                     "tagged samples exists in the project DB")
-    mods = _q(proj, "SELECT id FROM modules WHERE name='__demo__'")
-    assert len(mods) == 1
-    methods = _q(
-        proj,
-        f"SELECT name FROM methods WHERE module_id={mods[0][0]} ORDER BY name",
-    )
-    assert {m[0] for m in methods} == {
-        "__demo__preprocess", "__demo__filter_cells", "__demo__label",
-        "__demo__summarize", "__demo__plot",
-    }
+             purpose="Three __demo__ modules holding the five contracted "
+                     "methods and three tagged samples exist in the project DB")
+    rows = _q(proj, "SELECT mo.name, m.name FROM methods m JOIN modules mo "
+                    "ON m.module_id = mo.id ORDER BY m.name")
+    assert {method: module for module, method in rows} == {
+        f"__demo__{src}": module for src, module in MODULE_OF.items()}
     contracts = _q(
         proj,
-        f"SELECT COUNT(*) FROM method_contracts WHERE method_id IN "
-        f"(SELECT id FROM methods WHERE module_id={mods[0][0]})",
+        "SELECT COUNT(*) FROM method_contracts WHERE method_id IN "
+        "(SELECT m.id FROM methods m JOIN modules mo ON m.module_id = mo.id "
+        "WHERE mo.name LIKE '\\_\\_demo\\_\\_%' ESCAPE '\\')",
     )
     assert contracts[0][0] == 5
     samples = _q(proj, "SELECT name FROM samples WHERE name LIKE '\\_\\_demo\\_\\_%' ESCAPE '\\'")
@@ -115,14 +116,14 @@ def test_demo_scaffold_shape(tmp_path, monkeypatch, client_image):
     env = manifest["envs"]["wfc-demo-env"]
     assert env["backend"] == "byo"
     assert "@sha256:" in env["container"]
-    # Each method's snapshot sits under the demo module's own snapshot
+    # Each method's snapshot sits under its demo module's own snapshot
     # directory, committed by its registration.
-    for m in ("preprocess", "filter_cells", "label", "summarize", "plot"):
-        snapshot = layout.method_dir(proj, "__demo__", f"__demo__{m}")
+    for m, module in MODULE_OF.items():
+        snapshot = layout.method_dir(proj, module, f"__demo__{m}")
         assert (snapshot / "method.yaml").exists()
         assert (snapshot / f"{m}.py").exists()
-    demo_rel = _demo_snapshot_rel(proj)
-    assert _git(proj, "ls-files", "--", demo_rel) != ""
+    for demo_rel in _demo_snapshot_rels(proj):
+        assert _git(proj, "ls-files", "--", demo_rel) != ""
     assert _git(proj, "status", "--porcelain", "--", ".wfc") == ""
     assert (proj / "demo-pipeline.json").exists()
     # Registered from the bundled assets: nothing is staged in the workspace.
@@ -190,13 +191,15 @@ def test_demo_teardown_precision_with_user_overlap(tmp_path, monkeypatch, client
             Method, Module, Run, RunAnnotation, RunInput, RunOutput,
         )
 
-        with get_session() as session:
-            demo_mod = session.exec(
-                select(Module).where(Module.name == "__demo__")
+        def demo_module(src: str):
+            return session.exec(
+                select(Module).where(Module.name == MODULE_OF[src])
             ).one()
+
+        with get_session() as session:
             demo_label = session.exec(
                 select(Method).where(
-                    Method.module_id == demo_mod.id,
+                    Method.module_id == demo_module("label").id,
                     Method.name == "__demo__label",
                 )
             ).one()
@@ -212,7 +215,7 @@ def test_demo_teardown_precision_with_user_overlap(tmp_path, monkeypatch, client
             # rows under separate names, so they snapshot into separate dirs.
             demo_pre = session.exec(
                 select(Method).where(
-                    Method.module_id == demo_mod.id,
+                    Method.module_id == demo_module("preprocess").id,
                     Method.name == "__demo__preprocess",
                 )
             ).one()
@@ -241,7 +244,7 @@ def test_demo_teardown_precision_with_user_overlap(tmp_path, monkeypatch, client
     # Separate snapshot directories, one per module.
     user_snapshot = layout.method_dir(proj, "my-analysis", "preprocess")
     assert (user_snapshot / "preprocess.py").exists()
-    assert (layout.method_dir(proj, "__demo__", "__demo__preprocess")
+    assert (layout.method_dir(proj, MODULE_OF["preprocess"], "__demo__preprocess")
             / "preprocess.py").exists()
 
     口 = Step(step_num=3, name="Remove the demo",
@@ -251,7 +254,7 @@ def test_demo_teardown_precision_with_user_overlap(tmp_path, monkeypatch, client
 
     口 = Step(step_num=4, name="Assert precision and zero orphans",
              purpose="Direct SQL: demo gone, user survives, no dangling FK")
-    assert _q(proj, "SELECT COUNT(*) FROM modules WHERE name='__demo__'")[0][0] == 0
+    assert _q(proj, "SELECT COUNT(*) FROM modules WHERE name LIKE '\\_\\_demo\\_\\_%' ESCAPE '\\'")[0][0] == 0
     assert _q(proj, "SELECT COUNT(*) FROM samples WHERE name LIKE '\\_\\_demo\\_\\_%' ESCAPE '\\'")[0][0] == 0
 
     # Direct-SQL orphan checks — the storage layer enforces nothing (FK OFF).
@@ -276,12 +279,12 @@ def test_demo_teardown_precision_with_user_overlap(tmp_path, monkeypatch, client
     assert "wfc-demo-env" not in manifest["envs"]
     assert "user-env" in manifest["envs"]
 
-    # Files: the demo module's snapshot directory is gone and its deletion is
-    # committed; the user's snapshot, in its own module, is untouched and
+    # Files: each demo module's snapshot directory is gone and its deletion
+    # is committed; the user's snapshot, in its own module, is untouched and
     # still committed. Nothing wfc owns is left dirty.
-    demo_rel = _demo_snapshot_rel(proj)
-    assert not (proj / demo_rel).exists()
-    assert _git(proj, "ls-files", "--", demo_rel) == ""
+    for demo_rel in _demo_snapshot_rels(proj):
+        assert not (proj / demo_rel).exists()
+        assert _git(proj, "ls-files", "--", demo_rel) == ""
     assert (user_snapshot / "preprocess.py").exists()
     user_rel = user_snapshot.relative_to(proj).as_posix()
     assert _git(proj, "ls-files", "--", user_rel) != ""

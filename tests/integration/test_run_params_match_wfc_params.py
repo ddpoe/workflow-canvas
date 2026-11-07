@@ -92,7 +92,7 @@ def test_run_rows_frozen_params_and_wfc_params_are_one_dict(
     口 = Step(step_num=2, name="Launch the pipeline from the CLI path",
              purpose="The method runs in its container and writes what it read")
     run_pipeline(pipeline_path=str(path), project_root=str(project_dir),
-                 wfc_root=str(project_dir), cores=1, pipeline_id=PIPELINE_ID,
+                 cores=1, pipeline_id=PIPELINE_ID,
                  archive=False)
 
     口 = Step(step_num=3, name="Read the three records",

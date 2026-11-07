@@ -35,8 +35,6 @@ from wfc.storage.cache import (
 from tests.fixtures.conftest import create_sample_csv as _create_sample_csv
 from tests.conftest import requires_docker
 
-WFC_ROOT = Path(__file__).resolve().parent.parent.parent
-
 
 # =============================================================================
 # Helpers
@@ -73,7 +71,6 @@ def _run_linear(pipeline_factory, project_dir, name, *, suffix, sample, archive)
     run_pipeline(
         pipeline_path=str(pipeline_path),
         project_root=str(project_dir),
-        wfc_root=str(WFC_ROOT),
         cores=1,
         archive=archive,
     )
@@ -214,7 +211,6 @@ def test_param_change_downstream_of_cache_hit_rewires_inputs(
         run_pipeline(
             pipeline_path=str(pipeline_path),
             project_root=str(project_dir),
-            wfc_root=str(WFC_ROOT),
             cores=1,
             archive=True,
         )

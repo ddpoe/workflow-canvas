@@ -112,3 +112,46 @@ def test_all_required_saved_no_error(tmp_path):
     warnings = validate_save_artifacts(script, declared_outputs=["clean", "dropped"],
                                        required_outputs=["clean", "dropped"])
     assert warnings == []
+
+
+# --- declared params the script never reads (case 18) -----------------------------
+
+
+def test_a_declared_param_the_script_never_reads_warns(tmp_path):
+    """Catalog case 18: literal reads count, wherever in the file; the rest warn."""
+    from wfc.registration import unread_param_warnings
+
+    script = _write(tmp_path, """\
+        import wfc_client as wfc
+
+        def _scale(ctx):
+            return ctx.params.get("scale", 1)
+
+        @wfc.method
+        def qc(ctx):
+            suffix = ctx.params["suffix"]
+            if "verbose" in ctx.params:
+                print(_scale(ctx))
+            ctx.save_artifact("clean", ctx.workdir / f"clean{suffix}.csv")
+    """)
+    warnings = unread_param_warnings(script, ["suffix", "scale", "verbose", "threshold"])
+    assert len(warnings) == 1, warnings
+    assert "'threshold'" in warnings[0] and "never reads" in warnings[0]
+
+
+@pytest.mark.parametrize("access", [
+    pytest.param('key = "threshold"\n    value = ctx.params[key]', id="variable key"),
+    pytest.param("for name in ctx.params:\n        print(name)", id="iteration"),
+    pytest.param("print(dict(ctx.params))", id="passed on"),
+    pytest.param("print(ctx.params.items())", id="items"),
+    pytest.param("p = ctx.params\n    print(p)", id="aliased"),
+    pytest.param('import os\n    print(os.environ["WFC_PARAMS"])', id="raw WFC_PARAMS"),
+])
+def test_dynamic_params_access_skips_the_unread_param_warning(tmp_path, access):
+    """Catalog case 18: any dynamic access to ctx.params skips the warning (d-9)."""
+    from wfc.registration import unread_param_warnings
+
+    script = tmp_path / "m.py"
+    script.write_text("import wfc_client as wfc\n\n@wfc.method\ndef qc(ctx):\n"
+                      f"    {access}\n", encoding="utf-8")
+    assert unread_param_warnings(script, ["threshold", "suffix"]) == []

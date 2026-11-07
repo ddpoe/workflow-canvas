@@ -1,7 +1,7 @@
 {
   "id": "unknown-method",
   "case": "legality-unknown-method",
-  "note": "mod.nope names no contract (an error); m2's required slot 'other' is unfilled (a warning).",
+  "note": "mod.nope names no contract (an error); m2's required slot 'other' is unconnected (an error too).",
   "document": {
     "name": "unknown-method",
     "nodes": [

@@ -246,6 +246,67 @@ def _lines(frames) -> list[tuple[str, str]]:
             if p is not None and p["type"] in ("stdout", "stderr")]
 
 
+def _get_acting_between_frames(app, path: str, on_frame) -> str:
+    """GET ``path`` from the ASGI ``app``, calling ``on_frame`` as each frame is sent.
+
+    The test client reads a response whole, so a test using it cannot act
+    between two frames of a live stream. This drives the app's ASGI
+    interface directly: ``on_frame`` gets each body chunk when the server
+    sends it, before the stream carries on, so a test can write to a log
+    after a given frame and before the stream's next read.
+
+    Args:
+        app: The canvas ASGI app.
+        path: The request path.
+        on_frame: Called with each non-empty body chunk (bytes) as it is sent.
+
+    Returns:
+        The whole response body, decoded.
+    """
+    import asyncio
+
+    body = bytearray()
+
+    async def drive() -> None:
+        finished = asyncio.Event()
+        requested = False
+
+        async def receive():
+            nonlocal requested
+            if not requested:
+                requested = True
+                return {"type": "http.request", "body": b"", "more_body": False}
+            await finished.wait()
+            return {"type": "http.disconnect"}
+
+        async def send(message):
+            if message["type"] == "http.response.start":
+                assert message["status"] == 200, message
+            elif message["type"] == "http.response.body":
+                chunk = message.get("body", b"")
+                body.extend(chunk)
+                if chunk:
+                    on_frame(chunk)
+                if not message.get("more_body", False):
+                    finished.set()
+
+        scope = {
+            "type": "http", "asgi": {"version": "3.0", "spec_version": "2.3"},
+            "http_version": "1.1", "method": "GET", "scheme": "http",
+            "path": path, "raw_path": path.encode(), "query_string": b"",
+            "root_path": "", "headers": [(b"host", b"testserver")],
+            "client": ("testclient", 50000), "server": ("testserver", 80),
+            "state": {}, "extensions": {},
+        }
+        try:
+            await app(scope, receive, send)
+        finally:
+            finished.set()
+
+    asyncio.run(drive())
+    return body.decode("utf-8")
+
+
 def test_a_reconnect_with_last_event_id_resumes_without_repeating_or_missing_lines(
         client, db_engine, tmp_path, monkeypatch):
     """A live stream names how far it has read; a reconnect sending that id as
@@ -262,16 +323,20 @@ def test_a_reconnect_with_last_event_id_resumes_without_repeating_or_missing_lin
     out.write_text("out-1\nout-2\n", encoding="utf-8")
     err.write_text("err-1\n", encoding="utf-8")
     url = f"/api/wfc/run/{run_id}/stream-logs"
-    # The test client reads a response whole: the live stream ends at its
-    # wall-time guard instead of being dropped mid-way. The guard leaves the
-    # 0.1 s appender ample slack on a loaded runner.
-    short_log_stream_wall(monkeypatch, 2.0)
+    # The live stream ends at its wall-time guard instead of being dropped
+    # mid-way.
+    short_log_stream_wall(monkeypatch, 0.4)
 
     # First connection: the snapshot, then a line written while it streams.
-    appender = threading.Timer(0.1, lambda: out.open("a", encoding="utf-8").write("out-3\n"))
-    appender.start()
-    first = _parse_sse_with_ids(client.get(url).text)
-    appender.join()
+    # The line is written once the stream has sent the frame that ends its
+    # snapshot, so it is written after the snapshot was read and before the
+    # stream reads the log again.
+    def write_after_the_snapshot(frame: bytes) -> None:
+        if frame.startswith(b"id: ") and b"data: " not in frame:
+            _append(out, "out-3\n")
+
+    first = _parse_sse_with_ids(
+        _get_acting_between_frames(client.app, url, write_after_the_snapshot))
     assert _lines(first) == [("stdout", "out-1"), ("stdout", "out-2"),
                              ("stderr", "err-1"), ("stdout", "out-3")]
     resume_from = _last_id(first)

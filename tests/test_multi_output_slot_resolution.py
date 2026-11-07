@@ -247,19 +247,20 @@ def test_two_outputs_into_one_slot_rejected(git_project, monkeypatch, capsys):
     )
 
 
-def test_unknown_source_slot_names_declared_slots(git_project, monkeypatch,
-                                                  capsys):
-    """A link naming a source_slot the parent's slot_outputs does not declare
-    fails the step with an error listing the declared output slots."""
+def test_unknown_source_slot_names_declared_slots(git_project, monkeypatch):
+    """A link naming a source_slot the parent's method does not declare is
+    refused by the load, before any step runs, naming the parent node, the
+    slot and the declared output slots."""
+    import pytest
+
     scn = _multi_output_scenario(consumer_inputs=[
         wire("classifier", source_slot="predictions", target_slot="data"),
         wire("classifier", source_slot="bogus", target_slot="model"),
     ])
-    capsys.readouterr()
-    obs = run_scenario(scn, root=git_project, monkeypatch=monkeypatch)
+    with pytest.raises(ValueError) as refused:
+        run_scenario(scn, root=git_project, monkeypatch=monkeypatch)
 
-    assert obs.exit_code(PLOTTER) == 1
-    err = capsys.readouterr().err
-    assert "bogus" in err
+    message = str(refused.value)
+    assert "Node 'classifier'" in message and "'bogus'" in message
     for declared in ("predictions", "model", "metrics"):
-        assert declared in err
+        assert f"'{declared}'" in message

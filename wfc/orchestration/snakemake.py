@@ -181,6 +181,7 @@ def _generate_rule(
     step_map: dict[str, StepDef],
     pipeline_id: str | None = None,
     sample_restore_sentinel: str | None = None,
+    draft: bool = False,
 ) -> list[str]:
     """Generate a minimal Snakemake rule that delegates to ``wfc run-step``.
 
@@ -195,6 +196,8 @@ def _generate_rule(
         sample_restore_sentinel: The restore_sample sentinel, handed to a
             step that reads a per-sample sample; declared as an input beside
             the step's upstream inputs and reference paths.
+        draft: Whether the step runs in draft mode (a draft, or downstream
+            of one); its shell line passes ``--draft`` to ``wfc run-step``.
 
     Returns:
         List of strings (one per line) for this rule block.
@@ -285,13 +288,16 @@ def _generate_rule(
     # Collapsed steps have no `{sample}` wildcard (it was baked to __all__).
     # Pass the literal so wfc run-step records the run at COLLAPSED_SAMPLE.
     sample_arg = COLLAPSED_SAMPLE if step.sample_collapsed else "{wildcards.sample}"
+    # A draft-mode step (a draft, or downstream of one) runs as a draft
+    # step; it still touches its sentinel, so the wiring is unchanged.
+    draft_arg = " --draft" if draft else ""
     lines.append('    shell:')
     lines.append(f'        "{{sys.executable}} -m wfc run-step '
                  f'--node-id {{params.node_id}} '
                  f'--sample {sample_arg} '
                  f'--variant {{params.variant}}'
                  f'{ref_input_args}'
-                 f'{collapsed_sample_args}"')
+                 f'{collapsed_sample_args}{draft_arg}"')
 
     lines.append("")
 
@@ -315,6 +321,7 @@ def generate_snakefile(
     pipeline_json_path: str | None = None,
     *,
     sample_hashes: dict[str, str] | None = None,
+    draft_steps: frozenset[str] | set[str] | None = None,
 ) -> str:
     """Generate a wildcard-based Snakefile.
 
@@ -352,6 +359,9 @@ def generate_snakefile(
             The rule and ``SAMPLE_HASHES`` are emitted only when the table
             is non-empty and some step reads a per-sample sample or carries
             a fan-in bundle; ``None`` is an empty table. The emitter reads nothing itself.
+        draft_steps: The node ids that run in draft mode (Graph's
+            ``draft_owners`` over the document); their rules pass
+            ``--draft``. ``None`` is none.
 
     Returns:
         String content of the Snakefile.
@@ -586,6 +596,7 @@ def generate_snakefile(
             sample_restore_sentinel=(
                 sample_restore_sentinel if reads_per_sample(step) else None
             ),
+            draft=step.node_id in (draft_steps or ()),
         ))
 
     # ── onsuccess / onerror handlers ─────────────────────────────────────

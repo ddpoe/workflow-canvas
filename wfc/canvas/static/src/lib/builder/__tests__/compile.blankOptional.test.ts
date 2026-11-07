@@ -22,7 +22,6 @@ function methodNode(data: Partial<CanvasNodeData>): Node<CanvasNodeData> {
       label: 'm',
       method: 'filter',
       module: 'mod',
-      color: '#ccc',
       inputs: [],
       outputs: [{ name: 'out', type: 'csv' }],
       params: [],

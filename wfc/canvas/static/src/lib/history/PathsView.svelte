@@ -53,7 +53,7 @@
     align-items: center;
     justify-content: center;
     padding: 40px;
-    color: var(--text-muted, #666);
+    color: var(--text-muted);
     font-size: 13px;
   }
 
@@ -63,7 +63,7 @@
 
   .path-label {
     font-size: 12px;
-    color: var(--text-muted, #666);
+    color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.5px;
     margin-bottom: 8px;
@@ -74,10 +74,13 @@
     align-items: center;
     flex-wrap: wrap;
     gap: 0;
+    /* Room for a draft-mode card's DRAFT MODE flag above its top edge. */
+    padding-top: 6px;
+    row-gap: 14px;
   }
 
   .path-arrow {
-    color: var(--text-muted, #666);
+    color: var(--text-muted);
     margin: 0 10px;
     font-size: 18px;
   }

@@ -268,8 +268,10 @@ test.describe('History descendants view (smoke)', () => {
     // A card names the method version the run used, apart from its NID.
     await expect(page.locator('.tree-card', { hasText: 'segment' }).locator('.card-version')).toHaveText('v1');
 
-    // Failed card carries its first error line.
-    await expect(page.locator('.tree-card .err-inline')).toContainText('boom');
+    // A failed card says it failed, not why: no error text on the card.
+    const failedCard = page.locator('.tree-card', { has: page.getByRole('button', { name: 'Failed' }) });
+    await expect(failedCard).toHaveCount(1);
+    await expect(failedCard).not.toContainText('boom');
 
     // Collapse all — only the two roots stay visible.
     await page.locator('.collapse-all-btn').click();

@@ -1,13 +1,13 @@
 """The load: a pipeline document to a ``PipelineDef``, on values alone.
 
 ``load_pipeline(document, *, contract_map, reference_outputs)`` composes
-the stages in order -- parse (the document's
-nodes, links and samples into steps, remembering the system-node facts),
-bind references (the referenced runs' outputs and sample, handed in), order
-and legality, collapse propagation, the column cross-check moment (the
-contract map, handed in) -- and refuses a definition with steps but no
-samples. Nothing here opens a database or reads a file: the caller reads
-the document, resolves the referenced runs and fetches the map
+the stages in order -- parse (the document's nodes, links and samples into
+steps, remembering the system-node facts), bind references (the referenced
+runs' outputs and sample, handed in), order and legality (with the
+single-input rule, which reads the contract map, handed in), collapse
+propagation -- and refuses a definition with steps but no samples. Nothing
+here opens a database or reads a file: the caller reads the document,
+resolves the referenced runs and fetches the map
 (``wfc.execution.load_pipeline_from_path`` is the one composer on the
 execution path).
 """
@@ -21,10 +21,19 @@ from pathlib import PurePath
 
 from axiom_annotations import AutoStep, Step, task
 
-from ..contracts import COLLAPSED_SAMPLE, cross_check_columns, version_entry
+from ..contracts import COLLAPSED_SAMPLE
 from .model import PipelineDef, StepDef
 from .order import topo_sort_steps
-from .validation import fan_in_upstream_errors, second_selector_errors
+from .validation import (
+    declared_input_slots,
+    fan_in_upstream_errors,
+    input_file_counts,
+    link_slot_errors,
+    second_selector_errors,
+    single_input_errors,
+    unwired_input_errors,
+)
+from .variables import param_sets_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +69,10 @@ class ParsedDocument:
     # method raw id -> distinct fan-in selector raw ids wired into it, link order
     upstream_link_counts: dict[str, int] = field(default_factory=dict)
     # method raw id -> incoming link count, every upstream kind, before filtering
+    input_file_counts: dict[tuple[str, str], int] = field(default_factory=dict)
+    # (raw id, input slot) -> files reaching it (a fan-in selector counts its samples)
+    links: list[dict] = field(default_factory=list)
+    # every link as the document wrote it, system-node links included, document order
 
 
 def reference_nodes(document: dict) -> dict[str, dict]:
@@ -239,17 +252,22 @@ def parse_document(document: dict) -> ParsedDocument:
         KeyError: If required fields are missing.
         ValueError: A method node with no incoming edge in a document that
             has system nodes; a link naming an unknown node; a method node
-            declaring no env.
+            declaring no env; a top-level ``param_sets`` that is not a
+            mapping (``param_sets_refusal``).
     """
     口 = Step(step_num=1, name="Parse the document",
-             purpose="Read nodes, links, samples, and param_sets; separate "
-                     "system nodes from method nodes")
+             purpose="Read nodes, links, samples, and param_sets, refusing a "
+                     "top-level param_sets that is not a mapping by name; "
+                     "separate system nodes from method nodes")
     raw = document
 
     all_nodes = raw["nodes"]
     links = raw.get("links", [])
     samples = list(raw.get("samples", []))
-    param_sets = raw.get("param_sets", {})
+    refusal = param_sets_refusal(raw)
+    if refusal is not None:
+        raise ValueError(refusal)
+    param_sets = raw.get("param_sets") or {}
     explicit_combos = raw.get("explicit_combos", None)
 
     # ── System node extraction ──────────────────────────────────────────────
@@ -453,6 +471,9 @@ def parse_document(document: dict) -> ParsedDocument:
         per_sample_selector_upstream=per_sample_selector_upstream,
         fan_in_selector_upstream=fan_in_selector_upstream,
         upstream_link_counts=upstream_link_counts,
+        input_file_counts=input_file_counts(
+            all_nodes, raw.get("links", []), slot_key="target_slot", default_slot="data"),
+        links=list(raw.get("links", [])),
     )
 
 
@@ -691,17 +712,24 @@ def bind_references(parsed: ParsedDocument, reference_outputs: dict[str, dict]) 
 @task(purpose="Refuse a document the engine cannot give a meaning to: a cycle "
               "in the step DAG, a method node fed by more than one per-sample "
               "selector, a method node fed by more than one fan-in selector, "
-              "or a fan-in selector beside another upstream on one consumer "
-              "(all three rules shared, message for message, with structural "
-              "validation)")
-def check_legality(parsed: ParsedDocument) -> None:
+              "or a fan-in selector beside another upstream on one consumer, "
+              "or more than one file into an input that takes one, or a link "
+              "naming a slot its node's version does not declare, or a "
+              "required input nothing is connected to (all six rules shared, "
+              "message for message, with structural validation)")
+def check_legality(parsed: ParsedDocument, contract_map: dict | None = None) -> None:
     """Refuse illegal wirings over the parsed steps.
 
     Args:
         parsed: The parse stage's result, references bound.
+        contract_map: Registration's contract map; the link-slot,
+            unwired-input and single-input rules read each node's declared
+            slots from it (``None`` or ``{}`` skips those rules).
 
     Raises:
-        ValueError: The DAG contains a cycle, a method node has more than
+        ValueError: The DAG contains a cycle, a link names a slot its
+            node's version does not declare, a required input (one not
+            ``required: false``) has no link into it, a method node has more than
             one per-sample selector upstream, a method node has more than
             one fan-in selector upstream, or a fan-in selector is not the
             sole upstream of its consumer.
@@ -709,9 +737,18 @@ def check_legality(parsed: ParsedDocument) -> None:
     # Cycle detection (topological sort via Kahn's algorithm)
     topo_sort_steps(parsed.steps)
 
+    # A link naming a slot its node's version does not declare -- the rule,
+    # and the message, structural validation gives.
+    errors = link_slot_errors(parsed.nodes, parsed.links, contract_map) if contract_map else []
+
+    # A required input nothing is connected to -- the rule, and the
+    # message, structural validation gives.
+    if contract_map:
+        errors.extend(unwired_input_errors(parsed.nodes, parsed.links, contract_map))
+
     # One per-sample selector per method node -- the same rule, and the
     # same message, structural validation gives.
-    errors = second_selector_errors(parsed.per_sample_selector_upstream)
+    errors.extend(second_selector_errors(parsed.per_sample_selector_upstream))
 
     # The fan-in shape rules, from the same module, so the launch path and
     # the canvas's preview refuse the same documents for the same reasons.
@@ -720,6 +757,12 @@ def check_legality(parsed: ParsedDocument) -> None:
             parsed.fan_in_selector_upstream, parsed.upstream_link_counts
         )
     )
+
+    # More than one file into an input without `multiple: true` -- the rule
+    # canvas validate gives, so `wfc run-pipeline` refuses the same wiring.
+    if contract_map:
+        errors.extend(single_input_errors(
+            parsed.input_file_counts, declared_input_slots(parsed.nodes, contract_map)))
     if errors:
         raise ValueError(errors[0])
 
@@ -807,92 +850,6 @@ def propagate_collapse(parsed: ParsedDocument) -> None:
 
 
 # =============================================================================
-# Stage: the column cross-check moment
-# =============================================================================
-
-@task(purpose="Pair each input slot with the upstream output slot that feeds "
-              "it and cross-check their declared columns (warnings only)")
-def cross_check_columns_moment(steps: list[StepDef], contract_map: dict,
-                               node_versions: dict[str, str | None] | None = None,
-                               ) -> None:
-    """Cross-check strict columns between connected steps at load time.
-
-    For each step, reads its version's contract from the map (keyed
-    ``module.method``, then the node's pinned version when it has one)
-    to get input/output column specs.  For each input
-    slot, finds the upstream step and checks that the upstream's declared
-    output columns are a superset of the downstream's required input
-    columns (strict only).  A step whose entry has no input-slot half is
-    skipped, as is an upstream with no output-slot half.
-
-    Warnings are logged for mismatches.  from_params and patterns are
-    silently deferred to runtime.
-
-    Args:
-        steps: The parsed steps.
-        contract_map: ``{"<module>.<method>": {"input_slots": ...,
-            "output_slots": ..., "versions": ...}}`` -- Registration's
-            contract map.
-        node_versions: Node id to the version the node runs (its pin);
-            a node with none reads the newest version's contract.
-    """
-    # Build node_id -> StepDef lookup
-    step_map: dict[str, StepDef] = {s.node_id: s for s in steps}
-
-    def _slots(step: StepDef) -> tuple[dict | None, dict | None]:
-        entry = contract_map.get(f"{step.module_name}.{step.method_name}")
-        if entry:
-            entry = version_entry(entry, (node_versions or {}).get(step.node_id))
-        if not entry:
-            return (None, None)
-        return (entry.get("input_slots"), entry.get("output_slots"))
-
-    # Cross-check each step's input slots against upstream output slots
-    for step in steps:
-        input_slots, _ = _slots(step)
-        if not input_slots:
-            continue
-
-        for slot_name, upstream_ids in step.inputs.items():
-            slot_def = input_slots.get(slot_name, {})
-            input_column_spec = slot_def.get("columns")
-            if not input_column_spec:
-                continue
-
-            for upstream_id in upstream_ids:
-                upstream_step = step_map.get(upstream_id)
-                if upstream_step is None:
-                    continue
-
-                _, upstream_output_slots = _slots(upstream_step)
-                if not upstream_output_slots:
-                    continue
-
-                # Determine which upstream output slot feeds this input
-                # Use the source_slot mapping if available, otherwise try
-                # the first output slot or the slot with the same name
-                source_slots = step.input_source_slots.get(slot_name, [])
-                idx = upstream_ids.index(upstream_id)
-                source_slot = source_slots[idx] if idx < len(source_slots) else None
-
-                if source_slot and source_slot in upstream_output_slots:
-                    upstream_slot_def = upstream_output_slots[source_slot]
-                elif len(upstream_output_slots) == 1:
-                    upstream_slot_def = next(iter(upstream_output_slots.values()))
-                else:
-                    continue
-
-                upstream_column_spec = upstream_slot_def.get("columns")
-                warnings = cross_check_columns(upstream_column_spec, input_column_spec)
-                for w in warnings:
-                    logger.warning(
-                        "Static column cross-check: step '%s' slot '%s' <- "
-                        "upstream '%s': %s",
-                        step.node_id, slot_name, upstream_id, w,
-                    )
-
-
-# =============================================================================
 # The load
 # =============================================================================
 
@@ -910,8 +867,8 @@ def load_pipeline(
     Args:
         document: The pipeline document (the caller reads the file).
         contract_map: Registration's contract map, ``{"<module>.<method>":
-            {"input_slots", "output_slots", ...}}``; ``{}`` skips the
-            column cross-check for every step.
+            {"input_slots", "output_slots", ...}}``; the single-input rule
+            reads each node's declared inputs from it; ``{}`` skips it.
         reference_outputs: The referenced runs' resolved outputs,
             ``{node id: {"output_paths", "sample", "method", "malformed"}}``
             (what ``wfc.storage.resolve_run_reference_outputs``
@@ -935,18 +892,12 @@ def load_pipeline(
     bind_references(parsed, reference_outputs)
 
     口 = AutoStep(step_num=3, name="Order and legality")
-    check_legality(parsed)
+    check_legality(parsed, contract_map)
 
     口 = AutoStep(step_num=4, name="Propagate sample collapse; reject a collapsed step over per-sample outputs")
     propagate_collapse(parsed)
 
-    口 = AutoStep(step_num=5, name="Static column cross-check")
-    cross_check_columns_moment(
-        parsed.steps, contract_map,
-        {str(n["id"]): n.get("version") for n in parsed.nodes},
-    )
-
-    口 = Step(step_num=6, name="Refuse zero samples; assemble the definition",
+    口 = Step(step_num=5, name="Refuse zero samples; assemble the definition",
              purpose="A pipeline with method steps but no samples would be a "
                      "zero-job DAG that silently exits 0 -- fail loudly")
     # Defensive: a pipeline with method steps but no samples produces a

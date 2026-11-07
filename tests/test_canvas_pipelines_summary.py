@@ -71,7 +71,7 @@ def _end_pipeline(project, pid: str, monkeypatch, *, exit_code: int,
         try:
             run_pipeline(pipeline_path=str(project.pipeline_json),
                          project_root=str(project.root),
-                         wfc_root=str(project.root), pipeline_id=pid, **kwargs)
+                         pipeline_id=pid, **kwargs)
         except RuntimeError:
             assert exit_code != 0
 
@@ -121,13 +121,24 @@ def test_the_pipelines_summary_gives_each_pipeline_its_status_and_expected_count
              purpose="One entry per pipeline")
     summaries = {s["pipelineId"]: s for s in
                  _get(git_project, monkeypatch, "/api/wfc/pipelines")}
+    # The name and start are the stored row's, as the launch wrote them.
+    from wfc.canvas.draft_views import pipeline_rows
+    rows = pipeline_rows()
+    for pid, summary in summaries.items():
+        started = rows[pid].started_at
+        assert summary.pop("startedAt") == (started.isoformat() if started else None)
+        assert summary.pop("name") == rows[pid].name
+    # Neither pipeline ran in draft mode: no drafts, no draft steps.
+    recorded_only = {"draftMode": False,
+                     "drafts": [], "draftStepCount": 0, "draftSteps": [],
+                     "cleared": None}
     assert summaries["p-failed"] == {
         "pipelineId": "p-failed", "status": "failed", "expected": 6,
-        "nodeOrder": ["a", "b", "c"],
+        "nodeOrder": ["a", "b", "c"], **recorded_only,
     }
     assert summaries["p-stopped"] == {
         "pipelineId": "p-stopped", "status": "cancelled", "expected": None,
-        "nodeOrder": None,
+        "nodeOrder": None, **recorded_only,
     }
 
 
@@ -198,7 +209,8 @@ def test_pending_runs_count_only_for_a_pipeline_with_a_record(git_project, monke
     assert (summary["status"], summary["expected"]) == ("mixed", 6)
 
     口 = Step(step_num=3, name="With a record: the missing run is pending",
-             purpose="The record is read per request; the pipeline reads running")
+             purpose="The server's start stores every pipeline's status again, "
+                     "the record read then; the pipeline reads running")
     write_pipeline_record(git_project, pid, ENTRY_POINT_CLI)
     summary = next(s for s in _get(git_project, monkeypatch, "/api/wfc/pipelines")
                    if s["pipelineId"] == pid)

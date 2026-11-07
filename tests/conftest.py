@@ -78,6 +78,30 @@ def _no_git_auto_maintenance():
 
 
 # =============================================================================
+# DVC's console log handlers write to the session's streams
+# =============================================================================
+
+@pytest.fixture(scope="session", autouse=True)
+def _dvc_logs_to_the_session_streams():
+    """Import DVC once per test process, before any test captures output.
+
+    ``import dvc`` runs ``dvc.logger.setup()``, which builds DVC's console
+    handlers around the ``sys.stdout`` and ``sys.stderr`` of that moment and
+    never looks them up again. When the first import happens inside a test
+    that captures output (``capsys``, ``capfd``, ``run_cli``'s redirect), the
+    handlers keep that test's capture stream, which is closed when the test
+    ends; the next DVC log record in the same process (``Repo.init`` logs one)
+    then raises ``LoggingException``. Importing DVC here, while the streams
+    are the session's, keeps the handlers on streams that stay open for the
+    whole run, whichever test imports DVC first in the process or xdist
+    worker.
+    """
+    if _dvc_available():
+        import dvc  # noqa: F401
+    yield
+
+
+# =============================================================================
 # Suite invariant: nothing lands in the developer's ~/.wfc/archives/
 # =============================================================================
 
@@ -411,7 +435,7 @@ def cli(tmp_project):
     """The in-process ``wfc`` runner, bound to ``tmp_project``.
 
     Returns :func:`run_cli`: each call is one invocation
-    (``cli("register_run", "--method", ...)``) and returns a
+    (``cli("register-sample", "--name", ...)``) and returns a
     :class:`CliResult` with ``returncode``, ``stdout`` and ``stderr``. The
     fixture exists to pin the project -- every invocation resolves
     ``tmp_project`` through the cwd and ``WFC_PROJECT_ROOT`` it set.

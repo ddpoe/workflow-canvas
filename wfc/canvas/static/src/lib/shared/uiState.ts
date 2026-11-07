@@ -43,3 +43,28 @@ export const graftToastState = writable<GraftToastRequest | null>(null);
  * grafted node is both selected and centered.
  */
 export const centerOnNodeRequest = writable<string | null>(null);
+
+/** A request to open a node's Inspector at one of its parameters. */
+export interface InspectParamRequest {
+  nodeId: string;
+  param: string;
+}
+
+/**
+ * Open-the-Inspector-at-a-parameter request store. A Built-from `param ↗`
+ * link sets it beside selecting and centring the node; the method node's
+ * Inspector body takes it when it shows that node, scrolls the parameter's
+ * row into view, highlights it briefly, and resets the store to null.
+ */
+export const inspectParamRequest = writable<InspectParamRequest | null>(null);
+
+/** The app's top-level tabs. */
+export type AppTab = 'builder' | 'registry' | 'history';
+
+/**
+ * Tab-switch request store. A link from inside one tab to another (the
+ * Inspector's Run Reference `param ↗` link to History, the Registry's Draft
+ * run tab opening History) sets it; App.svelte switches to that tab and
+ * resets the store to null.
+ */
+export const tabRequest = writable<AppTab | null>(null);

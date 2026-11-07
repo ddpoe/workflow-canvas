@@ -817,7 +817,7 @@ def test_pre_run_deleted_archive_is_a_miss(tmp_project):
 # =============================================================================
 
 @workflow(
-    purpose="The claim phase and the check_cache verb answer through one lookup: "
+    purpose="The claim phase and a hand-built candidate answer through one lookup: "
             "a completed run with the identical fingerprint and a present archive "
             "is a hit; a key that differs on one axis is a miss; a run that shares "
             "the candidate's lineage (same parents, same params) under a different "
@@ -825,8 +825,8 @@ def test_pre_run_deleted_archive_is_a_miss(tmp_project):
 )
 def test_cache_hit_lookup_is_the_one_rule(tmp_project, capsys, monkeypatch):
     """Fingerprint match is the one definition of a cache hit."""
-    from wfc.cli import cli_main
     from wfc.execution.claim import lookup_cache_hit
+    from tests.fixtures.routes.runs import cache_hit
 
     # Seed a completed run with lineage and archive: pre_run registers the
     # candidate (cache key, RunInput lineage, archive dir); marking it
@@ -836,7 +836,6 @@ def test_cache_hit_lookup_is_the_one_rule(tmp_project, capsys, monkeypatch):
         tmp_project, monkeypatch=monkeypatch, method="v_upstream",
         module="versioning_mod", sample="samp_one",
         outputs={"result": ".csv"}).run_id
-    capsys.readouterr()  # the route's registration output; the verb's is read below
     parent_link = f"data:{upstream_id}"
     flag, run_id = pre_run(
         method_name="v_method",
@@ -858,29 +857,20 @@ def test_cache_hit_lookup_is_the_one_rule(tmp_project, capsys, monkeypatch):
     assert lookup_cache_hit(
         "v_method", "versioning_mod", "samp_one", cache_key) == run_id
 
-    # The verb answers through the same lookup: check_cache computes the key
-    # the claim phase would and prints the run id the claim phase would reuse.
-    hit_argv = ["check_cache", "--method", "v_method",
-                "--module", "versioning_mod", "--sample", "samp_one",
-                "--params", '{"k": 1}', "--parent-run-id", parent_link]
-    assert cli_main(hit_argv) == 0
-    assert capsys.readouterr().out.strip() == str(run_id)
+    # A hand-built candidate answers through the same lookup: the key the
+    # claim phase would compute finds the run the claim phase would reuse.
+    hit = ("v_method", "versioning_mod", "samp_one", {"k": 1}, [parent_link])
+    assert cache_hit(*hit) == run_id
 
-    # One axis changed is a miss: same parents, different params -- the key
-    # differs on one axis and the verb prints NONE.
-    miss_argv = ["check_cache", "--method", "v_method",
-                 "--module", "versioning_mod", "--sample", "samp_one",
-                 "--params", '{"k": 2}', "--parent-run-id", parent_link]
-    assert cli_main(miss_argv) == 0
-    assert capsys.readouterr().out.strip() == "NONE"
+    # One axis changed is a miss: same parents, different params.
+    assert cache_hit("v_method", "versioning_mod", "samp_one", {"k": 2},
+                     [parent_link]) is None
 
     # Same lineage under a different key is a miss: re-register edited
     # source -- the candidate keeps its parents and params (a lineage match)
-    # but its code fingerprint, and so its key, differs; the verb prints NONE.
+    # but its code fingerprint, and so its key, differs.
     _register_v_method(tmp_project, body="def main():\n    return 2\n")
-    capsys.readouterr()  # the re-registration's output
-    assert cli_main(hit_argv) == 0
-    assert capsys.readouterr().out.strip() == "NONE"
+    assert cache_hit(*hit) is None
 
 
 @workflow(

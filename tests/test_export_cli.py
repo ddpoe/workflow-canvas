@@ -312,6 +312,34 @@ def test_export_all_audit_row_exports_source_outputs(cli, tmp_project, monkeypat
     assert str(cache_path) in result.stdout
 
 
+def test_export_path_all_names_each_recorded_line_by_its_slot(cli, tmp_project,
+                                                              monkeypatch):
+    """Case 17, recorded half: `--path --all` lines start with the slot, as a
+    draft step's do, not with the file name; `--json` items name the same slots."""
+    import json
+
+    from wfc.storage import archive_outputs
+
+    run_id = _run_with_outputs(tmp_project, monkeypatch, {
+        "table": ("alpha.csv", "a,b\n1,2\n"),
+        "masks": ("cells.tif", "TIF"),
+    }).run_id
+    archive_outputs(tmp_project, run_id=run_id)
+
+    result = cli("export", "--run", str(run_id), "--all", "--path")
+    assert result.returncode == 0, result.stderr
+    lines = dict(line.split("\t") for line in result.stdout.splitlines())
+    assert lines == {
+        "table": str(_cache_path_for(tmp_project, run_id, "table")),
+        "masks": str(_cache_path_for(tmp_project, run_id, "masks")),
+    }
+
+    as_json = cli("export", "--run", str(run_id), "--all", "--path", "--json")
+    assert as_json.returncode == 0, as_json.stderr
+    items = json.loads(as_json.stdout)["items"]
+    assert {item["slot"]: item["path"] for item in items} == lines
+
+
 @workflow(
     purpose="One unresolvable output among several stops the whole export: "
             "`wfc export --all` over a run with an un-archived row exits "

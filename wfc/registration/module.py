@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from axiom_annotations import Step, task
-from sqlmodel import select
+from sqlmodel import col, select
 
 from ..contracts import parse_module_yaml
 from ..persistence import (
@@ -16,6 +16,7 @@ from ..persistence import (
 from ..persistence import (
     project_root as get_project_root,
 )
+from .module_color import assign_module_colors
 
 
 @task(purpose="Create or update a module in the database")
@@ -36,10 +37,13 @@ def register_module(
       2. A ``module.yaml`` file in ``module_dir``
       3. If neither is provided, raises TypeError
 
-    When the contracts come from a ``module.yaml`` inside the project's git
-    repository, that file is committed by pathspec before the rows are, so
-    the tree is clean afterwards and nothing else the user staged is swept
-    in. Outside a git repository nothing is committed.
+    A new module gets its default colour in ``.wfc/registry/modules.json``
+    (``assign_module_colors``; modules registered before colours were stored
+    get theirs first, in registration order). That file, and the
+    ``module.yaml`` the contracts came from when it is inside the project's
+    git repository, are committed by pathspec in one commit before the rows
+    are, so the tree is clean afterwards and nothing else the user staged is
+    swept in. Outside a git repository nothing is committed.
 
     Args:
         name: Module name (e.g. 'data_preprocessing').
@@ -130,18 +134,20 @@ def register_module(
             session.add(mc)
         session.flush()
 
-        口 = Step(step_num=3, name="Commit module.yaml to git",
-                 purpose="Commit the module.yaml the contracts were read from, "
-                         "by pathspec, when it is inside the repository; then "
-                         "commit the rows, so a failed git commit leaves none")
-        if yaml_read is not None:
-            from ..version import commit_paths
-            sha = commit_paths(
-                get_project_root(), [yaml_read],
-                f"Register module {name}", require_repo=False,
-            )
-            if sha is not None:
-                print(f"  git: committed module.yaml as {sha[:12]}")
+        口 = Step(step_num=3, name="Store the colour and commit",
+                 purpose="Store a default colour for every module modules.json "
+                         "lacks, in registration order (this one last when "
+                         "new), and commit modules.json with the module.yaml "
+                         "the contracts were read from, by pathspec, when they "
+                         "are inside the repository; then commit the rows, so "
+                         "a failed git commit leaves none")
+        names = list(session.exec(select(Module.name).order_by(col(Module.id))).all())
+        written = assign_module_colors(
+            get_project_root(), names, message=f"Register module {name}",
+            also_commit=[yaml_read] if yaml_read is not None else [],
+        )
+        if written.commit is not None:
+            print(f"  git: committed as {written.commit[:12]}")
 
         session.commit()
         print(f"  {len(contracts)} contract(s) registered")

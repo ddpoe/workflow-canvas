@@ -90,7 +90,7 @@ def _run(project, pid: str, monkeypatch, *, exit_code: int, during_engine=None,
     with gen_patch, popen_patch:
         call = lambda: run_pipeline(  # noqa: E731
             pipeline_path=str(project.pipeline_json), project_root=str(project.root),
-            wfc_root=str(project.root), pipeline_id=pid, **kwargs)
+            pipeline_id=pid, **kwargs)
         if exit_code == 0:
             call()
         else:
@@ -175,7 +175,7 @@ def test_a_record_that_cannot_be_written_refuses_the_pipeline(git_project, monke
     with gen_patch, popen_patch as popen, pytest.raises(PipelineRecordError) as raised:
         run_pipeline(pipeline_path=str(project.pipeline_json),
                      project_root=str(project.root),
-                     wfc_root=str(project.root), pipeline_id=pid)
+                     pipeline_id=pid)
 
     assert "pipeline record" in str(raised.value)
     assert "not started" in str(raised.value)
@@ -205,7 +205,7 @@ def test_a_ctrl_c_leaves_the_record_for_the_close_out(git_project, monkeypatch):
     with gen_patch, popen_patch, pytest.raises(KeyboardInterrupt):
         run_pipeline(pipeline_path=str(project.pipeline_json),
                      project_root=str(project.root),
-                     wfc_root=str(project.root), pipeline_id=pid)
+                     pipeline_id=pid)
 
     口 = Step(step_num=3, name="The record is still there",
              purpose="Without it the pipeline would never be closed out")

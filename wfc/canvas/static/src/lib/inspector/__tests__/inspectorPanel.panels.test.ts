@@ -22,7 +22,8 @@ import InspectorPanel from '../InspectorPanel.svelte';
 import { nodes, edges, selectedNodeId, modules, samples } from '../../builder/stores';
 import { methodNode as buildMethodNode } from '../../builder/nodeData';
 import type { Node } from '@xyflow/svelte';
-import type { CanvasNodeData, ModuleDef, SampleInfo, CompletedRun } from '../../shared/types';
+import type { CanvasNodeData, ModuleDef, SampleInfo, CompletedRun, DraftDef } from '../../shared/types';
+import { registryFocus } from '../../registry/registryFocus';
 
 // ── the stubbed routes ────────────────────────────────────────────────────
 
@@ -79,7 +80,6 @@ function stubFetch(): void {
 
 const CONTRACT: ModuleDef = {
   name: 'mod_a',
-  color: '#2ecc71',
   methods: [{
     name: 'm_a',
     module: 'mod_a',
@@ -95,7 +95,7 @@ function mkNode(id: string, data: Partial<CanvasNodeData>): Node<CanvasNodeData>
     type: 'custom',
     position: { x: 0, y: 0 },
     data: {
-      label: id, method: '', module: '', color: '#1ABC9C',
+      label: id, method: '', module: '',
       inputs: [], outputs: [], params: [], paramValues: {},
       runStatus: 'idle', expanded: false, nodeType: 'method',
       ...data,
@@ -120,7 +120,7 @@ function runReference(id: string): Node<CanvasNodeData> {
 
 function methodNode(id: string): Node<CanvasNodeData> {
   return mkNode(id, {
-    label: 'm_a', method: 'm_a', module: 'mod_a', color: '#2ecc71',
+    label: 'm_a', method: 'm_a', module: 'mod_a',
     inputs: CONTRACT.methods[0].inputs,
     outputs: CONTRACT.methods[0].outputs,
     params: CONTRACT.methods[0].params,
@@ -346,14 +346,20 @@ describe('the method panel shows the contract and writes param values', () => {
     await waitFor(() => expect(dataOf('node_m').paramValues.alpha).toBe(7));
   });
 
-  it('the version dropdown pins an older version, flags what the new one lacks until removed, and the newest clears the pin', async () => {
+  it('the version dropdown lists the versions, a divider, then ● DRAFT; it pins an older version, flags what the new one lacks until removed, the newest clears the pin, and DRAFT runs the draft', async () => {
     const v1 = {
       label: 1, identity: 'id-v1', newest: false, env: 'env-a',
       inputs: CONTRACT.methods[0].inputs, outputs: CONTRACT.methods[0].outputs,
       params: [...CONTRACT.methods[0].params, { name: 'beta', type: 'int', contractType: 'int' as const }],
     };
     const v2 = { ...v1, label: 2, identity: 'id-v2', newest: true, env: 'env-b', params: CONTRACT.methods[0].params };
-    const method = { ...CONTRACT.methods[0], versions: [v1, v2] };
+    const draft: DraftDef = {
+      module: 'mod_a', method: 'm_a', kind: 'version', folder: 'methods/m_a', valid: true, reasons: [],
+      env: 'env-draft',
+      inputs: CONTRACT.methods[0].inputs, outputs: [{ name: 'report', type: 'html' }],
+      params: [...CONTRACT.methods[0].params, { name: 'gamma', type: 'float', contractType: 'float' as const }],
+    };
+    const method = { ...CONTRACT.methods[0], versions: [v1, v2], draft };
     nodes.set([buildMethodNode('node_m', { x: 0, y: 0 }, method, { version: 'id-v1', paramValues: { beta: 3 } })]);
     selectedNodeId.set('node_m');
     const { container } = render(InspectorPanel);
@@ -364,7 +370,8 @@ describe('the method panel shows the contract and writes param values', () => {
     const state = () => container.querySelector('.version-state')!.textContent;
     // The header's chips name the module, then the env of the version run.
     const env = () => container.querySelectorAll('.meta-chip .meta-val')[1].textContent;
-    expect([...select().options].map(o => o.textContent)).toEqual(['v1', 'v2']);
+    expect([...select().options].map(o => o.textContent)).toEqual(['v1', 'v2', '──────────', '● DRAFT']);
+    expect([...select().options].map(o => o.disabled)).toEqual([false, false, true, false]);
     expect(select().value).toBe('1');
     expect(select().title).toBe('Pinned to method version v1 · latest is v2');
     expect(state()).toBe('pinned');
@@ -394,6 +401,31 @@ describe('the method panel shows the contract and writes param values', () => {
     expect(dataOf('node_m').version).toBe('id-v1');
     expect(state()).toBe('pinned');
     expect(env()).toBe('env-a');
+
+    // Open in Registry beside the tag opens the version the node runs.
+    registryFocus.set(null);
+    await fireEvent.click(container.querySelector('[data-testid="open-in-registry"]')!);
+    expect(get(registryFocus)).toEqual({ sub: 'methods', module: 'mod_a', method: 'm_a', versionIdentity: 'id-v1', versionLabel: 'v1' });
+
+    // Picking DRAFT runs the draft: its folder and its contract, the tag
+    // reads ● DRAFT, the env is the draft's, and the banner says draft mode.
+    await fireEvent.change(select(), { target: { value: 'draft' } });
+    await tick();
+    expect(dataOf('node_m').version).toBe('draft');
+    expect(dataOf('node_m').folder).toBe('methods/m_a');
+    expect(dataOf('node_m').params.map(p => p.name)).toEqual(['alpha', 'gamma']);
+    expect(dataOf('node_m').outputs.map(o => o.name)).toEqual(['report']);
+    expect(select().value).toBe('draft');
+    expect(container.querySelector('.version-label')!.textContent).toBe('● DRAFT');
+    expect(env()).toBe('env-draft');
+    expect(container.querySelector('[data-testid="draft-banner"]')!.textContent).toContain(
+      'Draft mode: the latest results from this step are kept but not recorded');
+
+    // Open in Registry on DRAFT asks the Registry for the draft.
+    registryFocus.set(null);
+    await fireEvent.click(container.querySelector('[data-testid="open-in-registry"]')!);
+    expect(get(registryFocus)).toEqual({ sub: 'methods', module: 'mod_a', method: 'm_a', versionIdentity: 'draft', versionLabel: 'DRAFT' });
+    registryFocus.set(null);
   });
 
   it('a pin naming no listed version says so', async () => {

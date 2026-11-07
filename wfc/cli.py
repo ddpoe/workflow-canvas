@@ -1,21 +1,18 @@
 """wfc CLI: the command-line verbs.
 
-Pipeline verbs, invoked as ``python -m wfc <verb>``. A generated Snakefile's
-rules delegate to ``run-step``; its ``onerror`` handler is what calls
-``fail_pipeline``:
-  register_run       — insert a runs row (status='running'), print run ID
-  complete_run       — mark completed, refresh the collected outputs' records (cache is authoritative)
-  check_cache        — print the run id the claim phase would reuse for a step (identical fingerprint), or NONE
-  finalize_pipeline  — log successful pipeline completion
-  fail_pipeline      — mark in-flight runs as failed
-  resolve_input      — given a run ID, print the cache path for its output
-  lookup_run         — (legacy) find most-recent completed run for method+sample
+``wfc --help`` lists the user's verbs. Three hidden verbs keep their argv
+for a generated Snakefile: its rules delegate to ``run-step``, a restore
+rule calls ``restore-sample`` and its ``onerror`` handler calls
+``fail_pipeline``. ``pipeline-summary`` and the retired ``seed`` are hidden
+too. Every verb body parses, calls one owner function, renders and exits.
 """
 
 import argparse
+import contextlib
 import json
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from . import layout
@@ -42,6 +39,41 @@ def _not_runnable_message(piece: str, reason: str, hint: str = "") -> str:
         lines.append(f"  {hint}")
     lines.append("Run `wfc doctor` to see all run-readiness checks.")
     return "\n".join(lines)
+
+
+def _asker(*, assume_yes: bool, refusal: str, declined: str):
+    """The question a unit's verb body asks, put through :mod:`wfc.confirm`.
+
+    ``delete-env`` and ``cache prune`` run in units that never import the
+    CLI, so the question arrives as this callable. It answers True for
+    ``--yes`` or a yes at the terminal. On a no it prints *declined*; with
+    no terminal and no ``--yes`` it prints *refusal* (which names ``--yes``)
+    on stderr. Both answer False, and the verb changes nothing.
+
+    Args:
+        assume_yes: ``--yes``: answer yes without asking.
+        refusal: The no-terminal message: what was not done, and to re-run
+            with ``--yes``.
+        declined: What to print when the answer is no.
+
+    Returns:
+        A callable taking the question (without ``[y/N]``) and returning
+        whether to go ahead.
+    """
+    from .confirm import ConfirmationRequired, confirm
+
+    def ask(question: str) -> bool:
+        try:
+            if confirm(question, assume_yes=assume_yes,
+                       refusal=ConfirmationRequired(refusal)):
+                return True
+        except ConfirmationRequired as exc:
+            print(str(exc), file=sys.stderr)
+            return False
+        print(declined)
+        return False
+
+    return ask
 
 
 # =============================================================================
@@ -202,8 +234,30 @@ def _cli_push_env(args) -> int:
 
 
 #: The guide page that matches GitHub's package pages to what wfc records.
-GITHUB_IMAGES_GUIDE_URL = ("https://workflow-canvas.readthedocs.io/en/latest/"
-                           "how-to/see-your-images-on-github.html")
+_GITHUB_IMAGES_GUIDE_PAGE = "how-to/see-your-images-on-github.html"
+
+
+def github_images_guide_url(version: str | None) -> str:
+    """The guide page for GitHub's package pages, in the docs of *version*'s channel.
+
+    A pre-release (or a version that cannot be read) reads the latest docs,
+    a release the stable ones, so the page matches the wfc that prints it.
+
+    Args:
+        version: The installed wfc version, or ``None``.
+
+    Returns:
+        The page's URL.
+    """
+    from packaging.version import InvalidVersion, Version
+
+    try:
+        release = version is not None and not Version(version).is_prerelease
+    except InvalidVersion:
+        release = False
+    channel = "stable" if release else "latest"
+    return (f"https://workflow-canvas.readthedocs.io/en/{channel}/"
+            f"{_GITHUB_IMAGES_GUIDE_PAGE}")
 
 
 def _shares_to_ghcr(project_dir) -> bool:
@@ -230,29 +284,42 @@ def _cli_share(args) -> int:
     """``wfc share``: print what a collaborator will be missing; change nothing.
 
     The rows are :func:`wfc.execution.share_checks`', rendered through
-    :func:`wfc.preflight.render_health_table` under their own heading. When
-    the images go to GHCR, a last line names the guide page that matches
-    GitHub's package pages to what wfc records.
-    Nothing is written, committed or pushed.
+    :func:`wfc.preflight.render_health_table` under their own heading, then
+    what sharing does not carry (runs, samples and outputs stay in the
+    local ``wfc.db``) and the command that hands runs over (``wfc
+    export-run``). When the images go to GHCR, a last line names the guide
+    page that matches GitHub's package pages to what wfc records, in the
+    docs of the installed version's channel. ``--json`` prints the same as
+    one object. Nothing is written, committed or pushed.
 
     Args:
-        args: The parsed ``share`` arguments (none).
+        args: The parsed ``share`` arguments (``as_json``).
 
     Returns:
         0 whenever there is a project (the rows only warn); 1 outside one.
     """
+    from . import cli_render as render
     from .execution import share_checks
     from .preflight import render_health_table
+    from .version import installed_wfc_version
 
     try:
         project_dir = get_project_root()
     except RuntimeError as exc:
-        print(f"ERROR: No wfc project found: {exc}", file=sys.stderr)
-        return 1
-    print(render_health_table(share_checks(project_dir),
-                              heading="Sharing this project:"))
-    if _shares_to_ghcr(project_dir):
-        print(f"\nSee your images on GitHub: {GITHUB_IMAGES_GUIDE_URL}")
+        return render.fail(f"No wfc project found: {exc}", as_json=args.as_json)
+    rows = share_checks(project_dir)
+    guide = (github_images_guide_url(installed_wfc_version())
+             if _shares_to_ghcr(project_dir) else None)
+    if args.as_json:
+        render.print_json({"ok": True,
+                           "checks": [render.check_item(row) for row in rows],
+                           "notes": list(render.SHARE_NOTES),
+                           "images_guide_url": guide})
+        return 0
+    print(render_health_table(rows, heading="Sharing this project:"))
+    print("\n" + "\n".join(render.SHARE_NOTES))
+    if guide:
+        print(f"\nSee your images on GitHub: {guide}")
     return 0
 
 
@@ -260,33 +327,65 @@ def _cli_share(args) -> int:
 RUNS_COLUMNS = ("RUN", "PIPELINE", "NODE", "METHOD", "SAMPLE", "STATUS")
 
 
+def _run_argument(text: str) -> int | str:
+    """``--run``'s value: a run id as an integer, any other text as written.
+
+    A draft string passes through as text, for the verb to refuse or resolve.
+    """
+    try:
+        return int(text)
+    except ValueError:
+        return text.strip()
+
+
 def _cli_runs(args) -> int:
     """``wfc runs``: print each run's id, pipeline, node, method, sample and status.
 
     The rows are Persistence's (:func:`wfc.persistence.list_runs`), oldest
-    first, as a table padded to its widest cell; an empty column value
-    prints as ``-``. Nothing is written, so nothing is confirmed.
+    first, each pipeline named by its name, else its id (``--pipeline``
+    takes the id), then one row per draft step that exists, its draft string in
+    RUN (Execution's :func:`wfc.execution.draft.list_draft_steps`), as a table padded to its widest cell; an
+    empty column value prints as ``-``. ``--json`` prints the same rows as
+    items. Nothing is written, so nothing is confirmed.
 
     Args:
-        args: The parsed ``runs`` arguments (``pipeline_id``, ``method``).
+        args: The parsed ``runs`` arguments (``pipeline_id``, ``method``,
+            ``as_json``).
 
     Returns:
-        0 whenever there is a project, with or without runs; 1 outside one
-        or when ``--method`` is not module-qualified.
+        0 whenever there is a project, with or without runs; 1 outside one,
+        when ``--method`` is not module-qualified, or when the draft store
+        cannot be read.
     """
+    from . import cli_render as render
+    from .execution.draft import list_draft_steps
     from .persistence import list_runs
 
     try:
         get_project_root()
     except RuntimeError as exc:
-        print(f"ERROR: No wfc project found: {exc}", file=sys.stderr)
-        return 1
+        return render.fail(f"No wfc project found: {exc}", as_json=args.as_json)
     try:
         listings = list_runs(args.pipeline_id, args.method)
     except ValueError as exc:
-        print(f"ERROR: --method: {exc}", file=sys.stderr)
-        return 1
-    if not listings:
+        return render.fail(f"--method: {exc}", as_json=args.as_json)
+    try:
+        draft_steps = list_draft_steps(args.pipeline_id, args.method)
+    except (OSError, ValueError) as exc:
+        return render.fail(f"Cannot read the draft store: {exc}",
+                           as_json=args.as_json)
+    items = [{"run": r.run_id, "draft": False, "pipeline_id": r.pipeline_id,
+              "pipeline_name": r.pipeline_name, "node_id": r.node_id,
+              "method": r.method, "sample": r.sample, "status": r.status}
+             for r in listings]
+    items += [{"run": d.run, "draft": True, "pipeline_id": d.pipeline_id,
+               "pipeline_name": d.pipeline_name, "node_id": d.node_id,
+               "method": d.method, "sample": d.sample, "status": d.status}
+              for d in draft_steps]
+    if args.as_json:
+        render.print_items(items)
+        return 0
+    if not items:
         scope = []
         if args.pipeline_id:
             scope.append(f"in pipeline {args.pipeline_id}")
@@ -294,17 +393,343 @@ def _cli_runs(args) -> int:
             scope.append(f"of method {args.method}")
         print(f"No runs {' and '.join(scope)}." if scope else "No runs.")
         return 0
-    rows = [RUNS_COLUMNS] + [
-        tuple(str(value) if value not in (None, "") else "-"
-              for value in (r.run_id, r.pipeline_id, r.node_id, r.method,
-                            r.sample, r.status))
-        for r in listings
-    ]
-    widths = [max(len(row[i]) for row in rows) for i in range(len(RUNS_COLUMNS))]
-    for row in rows:
-        print("  ".join(cell.ljust(width) for cell, width in zip(row, widths, strict=True))
-              .rstrip())
+    render.print_table(RUNS_COLUMNS, (
+        (i["run"], i["pipeline_name"] or i["pipeline_id"], i["node_id"],
+         i["method"], i["sample"], i["status"]) for i in items))
     return 0
+
+
+def _cli_list(args) -> int:
+    """``wfc list-methods`` / ``list-modules`` / ``list-samples``: what the Registry lists.
+
+    Each reads Registration's listing function (the one the canvas's
+    registry routes read) and prints a table, or ``--json`` items.
+
+    Args:
+        args: The parsed arguments (``command``, ``as_json``).
+
+    Returns:
+        0 whenever there is a project; 1 outside one or when the colour
+        store is malformed.
+    """
+    from . import cli_render as render
+    from .registration import list_methods, list_modules, list_samples
+
+    kind = args.command.removeprefix("list-")
+    listers = {"methods": (list_methods, render.METHOD_COLUMNS, render.method_row),
+               "modules": (list_modules, render.MODULE_COLUMNS, render.module_row),
+               "samples": (list_samples, render.SAMPLE_COLUMNS, render.sample_row)}
+    lister, columns, row = listers[kind]
+    try:
+        listed = lister(get_project_root())
+    except RuntimeError as exc:
+        return render.fail(f"No wfc project found: {exc}", as_json=args.as_json)
+    except ValueError as exc:
+        return render.fail(str(exc), as_json=args.as_json)
+    if args.as_json:
+        render.print_items(listed)
+    elif not listed:
+        print(f"No {kind} registered.")
+    else:
+        render.print_table(columns, (row(entry) for entry in listed))
+    return 0
+
+
+def _cli_show_run(args) -> int:
+    """``wfc show-run``: one run's status, metrics, outputs, error and stderr tail.
+
+    Execution's :func:`wfc.execution.run_detail` reads a recorded run or a
+    draft step; ``--log stdout|stderr`` prints the whole log Execution's
+    :func:`wfc.execution.run_log` reads instead, and ``--json`` the detail as
+    one object.
+
+    Args:
+        args: The parsed arguments (``run``, ``log``, ``as_json``).
+
+    Returns:
+        0 when the run was read; 1 when it names no run, there is no
+        project, or the asked-for log does not exist.
+    """
+    from . import cli_render as render
+    from .execution import RunDetailError, run_detail, run_log
+
+    if args.log:
+        try:
+            text = run_log(args.run, args.log)
+        except RuntimeError as exc:
+            return render.fail(f"No wfc project found: {exc}", as_json=False)
+        except RunDetailError as exc:
+            return render.fail(str(exc), as_json=False)
+        sys.stdout.write(text)
+        return 0
+    try:
+        detail = run_detail(args.run)
+    except RuntimeError as exc:
+        return render.fail(f"No wfc project found: {exc}", as_json=args.as_json)
+    except RunDetailError as exc:
+        return render.fail(str(exc), as_json=args.as_json)
+    if args.as_json:
+        render.print_json({"ok": True, **detail.as_dict()})
+    else:
+        print("\n".join(render.show_run_lines(detail)))
+    return 0
+
+
+def _bind_project_root(project_root: str | None) -> None:
+    """Make ``--project-root`` the project this process works in, before any database read.
+
+    The database, the contract map and every child process (the engine's
+    steps) follow the process's project root, so a command given
+    ``--project-root`` names it as ``WFC_PROJECT_ROOT`` and drops the
+    process's cached root and engine; the next read resolves (and checks)
+    the named project. Without ``--project-root`` nothing changes: the
+    project is the one ``WFC_PROJECT_ROOT`` names or the one containing the
+    current directory.
+
+    Args:
+        project_root: The ``--project-root`` argument, or None.
+    """
+    from .persistence import reset_engine
+
+    if project_root:
+        os.environ[layout.ROOT_ENV_VAR] = str(Path(project_root).resolve())
+        reset_engine()
+
+
+def _cli_check_pipeline(args) -> int:
+    """``wfc check-pipeline``: the verdict on a pipeline file, without running it.
+
+    Execution's :func:`wfc.execution.validation.check_pipeline` reads the
+    file as ``run-pipeline`` reads it and gives canvas Validate's verdict
+    plus the load's; no Docker, nothing written. Each warning is a
+    ``WARNING:`` line and each error (draft refusals among them) an
+    ``ERROR:`` line on stderr; stdout says whether it passes, or under
+    ``--json`` is the verdict with ``ok``.
+
+    Args:
+        args: The parsed arguments (``pipeline``, ``project_root``, ``as_json``).
+
+    The checks run in order: the file first (a missing or unreadable file
+    is refused wherever wfc runs), then the project (the file may live
+    anywhere; ``--project-root`` names the project as ``wfc canvas``'s
+    does, otherwise it is the one containing the current directory), then
+    the check itself, whose errors print in their own words.
+
+    Returns:
+        0 when the document passes (warnings or not); 1 on an error, a file
+        that cannot be read, an unreachable database, or outside a project.
+    """
+    from . import cli_render as render
+    from .execution import PipelineDocumentError
+    from .execution.prepare import read_pipeline_document
+    from .execution.validation import check_pipeline
+    from .persistence import project_root as get_project_root
+
+    try:
+        read_pipeline_document(args.pipeline)
+    except PipelineDocumentError as exc:
+        return render.fail(str(exc), as_json=args.as_json)
+    _bind_project_root(args.project_root)
+    try:
+        root = get_project_root()
+    except RuntimeError as exc:
+        return render.fail(
+            f"No wfc project found: {exc}\nThe pipeline file can be anywhere; "
+            f"wfc checks it against a project. Run this command from inside the "
+            f"project's folder, or pass --project-root <project folder>.",
+            as_json=args.as_json)
+    try:
+        verdict = check_pipeline(args.pipeline, root)
+    except PipelineDocumentError as exc:
+        return render.fail(str(exc), as_json=args.as_json)
+    except RuntimeError as exc:
+        # DatabaseUnreachableError among them: its own words, no prefix.
+        return render.fail(str(exc), as_json=args.as_json)
+    for line in render.verdict_lines(verdict):
+        print(line, file=sys.stderr)
+    if args.as_json:
+        render.print_json({"ok": verdict["valid"], **verdict})
+    elif verdict["valid"]:
+        print(f"{args.pipeline} passes the check; `wfc run-pipeline --pipeline "
+              f"{args.pipeline}` runs it.")
+    else:
+        print(f"{args.pipeline} is refused: {len(verdict['errors'])} error(s).")
+    return 0 if verdict["valid"] else 1
+
+
+def _saved_line(saved) -> str:
+    """The line ``run-method`` prints before it runs."""
+    if saved.reused:
+        return f"Running {saved.path} (already saved with this document)."
+    return f"Saved the pipeline to {saved.path}; running it."
+
+
+def _params_arg(parser: argparse.ArgumentParser, text: str | None) -> dict | None:
+    """Parse ``run-method --params``: a JSON object, or a usage error naming the flag.
+
+    Args:
+        parser: The parser, for the usage error.
+        text: The flag's value, or ``None`` when it was not given.
+
+    Returns:
+        The params, or ``None`` when the flag was not given.
+    """
+    if text is None:
+        return None
+
+    def not_json(constant: str):
+        raise ValueError(f"{constant} is not a JSON value")
+
+    try:
+        params = json.loads(text, parse_constant=not_json)
+    except ValueError as exc:
+        parser.error(f"--params is not JSON ({exc}); give a JSON object of "
+                     f"parameter values, e.g. --params '{{\"n\": 3}}'")
+    if not isinstance(params, dict):
+        parser.error("--params must be a JSON object of parameter values, e.g. "
+                     "--params '{\"n\": 3}'")
+    return params
+
+
+def _cli_run_method(parser: argparse.ArgumentParser, args) -> int:
+    """``wfc run-method``: run one registered method on one sample.
+
+    Runs :func:`wfc.execution.run_one_method` with the params and the name
+    given, which checks and saves the one-step document (its path printed
+    first) and runs it as any pipeline. Refusals and a failed run print as
+    ``run-pipeline``'s do (:func:`_launch`).
+
+    Args:
+        parser: The parser, for ``--params``'s usage error.
+        args: The parsed ``run-method`` arguments.
+
+    Returns:
+        0 when the method ran; 1 when Docker is down, the run is refused, or
+        it failed.
+    """
+    params = _params_arg(parser, args.params)
+
+    def launch() -> None:
+        from .execution import run_one_method
+        run_one_method(
+            args.method, args.sample, params=params, name=args.name, save=args.save,
+            root=Path(args.project_root).resolve() if args.project_root else None,
+            cores=args.cores, snakefile_path=args.snakefile,
+            archive=args.archive, keep_going=args.keep_going,
+            on_saved=lambda saved: print(_saved_line(saved), flush=True))
+
+    return _launch(args, launch)
+
+
+def _cli_run_pipeline(args) -> int:
+    """``wfc run-pipeline``: run a pipeline file through :func:`wfc.execution.run_pipeline`.
+
+    Refusals and a failed run print as :func:`_launch` says.
+
+    Args:
+        args: The parsed ``run-pipeline`` arguments.
+
+    Returns:
+        0 when the pipeline ran; 1 when Docker is down, the document is
+        refused, or the run failed.
+    """
+    def launch() -> None:
+        from .execution import run_pipeline
+        run_pipeline(
+            pipeline_path=args.pipeline,
+            project_root=args.project_root,
+            cores=args.cores,
+            snakefile_path=args.snakefile,
+            archive=args.archive,
+            keep_going=args.keep_going,
+        )
+
+    return _launch(args, launch)
+
+
+def _launch(args, launch: Callable[[], None]) -> int:
+    """Bind the project, gate on Docker, run *launch*, and print how it ended.
+
+    The two run verbs share it. A refused document (``PipelineDocumentError``)
+    prints through ``document_refusal_lines``; a sample the preflight cannot
+    reach and a failed run are one ``ERROR:`` line each.
+
+    Args:
+        args: The parsed arguments (``project_root`` read).
+        launch: Runs the pipeline.
+
+    Returns:
+        0 when it ran; 1 when Docker is down, it was refused, or it failed.
+    """
+    from . import cli_render as render
+
+    # One project per process: --project-root is the process's project
+    # before anything reads a database or the engine's steps inherit it.
+    _bind_project_root(args.project_root)
+    # Docker-down pre-gate, as run-step has: without it the env pre-flight's
+    # image probe is the first thing to meet a stopped daemon.
+    docker_down = _docker_gate()
+    if docker_down:
+        print(docker_down, file=sys.stderr)
+        return 1
+    from .execution import PipelineDocumentError
+    from .registration import MalformedSampleError, UnreachableSampleError
+    try:
+        launch()
+    except PipelineDocumentError as exc:
+        # Every refusal of the document (the file, its variables, the
+        # validator, the load, the one-method run's own): nothing started.
+        for line in render.document_refusal_lines(exc):
+            print(line, file=sys.stderr)
+        return 1
+    except (UnreachableSampleError, MalformedSampleError) as exc:
+        # The pipeline-start preflight's point is one message instead of N
+        # job logs; MalformedSampleError comes from the composer's
+        # sample-hash read one step earlier. Both: not started, here is the
+        # repair.
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    except RuntimeError as exc:
+        # A failed pipeline (most often an engine that exited non-zero,
+        # after the pipeline-end walk recorded what failed and the summary
+        # printed), or a RuntimeError from beneath it: one line, not a
+        # traceback.
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _cli_doctor(args) -> int:
+    """``wfc doctor``: the run-readiness checks, then the env-image rows.
+
+    Args:
+        args: The parsed arguments (``as_json``).
+
+    Returns:
+        1 when any check fails (a warning does not), else 0.
+    """
+    from . import cli_render as render
+    from .demo.scaffold import demo_schema_check
+    from .execution.readiness import default_project_dir, env_image_checks, run_all_checks
+    from .preflight import render_health_table
+
+    results = run_all_checks(default_project_dir())
+    # The env-image rows (they only warn) under their own heading.
+    images = env_image_checks(default_project_dir())
+    # A demo an older wfc made: one warn row, from the demo itself.
+    demo_row = demo_schema_check(default_project_dir())
+    if demo_row is not None:
+        images.append(demo_row)
+    # Non-zero on any FAIL (WARN does not flip the gate).
+    any_fail = any(r.status == "fail" for r in results + images)
+    if args.as_json:
+        render.print_json({"ok": not any_fail,
+                           "checks": [render.check_item(r) for r in results],
+                           "env_images": [render.check_item(r) for r in images]})
+    else:
+        print(render_health_table(results))
+        print(render_health_table(images, heading="Env images:"))
+    return 1 if any_fail else 0
 
 
 def _cancel_plan_lines(pipeline_id: str, record, running) -> list[str]:
@@ -357,6 +782,10 @@ def _cancel_result_lines(outcome) -> list[str]:
     Returns:
         The lines: the rows cancelled, the engine, and who records the rest.
     """
+    if outcome.ended_before:
+        return [f"Pipeline {outcome.pipeline_id} ended before the cancel reached it: "
+                f"nothing was left to cancel. `wfc runs --pipeline "
+                f"{outcome.pipeline_id}` lists how each step ended."]
     lines = [f"Cancelled pipeline {outcome.pipeline_id}: {outcome.runs_cancelled} "
              f"running step(s) cancelled."]
     if outcome.engine_killed:
@@ -552,92 +981,556 @@ def _cli_export_run(args) -> int:
 # argparse entry-point
 # =============================================================================
 
+class _VersionAction(argparse.Action):
+    """``--version``: print ``wfc <version>`` and exit 0.
+
+    The version is read when the flag is given, not when the parser is
+    built, so other commands never look it up (nor log the missing-metadata
+    warning ``installed_wfc_version`` gives a run record).
+    """
+
+    def __init__(self, option_strings, dest=argparse.SUPPRESS,
+                 default=argparse.SUPPRESS, help=None):
+        super().__init__(option_strings=option_strings, dest=dest,
+                         default=default, nargs=0, help=help)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        from .version import installed_wfc_version
+
+        print(f"wfc {installed_wfc_version() or 'unknown'}")
+        parser.exit()
+
+
+def _dev_loop_variables(env_name: str) -> dict[str, str]:
+    """Build a dev-loop container's variables with Execution's one builder.
+
+    ``PYTHONUNBUFFERED=1``, and the env's own ``bin`` first on ``PATH`` (from
+    the env's current image, as Environments reads it), so ``python`` in the
+    container is the interpreter a step of that env runs under. The dev loop
+    is handed the values; Environments never imports Execution. When the
+    project or the env cannot be read the ``bin`` is left out: the dev loop
+    then refuses the env itself, naming why.
+
+    Args:
+        env_name: The env the dev-loop command launches.
+
+    Returns:
+        ``{name: value}`` for :func:`wfc.environments.dev_loop.shell`,
+        ``exec_`` and ``jupyter``.
+    """
+    from .environments import CaptureError, version_bin_dir
+    from .environments import get as get_env
+    from .execution.container_vars import container_variables
+
+    env_bin: str | None = None
+    try:
+        root = get_project_root()
+        record = get_env(env_name, root)
+        if record is not None:
+            env_bin = version_bin_dir(env_name, record.env_fingerprint, root)
+    except (RuntimeError, ValueError, CaptureError):
+        env_bin = None
+    return container_variables(env_bin=env_bin)
+
+
+# =============================================================================
+# Trying a method folder: wfc try, wfc shell|jupyter --method
+# =============================================================================
+
+
+class _TryRefused(Exception):
+    """A try or a wired session is refused before anything runs; the message says why."""
+
+
+def _method_input_flags(*, try_verb: bool = False) -> argparse.ArgumentParser:
+    """The one parser of a tried method's inputs, shared by try, shell and jupyter.
+
+    Args:
+        try_verb: ``wfc try``'s flags: ``--module`` and ``--sample`` are
+            required (the usage line shows them so). A session needs them
+            only with ``--method``, so there they are optional.
+
+    Returns:
+        A parent parser: ``--module``, ``--sample``, ``--params`` and
+        ``--parent-run-id`` as ``wfc run-step`` spells them, a draft string
+        allowed as an entry's run part.
+    """
+    flags = argparse.ArgumentParser(add_help=False)
+    flags.add_argument("--module", required=try_verb, default=None,
+                       help="The module the method belongs to (required"
+                            + ("" if try_verb else " with --method")
+                            + "); the folder becomes that module's draft")
+    flags.add_argument("--sample", required=try_verb, default=None,
+                       help=("The sample the step runs as (required); "
+                             if try_verb else "The sample ")
+                            + "read into the one input no parent entry feeds")
+    flags.add_argument("--params", default=None, help="JSON string of parameters")
+    flags.add_argument("--parent-run-id", action="append", default=None,
+                       help="One parent entry per use: input:output:run or "
+                            "input:run; the run part is a run id or a draft "
+                            "string (draft:<module>.<method>/<node>@<sample>, "
+                            "as `wfc runs` lists it)")
+    return flags
+
+
+class _MethodInputs:
+    """A method folder with its inputs, as the shared flags gave them.
+
+    Attributes:
+        folder: The method folder, absolute.
+        method: The method's name (the folder's name).
+        module: The module.
+        contract: ``method.yaml`` as Contracts parsed it.
+        env: The env ``method.yaml`` names (registered).
+        env_record: That env's registered record.
+        params: The parameters.
+        entries: The parent entries as typed.
+        parsed: The parsed entries.
+        sample: The sample, or ``None``.
+    """
+
+    def __init__(self, args, root: Path) -> None:
+        from .contracts import parse_method_yaml
+        from .environments import get as get_env
+        from .execution.parents import parse_parent_entries
+
+        self.folder = Path(args.method_dir).resolve()
+        self.method = self.folder.name
+        if not args.module:
+            raise _TryRefused("--module is required: the folder becomes a draft "
+                              "of a method in that module.")
+        self.module = args.module
+        try:
+            contract = parse_method_yaml(self.folder)
+        except (ValueError, OSError) as exc:
+            raise _TryRefused(f"{self.folder}/method.yaml cannot be read: {exc}") from exc
+        if contract is None:
+            raise _TryRefused(f"{self.folder} has no method.yaml; pick the method "
+                              f"folder that holds it.")
+        self.contract = contract
+        self.env = str(contract.get("env") or "")
+        try:
+            record = get_env(self.env, root) if self.env else None
+        except ValueError as exc:
+            raise _TryRefused(str(exc)) from exc
+        if record is None:
+            raise _TryRefused(
+                f"{self.folder.name}'s method.yaml names env '{self.env}', which is "
+                f"not registered. Register it first (`wfc register-env "
+                f"{self.env or '<name>'} --help`); nothing was added or run.")
+        self.env_record = record
+        try:
+            self.params = json.loads(args.params) if args.params else {}
+        except ValueError as exc:
+            raise _TryRefused(f"--params is not JSON: {exc}") from exc
+        if not isinstance(self.params, dict):
+            raise _TryRefused("--params must be a JSON object of parameter values.")
+        self.entries = list(args.parent_run_id or [])
+        try:
+            self.parsed = parse_parent_entries(self.entries, step=self.method,
+                                               allow_drafts=True)
+        except ValueError as exc:
+            raise _TryRefused(str(exc)) from exc
+        self.sample = args.sample
+
+
+def _use_draft(inputs: _MethodInputs, root: Path):
+    """Use the method's draft, adding the folder as it when it has none; say which.
+
+    Returns:
+        The draft's pointer.
+
+    Raises:
+        _TryRefused: The module is not registered, or the method's draft is
+            another folder's (named).
+    """
+    from .registration import DraftRefusedError, add_draft, plan_draft
+
+    try:
+        plan = plan_draft(inputs.module, inputs.folder, root)
+    except DraftRefusedError as exc:
+        raise _TryRefused(str(exc)) from exc
+    qualified = f"{inputs.module}.{inputs.method}"
+    if plan.existing is not None:
+        print(f"Uses {qualified}'s draft, from {plan.folder}.")
+        return plan.existing
+    print(f"Adds {plan.folder} as the draft of {qualified}. {plan.message}")
+    try:
+        return add_draft(inputs.module, inputs.folder, root)
+    except DraftRefusedError as exc:
+        raise _TryRefused(str(exc)) from exc
+
+
+def _cli_try(args) -> int:
+    """``wfc try``: run a method folder as its module's draft, on a sample or runs' outputs.
+
+    The folder is the method's draft (added as it when the method has none;
+    refused when the draft is another folder's). Execution's try launch
+    (``run_try``) runs it as a one-step pipeline named ``try-<method>``;
+    this verb parses the flags, states first what it does (nothing is
+    asked: a draft and its draft run are personal scratch, never recorded)
+    and prints the outcome with an export command per output.
+
+    The sample feeds the one input no parent entry feeds, as Contracts'
+    one-step document decides (several candidates are refused naming them).
+    Under ``--json`` the outcome is one object on stdout and the lines
+    saying what it does go to stderr.
+
+    Args:
+        args: The parsed ``try`` arguments.
+
+    Returns:
+        0 when the step completed (an export command per declared output
+        printed), 1 when it was refused or failed.
+    """
+    from . import cli_render as render
+    from .execution.draft import draft_run_label, read_draft_run, spell_draft_ref
+    from .execution.try_run import TryRefusedError, TryRequest, run_try
+
+    as_json = args.as_json
+    try:
+        root = get_project_root()
+    except RuntimeError as exc:
+        return render.fail(f"No wfc project found: {exc}", as_json=as_json)
+    # Under --json stdout holds the one object: every line the try prints on
+    # the way (the draft added, the units it calls) goes to stderr.
+    lines_to = contextlib.redirect_stdout(sys.stderr) if as_json else contextlib.nullcontext()
+    try:
+        with lines_to:
+            inputs = _MethodInputs(args, root)
+            docker_down = _docker_gate()
+            if docker_down:
+                raise _TryRefused(docker_down)
+            pointer = _use_draft(inputs, root)
+            previous = read_draft_run(inputs.module, inputs.method, root)
+
+            def _replaces() -> None:
+                if previous is not None:
+                    print(f"Replaces {draft_run_label(previous)}.", flush=True)
+
+            outcome = run_try(TryRequest(
+                module=inputs.module, method=inputs.method,
+                folder=Path(pointer.folder), params=inputs.params,
+                sample=inputs.sample, parent_entries=inputs.entries),
+                root, on_start=_replaces)
+    except (_TryRefused, TryRefusedError) as exc:
+        return render.fail(str(exc), as_json=as_json)
+    if outcome.refusal is not None:
+        return render.fail(outcome.refusal, as_json=as_json)
+    ref = spell_draft_ref(inputs.module, inputs.method, inputs.method, inputs.sample)
+    if outcome.returncode != 0:
+        failed = (f"The try of {inputs.module}.{inputs.method} failed; nothing "
+                  f"was recorded.")
+        print(failed, file=sys.stderr)
+        if as_json:
+            render.print_json({"ok": False, "error": failed, "run": ref})
+        return 1
+    exports = render.try_exports(ref, inputs.contract.get("outputs") or {})
+    if as_json:
+        render.print_json({"ok": True, "module": inputs.module,
+                           "method": inputs.method, "sample": inputs.sample,
+                           "run": ref, "outputs": exports})
+        return 0
+    print(f"Tried {inputs.module}.{inputs.method} on {inputs.sample}: {ref}. "
+          f"Nothing was recorded.")
+    print("Export its outputs with:")
+    for export in exports:
+        print(f"  {export['export']}")
+    return 0
+
+
+def _cli_delete_draft(args) -> int:
+    """``wfc delete-draft``: print Execution's delete plan, ask, apply it with its token.
+
+    Remove draft (the draft folder goes) or, with ``--outputs-only``,
+    Delete outputs (the draft is kept). The plan is printed first; the
+    question is asked through :func:`_asker` (``--yes`` answers it; with no
+    terminal and no ``--yes`` nothing is deleted). The apply half refuses
+    when what it deletes changed since the plan.
+
+    Args:
+        args: The parsed ``delete-draft`` arguments.
+
+    Returns:
+        0 when deleted (or nothing to delete), 1 when refused or not confirmed.
+    """
+    from .execution.draft_clearing import (
+        DraftDeletePlanChangedError,
+        delete_draft_outputs_and_clear,
+        plan_draft_delete,
+        remove_draft_and_clear,
+    )
+    from .registration import DraftNotFoundError
+
+    module, _, method = args.method.partition(".")
+    if not module or not method:
+        print(f"ERROR: name the draft's method as <module>.<method>, not "
+              f"{args.method!r}.", file=sys.stderr)
+        return 1
+    try:
+        root = get_project_root()
+        plan = plan_draft_delete(module, method, outputs_only=args.outputs_only,
+                                 root=root)
+    except RuntimeError as exc:
+        print(f"ERROR: No wfc project found: {exc}", file=sys.stderr)
+        return 1
+    except DraftNotFoundError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(plan.message)
+    if plan.nothing_to_delete:
+        return 0
+    ask = _asker(
+        assume_yes=args.assume_yes, declined="Nothing was deleted.",
+        refusal=(f"wfc delete-draft: deleting from the draft of {args.method} "
+                 "needs confirmation and there is no terminal to ask on. "
+                 "Nothing was deleted. Re-run with --yes to delete as listed "
+                 "above."))
+    if not ask("Proceed?"):
+        return 1
+    apply = delete_draft_outputs_and_clear if args.outputs_only else remove_draft_and_clear
+    try:
+        applied = apply(module, method, root, planned=plan.token)
+    except (DraftDeletePlanChangedError, DraftNotFoundError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(applied.done_message)
+    return 0
+
+
+def _session_inputs(inputs: _MethodInputs, root: Path) -> dict[str, list[str]]:
+    """Each input's host paths for a wired session: parent entries, then the sample.
+
+    The sample feeds the one input no parent entry feeds, by Contracts'
+    rule (the one ``wfc try`` uses).
+
+    Raises:
+        _TryRefused: An entry or the sample cannot be read, or the sample
+            could feed several inputs (named).
+    """
+    from .execution.draft import draft_step_output
+    from .storage import ResolveOutputError, restore_sample, sample_data_path
+
+    paths: dict[str, list[str]] = {}
+    for entry in inputs.parsed:
+        if entry.draft is not None:
+            found = draft_step_output(entry.draft, entry.source_slot, root)
+            if found.path is None:
+                raise _TryRefused(f"input '{entry.input_slot}' from {entry.draft}: "
+                                  f"{found.refusal}")
+            located = found.path
+        else:
+            from .storage import resolve_input
+            try:
+                located = resolve_input(run_id=entry.run_id, slot=entry.source_slot)
+            except (ResolveOutputError, Exception) as exc:  # noqa: BLE001
+                raise _TryRefused(f"input '{entry.input_slot}' from run "
+                                  f"{entry.run_id}: {exc}") from exc
+            if not located:
+                raise _TryRefused(f"input '{entry.input_slot}': run {entry.run_id} "
+                                  f"has no such output.")
+        paths.setdefault(entry.input_slot, []).append(str(located))
+    slot = None
+    if inputs.sample:
+        from .contracts import SampleInputError, sample_input
+        from .execution.try_run import FEED_THE_OTHERS
+        try:
+            slot = sample_input(f"{inputs.module}.{inputs.method}",
+                                inputs.contract.get("inputs"),
+                                {entry.input_slot for entry in inputs.parsed})
+        except SampleInputError as exc:
+            raise _TryRefused(f"{exc} {FEED_THE_OTHERS}") from exc
+    if slot is not None:
+        try:
+            restore_sample(inputs.sample, project_root=root)
+            data = sample_data_path(root, inputs.sample)
+        except (Exception, SystemExit) as exc:  # noqa: BLE001 - named for the user
+            raise _TryRefused(f"sample '{inputs.sample}' cannot be read: {exc}") from exc
+        paths.setdefault(slot, []).append(str(data))
+    return paths
+
+
+def _session_variables(args, root: Path) -> tuple[str, dict[str, str]]:
+    """The env and the variables of a wired ``wfc shell|jupyter --method`` session.
+
+    The env comes from ``method.yaml``. The session's run folder is the
+    draft's session scratch (emptied now, never a draft run); the step's
+    ``WFC_*`` values, the declared names, ``PYTHONUNBUFFERED`` and the env's
+    ``bin`` come from Execution's one builder, with container paths, so
+    ``RunContext()`` constructs in the container.
+
+    Returns:
+        ``(env name, variables)``.
+
+    Raises:
+        _TryRefused: Why the session cannot start (nothing was started).
+    """
+    import shutil
+
+    from .contracts import declared_names
+    from .environments import version_bin_dir
+    from .execution.container_vars import container_variables, step_variables
+
+    inputs = _MethodInputs(args, root)
+    pointer = _use_draft(inputs, root)
+    session = layout.draft_session_dir(root, pointer.module, pointer.method)
+    if session.exists():
+        shutil.rmtree(session)
+    session.mkdir(parents=True)
+    print(f"Outputs go to {session}, emptied at each session start; they are "
+          f"never a draft run.")
+    slot_paths = _session_inputs(inputs, root)
+    env_bin = version_bin_dir(inputs.env, inputs.env_record.env_fingerprint, root)
+    step = step_variables(run_id="session", run_dir=str(session.resolve()),
+                          sample=inputs.sample or "", params=inputs.params,
+                          node_id=inputs.method, pipeline_id="session",
+                          variant="default", slot_paths=slot_paths)
+    declared = declared_names(inputs.contract.get("inputs"),
+                              inputs.contract.get("outputs"))
+    mounts = layout.mount_table(root, layout.dvc_cache_dir(root))
+    return inputs.env, container_variables(step=step, declared=declared,
+                                           env_bin=env_bin, mounts=mounts)
+
+
+def _cli_dev_session(args, kind: str) -> int:
+    """``wfc shell`` / ``wfc jupyter``: an env, or a method folder wired as a step.
+
+    ``<env>`` alone is unchanged. ``--method <dir> --module <m>`` takes
+    ``wfc try``'s input flags and gives the container a step's variables.
+
+    Args:
+        args: The parsed arguments.
+        kind: ``"shell"`` or ``"jupyter"``.
+
+    Returns:
+        The container's exit code, or 1 when refused.
+    """
+    from .environments import dev_loop
+
+    if (args.env is None) == (args.method_dir is None):
+        print(f"ERROR: wfc {kind} takes an env name or --method <dir> --module "
+              f"<module>, not both.", file=sys.stderr)
+        return 1
+    if args.method_dir is None:
+        if any((args.module, args.sample, args.params, args.parent_run_id)):
+            print("ERROR: --module, --sample, --params and --parent-run-id need "
+                  "--method <dir>.", file=sys.stderr)
+            return 1
+        env, variables = args.env, _dev_loop_variables(args.env)
+    else:
+        try:
+            root = get_project_root()
+            env, variables = _session_variables(args, root)
+        except RuntimeError as exc:
+            print(f"ERROR: No wfc project found: {exc}", file=sys.stderr)
+            return 1
+        except _TryRefused as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+    if kind == "jupyter":
+        return dev_loop.jupyter(env, port=args.port, variables=variables)
+    return dev_loop.shell(env, variables=variables)
+
+
+class _HelpFormatter(argparse.HelpFormatter):
+    """Leaves hidden verbs out of ``wfc --help``.
+
+    A hidden verb is added with ``help=argparse.SUPPRESS``. On Python 3.12
+    argparse still lists it (with ``==SUPPRESS==`` as its help) and names it
+    in the usage line's ``{...}``; this formatter drops it from both. Its
+    parser and argv are unchanged: a generated Snakefile still calls it.
+    """
+
+    @staticmethod
+    def _shown(choice: argparse.Action) -> bool:
+        return choice.help is not argparse.SUPPRESS
+
+    def _iter_indented_subactions(self, action):
+        for subaction in super()._iter_indented_subactions(action):
+            if self._shown(subaction):
+                yield subaction
+
+    def _metavar_formatter(self, action, default_metavar):
+        if isinstance(action, argparse._SubParsersAction) and action.metavar is None:
+            names = [choice.dest for choice in action._choices_actions
+                     if self._shown(choice)]
+            text = "{" + ",".join(names) + "}"
+            return lambda tuple_size: (text,) * tuple_size
+        return super()._metavar_formatter(action, default_metavar)
+
+
+class _Parser(argparse.ArgumentParser):
+    """Leaves hidden verbs out of argparse's "invalid choice" message.
+
+    The message lists the verbs ``wfc --help`` lists; a hidden verb still
+    parses, as :class:`_HelpFormatter` leaves it.
+    """
+
+    def _check_value(self, action, value):
+        if (isinstance(action, argparse._SubParsersAction)
+                and action.choices is not None and value not in action.choices):
+            shown = [choice.dest for choice in action._choices_actions
+                     if choice.help is not argparse.SUPPRESS]
+            raise argparse.ArgumentError(
+                action, f"invalid choice: {value!r} (choose from {', '.join(shown)})")
+        super()._check_value(action, value)
+
+
+def _describe_verbs(sub: argparse._SubParsersAction) -> None:
+    """Give each listed verb's parser its list line as its description.
+
+    So ``wfc <verb> --help`` opens with what ``wfc --help`` says about it.
+    A verb that sets its own description keeps it.
+
+    Args:
+        sub: The subparsers action whose verbs to describe.
+    """
+    for choice in sub._choices_actions:
+        verb = sub.choices[choice.dest]
+        if verb.description is None and choice.help is not argparse.SUPPRESS:
+            verb.description = choice.help
+
+
+def _json_flag(cmd: argparse.ArgumentParser,
+               text: str = "Print one JSON object instead of text") -> None:
+    """Give a reading verb ``--json`` (``args.as_json``).
+
+    Args:
+        cmd: The verb's parser.
+        text: The flag's help.
+    """
+    cmd.add_argument("--json", action="store_true", dest="as_json", help=text)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    """Build the argparse parser for the low-level ``workflow-canvas`` verbs."""
-    parser = argparse.ArgumentParser(prog="workflow-canvas", description="Workflow Canvas CLI")
+    """Build the argparse parser for the ``wfc`` verbs."""
+    parser: argparse.ArgumentParser = _Parser(
+        prog="wfc",
+        description="wfc: register methods, samples and envs, run pipelines "
+                    "and read their runs. Run `wfc <command> --help` for a "
+                    "command's options.",
+        formatter_class=_HelpFormatter,
+    )
+    parser.add_argument(
+        "--version", action=_VersionAction, dest="version",
+        help="Print the installed wfc version and exit",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    # -- register_run --
-    reg = sub.add_parser("register_run", help="Register a new run (status=running)")
-    reg.add_argument("--method", required=True)
-    reg.add_argument("--module", required=True, help="Module that owns this method")
-    reg.add_argument("--sample", required=True)
-    reg.add_argument("--params", default=None, help="JSON string of parameters")
-    reg.add_argument("--parent-run-id", action="append", default=None,
-                             help="One parent entry per use: input:output:run (e.g. data:merged:412) "
-                             "or input:run. Every entry names the input slot it feeds. "
-                             "Repeat the flag for each parent; fan-in is repeated "
-                             "entries with the same input.")
-    reg.add_argument("--nf-process-name", default=None)
-    reg.add_argument("--pipeline-id", default=None, help="Pipeline execution ID (UUID)")
-
-    # -- pre_run --
-    pr = sub.add_parser("pre_run",
-                         help="Versioned pre-run hook: git check + cache lookup + run registration")
-    pr.add_argument("--method", required=True)
-    pr.add_argument("--module", required=True)
-    pr.add_argument("--sample", required=True)
-    pr.add_argument("--params", default=None, help="JSON string of parameters")
-    pr.add_argument("--parent-run-id", action="append", default=None,
-                             help="One parent entry per use: input:output:run (e.g. data:merged:412) "
-                             "or input:run. Every entry names the input slot it feeds. "
-                             "Repeat the flag for each parent; fan-in is repeated "
-                             "entries with the same input.")
-    pr.add_argument("--pipeline-id", default=None)
-    pr.add_argument("--nf-process-name", default=None)
-    pr.add_argument("--git-commit", default=None,
-                    help="Pre-computed commit SHA (skips git check; for testing).")
-
-    # -- complete_run --
-    comp = sub.add_parser("complete_run", help="Mark a run as completed")
-    comp.add_argument("--run-id", type=int, required=True)
-    comp.add_argument("--status", default="completed")
-    comp.add_argument("--output", nargs="*", default=[], help="Output file paths (in archive)")
-    comp.add_argument("--metrics", default=None, help="JSON string of metrics")
-    comp.add_argument("--error", default=None, help="Error message for failed runs")
-    comp.add_argument("--traceback", default=None, dest="traceback_str",
-                       help="Error traceback for failed runs")
-
-    # -- check_cache --
-    cache = sub.add_parser("check_cache", help="Check for cached identical run")
-    cache.add_argument("--method", required=True)
-    cache.add_argument("--module", required=True,
-                       help="Module the method is registered in. Required: a method "
-                            "name alone does not identify a method, and the cache "
-                            "key is over <module>.<method>.")
-    cache.add_argument("--sample", required=True)
-    cache.add_argument("--params", default=None, help="JSON string of parameters")
-    cache.add_argument("--parent-run-id", action="append", default=None,
-                             help="One parent entry per use: input:output:run (e.g. data:merged:412) "
-                             "or input:run. Every entry names the input slot it feeds. "
-                             "Repeat the flag for each parent; fan-in is repeated "
-                             "entries with the same input.")
-
-
-    # -- restore-sample --
-    rss = sub.add_parser("restore-sample", help="Restore a sample from DVC cache to .wfc/workspace/samples/")
+    # -- restore-sample (hidden: a generated Snakefile calls it) --
+    rss = sub.add_parser(
+        "restore-sample", help=argparse.SUPPRESS,
+        description="Restore a sample from the DVC cache to "
+                    ".wfc/workspace/samples/",
+    )
     rss.add_argument("--name", required=True, help="Sample identifier")
     rss.add_argument("--hash", default=None, dest="content_hash",
                      help="Expected content hash (default: the registered hash)")
 
-    # -- finalize_pipeline --
-    finalize = sub.add_parser("finalize_pipeline", help="Log successful pipeline completion")
-    finalize.add_argument("--pipeline-id", required=True)
-
-    # -- fail_pipeline --
-    fail = sub.add_parser("fail_pipeline", help="Mark in-flight runs as failed")
+    # -- fail_pipeline (hidden: a generated Snakefile's onerror calls it) --
+    fail = sub.add_parser("fail_pipeline", help=argparse.SUPPRESS,
+                          description="Mark a pipeline's in-flight runs as failed")
     fail.add_argument("--pipeline-id", required=True)
-
-    # -- resolve_input --
-    resolve = sub.add_parser("resolve_input", help="Get archived output path for a run")
-    resolve.add_argument("--run-id", type=int, required=True)
-
-    # -- lookup_run (legacy) --
-    look = sub.add_parser("lookup_run", help="(Legacy) Find most-recent completed run")
-    look.add_argument("--method", required=True)
-    look.add_argument("--module", required=True)
-    look.add_argument("--sample", required=True)
-    look.add_argument("--nf-process-name", default=None)
 
     # -- init --
     init_p = sub.add_parser("init", help="Scaffold a new wfc project directory")
@@ -653,17 +1546,18 @@ def build_parser() -> argparse.ArgumentParser:
                              "without asking (for scripts and CI)")
 
     # -- doctor --
-    sub.add_parser(
+    doctor_cmd = sub.add_parser(
         "doctor",
         help="Check run-readiness (git / DVC / Docker / samples). Exits "
              "non-zero on any fail.",
     )
+    _json_flag(doctor_cmd)
 
-    # -- seed (retired) --
+    # -- seed (retired, hidden) --
     sub.add_parser(
-        "seed",
-        help="(retired) Replaced by `wfc demo` — prints a pointer and exits "
-             "non-zero",
+        "seed", help=argparse.SUPPRESS,
+        description="(retired) Replaced by `wfc demo`: prints a pointer and "
+                    "exits non-zero",
     )
 
     # -- demo --
@@ -686,15 +1580,21 @@ def build_parser() -> argparse.ArgumentParser:
                     help="With --remove: also delete the local/wfc-demo-env "
                          "Docker image")
     dm.add_argument("--yes", action="store_true", dest="assume_yes",
-                    help="With --remove: skip the confirmation prompt")
+                    help="With --remove: remove without asking. With no "
+                         "terminal and no --yes, nothing is removed")
 
     # -- register-sample --
     rs = sub.add_parser(
         "register-sample",
         help="Register a data sample: store its content in the DVC cache and "
              "record where a restore puts it",
+        epilog=("A sample name is registered once. To use a corrected file, "
+                "register it under a new name and point the Input Selector "
+                "at that name."),
     )
-    rs.add_argument("--name", required=True, help="Sample identifier (e.g. CFPAC_ERKi)")
+    rs.add_argument("--name", required=True,
+                    help="Sample identifier (e.g. CFPAC_ERKi); a name is "
+                         "registered once")
     rs.add_argument("--source", required=True,
                     help="Path to the source data file or directory; its content "
                          "is cached, and the source itself is left in place")
@@ -729,26 +1629,69 @@ def build_parser() -> argparse.ArgumentParser:
                           "asking (for scripts and CI); the message saying "
                           "what it does still prints")
 
-    # -- run-pipeline --
-    rp = sub.add_parser("run-pipeline", help="Generate Snakefile and run the pipeline")
-    rp.add_argument("--pipeline", required=True, help="Path to the pipeline JSON file")
-    rp.add_argument("--project-root", default=None,
+    # -- run-pipeline and run-method: one launch, two ways to name it --
+    def launch_switches(verb: argparse.ArgumentParser) -> None:
+        verb.add_argument("--project-root", default=None,
+                          help="Project directory (default: the project containing "
+                               "the current directory)")
+        verb.add_argument("--cores", type=int, default=4,
+                          help="Number of jobs Snakemake runs at once (default: 4)")
+        verb.add_argument("--snakefile", default=None,
+                          help="Where to write the Snakefile (default: the "
+                               "pipeline's log directory, "
+                               "<project-root>/.wfc/runs/pipelines/<id>/Snakefile)")
+        verb.add_argument("--archive", action="store_true", default=True,
+                          dest="archive",
+                          help="Archive outputs after pipeline completion "
+                               "(default: on)")
+        verb.add_argument("--no-archive", action="store_false", dest="archive",
+                          help="Skip output archiving; archive later with "
+                               "wfc cache archive")
+        verb.add_argument("--keep-going", action="store_true", default=False,
+                          dest="keep_going",
+                          help="Pass --keep-going to Snakemake: a failed job "
+                               "doesn't cancel independent jobs (useful for "
+                               "fan-out pipelines)")
+
+    rp = sub.add_parser("run-pipeline", help="Run a pipeline file")
+    rp.add_argument("--pipeline", required=True,
+                    help="Path to the pipeline JSON file")
+    launch_switches(rp)
+
+    rm = sub.add_parser(
+        "run-method",
+        help="Run one registered method on one sample, with the params and the "
+             "name you give it")
+    rm.add_argument("method",
+                    help="The registered method, as <module>.<method>")
+    rm.add_argument("--sample", required=True,
+                    help="The registered sample it runs on")
+    rm.add_argument("--params", default=None,
+                    help="A JSON object of the method's parameter values, e.g. "
+                         "'{\"n\": 3}'")
+    rm.add_argument("--name", default=None,
+                    help="The pipeline's name, and its file pipelines/<name>.json "
+                         "(default: pipelines/<module>.<method>-<sample>.json, "
+                         "with a fingerprint of --params before .json when "
+                         "params are given)")
+    rm.add_argument("--save", default=None,
+                    help="Where to save the pipeline file instead; a relative "
+                         "path resolves against the project root. With --name, "
+                         "the name is the document's only. A different file "
+                         "already there is refused, never overwritten")
+    launch_switches(rm)
+
+    # -- check-pipeline --
+    cp = sub.add_parser(
+        "check-pipeline",
+        help="Check a pipeline file without running it: canvas Validate's "
+             "verdict plus the load's, no Docker needed")
+    cp.add_argument("--pipeline", required=True, help="Path to the pipeline JSON file")
+    cp.add_argument("--project-root", default=None,
                     help="Project directory (default: the project containing the "
                          "current directory)")
-    rp.add_argument("--wfc-root", default=None,
-                    help=argparse.SUPPRESS)
-    rp.add_argument("--cores", type=int, default=4, help="Number of jobs Snakemake runs at once (default: 4)")
-    rp.add_argument("--snakefile", default=None,
-                    help="Where to write the Snakefile (default: the pipeline's log "
-                         "directory, <project-root>/.wfc/runs/pipelines/<id>/Snakefile)")
-    rp.add_argument("--archive", action="store_true", default=True, dest="archive",
-                    help="Archive outputs after pipeline completion (default: on)")
-    rp.add_argument("--no-archive", action="store_false", dest="archive",
-                    help="Skip output archiving; archive later with "
-                         "wfc cache archive")
-    rp.add_argument("--keep-going", action="store_true", default=False, dest="keep_going",
-                    help="Pass --keep-going to Snakemake: a failed job doesn't "
-                         "cancel independent jobs (useful for fan-out pipelines)")
+    _json_flag(cp, "Print the verdict (ok, valid, errors, warnings, "
+                   "draftRefusals) as one JSON object")
 
     # -- canvas --
     cv = sub.add_parser("canvas", help="Launch the workflow canvas web UI")
@@ -762,7 +1705,9 @@ def build_parser() -> argparse.ArgumentParser:
                          ".wfc/wfc.db.")
 
     # -- run-step --
-    rs_cmd = sub.add_parser("run-step", help="Execute a single pipeline step end-to-end")
+    rs_cmd = sub.add_parser("run-step", help=argparse.SUPPRESS,
+                            description="Execute a single pipeline step end-to-end "
+                                        "(a generated Snakefile's rules call it)")
     rs_cmd.add_argument("--node-id", required=True, help="Unique node identity in the pipeline")
     rs_cmd.add_argument("--sample", required=True, help="Sample identifier")
     rs_cmd.add_argument("--variant", default="default", help="Parameter variant name")
@@ -787,16 +1732,23 @@ def build_parser() -> argparse.ArgumentParser:
                              "Repeatable. The runtime walks .wfc/workspace/samples/<s>/ per name "
                              "and accumulates the per-sample data files into the fan-in "
                              "slot. Order is preserved.")
+    rs_cmd.add_argument("--draft", action="store_true",
+                        help="Run the step as a draft step (a draft, or a step "
+                             "downstream of one): nothing is claimed, recorded or "
+                             "cached; results go to the draft's folder. Parent "
+                             "entries may name a draft step (draft:<module>.<method>/"
+                             "<node>@<sample>).")
 
     # -- pipeline-summary --
-    ps_cmd = sub.add_parser("pipeline-summary", help="Aggregate outcome sidecars into summary")
+    ps_cmd = sub.add_parser("pipeline-summary", help=argparse.SUPPRESS,
+                            description="Count a pipeline's run rows into its summary")
     ps_cmd.add_argument("--pipeline-id", required=True, help="Pipeline execution ID")
 
     # -- list-envs --
-    sub.add_parser(
+    _json_flag(sub.add_parser(
         "list-envs",
         help="List container envs in .wfc/envs.json",
-    )
+    ))
 
     # -- show-env --
     se_cmd = sub.add_parser(
@@ -812,10 +1764,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     de_cmd.add_argument("name", help="Env name to delete")
     de_cmd.add_argument(
-        "--force", action="store_true",
+        "--yes", "--force", action="store_true", dest="assume_yes",
         help=(
-            "Skip the confirmation prompt. An env that a method version "
-            "uses is refused even with --force."
+            "Delete without asking (--force is accepted as the same flag). "
+            "With no terminal and no --yes, nothing is deleted. An env that "
+            "a method version uses is refused even with --yes."
         ),
     )
 
@@ -830,7 +1783,7 @@ def build_parser() -> argparse.ArgumentParser:
              "--backend byo --image for a bring-your-own image.",
         epilog=(
             "Capturing from a live env (conda:<env>, pixi:<proj>:<env>) "
-            "records the env's current state — including any ad-hoc "
+            "records the env's current state, including any ad-hoc "
             "`pip install` mutations on top of the conda/pixi env. "
             "Inspect the captured package list in the canvas env-detail "
             "panel (or in .wfc/captures/<name>/<fingerprint>/packages.lock) "
@@ -909,8 +1862,9 @@ def build_parser() -> argparse.ArgumentParser:
         "push-env",
         help="Push an env's images to the project's registry: its current "
              "image and every image a method version records, when they are "
-             "on this machine and not yet pushed. The first run sets the "
-             "registry ([registry] url) and commits it.",
+             "on this machine and not yet pushed, or pushed to another "
+             "registry base. The first run sets the registry ([registry] url) "
+             "and commits it.",
     )
     pe_cmd.add_argument("name", nargs="?", default=None,
                         help="Env name (key in .wfc/envs.json)")
@@ -920,21 +1874,29 @@ def build_parser() -> argparse.ArgumentParser:
         "--registry", default=None, metavar="URL",
         help="The registry base to set on the first run (for example "
              "ghcr.io/<owner>/<repo>), when the git remote is not on GitHub "
-             "or another base is wanted. Once a base is set it cannot be "
-             "changed here.",
+             "or another base is wanted. Naming another base than the one "
+             "set switches the project to it, after you confirm; "
+             "`wfc push-env --all` then pushes every image there.",
     )
     pe_cmd.add_argument("--yes", action="store_true", dest="assume_yes",
                         help="Push and write as stated without asking (for "
                              "scripts and CI)")
 
     # -- share --
-    sub.add_parser(
+    share_cmd = sub.add_parser(
         "share",
-        help="List what a collaborator would be missing before you share the "
-             "project (git remote, registry login and base, unpushed images, "
-             "unconnected packages, method versions that cannot run), each "
-             "with the command that fixes it. Changes nothing.",
+        help="List what a collaborator needs before you share the project "
+             "through git (git remote, registry login and base, unpushed "
+             "images, unconnected packages, method versions that cannot "
+             "run), each with the command that fixes it. Changes nothing.",
+        epilog=(
+            "Runs, samples and outputs stay in this project's local wfc.db: "
+            "a collaborator registers the samples again from the data. To "
+            "hand over runs with their outputs, use `wfc export-run` (with "
+            "--with-image for an image that is not pushed)."
+        ),
     )
+    _json_flag(share_cmd)
 
     # -- dev-loop commands --
     # Three convenience verbs that launch an ephemeral container of the
@@ -948,12 +1910,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # -- jupyter --
-    jup_cmd = sub.add_parser(
-        "jupyter",
-        help="Launch Jupyter Lab in an ephemeral container of the env's image",
-        epilog=_EPHEMERAL_REMINDER,
+    _SESSION_NOTE = (
+        " With --method <dir> --module <m> the env is the one method.yaml "
+        "names and the container gets a step's inputs, parameters and run "
+        "folder (the draft's session scratch, emptied at each start), so "
+        "RunContext() works; the folder becomes the module's draft."
     )
-    jup_cmd.add_argument("env", help="Env name (key in .wfc/envs.json)")
+    method_inputs = _method_input_flags()
+
+    # -- jupyter --
+    jup_cmd = sub.add_parser(
+        "jupyter", parents=[method_inputs],
+        help="Launch Jupyter Lab in an ephemeral container of the env's image",
+        epilog=_EPHEMERAL_REMINDER + _SESSION_NOTE,
+    )
+    jup_cmd.add_argument("env", nargs="?", default=None,
+                         help="Env name (key in .wfc/envs.json)")
+    jup_cmd.add_argument("--method", dest="method_dir", default=None, metavar="DIR",
+                         help="A method folder to wire the session to")
     jup_cmd.add_argument(
         "--port", type=int, default=None,
         help="Host port for Jupyter (default: the first free port "
@@ -962,11 +1936,54 @@ def build_parser() -> argparse.ArgumentParser:
 
     # -- shell --
     sh_cmd = sub.add_parser(
-        "shell",
+        "shell", parents=[method_inputs],
         help="Drop into an interactive shell in an ephemeral container",
-        epilog=_EPHEMERAL_REMINDER,
+        epilog=_EPHEMERAL_REMINDER + _SESSION_NOTE,
     )
-    sh_cmd.add_argument("env", help="Env name (key in .wfc/envs.json)")
+    sh_cmd.add_argument("env", nargs="?", default=None,
+                        help="Env name (key in .wfc/envs.json)")
+    sh_cmd.add_argument("--method", dest="method_dir", default=None, metavar="DIR",
+                        help="A method folder to wire the session to")
+
+    # -- try --
+    try_cmd = sub.add_parser(
+        "try", parents=[_method_input_flags(try_verb=True)],
+        help="Run a method folder, registered or not, as its module's draft "
+             "in its env's container; nothing is recorded or cached",
+        epilog=(
+            "The folder becomes the method's draft (or is its draft already); "
+            "a draft from another folder is refused. The result is that "
+            "draft's draft run, a one-step pipeline named try-<method>, kept "
+            "until the draft runs again. Parent entries take run ids or draft "
+            "strings. The command ends with an export command per output."
+        ),
+    )
+    try_cmd.add_argument("method_dir", metavar="METHOD_DIR",
+                         help="The method folder (holds method.yaml)")
+    _json_flag(try_cmd, "Print the outcome as one JSON object (the lines saying "
+                        "what it does go to stderr)")
+
+    # -- delete-draft --
+    dd_cmd = sub.add_parser(
+        "delete-draft",
+        help="Remove a method's draft (its draft folder, draft run and "
+             "results), or with --outputs-only only its draft run; prints "
+             "what goes and asks first",
+        epilog=(
+            "Later drafts' results computed from it are cleared too, and the "
+            "pipelines whose draft results change are named. The method "
+            "folder is never touched. With no terminal and no --yes nothing "
+            "is deleted."
+        ),
+    )
+    dd_cmd.add_argument("method", metavar="MODULE.METHOD",
+                        help="The draft's method, as <module>.<method>")
+    dd_cmd.add_argument("--outputs-only", action="store_true", dest="outputs_only",
+                        help="Delete only the draft run and its results; keep "
+                             "the draft")
+    dd_cmd.add_argument("--yes", action="store_true", dest="assume_yes",
+                        help="Delete as printed without asking (for scripts "
+                             "and CI)")
 
     # -- exec --
     ex_cmd = sub.add_parser(
@@ -986,7 +2003,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     prune_cmd = cache_sub.add_parser(
         "prune",
-        help="Remove old run archives and optionally DVC local cache entries",
+        help="Remove old run archives, unused code copies and the canvas's "
+             "preview cache (.wfc/cache/previews/, converted again on demand), "
+             "and optionally DVC local cache entries",
     )
     prune_cmd.add_argument(
         "--all", action="store_true", dest="prune_all",
@@ -1004,10 +2023,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print what would be deleted without actually deleting",
     )
     prune_cmd.add_argument(
+        "--yes", action="store_true", dest="assume_yes",
+        help="Answer yes to the confirmation prompt. With no terminal and "
+             "no --yes, nothing is removed.",
+    )
+    prune_cmd.add_argument(
         "--force", action="store_true",
-        help="Skip the confirmation prompt and the archive check. It never "
-             "removes a cache entry that was not pushed (run `wfc cache "
-             "push` first).",
+        help="Prune even when the archive is unreachable, without asking. "
+             "It never removes a cache entry that was not pushed (run `wfc "
+             "cache push` first).",
     )
 
     # -- cache push (push every waiting entry now) --
@@ -1063,6 +2087,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="List only this method's runs, named with its module "
              "(module.method)",
     )
+    _json_flag(runs_cmd)
+
+    # -- list-methods / list-modules / list-samples (what the Registry lists) --
+    for verb, what in (("list-methods", "List every registered method: its newest "
+                                        "version, version count, env and source"),
+                       ("list-modules", "List every registered module: its method "
+                                        "count, contracts, colour and description"),
+                       ("list-samples", "List every registered sample: its type, "
+                                        "size, registration time and source")):
+        _json_flag(sub.add_parser(verb, help=what))
+
+    # -- show-run (one run's detail) --
+    show_run_cmd = sub.add_parser(
+        "show-run",
+        help="Show one run: status, method, sample, metrics, outputs, error "
+             "and the last 40 lines of its stderr",
+    )
+    show_run_cmd.add_argument(
+        "--run", required=True, metavar="RUN",
+        help="A run id, or a draft string (draft:<module>.<method>/<node>@"
+             "<sample>) for a draft step (`wfc runs` lists both)",
+    )
+    show_run_cmd.add_argument(
+        "--log", choices=("stdout", "stderr"), default=None,
+        help="Print that whole log instead",
+    )
+    _json_flag(show_run_cmd)
 
     # -- cancel (stop a running pipeline) --
     cancel_cmd = sub.add_parser(
@@ -1104,8 +2155,10 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     export_cmd.add_argument(
-        "--run", type=int, required=True, dest="run_id", metavar="ID",
-        help="Run ID to export from (`wfc runs` lists them)",
+        "--run", required=True, dest="run_id", metavar="RUN",
+        help="A run id, or a draft string (draft:<module>.<method>/<node>@"
+             "<sample>) for a draft step's outputs while its draft run "
+             "exists (`wfc runs` lists both)",
     )
     export_cmd.add_argument(
         "--slot", default=None, metavar="SLOT",
@@ -1130,6 +2183,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--force", action="store_true",
         help="Overwrite an existing destination file",
     )
+    _json_flag(export_cmd, "With --path: print the paths as one JSON object "
+                           "(each output's slot, name and path)")
 
     # -- export-run (a run bundle anyone can rerun) --
     export_run_cmd = sub.add_parser(
@@ -1145,10 +2200,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     export_run_cmd.add_argument(
-        "--run", type=int, action="append", required=True, dest="run_ids",
-        metavar="ID",
+        "--run", type=_run_argument, action="append", required=True,
+        dest="run_ids", metavar="ID",
         help="A run to export, with every run above it; repeat for more "
-             "(`wfc runs` lists them)",
+             "(`wfc runs` lists them). A draft string is refused: a draft "
+             "step is not recorded",
     )
     export_run_cmd.add_argument(
         "--out", required=True, metavar="FILE.zip",
@@ -1167,128 +2223,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip the confirmation prompt for images only this machine holds",
     )
 
+    _describe_verbs(sub)
+    _describe_verbs(cache_sub)
     return parser
+
+
+def _utf8_streams() -> None:
+    """Set stdout and stderr to UTF-8, replacing what cannot be encoded, line-buffered.
+
+    A Windows pipe (Git Bash, a captured subprocess) otherwise encodes as
+    cp1252 and buffers stdout in blocks, so a context line printed on stdout
+    could arrive after the error it explains. Only a stream that supports
+    ``reconfigure`` is changed: a test's ``StringIO`` capture is left alone.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 
 
 def cli_main(argv: list[str] | None = None) -> int:
     """Parse ``argv`` and run the selected verb, returning its exit code."""
+    _utf8_streams()
     parser = build_parser()
     argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(argv)
 
-    if args.command == "register_run":
-        params = json.loads(args.params) if args.params else None
-        from .execution.claim import register_run
-        run_id = register_run(
-            method_name=args.method,
-            module_name=args.module,
-            sample=args.sample,
-            params=params,
-            parent_run_ids=args.parent_run_id,
-            nf_process_name=args.nf_process_name,
-            pipeline_id=args.pipeline_id,
-        )
-        print(run_id)
-        return 0
-
-    elif args.command == "pre_run":
-        params = json.loads(args.params) if args.params else None
-        from .execution.claim import pre_run
-        try:
-            flag, run_id = pre_run(
-                method_name=args.method,
-                module_name=args.module,
-                sample=args.sample,
-                params=params,
-                parent_run_ids=args.parent_run_id,
-                pipeline_id=args.pipeline_id,
-                nf_process_name=args.nf_process_name,
-                git_commit=args.git_commit,
-            )
-        except Exception as exc:  # DirtyRepositoryError, ValueError, etc.
-            # Reframe ONLY the git-run-gate shapes into the one-door message.
-            # Unrelated exceptions still surface raw (no blanket-catch).
-            from .version import DirtyRepositoryError
-            msg = str(exc)
-            if isinstance(exc, DirtyRepositoryError) or (
-                isinstance(exc, RuntimeError) and "git rev-parse HEAD failed" in msg
-            ):
-                print(_not_runnable_message("git", msg), file=sys.stderr)
-                return 1
-            print(f"ERROR: {exc}", file=sys.stderr)
-            return 1
-        print(f"{flag}:{run_id}")
-        return 0
-
-    elif args.command == "complete_run":
-        metrics = json.loads(args.metrics) if args.metrics else None
-        from .execution.record import complete_run
-        complete_run(
-            run_id=args.run_id,
-            status=args.status,
-            output_files=args.output,
-            metrics=metrics,
-            error_message=args.error,
-            error_traceback=args.traceback_str,
-        )
-        return 0
-
-    elif args.command == "check_cache":
-        params = json.loads(args.params) if args.params else None
-        from .execution.claim import candidate_cache_key, lookup_cache_hit
-        try:
-            cache_key = candidate_cache_key(
-                method_name=args.method,
-                module_name=args.module,
-                sample=args.sample,
-                params=params,
-                parent_run_ids=args.parent_run_id,
-            )
-        except ValueError as exc:
-            print(f"ERROR: {exc}", file=sys.stderr)
-            return 1
-        run_id = lookup_cache_hit(
-            args.method, args.module, args.sample, cache_key
-        )
-        print(run_id if run_id is not None else "NONE")
-        return 0
-
-    elif args.command == "finalize_pipeline":
-        from .execution.lifecycle import finalize_pipeline
-        finalize_pipeline(pipeline_id=args.pipeline_id)
-        return 0
-
-    elif args.command == "fail_pipeline":
+    if args.command == "fail_pipeline":
         from .execution.lifecycle import fail_pipeline
         fail_pipeline(pipeline_id=args.pipeline_id)
-        return 0
-
-    elif args.command == "resolve_input":
-        from .storage import InputUnavailableError, ResolveOutputError, resolve_input
-        try:
-            path = resolve_input(run_id=args.run_id)
-        except InputUnavailableError:
-            # The resolver's FAIL on stderr already names the path and the re-run.
-            return 1
-        except ResolveOutputError as exc:
-            # Any other refusal (a malformed cache entry, say) carries Storage's
-            # own message, naming the repair.
-            print(f"ERROR: {exc}", file=sys.stderr)
-            return 1
-        if path is None:
-            print("ERROR: no output found for run", file=sys.stderr)
-            return 1
-        print(path)
-        return 0
-
-    elif args.command == "lookup_run":
-        from .execution.claim import lookup_run
-        run_id = lookup_run(args.method, args.module, args.sample,
-                            nf_process_name=args.nf_process_name)
-        if run_id is None:
-            print("ERROR: no completed run found", file=sys.stderr)
-            return 1
-        print(run_id)
         return 0
 
     elif args.command == "init":
@@ -1324,26 +2287,7 @@ def cli_main(argv: list[str] | None = None) -> int:
         return 0
 
     elif args.command == "doctor":
-        from .execution.readiness import (
-            default_project_dir,
-            env_image_checks,
-            run_all_checks,
-        )
-        from .preflight import render_health_table
-        results = run_all_checks(default_project_dir())
-        print(render_health_table(results))
-        # The env-image rows (they only warn) under their own heading.
-        images = env_image_checks(default_project_dir())
-        # A demo an older wfc made: one warn row, from the demo itself.
-        from .demo.scaffold import demo_schema_check
-        demo_row = demo_schema_check(default_project_dir())
-        if demo_row is not None:
-            images.append(demo_row)
-        print(render_health_table(images, heading="Env images:"))
-        results += images
-        # Non-zero on any FAIL (WARN does not flip the gate).
-        any_fail = any(r.status == "fail" for r in results)
-        return 1 if any_fail else 0
+        return _cli_doctor(args)
 
     elif args.command == "seed":
         from .seed import seed
@@ -1461,56 +2405,13 @@ def cli_main(argv: list[str] | None = None) -> int:
         return 0
 
     elif args.command == "run-pipeline":
-        # Docker-down pre-gate, as run-step has: without it the env
-        # pre-flight's image probe is the first thing to meet a stopped
-        # daemon.
-        docker_down = _docker_gate()
-        if docker_down:
-            print(docker_down, file=sys.stderr)
-            return 1
-        from .execution import run_pipeline
-        from .execution.validation import PipelineRefusedError
-        from .registration import MalformedSampleError, UnreachableSampleError
-        try:
-            run_pipeline(
-                pipeline_path=args.pipeline,
-                project_root=args.project_root,
-                wfc_root=args.wfc_root,
-                cores=args.cores,
-                snakefile_path=args.snakefile,
-                archive=args.archive,
-                keep_going=args.keep_going,
-            )
-        except PipelineRefusedError as exc:
-            # The validator's verdict, the one the canvas gives the same
-            # document: one refusal per line, nothing was started.
-            print("ERROR: the pipeline document is refused:", file=sys.stderr)
-            for refusal in exc.refusals:
-                print(f"  {refusal}", file=sys.stderr)
-            return 1
-        except (UnreachableSampleError, MalformedSampleError) as exc:
-            # The whole point of the pipeline-start preflight is that the
-            # user reads one message instead of N job logs. A traceback
-            # would put the message at the bottom of a stack, so this is
-            # the one refusal shape the verb prints itself.
-            #
-            # MalformedSampleError comes from the load one step EARLIER
-            # than the preflight (the composer's sample-hash read), so a
-            # hashless row never reaches the preflight at all. Both are
-            # "the pipeline was not started, here is the repair", so both
-            # get the same delivery.
-            print(f"ERROR: {exc}", file=sys.stderr)
-            return 1
-        except RuntimeError as exc:
-            # run_pipeline raises RuntimeError for a failed pipeline -- most
-            # often an engine that exited non-zero, after the pipeline-end
-            # walk recorded what failed and the summary was printed -- and a
-            # RuntimeError from anywhere beneath it is a failed run too. The
-            # message carries the cause, so the user reads it as one line
-            # rather than at the bottom of a traceback.
-            print(f"ERROR: {exc}", file=sys.stderr)
-            return 1
-        return 0
+        return _cli_run_pipeline(args)
+
+    elif args.command == "run-method":
+        return _cli_run_method(parser, args)
+
+    elif args.command == "check-pipeline":
+        return _cli_check_pipeline(args)
 
     elif args.command == "run-step":
         # Docker-down pre-gate: execution is container-only, so a stopped
@@ -1537,6 +2438,7 @@ def cli_main(argv: list[str] | None = None) -> int:
             git_commit=args.git_commit,
             ref_inputs=args.ref_input,
             collapsed_samples=args.collapsed_sample,
+            draft=args.draft,
         )
         return rc
 
@@ -1549,7 +2451,18 @@ def cli_main(argv: list[str] | None = None) -> int:
         # REGISTRY column counts older images as the canvas chip does.
         from .environments import verbs
         from .registration import version_fingerprints_recording_env
-        return verbs.list_envs(versions_of=version_fingerprints_recording_env)
+        if not args.as_json:
+            return verbs.list_envs(versions_of=version_fingerprints_recording_env)
+        from . import cli_render as render
+        try:
+            listing = verbs.env_listing(
+                get_project_root(), versions_of=version_fingerprints_recording_env)
+        except RuntimeError as exc:
+            return render.fail(f"No wfc project found: {exc}", as_json=True)
+        except ValueError as exc:
+            return render.fail(str(exc), as_json=True)
+        render.print_items(listing)
+        return 0
 
     elif args.command == "show-env":
         from .environments import verbs
@@ -1571,8 +2484,13 @@ def cli_main(argv: list[str] | None = None) -> int:
             read_error = str(exc)
         except RuntimeError:
             pass  # no project: the verb reports it
+        ask = _asker(
+            assume_yes=args.assume_yes, declined="Aborted.",
+            refusal=(f"wfc delete-env: deleting env {args.name!r} needs "
+                     f"confirmation and there is no terminal to ask on. "
+                     f"Nothing was deleted. Re-run with --yes to delete it."))
         return verbs.delete_env(args.name, references=references,
-                                read_error=read_error, force=args.force)
+                                read_error=read_error, ask=ask)
 
     elif args.command == "register-env":
         return _cli_register_env(args)
@@ -1584,16 +2502,21 @@ def cli_main(argv: list[str] | None = None) -> int:
         return _cli_share(args)
 
     elif args.command == "jupyter":
-        from .environments import dev_loop
-        return dev_loop.jupyter(args.env, port=args.port)
+        return _cli_dev_session(args, "jupyter")
 
     elif args.command == "shell":
-        from .environments import dev_loop
-        return dev_loop.shell(args.env)
+        return _cli_dev_session(args, "shell")
+
+    elif args.command == "try":
+        return _cli_try(args)
+
+    elif args.command == "delete-draft":
+        return _cli_delete_draft(args)
 
     elif args.command == "exec":
         from .environments import dev_loop
-        return dev_loop.exec_(args.env, args.cmd or [])
+        return dev_loop.exec_(args.env, args.cmd or [],
+                              variables=_dev_loop_variables(args.env))
 
     elif args.command == "cache":
         if args.cache_command == "prune":
@@ -1619,6 +2542,12 @@ def cli_main(argv: list[str] | None = None) -> int:
                 dry_run=args.dry_run,
                 force=args.force,
                 env_hashes=env_hashes,
+                ask=_asker(
+                    assume_yes=args.assume_yes, declined="Aborted.",
+                    refusal=("wfc cache prune: pruning needs confirmation and "
+                             "there is no terminal to ask on. Nothing was "
+                             "removed. Re-run with --yes to prune as listed "
+                             "above.")),
             )
         elif args.cache_command == "push":
             from .storage import NoRemoteConfiguredError, cache_push
@@ -1654,6 +2583,14 @@ def cli_main(argv: list[str] | None = None) -> int:
     elif args.command == "runs":
         return _cli_runs(args)
 
+    elif args.command in ("list-methods", "list-modules", "list-samples"):
+        return _cli_list(args)
+
+    elif args.command == "show-run":
+        if args.log and args.as_json:
+            parser.error("--log prints a whole log; it does not combine with --json")
+        return _cli_show_run(args)
+
     elif args.command == "cancel":
         return _cli_cancel(args)
 
@@ -1679,9 +2616,40 @@ def cli_main(argv: list[str] | None = None) -> int:
                 "--slot or --all required with --dest, --path or --force "
                 "(with --run alone the run's outputs are listed)"
             )
+        if args.as_json and not args.path_only:
+            parser.error("--json goes with --path (a copy changes the project)")
+        from .execution.draft import is_draft_ref
+        if args.as_json:
+            from . import cli_render as render
+            from .export import ExportPathError, export_paths
+            run: int | str = (args.run_id if is_draft_ref(args.run_id)
+                              else _run_argument(args.run_id))
+            if not isinstance(run, int) and not is_draft_ref(run):
+                parser.error(f"--run takes a run id or a draft string "
+                             f"(draft:<module>.<method>/<node>@<sample>), not "
+                             f"'{args.run_id}'")
+            try:
+                paths = export_paths(run, slot, export_all=args.export_all)
+            except ExportPathError as exc:
+                return render.fail(str(exc), as_json=True)
+            except RuntimeError as exc:
+                return render.fail(f"No wfc project found: {exc}", as_json=True)
+            render.print_items(paths)
+            return 0
+        if is_draft_ref(args.run_id):
+            from .export import export_draft_output
+            return export_draft_output(
+                ref=args.run_id, slot=slot, dest=dest,
+                export_all=args.export_all, path_only=args.path_only,
+                force=args.force)
+        run_id = _run_argument(args.run_id)
+        if not isinstance(run_id, int):
+            parser.error(f"--run takes a run id or a draft string "
+                         f"(draft:<module>.<method>/<node>@<sample>), not "
+                         f"'{args.run_id}'")
         from .export import export_output
         return export_output(
-            run_id=args.run_id,
+            run_id=run_id,
             slot=slot,
             dest=dest,
             export_all=args.export_all,
@@ -1703,8 +2671,7 @@ def cli_main(argv: list[str] | None = None) -> int:
         # canonical override, and the canonical resolver validates it (or
         # walks up from the cwd). No project means no server — exit with the
         # marker-naming error rather than serve the cwd.
-        if args.project_root:
-            os.environ[layout.ROOT_ENV_VAR] = str(Path(args.project_root).resolve())
+        _bind_project_root(args.project_root)
         try:
             proj = get_project_root()
         except RuntimeError as exc:

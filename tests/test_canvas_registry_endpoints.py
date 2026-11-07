@@ -165,6 +165,95 @@ def test_get_registry_methods_lists_each_method(client, registry_project):
 
 
 # =============================================================================
+# Case 11 (Registration half): the routes list what Registration lists
+# =============================================================================
+
+@workflow(purpose="The Registry's method, module and sample routes list the "
+                  "same entities, with the same fields, as Registration's "
+                  "listing functions over one project; the routes add only "
+                  "their run counts")
+def test_the_registry_routes_list_what_registration_lists(client, registry_project):
+    """Catalog case 11 (Registration half): the routes list what Registration lists."""
+    from wfc.registration import list_methods, list_modules, list_samples
+
+    methods = client.get("/api/registry/methods").json()["methods"]
+    modules = client.get("/api/registry/modules").json()["modules"]
+    samples = client.get("/api/registry/samples").json()["samples"]
+    root = registry_project.project.root.resolve()
+    listed_methods = list_methods(root)
+    listed_modules = list_modules(root)
+    listed_samples = list_samples(root)
+
+    assert methods and modules and samples
+    assert [{k: v for k, v in row.items() if k != "runCount"}
+            | {"versions": [{k: v for k, v in ver.items() if k != "runCount"}
+                            for ver in row["versions"]]}
+            for row in methods] == [
+        {"name": m.name, "module": m.module, "env": m.env, "source": m.source,
+         "versions": [{"label": v.label, "identity": v.identity,
+                       "registered_at": v.registered_at, "env": v.env,
+                       "newest": v.newest, "commit": v.commit,
+                       "envFingerprint": v.env_fingerprint, "image": v.image,
+                       "codeTree": v.code_tree} for v in m.versions]}
+        for m in listed_methods]
+    assert all(v["label"] for row in methods for v in row["versions"])
+    assert modules == [
+        {"name": m.name, "description": m.description,
+         "contracts": [{"type": c.type, "name": c.name,
+                        "value_type": c.value_type, "required": c.required}
+                       for c in m.contracts],
+         "methods": m.methods, "source": m.source, "color": m.color}
+        for m in listed_modules]
+    assert all(m.color for m in listed_modules)
+    assert [{k: v for k, v in row.items() if k != "runCount"}
+            for row in samples] == [
+        {"name": s.name, "source": s.source, "size": s.size, "hash": s.hash,
+         "pushed": s.pushed, "registered_at": s.registered_at,
+         "file_type": s.file_type}
+        for s in listed_samples]
+
+
+@workflow(purpose="Case 11, CLI half: wfc list-methods, list-modules and "
+                  "list-samples list the same methods, modules and samples as "
+                  "the Registry's routes over one project, with the same fields")
+def test_the_list_verbs_list_what_the_registry_routes_list(client, capsys):
+    import json
+
+    from wfc.cli import cli_main
+
+    def listed(verb: str) -> list[dict]:
+        capsys.readouterr()
+        assert cli_main([verb, "--json"]) == 0
+        body = json.loads(capsys.readouterr().out)
+        assert body["ok"] is True
+        return body["items"]
+
+    methods = client.get("/api/registry/methods").json()["methods"]
+    modules = client.get("/api/registry/modules").json()["modules"]
+    samples = client.get("/api/registry/samples").json()["samples"]
+    assert methods and modules and samples
+
+    assert [(m["module"], m["name"], m["env"], m["source"],
+             [(v["label"], v["identity"], v["code_tree"]) for v in m["versions"]])
+            for m in listed("list-methods")] == [
+        (m["module"], m["name"], m["env"], m["source"],
+         [(v["label"], v["identity"], v["codeTree"]) for v in m["versions"]])
+        for m in methods]
+    assert [{k: m[k] for k in ("name", "description", "contracts", "methods",
+                                "source", "color")}
+            for m in listed("list-modules")] == modules
+    assert [{k: v for k, v in s.items()} for s in listed("list-samples")] == [
+        {k: v for k, v in s.items() if k != "runCount"} for s in samples]
+
+    capsys.readouterr()
+    assert cli_main(["list-methods"]) == 0
+    table = capsys.readouterr().out.splitlines()
+    assert table[0].split()[:3] == ["METHOD", "NEWEST", "VERSIONS"]
+    assert sorted(line.split()[0] for line in table[1:]) == sorted(
+        f"{m['module']}.{m['name']}" for m in methods)
+
+
+# =============================================================================
 # T5: POST /api/registry/samples — DvcNotConfiguredError maps to 409
 # =============================================================================
 

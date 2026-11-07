@@ -1,7 +1,7 @@
 """Contracts — the Tier 0 method promise and the vocabulary the system shares with method code.
 
 What a method promises — its declared input and output slots, their types
-and filenames, its parameters, its columns, its env — and the vocabulary the
+and filenames, its parameters, its output options, its env — and the vocabulary the
 system uses to talk to method code. Documented by ``docs/system/contracts.json``.
 
 The package is pure: stdlib plus the YAML parser, no import from ``wfc``,
@@ -13,8 +13,11 @@ Family modules:
 - ``declarations`` — the ``method.yaml`` and ``module.yaml`` parsers.
 - ``slots`` — the output-slot type vocabulary, slot filename derivation and
   node-config slot resolution.
-- ``columns`` — the column family.
+- ``options`` — the options family: an output's ``options`` shape and
+  resolution, and the refusal of the retired forms registration applies.
 - ``enrichment`` — the pure enrichment pass over a sparse pipeline document.
+- ``one_step`` — the one-step document a single method runs as on a sample,
+  and the one rule for which input the sample feeds.
 - ``fingerprint`` — the contract projection: a parsed ``method.yaml`` minus
   descriptions, formatting, ``env`` and ``helpers``, rendered for the code
   fingerprint.
@@ -26,13 +29,9 @@ Family modules:
 
 from __future__ import annotations
 
-from .columns import (
-    cross_check_columns,
-    resolve_columns,
-    validate_columns_block,
-)
 from .declarations import parse_method_yaml, parse_module_yaml
 from .enrichment import (
+    DRAFT_PIN,
     MethodNotFoundError,
     enrich_pipeline,
     fill_document_defaults,
@@ -40,6 +39,7 @@ from .enrichment import (
     resolve_node_version,
     resolve_versions,
     version_entry,
+    version_refusal,
 )
 from .envspec import (
     ENV_NAME_RULE,
@@ -51,6 +51,8 @@ from .envspec import (
     validate_env_name,
 )
 from .fingerprint import render_contract_projection
+from .one_step import SampleInputError, one_step_document, sample_input
+from .options import resolve_options, retired_form_refusals, validate_options_block
 from .param_check import (
     MAX_SAFE_INTEGER,
     check_param_value,
@@ -63,9 +65,13 @@ from .param_check import (
     param_refusals,
 )
 from .slots import (
+    declared_names,
+    input_is_optional,
+    input_takes_many,
     is_directory_slot,
     output_slot_filename,
     resolve_node_outputs,
+    validate_input_multiple,
     validate_output_slot_type,
     validate_slot_name,
 )
@@ -94,25 +100,34 @@ __all__ = [
     "normalize_and_fill_params",
     "normalize_param_value",
     "MAX_SAFE_INTEGER",
-    "cross_check_columns",
+    "DRAFT_PIN",
     "MethodNotFoundError",
+    "SampleInputError",
+    "one_step_document",
+    "sample_input",
     "enrich_pipeline",
     "fill_document_defaults",
     "normalize_document_params",
     "resolve_node_version",
     "resolve_versions",
     "version_entry",
+    "version_refusal",
     "param_refusals",
+    "declared_names",
+    "input_is_optional",
+    "input_takes_many",
+    "validate_input_multiple",
     "is_directory_slot",
     "output_slot_filename",
     "parse_byo_ref",
     "parse_method_yaml",
     "parse_module_yaml",
     "render_contract_projection",
-    "resolve_columns",
     "resolve_node_outputs",
-    "validate_columns_block",
+    "resolve_options",
+    "retired_form_refusals",
     "validate_container_ref",
+    "validate_options_block",
     "validate_output_slot_type",
     "validate_slot_name",
 ]

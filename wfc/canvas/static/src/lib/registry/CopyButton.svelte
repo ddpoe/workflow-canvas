@@ -45,7 +45,7 @@
     width: 15px; height: 15px; padding: 0; margin-left: 4px; border: none; border-radius: 3px;
     background: none; color: #7d7d85; cursor: pointer; flex-shrink: 0;
   }
-  .copy-ico:hover, .copy-ico:focus-visible { color: var(--accent); background: rgba(74, 144, 217, 0.12); }
-  .copy-ico.done { color: var(--color-completed); }
+  .copy-ico:hover, .copy-ico:focus-visible { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .copy-ico.done { color: var(--status-ok); }
   .copy-ico svg { display: block; }
 </style>

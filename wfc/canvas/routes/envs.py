@@ -5,9 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from sqlmodel import col, select
+from sqlmodel import select
 
-from ...persistence import Method, Module, Run, get_session
+from ...execution import run_tallies
+from ...persistence import Method, Module, get_session
 from ..state import _server_project_root
 
 router = APIRouter()
@@ -25,9 +26,9 @@ router = APIRouter()
 def get_registry_envs():
     """List distinct env specs referenced by registered methods.
 
-    One row per ``Method.env`` value. Aggregates method names, total run
-    count, and most-recent run timestamp (``Run.started_at``) across all
-    methods sharing that env, and resolves the registered env's ``backend``
+    One row per ``Method.env`` value. Lists the method names sharing that
+    env, takes its run count and most-recent run start from Execution's run
+    tallies (:func:`wfc.execution.run_tallies`), and resolves the registered env's ``backend``
     plus a ``has_packages`` flag: whether the captures folder of the env's
     current image holds a package list (a byo image's holds none). It does
     not verify the list: ``GET .../packages`` does, and refuses one whose
@@ -60,7 +61,6 @@ def get_registry_envs():
         }
 
         by_env: dict[str, dict[str, Any]] = {}
-        method_ids_by_env: dict[str, list[int]] = {}
         for meth in methods:
             spec = meth.env
             row = by_env.setdefault(
@@ -77,18 +77,14 @@ def get_registry_envs():
             )
             mod_name = modules_by_id.get(meth.module_id, "?")
             row["methods"].append(f"{mod_name}.{meth.name}")
-            method_ids_by_env.setdefault(spec, []).append(meth.id)
 
-        # Aggregate Run stats per env spec.
-        for spec, method_ids in method_ids_by_env.items():
-            runs = session.exec(
-                select(Run).where(col(Run.method_id).in_(method_ids))
-            ).all()
-            row = by_env[spec]
-            row["run_count"] = len(runs)
-            started = [r.started_at for r in runs if r.started_at is not None]
-            if started:
-                row["last_run_at"] = max(started).isoformat()
+        # Execution's run tallies, merged by env spec.
+        tallies = run_tallies()
+        for spec, row in by_env.items():
+            tally = tallies.for_env(spec)
+            row["run_count"] = tally.count
+            if tally.last_run_at is not None:
+                row["last_run_at"] = tally.last_run_at.isoformat()
 
         # Resolve the backend from the env manifest and the package-list
         # state from the current image's captures folder.

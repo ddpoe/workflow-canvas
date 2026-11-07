@@ -14,15 +14,18 @@ Recipe:
   COPY pixi.toml pixi.lock /opt/
   RUN --mount=type=cache,target=/root/.cache/rattler \
       pixi install --locked --environment <env>   # tool-pinned env materialization
-  COPY pip-freeze.txt /opt/
+  COPY pip-freeze.txt /opt/                       # only with a freeze
   RUN --mount=type=cache,target=/root/.cache/pip \
-      /opt/.pixi/envs/<env>/bin/python -m pip install --no-deps -r /opt/pip-freeze.txt
+      /opt/.pixi/envs/<env>/bin/python -m pip install --no-deps -r /opt/pip-freeze.txt  # only with a freeze
   RUN chmod -R a+rX /opt/.pixi/envs/<env>         # pair w/ --user
   <the shared tail>                               # dockerfiles.tail
 
 The `--no-deps` pip layer runs AFTER `pixi install --locked` so the
 locked env establishes the dep graph; the freeze layer reconstructs the
 exact wheel set the user had at register-env time without re-solving.
+When the freeze has nothing to install (a lock-file registration, or an
+env without pip) the pip pair is left out, so an env with no Python, such
+as one holding only R, builds.
 
 The COPY pair is split so the slow `pixi install --locked` layer reuses
 Docker's layer cache when only pip-freeze.txt has changed; the cache
@@ -33,6 +36,7 @@ builds (BuildKit-only — :func:`wfc.environments.docker.build` sets
 
 from __future__ import annotations
 
+from ..introspect import freeze_has_packages
 from .bases import PIXI_BASE, PIXI_LOCK_MAX_VERSION
 from .tail import finish_recipe
 
@@ -169,7 +173,11 @@ def generate(
         pip_freeze_content: Verbatim ``pip freeze`` output captured at
             register-env time. Travels as a build context file and is
             installed with ``--no-deps`` so the locked env's dep graph
-            is preserved.
+            is preserved. When it is empty, only whitespace, or the
+            absent-pip sentinel
+            (:data:`wfc.environments.introspect.PIP_MISSING_SENTINEL`), the
+            pip COPY/RUN layers are omitted and the env's Python is never
+            run.
         base_image: Optional override for the pixi base image. When
             ``None``, :data:`wfc.environments.dockerfiles.bases.PIXI_BASE` is used.
 
@@ -200,6 +208,27 @@ def generate(
             f"pixi install --locked --environment {env_name}"
         ),
         "",
+        *_pip_layers(pip_freeze_content, env_python),
+        f"RUN chmod -R a+rX {env_dir}",
+        "",
+    ]
+    return finish_recipe(lines)
+
+
+def _pip_layers(pip_freeze_content: str, env_python: str) -> list[str]:
+    """The pip COPY/RUN pair, or nothing when the freeze has nothing to install.
+
+    Args:
+        pip_freeze_content: The captured freeze; empty, whitespace or the
+            absent-pip sentinel means nothing to install.
+        env_python: Container path of the env's Python, which runs pip.
+
+    Returns:
+        The recipe lines, each layer followed by a blank line.
+    """
+    if not freeze_has_packages(pip_freeze_content):
+        return []
+    return [
         "COPY pip-freeze.txt /opt/",
         "",
         (
@@ -207,7 +236,4 @@ def generate(
             f"{env_python} -m pip install --no-deps -r /opt/pip-freeze.txt"
         ),
         "",
-        f"RUN chmod -R a+rX {env_dir}",
-        "",
     ]
-    return finish_recipe(lines)

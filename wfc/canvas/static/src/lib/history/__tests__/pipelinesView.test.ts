@@ -15,8 +15,15 @@ import {
   selectedRunId,
 } from '../historyStore';
 import { modules } from '../../builder/stores';
-import type { WfcRun } from '../historyApi';
+import type { PipelineSummary, WfcRun } from '../historyApi';
 import { get } from 'svelte/store';
+
+/** A pipeline summary as the server sends it: no draft steps unless named. */
+function mkSummary(
+  s: Pick<PipelineSummary, 'pipelineId' | 'status'> & Partial<PipelineSummary>,
+): PipelineSummary {
+  return { draftMode: false, draftStepCount: 0, draftSteps: [], drafts: [], ...s };
+}
 
 function mkRun(partial: Partial<WfcRun>): WfcRun {
   return {
@@ -67,7 +74,7 @@ beforeEach(() => {
 });
 afterEach(() => cleanup());
 
-const texts = (els: NodeListOf<Element> | Element[]) =>
+const texts = (els: ArrayLike<Element>) =>
   Array.from(els).map(e => e.textContent?.trim());
 
 describe('the Pipelines view list', () => {
@@ -82,8 +89,8 @@ describe('the Pipelines view list', () => {
       mkRun({ id: 'q1', pipelineId: 'p2', pipelineName: 'qc-only', status: 'success', timestamp: 0 }),
     ]);
     pipelineSummaries.set([
-      { pipelineId: 'p1', status: 'running', expected: 12, nodeOrder: null },
-      { pipelineId: 'p2', status: 'succeeded', expected: 1, nodeOrder: null },
+      mkSummary({ pipelineId: 'p1', status: 'running', expected: 12, nodeOrder: null }),
+      mkSummary({ pipelineId: 'p2', status: 'succeeded', expected: 1, nodeOrder: null }),
     ]);
   });
 
@@ -151,10 +158,10 @@ describe('an expanded pipeline', () => {
       mkRun({ id: '13', nodeId: 'n_seg2', method: 'segment', dataSource: 'S3', status: 'running' }),
     ]);
     pipelineSummaries.set([
-      { pipelineId: 'p1', status: 'mixed', expected: 7, nodeOrder: ['n_load', 'n_seg1', 'n_seg2'] },
+      mkSummary({ pipelineId: 'p1', status: 'mixed', expected: 7, nodeOrder: ['n_load', 'n_seg1', 'n_seg2'] }),
     ]);
     modules.set([{
-      name: 'm', color: '#000', methods: [{
+      name: 'm', methods: [{
         name: 'segment', inputs: [], outputs: [], params: [],
         versions: [
           { label: 1, identity: 'seg-v1', newest: false },

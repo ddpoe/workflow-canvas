@@ -1,0 +1,16 @@
+{
+  "name": "workflow-canvas",
+  "description": "The Workflow Canvas (wfc) plugin for Claude Code.",
+  "owner": {
+    "name": "Dante Poe",
+    "url": "https://github.com/ddpoe"
+  },
+  "plugins": [
+    {
+      "name": "wfc",
+      "source": "./plugins/wfc",
+      "description": "Skills for working with Workflow Canvas (wfc): set up a project, run and read pipelines, and bring a script into wfc as a method, trying and drafting it before anything is registered.",
+      "category": "development"
+    }
+  ]
+}

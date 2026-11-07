@@ -19,6 +19,7 @@ import shutil
 import stat
 from pathlib import Path
 
+import pytest
 from axiom_annotations import workflow
 from sqlmodel import select
 
@@ -46,7 +47,7 @@ def _lay_tree_at(project: Path, run_id: int) -> str:
                   "with the re-run sentence and no traceback by wfc export (one "
                   "slot, --all and --path), by wfc export-run, by the canvas "
                   "artifact listing and zip (a 409, not a skipped output) and by "
-                  "the resolve_input CLI")
+                  "resolve_input")
 def test_every_reader_refuses_a_malformed_entry_naming_the_re_run(
     cli, tmp_project, monkeypatch, tmp_path
 ):
@@ -64,7 +65,6 @@ def test_every_reader_refuses_a_malformed_entry_naming_the_re_run(
         ("export", "--run", str(run_id), "--slot", slot, "--dest", str(dest)),
         ("export", "--run", str(run_id), "--slot", slot, "--path"),
         ("export", "--run", str(run_id), "--all", "--dest", str(dest)),
-        ("resolve_input", "--run-id", str(run_id)),
     ):
         result = cli(*argv)
         assert result.returncode == 1, f"{argv} -> {result!r}"
@@ -72,6 +72,12 @@ def test_every_reader_refuses_a_malformed_entry_naming_the_re_run(
         assert re_run in result.stderr, argv
         assert result.stdout == "", argv
     assert not dest.exists()
+
+    from wfc.storage import ResolveOutputError, resolve_input
+    with pytest.raises(ResolveOutputError) as refused:
+        resolve_input(run_id=run_id)
+    assert "malformed cache entry" in str(refused.value)
+    assert re_run in str(refused.value)
 
     # wfc export-run prints its plan on stdout, then lists the refusal.
     bundle = tmp_path / "bundle.zip"

@@ -50,6 +50,44 @@ def project_root() -> Path:
     return _project_root_cache
 
 
+class ProjectMismatchError(RuntimeError):
+    """A root was passed that is not the project this process works in."""
+
+
+def require_project_root(root: Path | str | None) -> Path:
+    """The project root a caller works in, refusing one that is not this process's.
+
+    The database a process reads and writes is its project's
+    (:func:`project_root`), so work done against another root would put that
+    root's files beside this project's rows. A caller that passes a root
+    passes this process's project, spelled any way that resolves to the same
+    folder.
+
+    Args:
+        root: The root the caller was handed, or ``None`` for the process's
+            own.
+
+    Returns:
+        ``root`` as a ``Path`` when it is given, else :func:`project_root`.
+
+    Raises:
+        ProjectMismatchError: ``root`` resolves to another folder than the
+            process's project root; the message names both.
+        RuntimeError: No project can be resolved for the process.
+    """
+    process_root = project_root()
+    if root is None:
+        return process_root
+    given = Path(root)
+    if given.resolve() != process_root.resolve():
+        raise ProjectMismatchError(
+            f"{given.resolve()} is not the project this process works in "
+            f"({process_root.resolve()}); its database is that project's. Run "
+            f"wfc from inside {given.resolve()}, pass --project-root "
+            f"{given.resolve()}, or set {layout.ROOT_ENV_VAR} to it.")
+    return given
+
+
 def clear_cache() -> None:
     """Forget the cached project root, so the next call resolves it again."""
     global _project_root_cache

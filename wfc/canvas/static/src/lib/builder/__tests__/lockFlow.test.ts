@@ -46,9 +46,9 @@ function answer(): CacheStatusResponse {
     rows: ['s1', 's2'].map(s => ({
       key: `m1::${s}::default`, node_id: 'm1', sample: s, variant: 'default',
       status: 'new_step_changed', reason: null, cache_key: null,
-      source_run_id: null, source_nid: null, outputs: [],
+      source_run_id: null, source_nid: null, outputs: [], draft_mode: false,
     })),
-  } as CacheStatusResponse;
+  };
 }
 
 let fetchMock: ReturnType<typeof vi.fn>;
@@ -175,7 +175,7 @@ describe('lock flow', () => {
     };
     const v2 = { ...v1, label: 2, identity: 'id-v2', newest: true, params: [] };
     modules.set([{
-      name: 'mod', color: '#2ecc71',
+      name: 'mod',
       methods: [{ name: 'filter', module: 'mod', versions: [v1, v2], ...v2 }],
     }]);
     loadPipeline({

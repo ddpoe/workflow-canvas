@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { displaySlotType, slotColor, truncateSlotType } from '../slotColor';
+import { PALETTE } from '../palette';
 
 describe('slotColor', () => {
   it('is deterministic for the same extension', () => {
@@ -24,8 +25,11 @@ describe('slotColor', () => {
     expect(slotColor('dir')).toBe(slotColor('directory'));
   });
 
-  it('falls back to a hashed HSL colour for unknown extensions', () => {
-    expect(slotColor('.unheardof')).toMatch(/^hsl\(\d+, 55%, 55%\)$/);
+  it('takes every colour, curated or not, from the module palette', () => {
+    const palette = new Set(PALETTE.map(c => c.hex));
+    for (const t of ['csv', 'tsv', 'parquet', 'json', 'txt', 'png', 'pkl', 'h5ad', 'dir', '.unheardof', 'tar.gz', 'xyz']) {
+      expect(palette.has(slotColor(t)), t).toBe(true);
+    }
   });
 
   it('displays the undotted form, keeping inner dots and directory markers', () => {

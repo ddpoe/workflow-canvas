@@ -22,6 +22,7 @@ leaves out, so the params a step runs with are written in the document.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -32,6 +33,10 @@ from .slots import output_slot_filename, validate_output_slot_type
 
 #: Node types that carry no method and pass through without enrichment.
 _SYSTEM_NODE_TYPES = ("input_selector", "run_reference")
+
+#: The version pin of a node that runs its method's draft (the contract map's
+#: ``versions["draft"]``); such a node also carries the draft's ``folder``.
+DRAFT_PIN = "draft"
 
 
 class MethodNotFoundError(ValueError):
@@ -59,6 +64,61 @@ class MethodNotFoundError(ValueError):
         )
 
 
+def _same_folder(a: str, b: str) -> bool:
+    """Whether two folder spellings name one folder (separators and case as the OS compares them)."""
+    return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
+
+
+def version_refusal(node: Mapping[str, Any], entry: Mapping[str, Any]) -> str | None:
+    """Why a method node cannot run the version it names, by its contract-map entry.
+
+    The one wording of a version refusal, which enrichment raises and the
+    structure check reports:
+
+    - an unpinned node on a DRAFT method (an entry marked ``draft_only``:
+      the method has a draft and no registered version) has no version to
+      run, and is never resolved to the draft silently;
+    - a ``draft`` pin on a method with no draft;
+    - a ``draft`` pin whose ``folder`` is not the folder the method's draft
+      is from;
+    - a pin that names no version of the method.
+
+    Args:
+        node: A method node (``id``, ``module``, ``method``, optional
+            ``version`` and ``folder``).
+        entry: The node's method's contract-map entry.
+
+    Returns:
+        The refusal naming the node and its ``module.method``, or ``None``
+        when the node can run.
+    """
+    qualified = f"{node.get('module') or ''}.{node.get('method') or ''}"
+    head = f"Node '{node.get('id')}' ({qualified})"
+    pin = node.get("version") or None
+    if pin is None:
+        if entry.get("draft_only"):
+            return (f"{head}: {qualified} is a DRAFT method with no registered "
+                    f"version, so the node has no version to run. Pick DRAFT as "
+                    f"the node's version to run the draft, or register the draft "
+                    f"(Register in the Registry's Drafts group) to run v1.")
+        return None
+    chosen = version_entry(entry, pin)
+    if pin == DRAFT_PIN:
+        if chosen is None:
+            return (f"{head}: the node runs its method's draft, but {qualified} "
+                    f"has no draft. Add one (\"+ Draft from folder…\" in the "
+                    f"Registry, or `wfc try`), or pick a registered version.")
+        folder, draft_folder = node.get("folder"), chosen.get("folder")
+        if folder and draft_folder and not _same_folder(str(folder), str(draft_folder)):
+            return (f"{head}: the node runs the draft from {folder}, but "
+                    f"{qualified}'s draft is from {draft_folder}. Pick the method "
+                    f"again in the Builder to run its current draft.")
+        return None
+    if chosen is None:
+        return f"{head}: pinned version {pin} is not a version of the method"
+    return None
+
+
 def version_entry(entry: Mapping[str, Any], pin: str | None) -> Mapping[str, Any] | None:
     """The contract a contract-map entry holds for one version.
 
@@ -68,8 +128,9 @@ def version_entry(entry: Mapping[str, Any], pin: str | None) -> Mapping[str, Any
         pin: The node's version pin, or ``None``/empty for the newest.
 
     Returns:
-        The pinned version's contract, the entry itself when there is no
-        pin, or ``None`` when the pin names no version of the method.
+        The pinned version's contract (``draft`` names the method's draft,
+        ``versions["draft"]``), the entry itself when there is no pin, or
+        ``None`` when the pin names no version of the method.
     """
     if not pin:
         return entry
@@ -90,12 +151,16 @@ def resolve_node_version(
     Returns:
         ``(identity, contract)``: the node's pin, or the newest version's
         identity when it has none (``None`` when the entry names no
-        version), and that version's contract.
+        version), and that version's contract. A ``draft`` pin gives
+        ``("draft", <the draft's contract>)``.
 
     Raises:
         MethodNotFoundError: The map holds no ``<module>.<method>`` for the
             node.
-        ValueError: The node's pin names no version of its method.
+        ValueError: The node cannot run the version it names
+            (:func:`version_refusal`): its pin names no version of its
+            method, it pins a draft the method does not have or one from
+            another folder, or it is unpinned on a DRAFT method.
     """
     module = node.get("module") or ""
     method = node.get("method") or ""
@@ -103,13 +168,15 @@ def resolve_node_version(
     entry = contract_map.get(qualified)
     if entry is None:
         raise MethodNotFoundError(str(node.get("id")), qualified)
+    refusal = version_refusal(node, entry)
+    if refusal is not None:
+        raise ValueError(refusal)
     pin = node.get("version") or None
     chosen = version_entry(entry, pin)
     if chosen is None:
-        raise ValueError(
-            f"Node '{node.get('id')}' ({qualified}): pinned version {pin} is "
-            f"not a version of the method"
-        )
+        # version_refusal refuses such a pin above; this keeps the contract typed.
+        raise ValueError(f"Node '{node.get('id')}' ({qualified}): pinned version "
+                         f"{pin} is not a version of the method")
     return (pin or entry.get("version")), chosen
 
 
@@ -430,6 +497,9 @@ def enrich_pipeline(
         }
         if version:
             node_dict["version"] = version
+        if version == DRAFT_PIN:
+            # A draft runs from its folder: the node's own, else its draft's.
+            node_dict["folder"] = node.get("folder") or info.get("folder")
         if node.get("label"):
             node_dict["label"] = node["label"]
         nodes.append(node_dict)

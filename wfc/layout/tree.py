@@ -39,6 +39,12 @@ PIPELINE_EDITABLE_DOC_FILENAME = "pipeline.editable.json"
 #: The pipeline record inside a pipeline run dir: while it exists the
 #: pipeline is running (its owner, its engine, its cancel flag).
 PIPELINE_RECORD_FILENAME = "pipeline_record.json"
+#: The lock file beside the pipeline record that every read-modify-write of
+#: the record (and its removal) holds, across processes.
+PIPELINE_RECORD_LOCK_FILENAME = "pipeline_record.json.lock"
+#: The lock file beside the pipeline record that the close-out and the cancel
+#: of the pipeline hold, across processes, so only one of them walks.
+PIPELINE_CLOSE_OUT_LOCK_FILENAME = "close-out.lock"
 #: The run-completion sentinel Snakemake waits on.
 RUN_SENTINEL_FILENAME = ".complete"
 #: The run-id lineage sidecar beside the sentinel.
@@ -162,6 +168,102 @@ def run_archive_name(run_id: int) -> str:
 def run_archive_dir(root: Path, run_id: int) -> Path:
     """Return the run archive ``<root>/.wfc/runs/<run-id zero-padded to 8>/``."""
     return artifact_store(root) / run_archive_name(run_id)
+
+
+#: A run's (and a draft step's) two logs, in its run archive or results folder.
+RUN_LOG_FILENAMES = {"stdout": "stdout.log", "stderr": "stderr.log"}
+
+
+def run_log_path(root: Path, run_id: int, stream: str) -> Path:
+    """Return a run's log ``<run archive>/stdout.log`` or ``stderr.log``.
+
+    Args:
+        root: The project root.
+        run_id: The run's id.
+        stream: ``stdout`` or ``stderr``.
+
+    Raises:
+        KeyError: *stream* is neither.
+    """
+    return run_archive_dir(root, run_id) / RUN_LOG_FILENAMES[stream]
+
+
+# --- the project's own pipelines folder --------------------------------------
+
+#: The project's pipelines folder, beside its code (tracked by git): where
+#: a one-method run saves the document it ran.
+PROJECT_PIPELINES_DIR_NAME = "pipelines"
+
+
+def project_pipelines_dir(root: Path) -> Path:
+    """Return the project's own pipelines folder ``<root>/pipelines/``."""
+    return Path(root) / PROJECT_PIPELINES_DIR_NAME
+
+
+def one_method_pipeline_path(root: Path, module: str, method: str, sample: str,
+                             fingerprint: str | None = None) -> Path:
+    """Return ``<root>/pipelines/<module>.<method>-<sample>[-<fingerprint>].json``.
+
+    The file a one-method run of *method* on *sample* saves its document as
+    when it is given no name.
+
+    Args:
+        root: The project root.
+        module: The method's module.
+        method: The method.
+        sample: The sample it runs on.
+        fingerprint: The params' fingerprint, appended when the run has
+            params; ``None`` for a run without.
+    """
+    stem = f"{module}.{method}-{sample}"
+    if fingerprint:
+        stem = f"{stem}-{fingerprint}"
+    return project_pipelines_dir(root) / f"{stem}.json"
+
+
+#: Characters a pipeline name cannot hold: it names a file on every platform.
+_PIPELINE_NAME_FORBIDDEN = '/\\<>:"|?*'
+
+
+def pipeline_name_refusal(name: str) -> str | None:
+    r"""Say why *name* cannot name a pipeline file, or ``None`` when it can.
+
+    The rule: not empty, none of ``/ \ < > : " | ? *``, and no trailing dot
+    or space (Windows drops them, so two names would share one file).
+
+    Args:
+        name: The pipeline's name, as the user gave it.
+
+    Returns:
+        The refusal, naming the name and the rule it breaks, or ``None``.
+    """
+    if not name or not name.strip():
+        return "a pipeline name cannot be empty"
+    bad = sorted({ch for ch in name if ch in _PIPELINE_NAME_FORBIDDEN})
+    if bad:
+        return (f"the pipeline name {name!r} holds {' '.join(bad)}; a name "
+                f"cannot hold any of / \\ < > : \" | ? *")
+    if name[-1] in ". ":
+        return (f"the pipeline name {name!r} ends with a dot or a space, "
+                f"which a file name cannot")
+    return None
+
+
+def named_pipeline_path(root: Path, name: str) -> Path:
+    """Return ``<root>/pipelines/<name>.json``, the file a named pipeline saves as.
+
+    Args:
+        root: The project root.
+        name: The pipeline's name.
+
+    Raises:
+        ValueError: The name breaks the pipeline-name rule
+            (:func:`pipeline_name_refusal`), named.
+    """
+    refusal = pipeline_name_refusal(name)
+    if refusal:
+        raise ValueError(refusal)
+    return project_pipelines_dir(root) / f"{name}.json"
 
 
 # --- directory-entry checkouts ---------------------------------------------
@@ -496,6 +598,16 @@ def pipeline_record_path(root: Path, pipeline_id: str) -> Path:
     return pipeline_run_dir(root, pipeline_id) / PIPELINE_RECORD_FILENAME
 
 
+def pipeline_record_lock_path(root: Path, pipeline_id: str) -> Path:
+    """Return the record's ``pipeline_record.json.lock`` inside the pipeline run dir."""
+    return pipeline_run_dir(root, pipeline_id) / PIPELINE_RECORD_LOCK_FILENAME
+
+
+def pipeline_close_out_lock_path(root: Path, pipeline_id: str) -> Path:
+    """Return the ``close-out.lock`` beside the record inside the pipeline run dir."""
+    return pipeline_run_dir(root, pipeline_id) / PIPELINE_CLOSE_OUT_LOCK_FILENAME
+
+
 def pipeline_outcomes_dir(root: Path, pipeline_id: str) -> Path:
     """Return the ``outcomes/`` sidecar dir inside the pipeline run dir."""
     return pipeline_run_dir(root, pipeline_id) / OUTCOMES_DIR_NAME
@@ -563,6 +675,107 @@ def sample_ready_sentinel_relpath(sample_segment: str) -> str:
 def registry_dir(root: Path) -> Path:
     """Return the registry ``<root>/.wfc/registry/``, tracked by git."""
     return state_dir(root) / REGISTRY_DIR_NAME
+
+
+#: The module colours file inside the registry, committed with the project.
+MODULE_COLORS_FILENAME = "modules.json"
+
+
+def module_colors_path(root: Path) -> Path:
+    """Return the module colours file ``<root>/.wfc/registry/modules.json``.
+
+    Registration owns it: each module's colour and its default, committed
+    so everyone who opens the project sees the same colours.
+    """
+    return registry_dir(root) / MODULE_COLORS_FILENAME
+
+
+# --- drafts: pointers, draft runs and session scratch ------------------------
+
+#: The drafts tree under the artifact store (ignored by git, as every
+#: project already ignores ``.wfc/runs/``): one folder per draft, by module
+#: and method.
+DRAFTS_DIR_NAME = "drafts"
+#: A draft's pointer inside its draft folder: the method folder, the kind and
+#: the folder's stat snapshot. Registration owns it.
+DRAFT_POINTER_FILENAME = "draft.json"
+#: A draft's latest draft run inside its draft folder.
+DRAFT_RUN_FILENAME = "draft-run.json"
+#: The scratch a ``wfc shell|jupyter --method`` session writes its outputs
+#: to, inside the draft folder; emptied at each session start and never a
+#: draft run. The leading dot keeps it apart from any node id.
+DRAFT_SESSION_DIR_NAME = ".session"
+
+
+def drafts_dir(root: Path) -> Path:
+    """Return ``<root>/.wfc/runs/drafts/``, the home of every draft folder."""
+    return artifact_store(root) / DRAFTS_DIR_NAME
+
+
+def draft_dir(root: Path, module: str, method: str) -> Path:
+    """Return a draft's folder, ``<root>/.wfc/runs/drafts/<module>/<method>/``.
+
+    It holds the draft's pointer, its latest draft run and that run's
+    result folders. Removing a draft removes this folder; the method folder
+    the pointer names is the author's and is never touched.
+
+    Args:
+        root: The project root.
+        module: The draft's module.
+        method: The draft's method name.
+
+    Returns:
+        The draft folder's path.
+    """
+    return drafts_dir(root) / module / method
+
+
+def draft_pointer_path(root: Path, module: str, method: str) -> Path:
+    """Return a draft's pointer, ``<draft folder>/draft.json``."""
+    return draft_dir(root, module, method) / DRAFT_POINTER_FILENAME
+
+
+def draft_run_path(root: Path, module: str, method: str) -> Path:
+    """Return a draft's latest draft run record, ``<draft folder>/draft-run.json``."""
+    return draft_dir(root, module, method) / DRAFT_RUN_FILENAME
+
+
+def draft_result_dir(root: Path, module: str, method: str,
+                     node_id: str, sample: str) -> Path:
+    """Return one draft step's results, ``<draft folder>/<node_id>/<sample>/``.
+
+    The step's results file, its stdout and stderr logs and its outputs.
+    A step downstream of the draft is stored in the folder of the draft
+    that owns it.
+
+    Args:
+        root: The project root.
+        module: The owning draft's module.
+        method: The owning draft's method name.
+        node_id: The step's pipeline node id.
+        sample: The step's sample.
+
+    Returns:
+        The result folder's path.
+    """
+    return draft_dir(root, module, method) / node_id / sample
+
+
+#: Where a draft step runs its method folder from: a copy taken at the
+#: step's start, inside the draft folder (so under the project mount), one
+#: per step and sample. The leading dot keeps it apart from any node id.
+DRAFT_CODE_DIR_NAME = ".code"
+
+
+def draft_code_dir(root: Path, module: str, method: str,
+                   node_id: str, sample: str) -> Path:
+    """Return a draft step's code copy, ``<draft folder>/.code/<node_id>/<sample>/``."""
+    return draft_dir(root, module, method) / DRAFT_CODE_DIR_NAME / node_id / sample
+
+
+def draft_session_dir(root: Path, module: str, method: str) -> Path:
+    """Return a shell/jupyter session's output scratch, ``<draft folder>/.session/``."""
+    return draft_dir(root, module, method) / DRAFT_SESSION_DIR_NAME
 
 
 def methods_dir(root: Path) -> Path:
@@ -684,6 +897,28 @@ def demo_stamp_path(root: Path) -> Path:
 def gitattributes_path(root: Path) -> Path:
     """Return the project's git attributes file ``<root>/.gitattributes``."""
     return root / GITATTRIBUTES_FILENAME
+
+
+#: The state dir's cache folder: derived files wfc can always rebuild, ignored
+#: by git. The canvas's preview cache lives beneath it.
+CACHE_DIR_NAME = "cache"
+#: The canvas's converted image previews, beneath the cache folder.
+PREVIEW_CACHE_DIR_NAME = "previews"
+
+
+def preview_cache_dir(root: Path) -> Path:
+    """Return the canvas's preview cache ``<root>/.wfc/cache/previews/``.
+
+    The canvas writes the PNGs it converts from run outputs here, keyed by
+    the output's content; ``wfc cache prune`` empties it. Not configurable.
+
+    Args:
+        root: The project root.
+
+    Returns:
+        The cache's path (which may not exist yet: an older project has none).
+    """
+    return state_dir(root) / CACHE_DIR_NAME / PREVIEW_CACHE_DIR_NAME
 
 
 def captures_dir(root: Path) -> Path:

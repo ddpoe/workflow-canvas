@@ -225,11 +225,13 @@ def test_image_state_reads_the_captures_folder_and_the_daemon(tmp_project, monke
     assert unknown.state == "unknown" and "Cannot connect" in unknown.detail
 
     write_pushed(tmp_project, "tools", fingerprint, digest=FAKE_PUSHED_DIGEST,
-                 tag="fp-" + fingerprint[:12])
+                 tag="fp-" + fingerprint[:12], base="ghcr.io/lab/project")
     refuse_docker(monkeypatch, "a pushed image's state asks no Docker")
     pushed = image_state("tools", fingerprint, tmp_project)
     assert pushed.state == "pushed" and pushed.in_registry
     assert pushed.pushed is not None and pushed.pushed.digest == FAKE_PUSHED_DIGEST
+    elsewhere = image_state("tools", fingerprint, tmp_project, base="ghcr.io/lab/moved")
+    assert elsewhere.state == "elsewhere" and elsewhere.in_registry
 
 
 def test_a_byo_registry_image_is_in_its_own_registry(tmp_project, monkeypatch):

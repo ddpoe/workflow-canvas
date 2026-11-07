@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "wfc-client"
-version = "0.2.0"
+version = "0.3.1b1"
 description = "Tier-1 sugar for writing Workflow Canvas (wfc) methods, with one small dependency"
 authors = ["Dante <dantepoe@noboundssolutions.com>"]
 readme = "README.md"

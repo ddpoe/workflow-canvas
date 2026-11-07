@@ -1,7 +1,11 @@
 @import url('https://fonts.googleapis.com/css2?family=Mukta+Vaani:wght@200;300;400;500;600;700;800&display=swap');
 
+/* The colour tokens. The standard is the SOP docs/sops/canvas-colours and
+   its style guide docs/sops/assets/canvas-colours-style-guide.html: a
+   colour is written as one of these tokens, never as a fresh literal, and
+   the protected colours are spelled only here. */
 :root {
-  --bg-canvas: #1a1a1a;
+  --bg-canvas: #1e1e1e;
   --bg-panel: #252526;
   --bg-input: #1e1e1e;
   --bg-header: #2d2d30;
@@ -10,26 +14,43 @@
   --text-primary: #ccc;
   --text-secondary: #888;
   --text-muted: #666;
-  --accent: #4A90D9;
-  --color-running: #E9A847;
-  --color-completed: #50C878;
-  --color-failed: #E74C3C;
-  --color-system: #1ABC9C;
-  --color-cancelled: #7f8ea3;
-  --color-cached: #E9A847;
-  --color-mixed: #D89E2E;
-  --color-version-newest: #7CFC9A;
-  /* Running and still-to-come in the History Pipelines view; the rest of
-     the app still draws running in --color-running. */
-  --color-history-running: #5DA9D9;
-  --color-history-pending: #4a4a4f;
   --node-bg: #353535;
 
+  /* Protected colours: one meaning each (SOP Protected Colours). Small
+     text in failed or cancelled uses the -ink shade. */
+  --status-ok: #50E7A3;
+  --status-active: #F1B620;
+  --status-failed: #F97163;
+  --status-failed-ink: #FF8A7E;
+  --status-cancelled: #7F8EA3;
+  --status-cancelled-ink: #A3B2C8;
+  --status-cached: #EAB8FF;
+  --accent: #4A90D9;
+  --fill-system: #0D857C;
+  --system-ink: #5ECBCB;
+
+  /* Neutrals: no status. */
+  --dash-neutral: #8a8a90;
+  --version-older: #c8ccd8;
+  /* Pending tally segment; downstream draft strip. */
+  --marker-dark: #4a4a4f;
+  /* Draft marker on the draft itself. */
+  --marker-light: #d4d4d4;
+  --port: #c8c8cc;
+
+  /* Selection: a glow in the border's own colour, near-white on a neutral
+     border (SOP Selection). --glow-c is set by the selected element. */
+  --glow-neutral: rgba(240, 240, 240, 0.34);
+
+  /* The one draft dash: 2px stroke, 6px dash, 4px gap, drawn through a
+     mask so every element gets the same rhythm (SOP Drafts). */
+  --dash-2: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='100%25' height='100%25' rx='6' ry='6' fill='none' stroke='white' stroke-width='4' stroke-dasharray='6 4'/%3E%3C/svg%3E");
+
   /* SvelteFlow dark mode overrides */
-  --xy-background-color: #1a1a1a;
+  --xy-background-color: #1e1e1e;
   --xy-background-pattern-color: #333;
   --xy-edge-stroke: #555;
-  --xy-edge-stroke-selected: #4A90D9;
+  --xy-edge-stroke-selected: #e0e0e0;
   --xy-minimap-background: #252526;
   --xy-minimap-mask-background: rgba(26, 26, 26, 0.7);
   --xy-controls-button-background: #2d2d30;
@@ -40,6 +61,63 @@
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* Text for screen readers only: read aloud, not drawn (e.g. "(failed)"
+   beside an aria-hidden ✗). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* Module text: the module colour mixed with 45% white (SOP Module
+   Colours). An element sets --module; --module-ink follows it. */
+* { --module-ink: color-mix(in srgb, var(--module, #808080), #fff 45%); }
+
+/* Selection glow. The selected element sets --glow-c to its border colour
+   (or leaves it unset for a neutral border); the border itself is never
+   changed. */
+.sel-glow {
+  box-shadow: 0 0 18px 5px var(--glow, color-mix(in srgb, var(--glow-c, rgb(240, 240, 240)) 32%, transparent));
+}
+.sel-glow.glow-neutral { --glow: var(--glow-neutral); }
+
+/* The dash utility (SOP Drafts, The technique): the element keeps a
+   transparent border of the same width; a ::before paints --dash-color
+   through the --dash-2 mask. A selected dashed element also lights its
+   dash gaps with --glow-gap. */
+.dash-2 {
+  position: relative;
+  border-color: transparent !important;
+  border-style: solid !important;
+}
+.dash-2::before {
+  content: '';
+  position: absolute;
+  inset: calc(-1 * var(--dash-bw, 2px));
+  border-radius: inherit;
+  background: var(--dash-color, var(--dash-neutral));
+  pointer-events: none;
+  -webkit-mask: var(--dash-2) 0 0 / 100% 100% no-repeat;
+  mask: var(--dash-2) 0 0 / 100% 100% no-repeat;
+  z-index: 1;
+}
+.dash-2.sel-glow {
+  background:
+    linear-gradient(var(--dash-body, var(--node-bg)), var(--dash-body, var(--node-bg))) padding-box,
+    color-mix(in srgb, var(--glow-c, rgb(240, 240, 240)) 30%, transparent) border-box;
+}
+
+/* A selected edge is near-white with the neutral glow; edges never take a
+   status, slot-type or module colour. */
+.svelte-flow__edge.selected .svelte-flow__edge-path {
+  stroke: var(--xy-edge-stroke-selected);
+  stroke-width: 2;
+  filter: drop-shadow(0 0 4px var(--glow-neutral));
+}
 
 html, body, #app {
   width: 100%; height: 100%;
@@ -129,12 +207,14 @@ html, body, #app {
   white-space: nowrap;
   line-height: 15px;
 }
-.hist-pill.succeeded { --pill: var(--color-completed); }
-.hist-pill.cached { --pill: var(--color-cached); }
-.hist-pill.failed { --pill: var(--color-failed); }
-.hist-pill.cancelled { --pill: var(--color-cancelled); }
-.hist-pill.running { --pill: var(--color-history-running); }
-.hist-pill.mixed { --pill: var(--color-mixed); }
+/* Status-colour text (the ink for failed and cancelled) on a 15% tint with
+   a 45% outline (SOP Protected Colours, pills). */
+.hist-pill.succeeded { --pill: var(--status-ok); }
+.hist-pill.cached { --pill: var(--status-cached); }
+.hist-pill.failed { --pill: var(--status-failed); color: var(--status-failed-ink); }
+.hist-pill.cancelled { --pill: var(--status-cancelled); color: var(--status-cancelled-ink); }
+.hist-pill.running { --pill: var(--status-active); }
+.hist-pill.mixed { --pill: var(--status-failed); color: var(--status-failed-ink); }
 .hist-pill.running::before {
   content: '';
   width: 6px;

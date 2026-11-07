@@ -1,6 +1,6 @@
 """Persistence: the project's relational store.
 
-- :mod:`.schema` holds the fourteen table classes and their enums.
+- :mod:`.schema` holds the fifteen table classes and their enums.
 - :mod:`.engine` holds the process engine and its sessions;
   :func:`bootstrap_engine`, the one path that builds an engine;
   :func:`write_transaction`, the one way a phase opens a write transaction
@@ -9,7 +9,9 @@
 - :mod:`.backfill` holds the schema backfill: missing columns added, tables
   whose unique constraints or indexes (partial predicates included) drifted
   rebuilt.
-- :mod:`.accessor` holds the project-root accessor and its per-process cache.
+- :mod:`.accessor` holds the project-root accessor and its per-process cache,
+  and :func:`require_project_root`, which refuses a root that is not the
+  process's project (``ProjectMismatchError``).
 - :mod:`.config` holds the reader for the project's ``wf-canvas.toml`` and
   :func:`set_registry_url`, the text edit that sets its ``[registry] url``.
 - :mod:`.run_graph` holds the run-graph reader: :func:`read_run_records`,
@@ -19,12 +21,17 @@
 Inside ``wfc`` the package imports only Layout.
 """
 
-from .accessor import project_root
+from .accessor import ProjectMismatchError, project_root, require_project_root
 from .backfill import ensure_schema
 from .config import (
     INTEGRITY_INPUTS_HASH,
     INTEGRITY_INPUTS_STAT_THEN_HASH,
     INTEGRITY_INPUTS_VALUES,
+    PREVIEWS_CACHE_MB_DEFAULT,
+    PREVIEWS_CACHE_MB_KEY,
+    PREVIEWS_DEFAULTS,
+    PREVIEWS_MEMORY_MB_DEFAULT,
+    PREVIEWS_MEMORY_MB_KEY,
     read_config,
     set_registry_url,
 )
@@ -59,6 +66,7 @@ from .schema import (
     ModuleContract,
     OutputIntegrity,
     ParamDef,
+    PipelineRun,
     PushStatus,
     Run,
     RunAnnotation,
@@ -80,6 +88,11 @@ __all__ = [
     "INTEGRITY_INPUTS_HASH",
     "INTEGRITY_INPUTS_STAT_THEN_HASH",
     "INTEGRITY_INPUTS_VALUES",
+    "PREVIEWS_CACHE_MB_DEFAULT",
+    "PREVIEWS_CACHE_MB_KEY",
+    "PREVIEWS_DEFAULTS",
+    "PREVIEWS_MEMORY_MB_DEFAULT",
+    "PREVIEWS_MEMORY_MB_KEY",
     "RUNNING_CLAIM_PREDICATE",
     "Blob",
     "InUseKind",
@@ -91,6 +104,8 @@ __all__ = [
     "ModuleContract",
     "OutputIntegrity",
     "ParamDef",
+    "PipelineRun",
+    "ProjectMismatchError",
     "PushStatus",
     "Run",
     "RunAnnotation",
@@ -110,6 +125,7 @@ __all__ = [
     "project_root",
     "read_config",
     "read_run_records",
+    "require_project_root",
     "reset_engine",
     "set_registry_url",
     "use_project",

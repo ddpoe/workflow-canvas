@@ -1,0 +1,7 @@
+name: figlet
+channels:
+  - defaults
+dependencies:
+  - python=3.12
+  - pyfiglet
+prefix: C:\Users\someone\anaconda3\envs\figlet

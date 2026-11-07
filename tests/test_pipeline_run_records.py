@@ -57,12 +57,12 @@ def _run_pipeline(project, pid: str, monkeypatch, *, exit_code: int,
         if exit_code == 0:
             run_pipeline(pipeline_path=str(project.pipeline_json),
                          project_root=str(project.root),
-                         wfc_root=str(project.root), pipeline_id=pid, **kwargs)
+                         pipeline_id=pid, **kwargs)
         else:
             with pytest.raises(RuntimeError):
                 run_pipeline(pipeline_path=str(project.pipeline_json),
                              project_root=str(project.root),
-                             wfc_root=str(project.root), pipeline_id=pid,
+                             pipeline_id=pid,
                              **kwargs)
 
 
@@ -174,7 +174,7 @@ def _engine_fails_before_any_claim(project, pid: str, monkeypatch, *,
     with gen_patch, popen_patch, pytest.raises(RuntimeError) as raised:
         run_pipeline(pipeline_path=str(project.pipeline_json),
                      project_root=str(project.root),
-                     wfc_root=str(project.root), pipeline_id=pid)
+                     pipeline_id=pid)
     return str(raised.value)
 
 

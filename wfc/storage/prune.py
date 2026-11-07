@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import shutil
 import sys
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from axiom_annotations import task
@@ -418,6 +418,58 @@ def prune_code_copies(project_dir: Path, *, dry_run: bool = False) -> list[Path]
     return removed
 
 
+def prune_preview_cache(project_dir: Path, *, dry_run: bool = False) -> list[Path]:
+    """Empty the canvas's preview cache (``.wfc/cache/previews/``).
+
+    Every file in it is a PNG the canvas converted from a run output (or one
+    it was writing), so removing one loses nothing: the canvas converts it
+    again on the next request. Storage needs only the folder's path, which
+    Layout owns; it never imports the canvas. A file another process holds
+    open (Windows refuses to delete a PNG being served) is left in place and
+    not counted.
+
+    Args:
+        project_dir: Root directory of the wfc project.
+        dry_run: If True, return the files that would be removed without
+            removing them.
+
+    Returns:
+        The files that were (or would be) removed.
+    """
+    root = layout.preview_cache_dir(Path(project_dir).resolve())
+    if not root.is_dir():
+        return []
+    files = sorted(p for p in root.iterdir() if p.is_file())
+    if dry_run:
+        return files
+    removed: list[Path] = []
+    for path in files:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            continue
+        removed.append(path)
+    return removed
+
+
+def _print_preview_cache(project_dir: Path, preview_paths: list[Path]) -> None:
+    """Print the preview cache a prune empties: its folder, file count and size.
+
+    Args:
+        project_dir: Root directory of the wfc project.
+        preview_paths: The cached files.
+    """
+    total = 0
+    for p in preview_paths:
+        try:
+            total += p.stat().st_size
+        except OSError:
+            pass
+    print(f"Preview cache to empty: {len(preview_paths)} file(s), "
+          f"{total / (1024 * 1024):.1f} MB (the canvas converts them again on demand)")
+    print(f"  {layout.preview_cache_dir(Path(project_dir).resolve())}")
+
+
 def _with_members(project_dir: Path, hashes: set[str]) -> set[str]:
     """Expand each directory hash in a set to include its members' hashes.
 
@@ -447,35 +499,31 @@ def _print_code_copies(code_paths: list[Path]) -> None:
         print(f"  {p}")
 
 
-def _confirmed() -> bool:
-    """Ask ``Proceed? [y/N]``; return whether the answer was yes."""
-    try:
-        answer = input("Proceed? [y/N] ")
-    except (EOFError, KeyboardInterrupt):
-        print("\nAborted.")
-        return False
-    if answer.strip().lower() != "y":
-        print("Aborted.")
-        return False
-    return True
-
-
-def _prune_code_copies_only(project_dir: Path, code_paths: list[Path]) -> None:
-    """Remove the unused code copies alone, without asking.
+def _prune_derived_only(project_dir: Path, code_paths: list[Path],
+                        preview_paths: list[Path]) -> None:
+    """Remove the unused code copies and empty the preview cache, without asking.
 
     The path ``cache_prune`` takes when the unreachable-remote guard holds
     back the archives and cache entries. No prompt: a copy is derived from
-    git, so removing one loses nothing a later run cannot extract again,
-    and the guard's refusal has already ended the interactive prune.
+    git and a preview from its output, so removing either loses nothing a
+    later run or request cannot make again, and the guard's refusal has
+    already ended the interactive prune.
 
     Args:
         project_dir: Root directory of the wfc project.
         code_paths: The copies a dry run selected.
+        preview_paths: The preview files a dry run selected.
     """
-    removed = prune_code_copies(project_dir)
-    print(f"Removed {len(removed)} unused code copy(ies) (a later run "
-          f"extracts them again from git); run archives and cache entries "
-          f"were not pruned.")
+    if code_paths:
+        removed = prune_code_copies(project_dir)
+        print(f"Removed {len(removed)} unused code copy(ies) (a later run "
+              f"extracts them again from git).")
+    if preview_paths:
+        previews = prune_preview_cache(project_dir)
+        print(f"Removed {len(previews)} cached preview(s) (the canvas converts "
+              f"them again on demand).")
+    if code_paths or preview_paths:
+        print("Run archives and cache entries were not pruned.")
 
 
 def _print_kept_unpushed(project_dir: Path, env_hashes: Iterable[str]) -> None:
@@ -505,10 +553,11 @@ def _print_kept_unpushed(project_dir: Path, env_hashes: Iterable[str]) -> None:
               f"init` wires the archive), then they can be pushed and pruned.")
 
 
-@task(purpose="Remove old run archives and unused method code copies, and "
-              "optionally the local cache entries no unpushed record names; "
-              "count the unpushed entries kept and name wfc cache push, or "
-              "with no remote say one is needed first")
+@task(purpose="Remove old run archives and unused method code copies, empty "
+              "the canvas's preview cache, and optionally the local cache "
+              "entries no unpushed record names; count the unpushed entries "
+              "kept and name wfc cache push, or with no remote say one is "
+              "needed first")
 def cache_prune(
     *,
     prune_all: bool = False,
@@ -516,16 +565,20 @@ def cache_prune(
     dry_run: bool = False,
     force: bool = False,
     env_hashes: Iterable[str] = (),
+    ask: Callable[[str], bool] | None = None,
 ) -> int:
-    """Remove old run archives, unused code copies and optionally DVC local cache entries.
+    """Remove old run archives, unused code copies, the preview cache and optionally DVC local cache entries.
 
     Extracted method-version code copies under ``.wfc/runs/code/`` that no
     holder has in use are always removed (:func:`prune_code_copies`); a later
-    run extracts its copy again from git. The unreachable-remote guard does
-    not apply to them: a copy is restored from git, never from the remote.
-    When the guard refuses, the copies are still removed (without a prompt:
-    nothing is lost), the archives and cache entries are left alone, and
-    the exit code is 1.
+    run extracts its copy again from git. The canvas's preview cache is
+    always emptied (:func:`prune_preview_cache`); the canvas converts a
+    preview again from its output on demand. The unreachable-remote guard
+    does not apply to either: a copy is restored from git and a preview
+    from its output, never from the remote. When the guard refuses, the
+    copies and previews are still removed (without a prompt: nothing is
+    lost), the archives and cache entries are left alone, and the exit code
+    is 1.
 
     With ``include_local``, the cache entries no unpushed record names are
     removed (:func:`prune_dvc_cache`); the unpushed ones are kept whatever
@@ -538,23 +591,28 @@ def cache_prune(
             unpushed ones a record names.
         include_local: Also prune .dvc/cache/ entries no unpushed record names.
         dry_run: Print what would be deleted without deleting.
-        force: Skips the confirmation prompt and overrides the
-            unreachable-remote abort. It never removes an unpushed entry.
+        force: Overrides the unreachable-remote abort and asks nothing. It
+            never removes an unpushed entry.
         env_hashes: The env manifest's hashes (``env_fingerprint`` and
             ``source_fingerprint``), read by the caller: Storage never reads
             the manifest.
+        ask: Asks ``Proceed?`` once the listing is printed and returns True
+            to prune. The CLI's asks through :mod:`wfc.confirm` and prints
+            why it did not go ahead (a no, or no terminal and no ``--yes``).
+            ``None`` asks nothing.
 
     Returns:
-        0 on success, 1 on user abort or when the unreachable-remote guard
-        refused the archives and cache entries.
+        0 on success, 1 when *ask* answers no or when the unreachable-remote
+        guard refused the archives and cache entries.
     """
     from .setup import check_remote_reachable
 
     project_dir = get_project_root()
 
-    # Code copies come back from git, not the remote: the guard below never
-    # holds them back.
+    # Code copies come back from git and previews from their outputs, not
+    # the remote: the guard below never holds them back.
     code_paths = prune_code_copies(project_dir, dry_run=True)
+    preview_paths = prune_preview_cache(project_dir, dry_run=True)
 
     # Safety check: verify DVC remote is reachable before pruning
     if not dry_run:
@@ -574,8 +632,7 @@ def cache_prune(
                     f"Use --force to override.",
                     file=sys.stderr,
                 )
-            if code_paths:
-                _prune_code_copies_only(project_dir, code_paths)
+            _prune_derived_only(project_dir, code_paths, preview_paths)
             return 1
 
     # Prune guard: refuse to prune runs with un-archived outputs
@@ -608,7 +665,7 @@ def cache_prune(
     if include_local:
         _print_kept_unpushed(project_dir, env_hashes)
 
-    if not archive_paths and not cache_paths and not code_paths:
+    if not archive_paths and not cache_paths and not code_paths and not preview_paths:
         print("Nothing to prune.")
         return 0
 
@@ -628,13 +685,14 @@ def cache_prune(
                 print(f"  {p}")
     if code_paths:
         _print_code_copies(code_paths)
+    if preview_paths:
+        _print_preview_cache(project_dir, preview_paths)
 
     if dry_run:
         print("(dry run -- no files deleted)")
         return 0
 
-    # Confirmation prompt
-    if not force and not _confirmed():
+    if not force and ask is not None and not ask("Proceed?"):
         return 1
 
     # Actually prune; the count is what each pass removed, so an entry one
@@ -648,7 +706,9 @@ def cache_prune(
         if include_local else []
     )
     code_removed = prune_code_copies(project_dir) if code_paths else []
+    previews_removed = prune_preview_cache(project_dir) if preview_paths else []
 
-    total = len(archives_removed) + len(cache_removed) + len(code_removed)
+    total = (len(archives_removed) + len(cache_removed) + len(code_removed)
+             + len(previews_removed))
     print(f"Pruned {total} item(s).")
     return 0

@@ -24,7 +24,26 @@ sys.path[:0] = [str(_REPO_ROOT), str(_REPO_ROOT / "wfc-client")]
 project = "Workflow Canvas"
 author = "Dante Poe"
 copyright = "2026, Dante Poe"
-release = "0.7.0"
+# The guide's version is the package's, read from pyproject.toml so the footer
+# never names another release.
+import tomllib
+with open(_REPO_ROOT / "pyproject.toml", "rb") as _f:
+    release = tomllib.load(_f)["tool"]["poetry"]["version"]
+
+# A pre-release's guide (a beta or release candidate, on /en/latest/) pins its
+# install commands to that version, since a plain `pip install workflow-canvas`
+# installs the last stable release; a stable release's guide keeps them plain.
+# The mirror syncs only when a release is published, so the pinned version is
+# always on PyPI.
+import re
+from packaging.version import Version
+PRERELEASE = Version(release).is_prerelease
+_PLAIN_INSTALL = re.compile(r"\bpip install workflow-canvas(?![=\[\w.-])")
+
+
+def _pin_install(text: str) -> str:
+    """Pin each plain ``pip install workflow-canvas`` to this release, for a pre-release."""
+    return _PLAIN_INSTALL.sub(f"pip install workflow-canvas=={release}", text) if PRERELEASE else text
 
 REPO_URL = "https://github.com/ddpoe/workflow-canvas"
 PYPI_URL = "https://pypi.org/project/workflow-canvas/"
@@ -55,9 +74,9 @@ autodoc_typehints = "signature"
 autodoc_member_order = "bysource"
 
 # Read the Docs sets the canonical URL of the version being built
-# (e.g. https://workflow-canvas.readthedocs.io/en/latest/); local builds fall
+# (e.g. https://workflow-canvas.readthedocs.io/en/stable/); local builds fall
 # back to the default version.
-html_baseurl = os.environ.get("READTHEDOCS_CANONICAL_URL", "https://workflow-canvas.readthedocs.io/en/latest/")
+html_baseurl = os.environ.get("READTHEDOCS_CANONICAL_URL", "https://workflow-canvas.readthedocs.io/en/stable/")
 sitemap_url_scheme = "{link}"
 
 ogp_site_url = html_baseurl
@@ -72,7 +91,8 @@ LLMS_SUMMARY = (
     "declare input/output contracts in method.yaml, and are wired into pipelines that compile to "
     "Snakemake. Every run is recorded in a local SQLite database with full lineage, outputs are "
     "stored content-addressed with DVC, and unchanged steps are skipped via a SHA-256 cache key. "
-    "Install with `pip install workflow-canvas`. Source: https://github.com/ddpoe/workflow-canvas"
+    + _pin_install("Install with `pip install workflow-canvas`. ")
+    + "Source: https://github.com/ddpoe/workflow-canvas"
 )
 
 source_suffix = {".md": "markdown"}
@@ -80,7 +100,12 @@ root_doc = "index"
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 # MyST features used by the axiom-graph renderer (colon-fence admonitions, etc.)
-myst_enable_extensions = ["colon_fence", "deflist", "tasklist"]
+# linkcheck (run before a release; see the consumer-docs SOP): OpenAI's help centre adds
+# its section ids in the browser, so its pages are checked but their #anchors are not.
+linkcheck_anchors_ignore_for_url = [r"https://help\.openai\.com/.*"]
+
+# attrs_inline: a class on a link, such as {.download-button} (custom.css draws it).
+myst_enable_extensions = ["colon_fence", "deflist", "tasklist", "attrs_inline"]
 myst_heading_anchors = 3
 
 html_theme = "sphinx_book_theme"
@@ -88,6 +113,13 @@ html_static_path = ["static"]
 templates_path = ["_templates"]
 # Copied verbatim to the site root (Google Search Console ownership file).
 html_extra_path = ["extra"]
+
+# The wfc plugin, zipped on every build into the source tree (git-ignored), so the
+# AI-agent tutorial's link to it becomes a download of the plugin of this docs version.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from plugin_zip import build_plugin_zip  # noqa: E402
+
+build_plugin_zip(_REPO_ROOT / "plugins" / "wfc", _REPO_ROOT / "userdocs" / "guide" / "wfc-plugin.zip")
 html_css_files = ["custom.css"]
 # Dark mode on first visit; the header's theme button switches it and the
 # reader's choice is remembered.
@@ -192,6 +224,20 @@ class _TidyCliArguments(SphinxTransform):
             rubric["ids"] = ids
 
 
+def _pin_install_in_source(app, docname, source):
+    """Sphinx ``source-read``: pin a pre-release page's install commands (see ``_pin_install``)."""
+    source[0] = _pin_install(source[0])
+
+
+if PRERELEASE:
+    html_theme_options["announcement"] = (
+        f"These docs are for {release}, a pre-release: install it with "
+        f"<code>pip install workflow-canvas=={release}</code>. "
+        'For the current release, see <a href="https://workflow-canvas.readthedocs.io/en/stable/">the stable docs</a>.'
+    )
+
+
 def setup(app):
+    app.connect("source-read", _pin_install_in_source)
     app.add_transform(_TidyCliArguments)
     app.connect("build-finished", _write_search_files)

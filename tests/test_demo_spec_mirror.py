@@ -41,7 +41,11 @@ import json
 import re
 from pathlib import Path
 
-from wfc.demo.scaffold import DEMO_METHODS, DEMO_MODULE, DEMO_SAMPLES
+from wfc.demo.scaffold import DEMO_METHODS, DEMO_MODULES, DEMO_PREFIX, DEMO_SAMPLES
+
+#: The module each registered demo method is registered in.
+MODULE_OF = {f"{DEMO_PREFIX}{src}": module
+             for module, sources in DEMO_MODULES.items() for src in sources}
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SPEC_REL = "wfc/canvas/static/tests/e2e/demo-pipeline.spec.ts"
@@ -146,16 +150,36 @@ def test_demo_browser_smoke_mirrors_the_methods_the_scaffold_registers():
         "re-point the gate rather than deleting it."
     )
 
+    module_keys = _top_level_keys(modules)
+    assert set(module_keys) == set(DEMO_MODULES), (
+        f"{SPEC_REL}: MODULES holds {sorted(module_keys)}, the scaffold "
+        f"registers {sorted(DEMO_MODULES)} (DEMO_MODULES)."
+    )
+    spec_module_of = {
+        method: module
+        for module in module_keys
+        for method in _top_level_keys(
+            _brace_block(_brace_block(modules, f"{module}:"), "methods:"))
+    }
     sites = {
         "DEMO_PIPELINE.nodes[].method":
             {m for m in re.findall(r"method:\s*'([^']*)'", pipeline) if m},
-        "MODULES.__demo__.methods (keys)":
-            set(_top_level_keys(_brace_block(modules, "methods:"))),
+        "MODULES.*.methods (keys)": set(spec_module_of),
         "the node-label list in the test body":
             set(re.findall(r"'([^']+)'", label_list.group(1))),
     }
     for site, found in sites.items():
         assert found == expected, _drift_message(site, found, expected)
+    assert spec_module_of == MODULE_OF, (
+        f"{SPEC_REL}: MODULES files the methods under other modules than "
+        f"the scaffold.\n    spec:   {spec_module_of}\n    oracle: {MODULE_OF}"
+    )
+    node_modules = dict(re.findall(
+        r"method:\s*'([^']+)',\s*module:\s*'([^']*)'", pipeline))
+    assert node_modules == MODULE_OF, (
+        f"{SPEC_REL}: DEMO_PIPELINE's nodes name other modules than the "
+        f"scaffold registers.\n    spec:   {node_modules}\n    oracle: {MODULE_OF}"
+    )
 
 
 def test_the_shipped_demo_asset_names_the_methods_and_samples_the_demo_registers():
@@ -187,7 +211,15 @@ def test_the_shipped_demo_asset_names_the_methods_and_samples_the_demo_registers
         "fallback script path."
     )
 
-    expected_samples = {f"{DEMO_MODULE}{s}" for s in DEMO_SAMPLES}
+    node_modules = {n["method"]: n["module"] for n in asset["nodes"]
+                    if n.get("method")}
+    assert node_modules == MODULE_OF, (
+        "DEMO ASSET DRIFT - wfc/demo/assets/pipeline.json files a method "
+        "under a module the demo does not register it in.\n"
+        f"    asset:  {node_modules}\n    oracle: {MODULE_OF}"
+    )
+
+    expected_samples = {f"{DEMO_PREFIX}{s}" for s in DEMO_SAMPLES}
     assert set(asset["samples"]) == expected_samples, (
         "DEMO ASSET DRIFT - the asset's `samples` list names samples the "
         f"demo does not register.\n    asset:  {sorted(asset['samples'])}\n"

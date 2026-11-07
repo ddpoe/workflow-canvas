@@ -219,3 +219,62 @@ def test_the_same_sample_bytes_registered_under_a_new_name_keep_the_name_each_ru
         "the first run read the file under its first name, though today's row, "
         "with the same hash, says renamed.csv")
     assert second_input.sample_file == "renamed.csv"
+
+
+@workflow(purpose="Case 9: a draft string asked for as a run is refused naming the "
+                  "draft step and saying to register the draft and run again, and "
+                  "nothing is written; the recorded upstream run of the same "
+                  "draft-mode pipeline exports, since draft mode spreads only "
+                  "downstream and its lineage holds no draft step",
+          inputs="A pipeline sel -> up -> mid (draft) -> low run on the stub rung",
+          outputs="A refused plan for the draft string and no zip; a bundle of up")
+def test_a_draft_string_is_refused_and_a_draft_mode_pipelines_recorded_run_exports(
+        tmp_project, monkeypatch):
+    from tests.fixtures.fakes.docker import (
+        stub_docker_image_content,
+        stub_docker_image_inspect,
+    )
+    from tests.harness import run_scenario
+    from tests.harness.project import STUB_DIGEST
+    from wfc.execution.draft import spell_draft_ref
+
+    stub_docker_image_inspect(monkeypatch, f"sha256:{STUB_DIGEST}")
+    stub_docker_image_content(monkeypatch)
+    口 = Step(step_num=1, name="Run a pipeline with a draft",
+             purpose="up is recorded; mid and low are draft steps")
+    scenario = Scenario(
+        nodes=[selector(),
+               node("up", inputs=[wire(SELECTOR_ID)], outputs={"table": ".csv"}),
+               node("mid", inputs=[wire("up", source_slot="table")],
+                    outputs={"table": ".csv"}),
+               node("low", inputs=[wire("mid", source_slot="table")])],
+        samples=["s1"], pipeline_id="bundle-draft", drafts=("mid",))
+    obs = run_scenario(scenario, root=tmp_project, monkeypatch=monkeypatch)
+    up_run = obs.runs[("up", "s1", "default")].run_id
+    mid_ref = spell_draft_ref(DEFAULT_MODULE, "mid", "mid", "s1")
+
+    口 = Step(step_num=2, name="Plan the export of the draft string beside up's run",
+             purpose="The draft string is refused, naming the draft step; up's "
+                     "run is not refused")
+    plan = plan_export([mid_ref, up_run])
+    assert not plan.ok
+    drafted = _reasons(plan, None)
+    assert "draft step 'mid'" in drafted and "register the draft" in drafted
+    assert _reasons(plan, up_run) == ""
+
+    口 = Step(step_num=3, name="Apply the refused plan",
+             purpose="Nothing is written")
+    out = Path(tmp_project) / "refused.zip"
+    with pytest.raises(ExportRefusedError):
+        write_bundle(plan, out)
+    assert not out.exists()
+
+    口 = Step(step_num=4, name="Export up's recorded run alone",
+             purpose="Its pipeline ran a draft, but no draft step is in up's "
+                     "lineage: the plan has no refusal and the bundle is written")
+    plan = plan_export([up_run])
+    assert plan.ok, [r.reason for r in plan.refusals]
+    assert [s.run_id for s in plan.steps] == [up_run]
+    bundle = Path(tmp_project) / "up.zip"
+    write_bundle(plan, bundle)
+    assert bundle.is_file()

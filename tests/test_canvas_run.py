@@ -29,6 +29,7 @@ from wfc.persistence import project_root as get_project_root
 from wfc.layout import run_archive_dir
 from wfc.persistence import Module, Method, Run
 
+from tests.conftest import pin_project_root
 from tests.fixtures.fakes import (
     fake_engine_process,
     restore_readiness_probe,
@@ -728,8 +729,9 @@ class TestPipelineIdPassthrough:
         log-dir path and the generated Snakefile's embedded PIPELINE_ID.
         """
         monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'test.db'}")
-        from wfc.persistence import reset_engine
-        reset_engine()
+        # The root run_pipeline is handed is the process's project, as
+        # production binds it (one project per process).
+        pin_project_root(monkeypatch, tmp_path)
 
         caller_id = "caller-provided-id-1234"
 
@@ -742,7 +744,6 @@ class TestPipelineIdPassthrough:
             run_pipeline(
                 pipeline_path=str(tmp_path / "pipeline.json"),
                 project_root=str(tmp_path),
-                wfc_root=str(tmp_path),
                 pipeline_id=caller_id,
             )
 
@@ -759,8 +760,9 @@ class TestPipelineIdPassthrough:
         Real engine internals over a real pipeline.json; Popen-only stub.
         """
         monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'test.db'}")
-        from wfc.persistence import reset_engine
-        reset_engine()
+        # The root run_pipeline is handed is the process's project, as
+        # production binds it (one project per process).
+        pin_project_root(monkeypatch, tmp_path)
         (tmp_path / "pipeline.json").write_text('{"nodes": [], "links": [], "samples": []}')
 
         with fake_engine_process():
@@ -768,7 +770,6 @@ class TestPipelineIdPassthrough:
             run_pipeline(
                 pipeline_path=str(tmp_path / "pipeline.json"),
                 project_root=str(tmp_path),
-                wfc_root=str(tmp_path),
             )
 
             pipelines_dir = layout.artifact_store(tmp_path) / "pipelines"
@@ -818,8 +819,9 @@ class TestCaptureOutputParam:
         stubbed; load_pipeline + generate_snakefile run for real.
         """
         monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'test.db'}")
-        from wfc.persistence import reset_engine
-        reset_engine()
+        # The root run_pipeline is handed is the process's project, as
+        # production binds it (one project per process).
+        pin_project_root(monkeypatch, tmp_path)
         (tmp_path / "pipeline.json").write_text('{"nodes": [], "links": [], "samples": []}')
 
         with fake_engine_process() as mock_sp:
@@ -827,7 +829,6 @@ class TestCaptureOutputParam:
             run_pipeline(
                 pipeline_path=str(tmp_path / "pipeline.json"),
                 project_root=str(tmp_path),
-                wfc_root=str(tmp_path),
             )
 
             sp_call = mock_sp.call_args
@@ -840,8 +841,9 @@ class TestCaptureOutputParam:
         Real engine internals over a real pipeline.json; Popen-only stub.
         """
         monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'test.db'}")
-        from wfc.persistence import reset_engine
-        reset_engine()
+        # The root run_pipeline is handed is the process's project, as
+        # production binds it (one project per process).
+        pin_project_root(monkeypatch, tmp_path)
         (tmp_path / "pipeline.json").write_text('{"nodes": [], "links": [], "samples": []}')
 
         with fake_engine_process() as mock_sp:
@@ -849,7 +851,6 @@ class TestCaptureOutputParam:
             run_pipeline(
                 pipeline_path=str(tmp_path / "pipeline.json"),
                 project_root=str(tmp_path),
-                wfc_root=str(tmp_path),
                 capture_output=True,
             )
 
@@ -953,7 +954,6 @@ class TestLaunch:
             run_pipeline(
                 pipeline_path=str(doc_path),
                 project_root=str(root),
-                wfc_root=str(root),
                 cores=2,
                 snakefile_path=snakefile_path,
                 pipeline_id=pid,
@@ -1039,7 +1039,7 @@ class TestLaunch:
         with fake_engine_process() as popen:
             run_pipeline(
                 pipeline_path=str(doc_path), project_root=str(root),
-                wfc_root=str(root), cores=1, pipeline_id=pid,
+                cores=1, pipeline_id=pid,
             )
 
         argv = popen.call_args.args[0]

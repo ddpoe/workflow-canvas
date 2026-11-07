@@ -3,6 +3,7 @@
   import { previewArtifacts, exportArtifacts } from './historyApi.js';
   import type { ExportPreviewResponse } from './historyApi.js';
   import { get } from 'svelte/store';
+  import { isDraftRef } from './historyDrafts.js';
 
   interface Props {
     onClose: () => void;
@@ -15,10 +16,23 @@
   let loading = $state(true);
   let downloading = $state(false);
 
+  /**
+   * The recorded runs the artifact export asks for. A draft step is kept
+   * but not recorded, so the recorded-run export cannot read it: its id is
+   * left out and the dialog says so (its outputs download from its run
+   * panel's Download zip).
+   */
+  function recordedIds(): string[] {
+    return [...get(selectedRunIds)].filter(id => !isDraftRef(id));
+  }
+  const draftCount = [...get(selectedRunIds)].filter(isDraftRef).length;
+  const draftNote = draftCount === 0 ? null
+    : `${draftCount} draft step${draftCount === 1 ? '' : 's'} left out: a draft step is not recorded. Download its outputs with Download zip in its run panel.`;
+
   $effect(() => {
-    const ids = [...get(selectedRunIds)];
+    const ids = recordedIds();
     if (ids.length === 0) {
-      loadError = 'No runs selected.';
+      loadError = draftNote ?? 'No runs selected.';
       loading = false;
       return;
     }
@@ -42,7 +56,7 @@
   }
 
   async function doExport() {
-    const ids = [...get(selectedRunIds)];
+    const ids = recordedIds();
     downloading = true;
     try {
       const { blob, filename } = await exportArtifacts(ids);
@@ -76,6 +90,9 @@
       <div class="modal-body center error">{loadError}</div>
     {:else if preview}
       <div class="modal-body">
+        {#if draftNote}
+          <div class="draft-note" data-testid="export-draft-note">{draftNote}</div>
+        {/if}
         <div class="summary-grid">
           <div class="summary-item">
             <span class="summary-value">{preview.run_count}</span>
@@ -135,6 +152,14 @@
 </div>
 
 <style>
+  .draft-note {
+    margin-bottom: 12px;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    font-size: 11.5px;
+  }
   .modal-overlay {
     position: fixed;
     inset: 0;
@@ -145,8 +170,8 @@
     z-index: 1000;
   }
   .modal-content {
-    background: var(--bg-panel, #252526);
-    border: 1px solid var(--border, #3e3e42);
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
     border-radius: 8px;
     width: 400px;
     max-width: 90vw;
@@ -160,22 +185,22 @@
     align-items: center;
     justify-content: space-between;
     padding: 12px 16px;
-    border-bottom: 1px solid var(--border, #3e3e42);
+    border-bottom: 1px solid var(--border);
   }
   .modal-title {
     font-size: 14px;
     font-weight: 600;
-    color: var(--text-primary, #ccc);
+    color: var(--text-primary);
   }
   .modal-close {
     background: none;
     border: none;
-    color: var(--text-muted, #666);
+    color: var(--text-muted);
     font-size: 20px;
     cursor: pointer;
     line-height: 1;
   }
-  .modal-close:hover { color: var(--text-primary, #ccc); }
+  .modal-close:hover { color: var(--text-primary); }
   .modal-body {
     padding: 16px;
     overflow-y: auto;
@@ -187,9 +212,9 @@
     justify-content: center;
     min-height: 80px;
     font-size: 12px;
-    color: var(--text-secondary, #888);
+    color: var(--text-secondary);
   }
-  .modal-body.error { color: var(--color-failed, #E74C3C); }
+  .modal-body.error { color: var(--status-failed-ink); }
 
   /* Summary grid */
   .summary-grid {
@@ -203,17 +228,17 @@
     flex-direction: column;
     align-items: center;
     padding: 10px;
-    background: var(--bg-input, #1e1e1e);
+    background: var(--bg-input);
     border-radius: 6px;
   }
   .summary-value {
     font-size: 18px;
     font-weight: 600;
-    color: var(--text-primary, #ccc);
+    color: var(--text-primary);
   }
   .summary-label {
     font-size: 10px;
-    color: var(--text-muted, #666);
+    color: var(--text-muted);
     text-transform: uppercase;
     margin-top: 2px;
   }
@@ -224,7 +249,7 @@
   }
   .breakdown-title {
     font-size: 11px;
-    color: var(--text-muted, #666);
+    color: var(--text-muted);
     text-transform: uppercase;
     margin-bottom: 6px;
   }
@@ -235,24 +260,24 @@
   }
   .breakdown-table th {
     text-align: left;
-    color: var(--text-muted, #666);
+    color: var(--text-muted);
     font-weight: 500;
     padding: 3px 6px;
-    border-bottom: 1px solid var(--border, #3e3e42);
+    border-bottom: 1px solid var(--border);
   }
   .breakdown-table td {
     padding: 3px 6px;
     border-bottom: 1px solid rgba(62, 62, 66, 0.3);
-    color: var(--text-primary, #ccc);
+    color: var(--text-primary);
   }
   .type-ext { font-family: 'Consolas', monospace; }
   .type-count { text-align: center; }
-  .type-size { text-align: right; color: var(--text-secondary, #888); }
+  .type-size { text-align: right; color: var(--text-secondary); }
 
   .no-artifacts {
     text-align: center;
     padding: 16px;
-    color: var(--text-muted, #666);
+    color: var(--text-muted);
     font-size: 12px;
   }
 
@@ -262,20 +287,20 @@
     justify-content: flex-end;
     gap: 8px;
     padding: 12px 16px;
-    border-top: 1px solid var(--border, #3e3e42);
+    border-top: 1px solid var(--border);
   }
   .cancel-btn {
-    background: var(--bg-header, #2d2d30);
-    border: 1px solid var(--border, #3e3e42);
+    background: var(--bg-header);
+    border: 1px solid var(--border);
     border-radius: 4px;
     padding: 6px 14px;
-    color: var(--text-primary, #ccc);
+    color: var(--text-primary);
     font-size: 12px;
     cursor: pointer;
   }
-  .cancel-btn:hover { border-color: var(--accent, #4A90D9); }
+  .cancel-btn:hover { border-color: var(--accent); }
   .download-btn {
-    background: var(--accent, #4A90D9);
+    background: var(--accent);
     border: none;
     border-radius: 4px;
     padding: 6px 14px;

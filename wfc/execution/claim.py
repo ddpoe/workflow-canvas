@@ -15,11 +15,12 @@ the orchestrator, because that is the one materialize resolves into paths.
 
 The claim's bodies live here: ``pre_run`` (git check, the cache answer,
 registration), ``compose_cache_key`` (the one recipe for a cache key, shared
-by ``pre_run`` and the ``check_cache`` verb), ``input_fingerprint_from_rows``
+by ``pre_run`` and ``candidate_cache_key``), ``input_fingerprint_from_rows``
 (the one reader of Run/Sample rows for the input fingerprint),
-``lookup_cache_hit`` (the one definition of a cache hit, shared with the
-verb), ``candidate_cache_key`` (the verb's method resolution over the
-recipe), and the legacy ``register_run`` / ``lookup_run`` verbs.
+``lookup_cache_hit`` (the one definition of a cache hit),
+``candidate_cache_key`` (a candidate step's method resolution over the
+recipe, for a caller with no pipeline document), and the legacy
+``register_run`` / ``lookup_run`` functions.
 """
 from __future__ import annotations
 
@@ -39,6 +40,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, col, select
 
 from .. import layout
+from ..contracts import input_is_optional
 from ..graph import document_node, inbound_wiring
 from ..identity import KEY_RECIPE
 from ..persistence import (
@@ -297,7 +299,7 @@ def resolve_input_identities(
         and ``SampleIdentity`` lists ``cache_key_from_identities`` takes.
 
     Raises:
-        ValueError: An entry names a run with no row, a sample name has no
+        ValueError: An entry names a draft step or a run with no row, a sample name has no
             row, or an entry naming no output is wired to a run whose
             recorded outputs are not exactly one.
     """
@@ -308,7 +310,14 @@ def resolve_input_identities(
     sample_identities: list[SampleIdentity] = []
     with get_session() as session:
         for entry in parent_entries:
-            run = session.get(Run, entry.run_id)
+            run_id = entry.run_id
+            if run_id is None:
+                raise ValueError(
+                    f"Step '{step}': input slot '{entry.input_slot}' is fed by "
+                    f"draft step {entry.draft}, which is not a registered run; "
+                    f"a draft has no run identity for the step's cache key."
+                )
+            run = session.get(Run, run_id)
             if run is None:
                 raise ValueError(
                     f"Step '{step}': input slot '{entry.input_slot}' is fed by "
@@ -318,7 +327,7 @@ def resolve_input_identities(
                 )
             source_slot = entry.source_slot
             if source_slot is None:
-                slots = recorded_output_slots(entry.run_id, session=session)
+                slots = recorded_output_slots(run_id, session=session)
                 if len(slots) != 1:
                     listing = ", ".join(slots) or "(none)"
                     raise ValueError(
@@ -332,7 +341,7 @@ def resolve_input_identities(
             upstream_runs.append(UpstreamRunIdentity(
                 input_slot=entry.input_slot,
                 source_slot=source_slot,
-                run_id=entry.run_id,
+                run_id=run_id,
                 cache_key=run.cache_key,
             ))
         for input_slot, sample_name in samples:
@@ -448,8 +457,8 @@ def classify_cache_key(
     ``outputs_missing``: the step re-runs under the same key, so its
     downstream steps keep theirs.
 
-    ``pre_run`` step 6 and the ``check_cache`` verb (through
-    ``lookup_cache_hit``) and the cache-status preview all answer through
+    ``pre_run`` step 6, ``lookup_cache_hit`` and the cache-status preview
+    all answer through
     this function, so no caller serves a hit under a second, weaker rule.
 
     The filter matches the method WITHIN ITS MODULE: the row is reached
@@ -504,8 +513,7 @@ def lookup_cache_hit(
 ) -> int | None:
     """Find the completed run the claim phase would reuse for a cache key.
 
-    ``classify_cache_key``'s hit, as the run id ``pre_run`` and the
-    ``check_cache`` verb reuse.
+    ``classify_cache_key``'s hit, as the run id ``pre_run`` reuses.
 
     Args:
         method_name: The method's name.
@@ -543,8 +551,8 @@ def step_sample_inputs(
     (as this branch once did) meant such a node read a sample it keyed
     nothing from, and a content change left its key byte-identical.
 
-    ``None`` means the caller did not classify -- a direct verb drive with
-    no pipeline document. Such a drive reads the sample when it has no
+    ``None`` means the caller did not classify -- a direct call with no
+    pipeline document. Such a call reads the sample when it has no
     parents, into ``data``, which is the slot materialize delivers into for
     exactly that case.
 
@@ -800,8 +808,8 @@ def compose_cache_key(
     """Compose the cache key for a candidate step of a resolved method.
 
     The one owner of the key's recipe: ``pre_run`` builds every run's key
-    here, and the ``check_cache`` verb builds its candidate's key here
-    through ``candidate_cache_key``. Each caller resolves the method row
+    here, and ``candidate_cache_key`` builds a candidate's key here. Each
+    caller resolves the method row
     itself and hands over the row's name, module and env.
 
     Args:
@@ -821,8 +829,8 @@ def compose_cache_key(
             root's input identity and enter the key as a set.
         selector_slot: The input slot the step reads its sample into, as the
             claim phase classified it from the pipeline document. ``None``
-            when the caller has no document to classify from -- a direct verb
-            drive -- in which case a parentless step reads its sample into
+            when the caller has no document to classify from -- a direct
+            call -- in which case a parentless step reads its sample into
             ``data``.
         version: The method version's content identity the step runs;
             ``None`` is the newest. Its code and recorded env fingerprints
@@ -909,7 +917,7 @@ def resolve_claim_params(module_name: str, method_name: str,
     ``run_claim`` (once per claim, so dispatch gets the dict the run row
     records; its ``pre_run`` call does not resolve again), a direct
     ``pre_run``, ``candidate_cache_key`` and ``register_run`` all come
-    through here, so a hand-run verb gets the pipeline's verdict, its
+    through here, so a direct call gets the pipeline's verdict, its
     ``int``/``float`` spelling and its declared defaults.
 
     Args:
@@ -919,7 +927,7 @@ def resolve_claim_params(module_name: str, method_name: str,
         version: The version's content identity; ``None`` checks against the
             newest version.
         node_id: The pipeline node the params are for, named in a refusal;
-            ``None`` (a verb with no node) names the method instead.
+            ``None`` (a call with no node) names the method instead.
 
     Returns:
         A new dict: the params with each declared value normalized and each
@@ -958,7 +966,7 @@ def resolve_claim_params(module_name: str, method_name: str,
                               params, schema)
     if refusals:
         if node_id is None:
-            # A verb with no node: the refusal names the method it was for.
+            # A call with no node: the refusal names the method it was for.
             prefix = f"Node '{method_name}' "
             refusals = [f"Method '{method_name}' " + r[len(prefix):]
                         if r.startswith(prefix) else r for r in refusals]
@@ -979,21 +987,21 @@ def candidate_cache_key(
     params: dict | None = None,
     parent_run_ids: list | None = None,
 ) -> str:
-    """Compute the cache key the ``check_cache`` verb looks up for a candidate.
+    """Compute the cache key a candidate step would look up, with no document.
 
     Resolves the method row within its module, then builds the key through
     ``compose_cache_key``, the recipe ``pre_run`` uses. One divergence from
     the claim phase's answer remains:
 
     - A collapsed fan-in root. The claim phase folds the bundled sample
-      identities into the root's key; the verb's argv cannot name a bundle,
-      so its key for a collapsed root carries none and does not match the
-      key the claim phase built.
+      identities into the root's key; this function's arguments cannot name
+      a bundle, so its key for a collapsed root carries none and does not
+      match the key the claim phase built.
 
     Args:
         method_name: The method's name.
-        module_name: The name of the module that registered it. The verb
-            requires it, so the row this resolves is the row ``pre_run``
+        module_name: The name of the module that registered it. It is
+            required, so the row this resolves is the row ``pre_run``
             would resolve for the same step.
         sample: The sample identifier.
         params: The step's parameters, as given: checked, normalized and
@@ -1064,7 +1072,9 @@ def check_required_inputs(
     ``required: false`` is the codebase's existing "declared but
     deliberately unfed" convention (a method must declare at least one
     input slot, so a trigger-only method declares one and leaves it
-    unfed); those slots are not checked.
+    unfed); those slots are not checked. An input with no ``required`` key
+    is required (Contracts' ``input_is_optional``), as the check-time rule
+    reads it.
 
     A caller with no pipeline document does not call this: the
     ``--ref-input`` channel feeds slots that never reach the claim, so the
@@ -1091,8 +1101,7 @@ def check_required_inputs(
     fed |= {input_slot for input_slot, _ in sample_inputs}
     unfed = sorted(
         slot for slot, spec in (declared_inputs or {}).items()
-        if isinstance(spec, dict) and spec.get("required") is True
-        and slot not in fed
+        if not input_is_optional(spec) and slot not in fed
     )
     wired = wired_slots or {}
     fed_listing = ", ".join(f"'{slot}'" for slot in sorted(fed)) or "(none)"
@@ -1569,8 +1578,9 @@ def pre_run(
 ) -> tuple[str, int]:
     """Git-commit check, input fingerprinting, cache lookup, and run registration.
 
-    One call covers what the separate ``check_cache`` and ``register_run``
-    verbs do, and also enforces version discipline.
+    One call covers what ``candidate_cache_key`` with ``lookup_cache_hit``
+    and ``register_run`` do separately, and also enforces version
+    discipline.
 
     A claim held by its process (``hold_claim``, how ``run_step`` claims)
     computes alone: its run row carries the claim heartbeat, which puts it
@@ -1615,7 +1625,7 @@ def pre_run(
             and enter the cache key as a set; see ``compose_cache_key``.
         selector_slot: The input slot this step reads its sample into, as
             ``run_claim`` classified it from the pipeline document; ``None``
-            on a direct verb drive, where a parentless step reads into
+            on a direct call, where a parentless step reads into
             ``data``.
         has_pipeline_document: Whether the caller resolved a pipeline
             document for this node. ``False`` says the claim cannot see
@@ -1641,7 +1651,7 @@ def pre_run(
             keeps the claim alive until its record phase. ``True`` (the
             ``run_step`` claim): a new row carries the heartbeat and this
             process advances it until :func:`stop_heartbeat` is called with
-            the run id. ``False`` (the hand-run ``pre_run`` verb, whose
+            the run id. ``False`` (a direct ``pre_run`` call whose
             process exits before the run executes): the row carries no
             heartbeat and stays outside the index, like ``register_run``'s.
         code_claim: The claim's token (``run_claim``'s), under which the
@@ -1902,7 +1912,7 @@ def register_run(
     ``params`` go through ``resolve_claim_params`` against the newest
     version before the row is written: the row records them normalized and
     filled with the declared defaults, and a refusal prints ``ERROR:`` and
-    exits 1, as the verb's other errors do.
+    exits 1, as this function's other errors do.
     """
     parent_entries: list[ParentEntry] = []
     if parent_run_ids:
@@ -1961,7 +1971,7 @@ def lookup_run(method_name: str, module_name: str, sample: str,
                nf_process_name: str | None = None) -> int | None:
     """Find the most-recent completed run for a module's method + sample.
 
-    Legacy verb — pipelines resolve their parents through the run_id.txt
+    Legacy lookup — pipelines resolve their parents through the run_id.txt
     sidecars and take the claim phase's cache answer instead.
 
     Args:
@@ -2227,6 +2237,10 @@ def run_claim(
                 pid = named.run_id
                 source_slot = wire.source_slot
                 declared = (wire.source_node or {}).get("slot_outputs") or {}
+                # Backstop: the load refuses a link to an undeclared source
+                # slot first (the link-slot check every door's load runs). This
+                # catches only a document that reached the claim without that
+                # load, so it stays as the last refusal before a parent entry.
                 if source_slot and declared and source_slot not in declared:
                     return _refuse(
                         f"node '{node_id}' input slot '{slot}' is "

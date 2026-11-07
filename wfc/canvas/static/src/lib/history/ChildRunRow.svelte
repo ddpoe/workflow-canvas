@@ -85,27 +85,27 @@
   .child-row {
     padding: 5px 12px;
     border-top: 1px solid rgba(62, 62, 66, 0.5);
-    color: var(--text-primary, #ccc);
+    color: var(--text-primary);
     font-size: 11px;
     cursor: pointer;
   }
   .child-row:hover { background: rgba(255, 255, 255, 0.03); }
   .child-row.highlighted {
-    background: rgba(74, 144, 217, 0.15);
-    box-shadow: inset 3px 0 0 var(--accent, #4A90D9);
+    background: color-mix(in srgb, var(--accent) 15%, transparent);
+    box-shadow: inset 3px 0 0 var(--accent);
   }
   .step { font-weight: 500; }
   .mono { font-family: 'Consolas', monospace; font-size: 10.5px; font-variant-numeric: tabular-nums; }
-  .muted { color: var(--text-muted, #666); }
+  .muted { color: var(--text-muted); }
   .right { text-align: right; }
-  .sample { color: var(--color-completed, #50C878); }
+  .sample { color: var(--system-ink); }
   .ver {
     font-family: 'Consolas', monospace;
     font-size: 10px;
     padding: 0 5px;
-    border: 1px solid var(--border, #3e3e42);
+    border: 1px solid var(--border);
     border-radius: 3px;
-    color: var(--text-secondary, #888);
+    color: var(--text-secondary);
   }
   .ver.newest::before {
     content: '';
@@ -115,7 +115,7 @@
     border-radius: 50%;
     margin-right: 4px;
     vertical-align: middle;
-    background: var(--color-version-newest);
+    background: var(--status-ok);
   }
   .tip { position: relative; display: inline-block; }
   /* Hangs below the pill with no gap, so the pointer can reach the link. */
@@ -127,11 +127,11 @@
     z-index: 5;
     margin-top: 0;
     padding: 6px 10px;
-    background: var(--bg-header, #2d2d30);
-    border: 1px solid var(--border, #3e3e42);
+    background: var(--bg-header);
+    border: 1px solid var(--border);
     border-radius: 6px;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
-    color: var(--text-primary, #ccc);
+    color: var(--text-primary);
     font-size: 11px;
     white-space: nowrap;
     cursor: default;
@@ -143,7 +143,7 @@
     border: none;
     padding: 0;
     margin-left: 4px;
-    color: var(--accent, #4A90D9);
+    color: var(--accent);
     font-family: 'Consolas', monospace;
     font-size: 10.5px;
     cursor: pointer;

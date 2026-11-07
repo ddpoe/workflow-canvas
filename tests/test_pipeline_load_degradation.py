@@ -78,6 +78,10 @@ def test_unreachable_database_fails_the_load_before_the_launch(
     doc_path.write_text(json.dumps(_document(with_reference=True)),
                         encoding="utf-8")
 
+    # The root run_pipeline is handed is the process's project, as
+    # production binds it (one project per process).
+    from tests.conftest import pin_project_root
+    pin_project_root(monkeypatch, tmp_path)
     prepared = []
     stub_pipeline_stage(monkeypatch,
                         prepare_launch=lambda *a, **k: prepared.append(a))

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { nodes, edges, runState, pipelineName, clearRunState,
-           setPipelineError, showFlash } from './stores.js';
+           setPipelineError, showFlash, newCanvasGeneration } from './stores.js';
   import { pushState } from './undo.js';
   import { undo, redo } from './undo.js';
   import {
@@ -14,6 +14,9 @@
   import { requestRun, blockedReasons } from './lockFlow.js';
   import { validatePipeline } from '../machines/services.js';
   import ArchiveBadge from './ArchiveBadge.svelte';
+  import { refreshDrafts } from './drafts.js';
+  import { clearRefusals, refusalsByNode, showRefusals } from './nodeRefusals.js';
+  import { isDraftNode } from './nodeData.js';
   import type { PipelineJSON, CanvasNodeData } from '../shared/types.js';
   import { get } from 'svelte/store';
 
@@ -24,6 +27,8 @@
   $: runDisabled = $runState.running;
   // Blocked rows in the current lock disable Run; the reasons are its tooltip.
   $: runBlocked = $blockedReasons.length > 0;
+  // A canvas holding a draft node runs in draft mode; Run says so.
+  $: hasDraft = $nodes.some(n => isDraftNode(n.data as CanvasNodeData));
 
   export let activeTab: 'builder' | 'registry' | 'history' = 'builder';
   export let onTabChange: ((tab: 'builder' | 'registry' | 'history') => void) | undefined = undefined;
@@ -70,19 +75,27 @@
   }
 
   async function doValidate() {
+    // Every draft node first takes the contract its method.yaml declares
+    // now; the server reads each draft again and gives the verdict.
+    clearRefusals();
+    if (get(nodes).some(n => isDraftNode(n.data as CanvasNodeData))) await refreshDrafts();
     const pipeline = exportPipeline();
     try {
       const result = await validatePipeline(pipeline);
+      // A refusal naming a node shows on it and in the Inspector.
+      showRefusals(refusalsByNode(result.errors ?? [], result.draftRefusals ?? []));
       if (result.valid) {
         // Clear any stale error banner; confirm via transient toast so the
         // user gets feedback without a blocking modal.
         setPipelineError(null);
         showFlash('Workflow is valid!', 'success');
       } else {
+        // `errors` already holds each draft refusal's message.
         setPipelineError({
           kind: 'not_found',
-          message: 'Validation errors:\n' + (result.errors ?? []).join('\n'),
-          hint: 'Fix the listed issues on the canvas, then click Validate again.',
+          message: 'Validation errors:',
+          items: result.errors ?? [],
+          hint: "Fix each issue in the pipeline, or in the method's files if it says so, then click Validate again.",
         });
       }
     } catch (err) {
@@ -95,6 +108,7 @@
 
   function doClear() {
     pushState();
+    newCanvasGeneration();
     nodes.set([]);
     edges.set([]);
     clearRunState();
@@ -133,7 +147,7 @@
       <button class="btn btn-stop" onclick={dispatchUserStop}>Stop</button>
     {:else}
       <button class="btn btn-run" onclick={doRun} disabled={runDisabled || runBlocked}
-        title={runBlocked ? ['Blocked:', ...$blockedReasons].join('\n') : ''}>&#9654; Run</button>
+        title={runBlocked ? ['Blocked:', ...$blockedReasons].join('\n') : ''}>&#9654; Run{#if hasDraft} <small class="draft-mode-note">· draft mode</small>{/if}</button>
     {/if}
     <button class="btn btn-muted" onclick={doClear}>Clear</button>
     <button class="btn btn-muted" onclick={undo} title="Undo (Ctrl+Z)">&#8630;</button>
@@ -154,22 +168,22 @@
     display: flex;
     align-items: center;
     padding: 10px 14px;
-    background: #252526;
+    background: var(--bg-panel);
     border-bottom: 1px solid var(--border);
     gap: 14px;
     flex-shrink: 0;
   }
-  .title { color: #ccc; font-size: 22px; font-weight: 600; white-space: nowrap; }
+  .title { color: var(--text-primary); font-size: 22px; font-weight: 600; white-space: nowrap; }
   .tabs {
     display: flex;
     gap: 2px;
-    background: #1e1e1e;
+    background: var(--bg-input);
     padding: 4px;
     border-radius: 6px;
   }
   .tab {
     padding: 6px 16px;
-    color: #888;
+    color: var(--text-secondary);
     font-size: 13px;
     background: none;
     border: none;
@@ -179,11 +193,11 @@
   .tab.active { background: var(--accent); color: white; }
   .spacer { flex: 1; }
   .pipeline-name {
-    background: #2d2d30;
+    background: var(--bg-header);
     padding: 6px 12px;
     border-radius: 4px;
     border: 1px solid var(--border);
-    color: #ccc;
+    color: var(--text-primary);
     font-size: 13px;
     /* 320px fits most pipeline names; the min-width keeps the action
        buttons on-screen on narrow viewports. */
@@ -194,18 +208,18 @@
   .actions { display: flex; gap: 8px; align-items: center; }
   .btn {
     padding: 6px 10px;
-    background: #2d2d30;
+    background: var(--bg-header);
     border-radius: 4px;
     font-size: 13px;
-    color: #ccc;
+    color: var(--text-primary);
     border: none;
     cursor: pointer;
   }
   .btn:hover { background: var(--border); }
-  .btn-run { background: #50C878; color: white; font-weight: 600; padding: 6px 12px; }
-  .btn-run:disabled { background: #2e2e32; color: #666; cursor: not-allowed; }
-  .btn-stop { background: #E74C3C; color: white; font-weight: 600; }
-  .btn-muted { color: #888; }
+  .btn-run { background: var(--status-ok); color: white; font-weight: 600; padding: 6px 12px; }
+  .btn-run:disabled { background: #2e2e32; color: var(--text-muted); cursor: not-allowed; }
+  .btn-stop { background: var(--status-failed); color: white; font-weight: 600; }
+  .btn-muted { color: var(--text-secondary); }
   .status-bar {
     padding: 5px 14px;
     background: #1e7a3e;

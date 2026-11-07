@@ -54,9 +54,11 @@ def read_results_manifest(run_dir: Path | str) -> ManifestResults | None:
         ``run_dir`` for declared outputs instead).
 
     Raises:
-        ValueError: If the manifest is malformed, an output path resolves
-            outside ``run_dir`` (escape attempt), or a declared output file
-            does not exist at its recorded path.
+        ValueError: If the manifest is malformed, an output's recorded path
+            is not a string or a metric is not a scalar (a string, number,
+            boolean or null) -- the message names the file and the field --,
+            an output path resolves outside ``run_dir`` (escape attempt), or
+            a declared output file does not exist at its recorded path.
     """
     run_dir = Path(run_dir).resolve()
     manifest_path = run_dir / RESULTS_FILENAME
@@ -83,6 +85,23 @@ def read_results_manifest(run_dir: Path | str) -> ManifestResults | None:
             f"Results manifest at {manifest_path} must have dict 'outputs' "
             f"and 'metrics' fields."
         )
+
+    for name, rel_path in outputs_raw.items():
+        if not isinstance(rel_path, str):
+            raise ValueError(
+                f"Results manifest {manifest_path} records output '{name}' as "
+                f"{json.dumps(rel_path)} ({type(rel_path).__name__}); each "
+                f"output must be one path, a string relative to WFC_RUN_DIR. "
+                f"(R's jsonlite::write_json needs auto_unbox = TRUE.)"
+            )
+    for name, value in metrics.items():
+        if not (value is None or isinstance(value, (str, int, float, bool))):
+            raise ValueError(
+                f"Results manifest {manifest_path} records metric '{name}' as "
+                f"{json.dumps(value)} ({type(value).__name__}); each metric "
+                f"must be one value: a string, a number, true/false or null. "
+                f"(R's jsonlite::write_json needs auto_unbox = TRUE.)"
+            )
 
     resolved: dict[str, Path] = {}
     for name, rel_path in outputs_raw.items():

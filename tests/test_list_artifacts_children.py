@@ -96,3 +96,8 @@ def test_directory_artifact_has_direct_children(tmp_path, monkeypatch):
     # File sizes populated for leaf files
     tile_0 = next(c for c in dir_entry["children"] if c["name"] == "tile_0.png")
     assert tile_0["size"] > 0
+    # A file child carries its extension (no dot) and its viewer; a
+    # subdirectory child opens nothing.
+    assert (tile_0["extension"], tile_0["viewer"]) == ("png", "image")
+    nested = next(c for c in dir_entry["children"] if c["name"] == "nested/")
+    assert (nested["extension"], nested["viewer"]) == ("", None)

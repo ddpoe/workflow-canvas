@@ -4,8 +4,10 @@
  * The three list endpoints behind the modules / methods / samples sub-tabs, a
  * method's detail payload and its version export, the registration POST
  * behind the register modal's check and its confirmation, the filesystem
- * browse its method form picks a directory from, and the env sub-tab's list and
- * package lookups.
+ * browse its method form picks a directory from, the env sub-tab's list and
+ * package lookups, the Colour picker's check and save, and the Drafts
+ * group's routes (list, add, Update, check, detail, Remove, the draft run,
+ * its zip and Delete outputs).
  *
  * Each component calls these from the place it made the call itself. The URLs,
  * the response checks and the error strings are the components', moved
@@ -13,6 +15,8 @@
  * where a component formatted a message inline without throwing, the function
  * returns that message on a result object so the rendered text is unchanged.
  */
+import { rememberModuleColors } from '../shared/moduleColor.svelte.js';
+import type { components } from '../types/api.js';
 
 // ---------- Response types ----------
 
@@ -75,14 +79,48 @@ export type ContractRow = {
   required: boolean;
 };
 
-/** One row of the modules sub-tab. */
+/**
+ * One row of the modules sub-tab. `color` is the module's stored colour,
+ * `#rrggbb`, as the server sends it; views read it through `moduleColor`.
+ */
 export type ModuleRow = {
   name: string;
   description: string;
   contracts: ContractRow[];
   methods: number;
   source: string;
+  color?: string | null;
 };
+
+/**
+ * The server's answer on whether a colour can be a module colour
+ * (`ColorCheckResult`). A refused colour carries `message`, the plain-words
+ * reason to show as given, and `suggested` with its CSS name
+ * `suggestedName` (separate lowercase words), the nearest shade that passes.
+ */
+export type ColorCheck = {
+  ok: boolean;
+  color: string;
+  failedTest?: string | null;
+  reserved?: string | null;
+  message?: string | null;
+  suggested?: string | null;
+  suggestedName?: string | null;
+};
+
+/** A colour check: the server's answer, or the error a 400 or a failure became. */
+export type ColorCheckOutcome =
+  | { ok: true; check: ColorCheck }
+  | { ok: false; error: string };
+
+/**
+ * A module colour change: saved (the module as the server now lists it),
+ * refused by the colour check, or failed for another reason.
+ */
+export type ModuleColorSave =
+  | { ok: true; module: ModuleRow }
+  | { ok: false; refusal: ColorCheck }
+  | { ok: false; error: string };
 
 /** One version of a method in the methods list. */
 export type MethodVersionRow = DetailVersion;
@@ -264,7 +302,9 @@ export type RegistrationPlan = {
  */
 export async function fetchRegistryModules(): Promise<ModuleRow[]> {
   const body = await fetch('/api/registry/modules').then(r => r.json());
-  return body.modules ?? [];
+  const rows: ModuleRow[] = body.modules ?? [];
+  rememberModuleColors(rows);
+  return rows;
 }
 
 /**
@@ -287,6 +327,75 @@ export async function fetchRegistryMethods(): Promise<MethodRow[]> {
 export async function fetchRegistrySamples(): Promise<SampleRow[]> {
   const body = await fetch('/api/registry/samples').then(r => r.json());
   return body.samples ?? [];
+}
+
+// ---------- Module colours ----------
+
+/** The `detail` of an error body as a string: its text, or the raw body. */
+async function errorDetail(resp: Response): Promise<string> {
+  const text = await resp.text();
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed.detail === 'string') return parsed.detail;
+  } catch { /* not JSON */ }
+  return `HTTP ${resp.status}: ${text}`;
+}
+
+/**
+ * Ask the server whether a colour can be a module colour. Nothing is
+ * written; the canvas runs none of the tests itself.
+ *
+ * Args:
+ *     color: The colour as typed, e.g. ``#E06C75``.
+ *
+ * Returns:
+ *     The check, or the reason the server gave for a value that is not a
+ *     colour (its 400 detail).
+ */
+export async function checkModuleColor(color: string): Promise<ColorCheckOutcome> {
+  const resp = await fetch('/api/registry/modules/color-check', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ color }),
+  });
+  if (!resp.ok) return { ok: false, error: await errorDetail(resp) };
+  return { ok: true, check: await resp.json() };
+}
+
+/**
+ * Store a module's colour for everyone who opens the project, or reset it
+ * to its default. A saved colour is remembered at once, so every view that
+ * calls `moduleColor` shows it without a reload.
+ *
+ * Args:
+ *     name: The module's name.
+ *     color: The new ``#rrggbb`` colour, or null for the module's default.
+ *
+ * Returns:
+ *     The module as the server now lists it; the check's result when the
+ *     server refused the colour (a 400 with a `ColorRefusalBody`); or the
+ *     error text of any other failure.
+ */
+export async function setModuleColor(name: string, color: string | null): Promise<ModuleColorSave> {
+  const resp = await fetch(`/api/registry/modules/${encodeURIComponent(name)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ color }),
+  });
+  if (resp.ok) {
+    const module: ModuleRow = await resp.json();
+    rememberModuleColors([module]);
+    return { ok: true, module };
+  }
+  const text = await resp.text();
+  try {
+    const parsed = JSON.parse(text);
+    if (resp.status === 400 && parsed?.detail && typeof parsed.detail === 'object') {
+      return { ok: false, refusal: parsed.detail as ColorCheck };
+    }
+    if (parsed && typeof parsed.detail === 'string') return { ok: false, error: parsed.detail };
+  } catch { /* not JSON */ }
+  return { ok: false, error: `HTTP ${resp.status}: ${text}` };
 }
 
 // ---------- Method detail and export ----------
@@ -455,4 +564,230 @@ export async function fetchEnvPackages(spec: string): Promise<PackagesResponse> 
   const resp = await fetch(`/api/registry/envs/${encodeURIComponent(spec)}/packages`);
   if (!resp.ok) throw await httpError(resp);
   return resp.json();
+}
+
+// ---------- Drafts ----------
+
+/** One draft as the Methods tab's Drafts group lists it. */
+export type DraftEntry = components['schemas']['DraftEntry'];
+/** A draft's Registration check: every line ✓ or ✗; nothing is written. */
+export type DraftCheck = components['schemas']['DraftCheck'];
+/** The dry run (or the result) of adding a folder as a draft. */
+export type DraftAddResponse = components['schemas']['DraftAddResponse'];
+/** Update's answer: the draft as re-read, and whether its contract changed. */
+export type DraftUpdateResponse = components['schemas']['DraftUpdateResponse'];
+/** A draft's files and contract for its open row. */
+export type DraftDetail = components['schemas']['DraftDetail'];
+/** The latest draft run of a draft (the Draft run tab). */
+export type DraftRunDetail = components['schemas']['DraftRunDetail'];
+/** One node line of the Draft run tab. */
+export type DraftRunNode = components['schemas']['DraftRunNode'];
+
+/** An outcome that is either a value or the reason the server gave. */
+export type DraftResult<T> = { ok: true; value: T } | { ok: false; error: string };
+
+/** The `/api/registry/drafts/<module>/<method>` prefix of one draft's routes. */
+function draftUrl(module: string, method: string): string {
+  return `/api/registry/drafts/${encodeURIComponent(module)}/${encodeURIComponent(method)}`;
+}
+
+/** A response's JSON as a `DraftResult`: the body, or its `detail` text. */
+async function draftResult<T>(resp: Response): Promise<DraftResult<T>> {
+  if (!resp.ok) return { ok: false, error: await errorDetail(resp) };
+  return { ok: true, value: await resp.json() as T };
+}
+
+/**
+ * Fetch every draft, each with its Registration check and latest draft run.
+ *
+ * A failed request lists no drafts, so the Methods tab still shows its
+ * registered methods and the Drafts group's "+ Draft from folder…".
+ *
+ * Returns:
+ *     The drafts, empty when the server lists none or the request fails.
+ */
+export async function fetchDrafts(): Promise<DraftEntry[]> {
+  try {
+    const resp = await fetch('/api/registry/drafts');
+    if (!resp.ok) return [];
+    const body = await resp.json();
+    return body?.drafts ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Ask what adding a folder as a draft of a module would do, or add it.
+ *
+ * The dry run writes nothing and answers with the kind (a DRAFT version of
+ * the module's method of the folder's name, or a DRAFT method) and the
+ * dialog's sentence.
+ *
+ * Args:
+ *     module: The module the draft belongs to.
+ *     folder: The method folder, absolute or relative to the project root.
+ *     dryRun: Whether to only ask.
+ *
+ * Returns:
+ *     The server's answer, or the reason it refused (e.g. the method
+ *     already has a draft from another folder).
+ */
+export async function addDraft(
+  module: string, folder: string, dryRun: boolean,
+): Promise<DraftResult<DraftAddResponse>> {
+  const resp = await fetch(`/api/registry/drafts${dryRun ? '?dryRun=true' : ''}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ module, folder }),
+  });
+  return draftResult<DraftAddResponse>(resp);
+}
+
+/**
+ * Update: read the draft's `method.yaml` again. Nothing is registered.
+ *
+ * Args:
+ *     module: The draft's module.
+ *     method: The draft's method.
+ *
+ * Returns:
+ *     The draft as re-read and whether its contract changed, or the reason.
+ */
+export async function updateDraft(
+  module: string, method: string,
+): Promise<DraftResult<DraftUpdateResponse>> {
+  const resp = await fetch(`${draftUrl(module, method)}/update`, { method: 'POST' });
+  return draftResult<DraftUpdateResponse>(resp);
+}
+
+/** What Remove draft or Delete outputs deletes, planned before anything is. */
+export type DraftDeletePlan = components['schemas']['DraftDeletePlan'];
+
+/**
+ * Plan Remove draft or Delete outputs: the server's dry run says what would
+ * be deleted and gives the token the real request sends back. Nothing is
+ * deleted.
+ *
+ * Args:
+ *     module: The draft's module.
+ *     method: The draft's method.
+ *     outputsOnly: Delete outputs (the draft run only) rather than Remove draft.
+ *
+ * Returns:
+ *     The plan, or the reason the server refused to plan.
+ */
+export async function planDraftDelete(
+  module: string, method: string, outputsOnly: boolean,
+): Promise<DraftResult<DraftDeletePlan>> {
+  const base = outputsOnly ? `${draftUrl(module, method)}/draft-run` : draftUrl(module, method);
+  const resp = await fetch(`${base}?dryRun=true`, { method: 'DELETE' });
+  const res = await draftResult<components['schemas']['DraftActionResponse']>(resp);
+  if (!res.ok) return res;
+  if (!res.value.plan) return { ok: false, error: res.value.message };
+  return { ok: true, value: res.value.plan };
+}
+
+/**
+ * Remove a draft as planned: its pointer and draft run go; the method folder
+ * stays. The server refuses when what would go changed since the plan.
+ *
+ * Args:
+ *     module: The draft's module.
+ *     method: The draft's method.
+ *     planned: The token of the plan the user confirmed.
+ *
+ * Returns:
+ *     What was done, or the reason it was refused.
+ */
+export async function removeDraft(
+  module: string, method: string, planned: string,
+): Promise<DraftResult<components['schemas']['DraftActionResponse']>> {
+  const resp = await fetch(`${draftUrl(module, method)}?planned=${encodeURIComponent(planned)}`, { method: 'DELETE' });
+  return draftResult(resp);
+}
+
+/**
+ * Fetch a draft's files and contract for its open row.
+ *
+ * Args:
+ *     module: The draft's module.
+ *     method: The draft's method.
+ *
+ * Returns:
+ *     The detail, or the reason it could not be read.
+ */
+export async function fetchDraftDetail(
+  module: string, method: string,
+): Promise<DraftResult<DraftDetail>> {
+  const resp = await fetch(`${draftUrl(module, method)}/detail`);
+  return draftResult<DraftDetail>(resp);
+}
+
+/**
+ * Run a draft's Registration check again from its folder; nothing is written.
+ *
+ * Args:
+ *     module: The draft's module.
+ *     method: The draft's method.
+ *
+ * Returns:
+ *     Every check line, or the reason the check could not run.
+ */
+export async function fetchDraftCheck(
+  module: string, method: string,
+): Promise<DraftResult<DraftCheck>> {
+  const resp = await fetch(`${draftUrl(module, method)}/check`);
+  return draftResult<DraftCheck>(resp);
+}
+
+/**
+ * Fetch a draft's latest draft run.
+ *
+ * Args:
+ *     module: The draft's module.
+ *     method: The draft's method.
+ *
+ * Returns:
+ *     The draft run, or the server's reason there is none (its 404 detail).
+ */
+export async function fetchDraftRun(
+  module: string, method: string,
+): Promise<DraftResult<DraftRunDetail>> {
+  const resp = await fetch(`${draftUrl(module, method)}/draft-run`);
+  return draftResult<DraftRunDetail>(resp);
+}
+
+/**
+ * Delete outputs as planned: remove the draft's draft run and keep the draft.
+ * The server refuses when what would go changed since the plan.
+ *
+ * Args:
+ *     module: The draft's module.
+ *     method: The draft's method.
+ *     planned: The token of the plan the user confirmed.
+ *
+ * Returns:
+ *     What was done, or the reason it was refused.
+ */
+export async function deleteDraftRun(
+  module: string, method: string, planned: string,
+): Promise<DraftResult<components['schemas']['DraftActionResponse']>> {
+  const resp = await fetch(`${draftUrl(module, method)}/draft-run?planned=${encodeURIComponent(planned)}`,
+                           { method: 'DELETE' });
+  return draftResult(resp);
+}
+
+/**
+ * The URL that downloads a draft run's outputs as a zip.
+ *
+ * Args:
+ *     module: The draft's module.
+ *     method: The draft's method.
+ *
+ * Returns:
+ *     The zip route's URL for the whole draft run.
+ */
+export function draftRunZipUrl(module: string, method: string): string {
+  return `${draftUrl(module, method)}/draft-run/zip`;
 }

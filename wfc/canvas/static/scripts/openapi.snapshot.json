@@ -1,6 +1,72 @@
 {
   "components": {
     "schemas": {
+      "ArtifactPreview": {
+        "description": "``GET /api/wfc/run/{id}/preview/{path}``: the start of a table, JSON or text file.",
+        "properties": {
+          "kind": {
+            "enum": [
+              "table",
+              "json",
+              "text"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "shown_bytes": {
+            "title": "Shown Bytes",
+            "type": "integer"
+          },
+          "table": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TablePreview"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "total_bytes": {
+            "title": "Total Bytes",
+            "type": "integer"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "shown_bytes",
+          "total_bytes",
+          "truncated"
+        ],
+        "title": "ArtifactPreview",
+        "type": "object"
+      },
       "CacheStatusOutput": {
         "description": "Where one output of the source run can be read from.",
         "properties": {
@@ -66,6 +132,11 @@
               }
             ],
             "title": "Cache Key"
+          },
+          "draft_mode": {
+            "default": false,
+            "title": "Draft Mode",
+            "type": "boolean"
           },
           "key": {
             "title": "Key",
@@ -147,6 +218,167 @@
         "title": "CacheStatusRowModel",
         "type": "object"
       },
+      "ClearedDraft": {
+        "description": "Why one draft's steps of a pipeline run were cleared.",
+        "properties": {
+          "at": {
+            "title": "At",
+            "type": "string"
+          },
+          "draft": {
+            "title": "Draft",
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "replaced",
+              "outputs_deleted",
+              "registered",
+              "removed"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "registeredAs": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Registeredas"
+          },
+          "replacedByPipelineId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replacedbypipelineid"
+          }
+        },
+        "required": [
+          "draft",
+          "reason",
+          "at"
+        ],
+        "title": "ClearedDraft",
+        "type": "object"
+      },
+      "ColorCheckRequest": {
+        "description": "A colour the picker asks about.",
+        "properties": {
+          "color": {
+            "title": "Color",
+            "type": "string"
+          }
+        },
+        "required": [
+          "color"
+        ],
+        "title": "ColorCheckRequest",
+        "type": "object"
+      },
+      "ColorCheckResult": {
+        "description": "Whether a colour can be a module colour, and the nearest one that can.\n\n``failedTest`` names the first of the colour standard's six tests the\ncolour fails: ``distance`` (too close to a protected colour),\n``hue_guard``, ``chroma`` (too grey), ``white_text``, ``background``\n(too dark on the canvas backgrounds) or ``module_ink``. ``reserved`` is\nthe meaning of the protected colour it is too close to, in plain words\n(\"completed\", \"running\", \"failed\", \"cancelled\", \"cached results\",\n\"buttons and links\", \"system nodes\"); None for a contrast failure.",
+        "properties": {
+          "color": {
+            "title": "Color",
+            "type": "string"
+          },
+          "failedTest": {
+            "anyOf": [
+              {
+                "enum": [
+                  "distance",
+                  "hue_guard",
+                  "chroma",
+                  "white_text",
+                  "background",
+                  "module_ink"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failedtest"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "reserved": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reserved"
+          },
+          "suggested": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suggested"
+          },
+          "suggestedName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suggestedname"
+          }
+        },
+        "required": [
+          "ok",
+          "color"
+        ],
+        "title": "ColorCheckResult",
+        "type": "object"
+      },
+      "ColorRefusalBody": {
+        "description": "The 400 body of a refused colour change: the check's result.",
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/ColorCheckResult"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "ColorRefusalBody",
+        "type": "object"
+      },
       "ContractSpec": {
         "properties": {
           "name": {
@@ -181,6 +413,1202 @@
         "title": "ContractSpec",
         "type": "object"
       },
+      "DraftActionResponse": {
+        "description": "Remove draft and Delete outputs: the plan (dry run) or what was done.",
+        "properties": {
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DraftDeletePlan"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "ok",
+          "message"
+        ],
+        "title": "DraftActionResponse",
+        "type": "object"
+      },
+      "DraftAddRequest": {
+        "description": "``+ Draft from folder\u2026``: the module first, then the method folder.",
+        "properties": {
+          "folder": {
+            "title": "Folder",
+            "type": "string"
+          },
+          "module": {
+            "title": "Module",
+            "type": "string"
+          }
+        },
+        "required": [
+          "module",
+          "folder"
+        ],
+        "title": "DraftAddRequest",
+        "type": "object"
+      },
+      "DraftAddResponse": {
+        "description": "What adding the folder as a draft does (the dry run) or did.\n\n``message`` is the dialog's sentence, e.g. \"Module __demo__ already has a\nmethod called __demo__label (newest version v3). This folder becomes its\nDRAFT version; registering it adds v4.\"",
+        "properties": {
+          "draft": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DraftEntry"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "enum": [
+              "version",
+              "method"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "method": {
+            "title": "Method",
+            "type": "string"
+          },
+          "module": {
+            "title": "Module",
+            "type": "string"
+          },
+          "newestLabel": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Newestlabel"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "registersAs": {
+            "title": "Registersas",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ok",
+          "module",
+          "method",
+          "kind",
+          "message",
+          "registersAs"
+        ],
+        "title": "DraftAddResponse",
+        "type": "object"
+      },
+      "DraftCheck": {
+        "description": "A draft's Registration check: every line, \u2713 or \u2717. Nothing is written.",
+        "properties": {
+          "lines": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DraftCheckLine"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "DraftCheck",
+        "type": "object"
+      },
+      "DraftCheckLine": {
+        "description": "One line of a draft's Registration check (\u2713 or \u2717).",
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "text"
+        ],
+        "title": "DraftCheckLine",
+        "type": "object"
+      },
+      "DraftContract": {
+        "description": "The contract a draft folder's ``method.yaml`` declares.",
+        "properties": {
+          "executor": {
+            "default": "python",
+            "title": "Executor",
+            "type": "string"
+          },
+          "inputs": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Inputs",
+            "type": "object"
+          },
+          "outputs": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Outputs",
+            "type": "object"
+          },
+          "params_schema": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Params Schema",
+            "type": "object"
+          }
+        },
+        "title": "DraftContract",
+        "type": "object"
+      },
+      "DraftDeleteLaterDraft": {
+        "description": "A later draft whose results computed from the deleted one are cleared.",
+        "properties": {
+          "draft": {
+            "title": "Draft",
+            "type": "string"
+          },
+          "run": {
+            "title": "Run",
+            "type": "string"
+          }
+        },
+        "required": [
+          "draft",
+          "run"
+        ],
+        "title": "DraftDeleteLaterDraft",
+        "type": "object"
+      },
+      "DraftDeletePipeline": {
+        "description": "A pipeline whose cleared line a delete changes.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "pipelineId": {
+            "title": "Pipelineid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pipelineId",
+          "name"
+        ],
+        "title": "DraftDeletePipeline",
+        "type": "object"
+      },
+      "DraftDeletePlan": {
+        "description": "What Remove draft or Delete outputs deletes, planned before anything is.",
+        "properties": {
+          "deletes": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Deletes",
+            "type": "array"
+          },
+          "draftRun": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draftrun"
+          },
+          "folder": {
+            "title": "Folder",
+            "type": "string"
+          },
+          "hint": {
+            "default": "",
+            "title": "Hint",
+            "type": "string"
+          },
+          "keeps": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Keeps",
+            "type": "array"
+          },
+          "laterDrafts": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DraftDeleteLaterDraft"
+            },
+            "title": "Laterdrafts",
+            "type": "array"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "method": {
+            "title": "Method",
+            "type": "string"
+          },
+          "module": {
+            "title": "Module",
+            "type": "string"
+          },
+          "outputsOnly": {
+            "title": "Outputsonly",
+            "type": "boolean"
+          },
+          "pipelines": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DraftDeletePipeline"
+            },
+            "title": "Pipelines",
+            "type": "array"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "token": {
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "module",
+          "method",
+          "outputsOnly",
+          "folder",
+          "source",
+          "message",
+          "token"
+        ],
+        "title": "DraftDeletePlan",
+        "type": "object"
+      },
+      "DraftDetail": {
+        "description": "A draft's files and contract for its expanded Registry row.",
+        "properties": {
+          "contract": {
+            "$ref": "#/components/schemas/DraftContract",
+            "default": {
+              "executor": "python",
+              "inputs": {},
+              "outputs": {},
+              "params_schema": {}
+            }
+          },
+          "draft": {
+            "$ref": "#/components/schemas/DraftEntry"
+          },
+          "env": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Env"
+          },
+          "files": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/MethodFile"
+            },
+            "title": "Files",
+            "type": "array"
+          }
+        },
+        "required": [
+          "draft"
+        ],
+        "title": "DraftDetail",
+        "type": "object"
+      },
+      "DraftEntry": {
+        "description": "One draft as the Registry's Drafts group lists it.",
+        "properties": {
+          "check": {
+            "$ref": "#/components/schemas/DraftCheck"
+          },
+          "contract": {
+            "$ref": "#/components/schemas/DraftContract",
+            "default": {
+              "executor": "python",
+              "inputs": {},
+              "outputs": {},
+              "params_schema": {}
+            }
+          },
+          "draftRun": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DraftRunSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "env": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Env"
+          },
+          "filesUpdated": {
+            "default": false,
+            "title": "Filesupdated",
+            "type": "boolean"
+          },
+          "folder": {
+            "title": "Folder",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "version",
+              "method"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "method": {
+            "title": "Method",
+            "type": "string"
+          },
+          "module": {
+            "title": "Module",
+            "type": "string"
+          },
+          "newestLabel": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Newestlabel"
+          },
+          "reasons": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "registersAs": {
+            "title": "Registersas",
+            "type": "integer"
+          },
+          "stale": {
+            "default": false,
+            "title": "Stale",
+            "type": "boolean"
+          },
+          "valid": {
+            "default": true,
+            "title": "Valid",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "module",
+          "method",
+          "kind",
+          "folder",
+          "registersAs",
+          "check"
+        ],
+        "title": "DraftEntry",
+        "type": "object"
+      },
+      "DraftRef": {
+        "description": "A draft named by its module and method.",
+        "properties": {
+          "method": {
+            "title": "Method",
+            "type": "string"
+          },
+          "module": {
+            "title": "Module",
+            "type": "string"
+          }
+        },
+        "required": [
+          "module",
+          "method"
+        ],
+        "title": "DraftRef",
+        "type": "object"
+      },
+      "DraftRefusal": {
+        "description": "Why one draft node cannot run or validate.\n\n``draft_invalid``: the draft cannot be read for a run, its Registration\ncheck fails (``reasons`` lists each failed line), it selects no script,\nor its env cannot run. ``draft_in_use``: the draft's draft run is still\nrunning in ``pipelineId``. ``draft_mismatch`` (Run only): the document\ndoes not match the draft's contract read now -- a param or variant, a\nlink slot, or a required input nothing is connected to; the message\nnames the node and the field. A changed ``method.yaml`` is never a\nrefusal: Run and Validate read it again.",
+        "properties": {
+          "draft": {
+            "title": "Draft",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "draft_invalid",
+              "draft_in_use",
+              "draft_mismatch"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "nodeId": {
+            "title": "Nodeid",
+            "type": "string"
+          },
+          "pipelineId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pipelineid"
+          },
+          "pipelineName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pipelinename"
+          },
+          "reasons": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          }
+        },
+        "required": [
+          "kind",
+          "nodeId",
+          "draft",
+          "message"
+        ],
+        "title": "DraftRefusal",
+        "type": "object"
+      },
+      "DraftRunDetail": {
+        "description": "The latest draft run of a draft (the Registry's Draft run tab).",
+        "properties": {
+          "keptUntil": {
+            "title": "Keptuntil",
+            "type": "string"
+          },
+          "method": {
+            "title": "Method",
+            "type": "string"
+          },
+          "module": {
+            "title": "Module",
+            "type": "string"
+          },
+          "nodes": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DraftRunNode"
+            },
+            "title": "Nodes",
+            "type": "array"
+          },
+          "pipelineId": {
+            "title": "Pipelineid",
+            "type": "string"
+          },
+          "pipelineName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pipelinename"
+          },
+          "samples": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Samples",
+            "type": "array"
+          },
+          "startedAt": {
+            "title": "Startedat",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "tally": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "default": {},
+            "title": "Tally",
+            "type": "object"
+          },
+          "totalBytes": {
+            "default": 0,
+            "title": "Totalbytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "module",
+          "method",
+          "startedAt",
+          "pipelineId",
+          "status",
+          "keptUntil"
+        ],
+        "title": "DraftRunDetail",
+        "type": "object"
+      },
+      "DraftRunNode": {
+        "description": "One node line of the Registry's Draft run tab.",
+        "properties": {
+          "isDraft": {
+            "title": "Isdraft",
+            "type": "boolean"
+          },
+          "method": {
+            "title": "Method",
+            "type": "string"
+          },
+          "module": {
+            "title": "Module",
+            "type": "string"
+          },
+          "nodeId": {
+            "title": "Nodeid",
+            "type": "string"
+          },
+          "sizeBytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sizebytes"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "running",
+              "success",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "steps": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DraftRunNodeStep"
+            },
+            "title": "Steps",
+            "type": "array"
+          }
+        },
+        "required": [
+          "nodeId",
+          "module",
+          "method",
+          "isDraft",
+          "status"
+        ],
+        "title": "DraftRunNode",
+        "type": "object"
+      },
+      "DraftRunNodeStep": {
+        "description": "One sample of one node in a draft run.",
+        "properties": {
+          "draftString": {
+            "title": "Draftstring",
+            "type": "string"
+          },
+          "sample": {
+            "title": "Sample",
+            "type": "string"
+          },
+          "sizeBytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sizebytes"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "running",
+              "success",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sample",
+          "draftString",
+          "status"
+        ],
+        "title": "DraftRunNodeStep",
+        "type": "object"
+      },
+      "DraftRunSummary": {
+        "description": "The draft's latest draft run, in brief.",
+        "properties": {
+          "pipelineId": {
+            "title": "Pipelineid",
+            "type": "string"
+          },
+          "pipelineName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pipelinename"
+          },
+          "running": {
+            "default": false,
+            "title": "Running",
+            "type": "boolean"
+          },
+          "startedAt": {
+            "title": "Startedat",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "startedAt",
+          "pipelineId",
+          "status"
+        ],
+        "title": "DraftRunSummary",
+        "type": "object"
+      },
+      "DraftStep": {
+        "description": "One draft-mode step of the latest draft run of a draft.\n\nThe shape History's Pipelines rows, Lineages and Descendants draw. A step\nis the draft's own (``isDraft``) or downstream of it; ``draft`` names the\ndraft that owns it (the nearest one upstream).",
+        "properties": {
+          "draft": {
+            "title": "Draft",
+            "type": "string"
+          },
+          "draftString": {
+            "title": "Draftstring",
+            "type": "string"
+          },
+          "duration": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "isDraft": {
+            "title": "Isdraft",
+            "type": "boolean"
+          },
+          "method": {
+            "title": "Method",
+            "type": "string"
+          },
+          "module": {
+            "title": "Module",
+            "type": "string"
+          },
+          "nid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nid"
+          },
+          "nodeId": {
+            "title": "Nodeid",
+            "type": "string"
+          },
+          "parentDraftSteps": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Parentdraftsteps",
+            "type": "array"
+          },
+          "parentRunIds": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Parentrunids",
+            "type": "array"
+          },
+          "pipelineId": {
+            "title": "Pipelineid",
+            "type": "string"
+          },
+          "pipelineName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pipelinename"
+          },
+          "sample": {
+            "title": "Sample",
+            "type": "string"
+          },
+          "sizeBytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sizebytes"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "running",
+              "success",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "timestamp": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timestamp"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "draftString",
+          "module",
+          "method",
+          "nodeId",
+          "sample",
+          "draft",
+          "isDraft",
+          "status",
+          "pipelineId"
+        ],
+        "title": "DraftStep",
+        "type": "object"
+      },
+      "DraftStepArtifact": {
+        "description": "One file in a draft step's folder.",
+        "properties": {
+          "extension": {
+            "default": "",
+            "title": "Extension",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "viewer": {
+            "anyOf": [
+              {
+                "enum": [
+                  "image",
+                  "table",
+                  "json",
+                  "text",
+                  "pdf"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Viewer"
+          }
+        },
+        "required": [
+          "name",
+          "size"
+        ],
+        "title": "DraftStepArtifact",
+        "type": "object"
+      },
+      "DraftStepDetail": {
+        "description": "History's run panel for a draft step.",
+        "properties": {
+          "artifacts": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DraftStepArtifact"
+            },
+            "title": "Artifacts",
+            "type": "array"
+          },
+          "folder": {
+            "title": "Folder",
+            "type": "string"
+          },
+          "inputs": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DraftStepInput"
+            },
+            "title": "Inputs",
+            "type": "array"
+          },
+          "keptUntil": {
+            "title": "Keptuntil",
+            "type": "string"
+          },
+          "log": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Log"
+          },
+          "metrics": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Metrics",
+            "type": "object"
+          },
+          "outputs": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DraftStepOutput"
+            },
+            "title": "Outputs",
+            "type": "array"
+          },
+          "params": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Params",
+            "type": "object"
+          },
+          "step": {
+            "$ref": "#/components/schemas/DraftStep"
+          },
+          "versionText": {
+            "title": "Versiontext",
+            "type": "string"
+          }
+        },
+        "required": [
+          "step",
+          "versionText",
+          "folder",
+          "keptUntil"
+        ],
+        "title": "DraftStepDetail",
+        "type": "object"
+      },
+      "DraftStepInput": {
+        "description": "What filled one input of a draft step.\n\n``source`` is ``sample`` (``sample`` set), ``run`` (a recorded run,\n``runId`` and ``sourceSlot`` set) or ``draft`` (an upstream draft step,\n``draftString`` and ``sourceSlot`` set).",
+        "properties": {
+          "draftString": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draftstring"
+          },
+          "runId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runid"
+          },
+          "sample": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sample"
+          },
+          "slot": {
+            "title": "Slot",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "sample",
+              "run",
+              "draft"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "sourceSlot": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sourceslot"
+          }
+        },
+        "required": [
+          "slot",
+          "source"
+        ],
+        "title": "DraftStepInput",
+        "type": "object"
+      },
+      "DraftStepOutput": {
+        "description": "One output a draft step wrote.",
+        "properties": {
+          "filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filename"
+          },
+          "sizeBytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sizebytes"
+          },
+          "slot": {
+            "title": "Slot",
+            "type": "string"
+          }
+        },
+        "required": [
+          "slot"
+        ],
+        "title": "DraftStepOutput",
+        "type": "object"
+      },
+      "DraftStepsResponse": {
+        "description": "``GET /api/wfc/draft-steps``: every draft step that still exists.",
+        "properties": {
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/DraftStep"
+            },
+            "title": "Steps",
+            "type": "array"
+          }
+        },
+        "required": [
+          "steps"
+        ],
+        "title": "DraftStepsResponse",
+        "type": "object"
+      },
+      "DraftUpdateResponse": {
+        "description": "Update: the draft's ``method.yaml`` read again (nothing registered).",
+        "properties": {
+          "changed": {
+            "title": "Changed",
+            "type": "boolean"
+          },
+          "draft": {
+            "$ref": "#/components/schemas/DraftEntry"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "draft",
+          "changed",
+          "message"
+        ],
+        "title": "DraftUpdateResponse",
+        "type": "object"
+      },
+      "DraftsResponse": {
+        "description": "``GET /api/registry/drafts``.",
+        "properties": {
+          "drafts": {
+            "items": {
+              "$ref": "#/components/schemas/DraftEntry"
+            },
+            "title": "Drafts",
+            "type": "array"
+          }
+        },
+        "required": [
+          "drafts"
+        ],
+        "title": "DraftsResponse",
+        "type": "object"
+      },
       "ExportArtifactsRequest": {
         "properties": {
           "file_types": {
@@ -213,6 +1641,41 @@
           }
         },
         "title": "ExportArtifactsRequest",
+        "type": "object"
+      },
+      "ExportRefusal": {
+        "description": "Why the bundle cannot be written: the lead line and every reason.\n\nA draft string asked for as a run is refused with a reason naming the\ndraft step and saying to register the draft and run the pipeline again.\nA recorded run of a pipeline that ran a draft exports.",
+        "properties": {
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "reasons": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "ExportRefusal",
+        "type": "object"
+      },
+      "ExportRefusalBody": {
+        "description": "The 409 body of a refused or changed export.",
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/ExportRefusal"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "ExportRefusalBody",
         "type": "object"
       },
       "ExportRunsRequest": {
@@ -266,6 +1729,129 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "ImageInfo": {
+        "description": "``GET /api/wfc/run/{id}/image-info/{path}``: what an image preview shows of its file.\n\nRead from the file's header, never decoding it, for the size asked: the\nfacts the viewer's note states (smaller than the file, bit depth reduced,\npage 1 of N) and whether the image route would refuse it.",
+        "properties": {
+          "bit_depth": {
+            "title": "Bit Depth",
+            "type": "integer"
+          },
+          "bit_depth_reduced": {
+            "title": "Bit Depth Reduced",
+            "type": "boolean"
+          },
+          "decoded_bytes": {
+            "title": "Decoded Bytes",
+            "type": "integer"
+          },
+          "height": {
+            "title": "Height",
+            "type": "integer"
+          },
+          "memory_bytes": {
+            "title": "Memory Bytes",
+            "type": "integer"
+          },
+          "memory_mb_needed": {
+            "title": "Memory Mb Needed",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "preview_height": {
+            "title": "Preview Height",
+            "type": "integer"
+          },
+          "preview_width": {
+            "title": "Preview Width",
+            "type": "integer"
+          },
+          "refused": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refused"
+          },
+          "width": {
+            "title": "Width",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "width",
+          "height",
+          "preview_width",
+          "preview_height",
+          "bit_depth",
+          "bit_depth_reduced",
+          "pages",
+          "decoded_bytes",
+          "memory_bytes",
+          "memory_mb_needed"
+        ],
+        "title": "ImageInfo",
+        "type": "object"
+      },
+      "ImageTooLarge": {
+        "description": "The image route's 422: an image whose conversion needs more than half of ``[previews] memory_mb``.",
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "height": {
+            "title": "Height",
+            "type": "integer"
+          },
+          "memory_mb_needed": {
+            "title": "Memory Mb Needed",
+            "type": "integer"
+          },
+          "width": {
+            "title": "Width",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "detail",
+          "width",
+          "height",
+          "memory_mb_needed"
+        ],
+        "title": "ImageTooLarge",
+        "type": "object"
+      },
+      "MethodFile": {
+        "description": "One file at the top of a method folder, with its content.",
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "language": {
+            "title": "Language",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "language",
+          "content"
+        ],
+        "title": "MethodFile",
+        "type": "object"
+      },
       "MethodRegisterRequest": {
         "properties": {
           "directory": {
@@ -304,6 +1890,27 @@
           "module"
         ],
         "title": "MethodRegisterRequest",
+        "type": "object"
+      },
+      "ModuleColorPatch": {
+        "description": "``PATCH /api/registry/modules/{name}``: the module's new colour.\n\n``color`` null resets the module to its default colour.",
+        "properties": {
+          "color": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Color"
+          }
+        },
+        "required": [
+          "color"
+        ],
+        "title": "ModuleColorPatch",
         "type": "object"
       },
       "ModuleRegisterRequest": {
@@ -515,6 +2122,353 @@
         "title": "NodeRunState",
         "type": "object"
       },
+      "OutputOptionsRequest": {
+        "description": "What the options picker asks of an upstream output slot.\n\nA method upstream names its pinned ``version`` (absent: the newest) and\nits ``param_sets``: the node's base values and each variant's and\nper-sample override's, each as the node holds them. A Run Reference\nupstream names its ``run_id`` instead; the run names its own method,\nversion and params, and the other fields are not read.\n\nAttributes:\n    slot: The upstream's output slot.\n    version: The upstream node's pinned version (its content identity).\n    param_sets: The upstream's param sets; none is one empty set.\n    run_id: The referenced run's id.",
+        "properties": {
+          "param_sets": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Param Sets",
+            "type": "array"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "slot": {
+            "title": "Slot",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "slot"
+        ],
+        "title": "OutputOptionsRequest",
+        "type": "object"
+      },
+      "PaletteDraft": {
+        "description": "One draft in the palette's Drafts group, with the contract its folder declares.\n\nA ``version`` draft is the next version of the registered method of the\nsame name in its module (the node's version menu shows it as \u25cf DRAFT); a\n``method`` draft is a new method of the module.",
+        "properties": {
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "env": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Env"
+          },
+          "executor": {
+            "default": "python",
+            "title": "Executor",
+            "type": "string"
+          },
+          "folder": {
+            "title": "Folder",
+            "type": "string"
+          },
+          "inputs": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Inputs",
+            "type": "object"
+          },
+          "kind": {
+            "enum": [
+              "version",
+              "method"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "outputs": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Outputs",
+            "type": "object"
+          },
+          "params_schema": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Params Schema",
+            "type": "object"
+          },
+          "reasons": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "valid": {
+            "default": true,
+            "title": "Valid",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "folder"
+        ],
+        "title": "PaletteDraft",
+        "type": "object"
+      },
+      "PaletteMethod": {
+        "description": "One registered method; its contract fields and env are its newest version's.",
+        "properties": {
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "env": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Env"
+          },
+          "executor": {
+            "default": "python",
+            "title": "Executor",
+            "type": "string"
+          },
+          "inputs": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": {},
+            "title": "Inputs"
+          },
+          "outputs": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": {},
+            "title": "Outputs"
+          },
+          "params_schema": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": {},
+            "title": "Params Schema"
+          },
+          "versions": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/PaletteVersion"
+            },
+            "title": "Versions",
+            "type": "array"
+          }
+        },
+        "title": "PaletteMethod",
+        "type": "object"
+      },
+      "PaletteModule": {
+        "description": "One module of ``GET /api/modules``, keyed by its name.",
+        "properties": {
+          "color": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Color"
+          },
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "drafts": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PaletteDraft"
+            },
+            "default": {},
+            "title": "Drafts",
+            "type": "object"
+          },
+          "methods": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PaletteMethod"
+            },
+            "default": {},
+            "title": "Methods",
+            "type": "object"
+          }
+        },
+        "title": "PaletteModule",
+        "type": "object"
+      },
+      "PaletteVersion": {
+        "description": "One registered version of a method, with its contract.",
+        "properties": {
+          "env": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Env"
+          },
+          "executor": {
+            "default": "python",
+            "title": "Executor",
+            "type": "string"
+          },
+          "identity": {
+            "title": "Identity",
+            "type": "string"
+          },
+          "inputs": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": {},
+            "title": "Inputs"
+          },
+          "label": {
+            "title": "Label",
+            "type": "integer"
+          },
+          "newest": {
+            "title": "Newest",
+            "type": "boolean"
+          },
+          "outputs": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": {},
+            "title": "Outputs"
+          },
+          "params_schema": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": {},
+            "title": "Params Schema"
+          },
+          "registered_at": {
+            "title": "Registered At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "identity",
+          "registered_at",
+          "newest"
+        ],
+        "title": "PaletteVersion",
+        "type": "object"
+      },
+      "PipelineCleared": {
+        "description": "The one greyed line of a pipeline run whose draft steps are gone.",
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "drafts": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ClearedDraft"
+            },
+            "title": "Drafts",
+            "type": "array"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "count",
+          "text"
+        ],
+        "title": "PipelineCleared",
+        "type": "object"
+      },
       "PipelineInput": {
         "additionalProperties": true,
         "properties": {
@@ -565,21 +2519,6 @@
             "type": "array"
           },
           "param_sets": {
-            "anyOf": [
-              {
-                "additionalProperties": {
-                  "additionalProperties": {
-                    "additionalProperties": true,
-                    "type": "object"
-                  },
-                  "type": "object"
-                },
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
             "title": "Param Sets"
           },
           "samples": {
@@ -662,6 +2601,18 @@
               }
             ],
             "title": "Fan Mode"
+          },
+          "folder": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A draft node's method folder (with version \"draft\"), as the draft's pointer names it.",
+            "title": "Folder"
           },
           "id": {
             "title": "Id",
@@ -771,6 +2722,7 @@
                 "type": "null"
               }
             ],
+            "description": "A method node's pinned version identity, or \"draft\" for a node that runs its method's draft folder.",
             "title": "Version"
           }
         },
@@ -783,6 +2735,42 @@
       "PipelineSummary": {
         "description": "One pipeline as History's Pipelines view lists it.",
         "properties": {
+          "cleared": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PipelineCleared"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "draftMode": {
+            "default": false,
+            "title": "Draftmode",
+            "type": "boolean"
+          },
+          "draftStepCount": {
+            "default": 0,
+            "title": "Draftstepcount",
+            "type": "integer"
+          },
+          "draftSteps": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DraftStep"
+            },
+            "title": "Draftsteps",
+            "type": "array"
+          },
+          "drafts": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Drafts",
+            "type": "array"
+          },
           "expected": {
             "anyOf": [
               {
@@ -793,6 +2781,17 @@
               }
             ],
             "title": "Expected"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
           },
           "nodeOrder": {
             "anyOf": [
@@ -812,6 +2811,17 @@
             "title": "Pipelineid",
             "type": "string"
           },
+          "startedAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Startedat"
+          },
           "status": {
             "title": "Status",
             "type": "string"
@@ -822,6 +2832,224 @@
           "status"
         ],
         "title": "PipelineSummary",
+        "type": "object"
+      },
+      "RegistryContract": {
+        "description": "One module-level contract as the Registry lists it.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "required": {
+            "default": true,
+            "title": "Required",
+            "type": "boolean"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          },
+          "value_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value Type"
+          }
+        },
+        "required": [
+          "type",
+          "name"
+        ],
+        "title": "RegistryContract",
+        "type": "object"
+      },
+      "RegistryModule": {
+        "description": "One module as the Registry's Modules tab lists it.",
+        "properties": {
+          "color": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Color"
+          },
+          "contracts": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/RegistryContract"
+            },
+            "title": "Contracts",
+            "type": "array"
+          },
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "methods": {
+            "default": 0,
+            "title": "Methods",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "source"
+        ],
+        "title": "RegistryModule",
+        "type": "object"
+      },
+      "RegistryModulesResponse": {
+        "description": "``GET /api/registry/modules``.",
+        "properties": {
+          "modules": {
+            "items": {
+              "$ref": "#/components/schemas/RegistryModule"
+            },
+            "title": "Modules",
+            "type": "array"
+          }
+        },
+        "required": [
+          "modules"
+        ],
+        "title": "RegistryModulesResponse",
+        "type": "object"
+      },
+      "RunArtifact": {
+        "description": "``GET /api/wfc/run/{id}/artifacts``: one archived output of a run.",
+        "properties": {
+          "children": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/RunArtifactChild"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Children"
+          },
+          "count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Count"
+          },
+          "extension": {
+            "default": "",
+            "title": "Extension",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "type": {
+            "enum": [
+              "file",
+              "dir"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "viewer": {
+            "anyOf": [
+              {
+                "enum": [
+                  "image",
+                  "table",
+                  "json",
+                  "text",
+                  "pdf"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Viewer"
+          }
+        },
+        "required": [
+          "name",
+          "type",
+          "size"
+        ],
+        "title": "RunArtifact",
+        "type": "object"
+      },
+      "RunArtifactChild": {
+        "description": "One direct child of a folder output: a file, or a subdirectory ``name/``.",
+        "properties": {
+          "extension": {
+            "default": "",
+            "title": "Extension",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "viewer": {
+            "anyOf": [
+              {
+                "enum": [
+                  "image",
+                  "table",
+                  "json",
+                  "text",
+                  "pdf"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Viewer"
+          }
+        },
+        "required": [
+          "name",
+          "size"
+        ],
+        "title": "RunArtifactChild",
         "type": "object"
       },
       "RunPatchRequest": {
@@ -878,6 +3106,58 @@
         "title": "RunPatchRequest",
         "type": "object"
       },
+      "RunRefusal": {
+        "description": "The run route's 409 detail when a draft node refuses the run.\n\nThe same kind-tagged ``{kind, message, hint}`` shape as the not-ready\nrefusals, with one entry per refusing draft node.",
+        "properties": {
+          "hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hint"
+          },
+          "kind": {
+            "const": "draft_refused",
+            "title": "Kind",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "refusals": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DraftRefusal"
+            },
+            "title": "Refusals",
+            "type": "array"
+          }
+        },
+        "required": [
+          "kind",
+          "message"
+        ],
+        "title": "RunRefusal",
+        "type": "object"
+      },
+      "RunRefusalBody": {
+        "description": "The run route's 409 body for a draft refusal.",
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/RunRefusal"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "RunRefusalBody",
+        "type": "object"
+      },
       "SampleRegisterRequest": {
         "properties": {
           "description": {
@@ -917,6 +3197,190 @@
           "source"
         ],
         "title": "SampleRegisterRequest",
+        "type": "object"
+      },
+      "SnapshotCheckEntry": {
+        "description": "One draft folder against its pointer's stat snapshot.\n\n``current``: the draft can be read and its Registration check passes.\n``invalid``: the check fails. ``missing``: the draft or its folder is\ngone. A changed ``method.yaml`` is information, not a state: Run and\nValidate read it again.",
+        "properties": {
+          "contractChanged": {
+            "default": false,
+            "title": "Contractchanged",
+            "type": "boolean"
+          },
+          "filesUpdated": {
+            "default": false,
+            "title": "Filesupdated",
+            "type": "boolean"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "method": {
+            "title": "Method",
+            "type": "string"
+          },
+          "module": {
+            "title": "Module",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "current",
+              "invalid",
+              "missing"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "module",
+          "method",
+          "state"
+        ],
+        "title": "SnapshotCheckEntry",
+        "type": "object"
+      },
+      "SnapshotCheckRequest": {
+        "description": "The drafts whose folders to check (on drag, and before Run or Validate).",
+        "properties": {
+          "drafts": {
+            "items": {
+              "$ref": "#/components/schemas/DraftRef"
+            },
+            "title": "Drafts",
+            "type": "array"
+          }
+        },
+        "required": [
+          "drafts"
+        ],
+        "title": "SnapshotCheckRequest",
+        "type": "object"
+      },
+      "SnapshotCheckResponse": {
+        "description": "``POST /api/registry/drafts/snapshot-check``.",
+        "properties": {
+          "drafts": {
+            "items": {
+              "$ref": "#/components/schemas/SnapshotCheckEntry"
+            },
+            "title": "Drafts",
+            "type": "array"
+          }
+        },
+        "required": [
+          "drafts"
+        ],
+        "title": "SnapshotCheckResponse",
+        "type": "object"
+      },
+      "TablePreview": {
+        "description": "The rows a table preview shows, and how they were split.",
+        "properties": {
+          "columns": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Columns"
+          },
+          "delimiter": {
+            "enum": [
+              "comma",
+              "tab",
+              "semicolon",
+              "pipe",
+              "space"
+            ],
+            "title": "Delimiter",
+            "type": "string"
+          },
+          "delimiter_guessed": {
+            "title": "Delimiter Guessed",
+            "type": "boolean"
+          },
+          "header": {
+            "title": "Header",
+            "type": "boolean"
+          },
+          "header_guessed": {
+            "title": "Header Guessed",
+            "type": "boolean"
+          },
+          "rows": {
+            "items": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "rows",
+          "delimiter",
+          "delimiter_guessed",
+          "header",
+          "header_guessed"
+        ],
+        "title": "TablePreview",
+        "type": "object"
+      },
+      "ValidateResponse": {
+        "additionalProperties": true,
+        "description": "The validate route's verdict on a pipeline document.",
+        "properties": {
+          "draftRefusals": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DraftRefusal"
+            },
+            "title": "Draftrefusals",
+            "type": "array"
+          },
+          "errors": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Errors",
+            "type": "array"
+          },
+          "valid": {
+            "title": "Valid",
+            "type": "boolean"
+          },
+          "warnings": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "valid"
+        ],
+        "title": "ValidateResponse",
         "type": "object"
       },
       "ValidationError": {
@@ -1042,10 +3506,10 @@
         "summary": "Root"
       }
     },
-    "/api/contracts/{method_full}/output_columns": {
-      "get": {
-        "description": "Resolve declared output columns for a method's slot.\n\nThe canvas inspector calls this for params declared with\n``column_of_input: <slot>`` to populate a dropdown of candidate column\nnames. Reuses ``wfc.contracts.resolve_columns`` against the upstream\nmethod's contract.\n\nArgs:\n    method_full: ``module.method`` (e.g. ``data_preprocessing.regionprops``).\n    slot: Output slot name to resolve columns for.\n    params: JSON-encoded dict of upstream node's current canvas params\n        (used by ``from_params`` expansion). Optional; missing/empty\n        falls back to ``{}``.\n    run_id: When the upstream is a ``run_reference`` node, pass the\n        referenced run id; the endpoint then uses Run.params from the\n        DB as the resolution context.\n    version: The upstream node's pinned version (its content identity);\n        the columns are that version's. Absent: the newest version's.\n        A version no entry carries is a 404.\n\nReturns:\n    ``{strict, from_params, patterns, all}`` where ``all`` is the\n    union of resolved column names produced by ``resolve_columns``.\n    ``patterns`` are returned literally (resolution requires a CSV;\n    not done here per the no-introspection constraint).",
-        "operationId": "get_output_columns_api_contracts__method_full__output_columns_get",
+    "/api/contracts/{method_full}/output_options": {
+      "post": {
+        "description": "Resolve the options an upstream method's output slot offers.\n\nThe Inspector's options picker calls this for a parameter declared with\n``options_from: <input>``, once per upstream wired to that input. Each\nparam set is filled with the version's declared defaults and the slot's\n``options`` block is expanded over them with\n``wfc.contracts.resolve_options``. A Run Reference upstream resolves\nthrough its run: the run's method and version, and one param set, the\nparams it ran with. *method_full* is then not read (the canvas sends a\nplaceholder).\n\nArgs:\n    method_full: ``module.method`` (e.g. ``features.regionprops``).\n    request: The slot, and either the version and param sets or a run id.\n\nReturns:\n    ``{fixed, built: [{params, names}], patterns, all}`` in declaration\n    order, each name once; ``patterns`` are returned literally (matching\n    one needs the data, which is not read here). A Run Reference's\n    answer also names the run's ``module`` and ``method``.\n\nRaises:\n    HTTPException: 400 for a method name with no dot or a run id that is\n        not an integer; 404 for an unknown run, or, without a run id, an\n        unknown module, method or version.",
+        "operationId": "resolve_output_options_api_contracts__method_full__output_options_post",
         "parameters": [
           {
             "in": "path",
@@ -1055,65 +3519,18 @@
               "title": "Method Full",
               "type": "string"
             }
-          },
-          {
-            "in": "query",
-            "name": "slot",
-            "required": true,
-            "schema": {
-              "title": "Slot",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "params",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Params"
-            }
-          },
-          {
-            "in": "query",
-            "name": "run_id",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Run Id"
-            }
-          },
-          {
-            "in": "query",
-            "name": "version",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Version"
-            }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OutputOptionsRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -1134,7 +3551,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Get Output Columns"
+        "summary": "Resolve Output Options"
       }
     },
     "/api/fs/browse": {
@@ -1178,13 +3595,19 @@
     },
     "/api/modules": {
       "get": {
-        "description": "Return modules as a nested dict keyed by module/method name for the builder UI.\n\nShape: {moduleName: {description, methods: {methodName: {inputs, outputs,\nparams_schema, executor, env, description, versions}}}}. The method's\nown contract fields and env are its newest version's; ``versions`` lists\nevery version (label, identity, registered_at, env, newest) with its\ncontract. The builder's module palette reads this shape.",
+        "description": "Return modules as a nested dict keyed by module/method name for the builder UI.\n\nShape: {moduleName: {description, color, methods: {methodName: {inputs,\noutputs, params_schema, executor, env, description, versions}}, drafts:\n{methodName: {kind, folder, ...contract, env, valid, reasons}}}}. The\nmethod's own contract fields and env are its newest version's;\n``versions`` lists every version (label, identity, registered_at, env,\nnewest) with its contract. ``color`` is the module's stored colour and\n``drafts`` the module's drafts (the palette's Drafts group). The\nbuilder's module palette reads this shape.",
         "operationId": "get_modules_api_modules_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "additionalProperties": {
+                    "$ref": "#/components/schemas/PaletteModule"
+                  },
+                  "title": "Response Get Modules Api Modules Get",
+                  "type": "object"
+                }
               }
             },
             "description": "Successful Response"
@@ -1286,9 +3709,539 @@
         "summary": "Download Pipeline Document"
       }
     },
+    "/api/registry/drafts": {
+      "get": {
+        "description": "List every draft, each with its Registration check and latest draft run.",
+        "operationId": "get_registry_drafts_api_registry_drafts_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Registry Drafts"
+      },
+      "post": {
+        "description": "Add a method folder as a draft of a module.\n\nThe dry run states the kind (a DRAFT version of the module's method of\nthe folder's name, or a DRAFT method) and the dialog's sentence, writing\nnothing. A folder whose method already has a draft from another folder\nis a 400 naming that folder.",
+        "operationId": "add_registry_draft_api_registry_drafts_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "dryRun",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Dryrun",
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DraftAddRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftAddResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Registry Draft"
+      }
+    },
+    "/api/registry/drafts/snapshot-check": {
+      "post": {
+        "description": "Check each draft's folder against its pointer's stat snapshot; nothing is written.",
+        "operationId": "check_draft_snapshots_api_registry_drafts_snapshot_check_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SnapshotCheckRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnapshotCheckResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Check Draft Snapshots"
+      }
+    },
+    "/api/registry/drafts/{module_name}/{method_name}": {
+      "delete": {
+        "description": "Remove draft: delete its draft folder (pointer and draft run); the method folder is untouched.\n\nAs method registration's route: the dry run returns Execution's delete\nplan (what goes, the text ``wfc delete-draft`` prints) and its token,\ndeleting nothing. The real request sends the token back as ``planned``\nand deletes only when a fresh plan has the same token; a different one\nis a 409 having deleted nothing, and a request with no token is a 400.",
+        "operationId": "remove_registry_draft_api_registry_drafts__module_name___method_name__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "module_name",
+            "required": true,
+            "schema": {
+              "title": "Module Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "method_name",
+            "required": true,
+            "schema": {
+              "title": "Method Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "dryRun",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Dryrun",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "planned",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Planned"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftActionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove Registry Draft"
+      }
+    },
+    "/api/registry/drafts/{module_name}/{method_name}/check": {
+      "get": {
+        "description": "The draft's Registration check: every line \u2713 or \u2717; nothing is written.",
+        "operationId": "check_registry_draft_api_registry_drafts__module_name___method_name__check_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "module_name",
+            "required": true,
+            "schema": {
+              "title": "Module Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "method_name",
+            "required": true,
+            "schema": {
+              "title": "Method Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftCheck"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Check Registry Draft"
+      }
+    },
+    "/api/registry/drafts/{module_name}/{method_name}/detail": {
+      "get": {
+        "description": "A draft's files and contract for its expanded row.",
+        "operationId": "get_registry_draft_detail_api_registry_drafts__module_name___method_name__detail_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "module_name",
+            "required": true,
+            "schema": {
+              "title": "Module Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "method_name",
+            "required": true,
+            "schema": {
+              "title": "Method Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Registry Draft Detail"
+      }
+    },
+    "/api/registry/drafts/{module_name}/{method_name}/draft-run": {
+      "delete": {
+        "description": "Delete outputs: remove the draft run, keeping the draft.\n\nThe dry run and the token as :func:`remove_registry_draft` takes them,\nover the Delete outputs plan.",
+        "operationId": "delete_registry_draft_run_api_registry_drafts__module_name___method_name__draft_run_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "module_name",
+            "required": true,
+            "schema": {
+              "title": "Module Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "method_name",
+            "required": true,
+            "schema": {
+              "title": "Method Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "dryRun",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Dryrun",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "planned",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Planned"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftActionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Registry Draft Run"
+      },
+      "get": {
+        "description": "The draft's latest draft run; a 404 says why there is none.",
+        "operationId": "get_registry_draft_run_api_registry_drafts__module_name___method_name__draft_run_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "module_name",
+            "required": true,
+            "schema": {
+              "title": "Module Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "method_name",
+            "required": true,
+            "schema": {
+              "title": "Method Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftRunDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Registry Draft Run"
+      }
+    },
+    "/api/registry/drafts/{module_name}/{method_name}/draft-run/zip": {
+      "get": {
+        "description": "Download the draft run's outputs as a zip.\n\nArgs:\n    module_name: The draft's module.\n    method_name: The draft's method.\n    node: Only this node's steps.\n    sample: Only this sample's steps.",
+        "operationId": "download_registry_draft_run_api_registry_drafts__module_name___method_name__draft_run_zip_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "module_name",
+            "required": true,
+            "schema": {
+              "title": "Module Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "method_name",
+            "required": true,
+            "schema": {
+              "title": "Method Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "node",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Node"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sample",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Sample"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Registry Draft Run"
+      }
+    },
+    "/api/registry/drafts/{module_name}/{method_name}/update": {
+      "post": {
+        "description": "Update: Registration's writing re-read of the draft, with no run.\n\nThe contract read now is stored on the pointer; the entry carries the\nre-read's own Registration check. Nothing is registered.",
+        "operationId": "update_registry_draft_api_registry_drafts__module_name___method_name__update_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "module_name",
+            "required": true,
+            "schema": {
+              "title": "Module Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "method_name",
+            "required": true,
+            "schema": {
+              "title": "Method Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftUpdateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Registry Draft"
+      }
+    },
     "/api/registry/envs": {
       "get": {
-        "description": "List distinct env specs referenced by registered methods.\n\nOne row per ``Method.env`` value. Aggregates method names, total run\ncount, and most-recent run timestamp (``Run.started_at``) across all\nmethods sharing that env, and resolves the registered env's ``backend``\nplus a ``has_packages`` flag: whether the captures folder of the env's\ncurrent image holds a package list (a byo image's holds none). It does\nnot verify the list: ``GET .../packages`` does, and refuses one whose\nbytes no longer match the record.\n\nEach row's ``registry`` says where the env's images are, read from the\ncaptures folders and the local daemon, never the registry: ``state``\n(``pushed``, ``not_pushed``, ``none`` for no registry, ``cannot_push``\nfor an image on this machine whose env name no registry accepts,\n``missing``, or ``unknown`` when Docker does not answer), ``base``,\n``older_not_pushed`` (older images method versions record that are not\npushed), ``older_missing`` (versions whose older image is gone),\n``recreate`` (the command that recreates the image), ``own_registry``\n(for a byo image pulled from its own registry, that ref; else ``null``)\nand ``reason`` (for ``cannot_push``, why the name cannot be pushed and\nthe fixes; else ``null``). It is ``null`` for an env with no record.",
+        "description": "List distinct env specs referenced by registered methods.\n\nOne row per ``Method.env`` value. Lists the method names sharing that\nenv, takes its run count and most-recent run start from Execution's run\ntallies (:func:`wfc.execution.run_tallies`), and resolves the registered env's ``backend``\nplus a ``has_packages`` flag: whether the captures folder of the env's\ncurrent image holds a package list (a byo image's holds none). It does\nnot verify the list: ``GET .../packages`` does, and refuses one whose\nbytes no longer match the record.\n\nEach row's ``registry`` says where the env's images are, read from the\ncaptures folders and the local daemon, never the registry: ``state``\n(``pushed``, ``not_pushed``, ``none`` for no registry, ``cannot_push``\nfor an image on this machine whose env name no registry accepts,\n``missing``, or ``unknown`` when Docker does not answer), ``base``,\n``older_not_pushed`` (older images method versions record that are not\npushed), ``older_missing`` (versions whose older image is gone),\n``recreate`` (the command that recreates the image), ``own_registry``\n(for a byo image pulled from its own registry, that ref; else ``null``)\nand ``reason`` (for ``cannot_push``, why the name cannot be pushed and\nthe fixes; else ``null``). It is ``null`` for an env with no record.",
         "operationId": "get_registry_envs_api_registry_envs_get",
         "responses": {
           "200": {
@@ -1343,7 +4296,7 @@
     },
     "/api/registry/methods": {
       "get": {
-        "description": "List registered methods for the Registry tab.\n\nShape: `{methods: [{name, module, env, runCount, source, versions}]}`.\n\n`source` is the project-relative `method.yaml` of the method's\nregistered copy, as the code resolver finds it, or null when the\nresolver refuses the record. `versions` lists every version in label\norder (:func:`_version_out`); the method's `env` is its newest\nversion's. A version is named by its identity in the detail and export\nroutes; the label is for display.",
+        "description": "List registered methods for the Registry tab.\n\nShape: `{methods: [{name, module, env, runCount, source, versions}]}`.\n\n`source` is the project-relative `method.yaml` of the method's\nregistered copy, as the code resolver finds it, or null when the\nresolver refuses the record. `versions` lists every version in label\norder (:func:`_version_out`); the method's `env` is its newest\nversion's. A version is named by its identity in the detail and export\nroutes; the label is for display. The methods are Registration's\nlisting (:func:`~wfc.registration.list_methods`); the run counts are\nExecution's run tallies (:func:`~wfc.execution.run_tallies`), merged on\nthe listed row ids.",
         "operationId": "get_registry_methods_api_registry_methods_get",
         "responses": {
           "200": {
@@ -1533,13 +4486,15 @@
     },
     "/api/registry/modules": {
       "get": {
-        "description": "List registered modules for the Registry tab.\n\nShape: `{modules: [{name, description, contracts[], methods, source}]}`.\n`color` is intentionally omitted -- the frontend assigns it from the\n`MOD_COLORS` cycle by registration order.",
+        "description": "List registered modules for the Registry tab.\n\nShape: `{modules: [{name, description, contracts[], methods, source,\ncolor}]}`. `color` is the module's stored colour (`#rrggbb`), the one\nevery view shows. The modules are Registration's listing\n(:func:`~wfc.registration.list_modules`).",
         "operationId": "get_registry_modules_api_registry_modules_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/RegistryModulesResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -1595,9 +4550,108 @@
         "summary": "Register Module Endpoint"
       }
     },
+    "/api/registry/modules/color-check": {
+      "post": {
+        "description": "Check a colour against the colour standard's six tests; nothing is written.",
+        "operationId": "check_module_color_api_registry_modules_color_check_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ColorCheckRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ColorCheckResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Check Module Color"
+      }
+    },
+    "/api/registry/modules/{name}": {
+      "patch": {
+        "description": "Set a module's colour (its own commit); null resets it to the default.\n\nA colour the colour check refuses is a 400 whose detail is the check's\nresult, and nothing is written.",
+        "operationId": "patch_registry_module_api_registry_modules__name__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModuleColorPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegistryModule"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ColorRefusalBody"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch Registry Module"
+      }
+    },
     "/api/registry/samples": {
       "get": {
-        "description": "List registered samples for the Registry tab.\n\nShape: `{samples: [{name, source, size, hash, pushed, runCount,\nregistered_at}]}`.\n\n`pushed` is `True` when a DVC content hash is present (indicates the sample\nis in the DVC cache and pushable to the remote); `False` otherwise.",
+        "description": "List registered samples for the Registry tab.\n\nShape: `{samples: [{name, source, size, hash, pushed, runCount,\nregistered_at}]}`.\n\n`pushed` is `True` when a DVC content hash is present (indicates the sample\nis in the DVC cache and pushable to the remote); `False` otherwise. The\nsamples are Registration's listing\n(:func:`~wfc.registration.list_samples`); the run counts are\nExecution's run tallies (:func:`~wfc.execution.run_tallies`), merged by\nsample name.",
         "operationId": "get_registry_samples_api_registry_samples_get",
         "responses": {
           "200": {
@@ -1775,9 +4829,143 @@
         "summary": "Get Wfc Completed Runs"
       }
     },
+    "/api/wfc/draft-step": {
+      "get": {
+        "description": "History's run panel for one draft step.\n\nArgs:\n    ref: The draft string, ``draft:<module>.<method>/<node>@<sample>``.\n        A malformed string is a 400 showing the full form; a draft step\n        that is gone is a 404 saying why.",
+        "operationId": "get_wfc_draft_step_api_wfc_draft_step_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "ref",
+            "required": true,
+            "schema": {
+              "title": "Ref",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftStepDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Wfc Draft Step"
+      }
+    },
+    "/api/wfc/draft-step/artifact": {
+      "get": {
+        "description": "Serve one file of a draft step's folder.\n\nArgs:\n    ref: The draft string.\n    name: The file's name inside the step's folder.",
+        "operationId": "get_wfc_draft_step_artifact_api_wfc_draft_step_artifact_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "ref",
+            "required": true,
+            "schema": {
+              "title": "Ref",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Wfc Draft Step Artifact"
+      }
+    },
+    "/api/wfc/draft-steps": {
+      "get": {
+        "description": "Every draft step that still exists, for Lineages and Descendants.\n\nArgs:\n    pipeline_id: Only the draft steps of this pipeline run.",
+        "operationId": "get_wfc_draft_steps_api_wfc_draft_steps_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "pipeline_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftStepsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Wfc Draft Steps"
+      }
+    },
     "/api/wfc/export-artifacts": {
       "post": {
-        "description": "Zip download of wfc run artifacts, optionally filtered by file type.",
+        "description": "Zip download of wfc run artifacts, optionally filtered by file type.\n\nAn invalid project config is a 409 with ``read_config``'s message.",
         "operationId": "export_wfc_artifacts_api_wfc_export_artifacts_post",
         "requestBody": {
           "content": {
@@ -1846,6 +5034,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportRefusalBody"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "422": {
             "content": {
@@ -1932,7 +5130,7 @@
     },
     "/api/wfc/pipelines": {
       "get": {
-        "description": "Return each pipeline's status and the number of runs it expects.",
+        "description": "Return each pipeline's status and the number of runs it expects.\n\nEach pipeline also names whether it ran in draft mode, its drafts, its\ndraft-step count, the draft steps that still exist and, once they are\ncleared, the one line that says why.",
         "operationId": "get_wfc_pipelines_api_wfc_pipelines_get",
         "responses": {
           "200": {
@@ -1955,7 +5153,7 @@
     },
     "/api/wfc/preview-artifacts": {
       "post": {
-        "description": "Preview what would be exported (all file types) without downloading.",
+        "description": "Preview what would be exported (all file types) without downloading.\n\nAn invalid project config is a 409 with ``read_config``'s message.",
         "operationId": "preview_wfc_artifacts_api_wfc_preview_artifacts_post",
         "requestBody": {
           "content": {
@@ -2092,6 +5290,7 @@
     },
     "/api/wfc/run/{run_id}/artifact/{artifact_path}": {
       "get": {
+        "description": "Serve one artifact's bytes, typed and named by its displayed name.\n\nThe media type comes from ``artifact_path``, never the resolved cache\npath (a top-level file output's cache entry has no extension). The file\nis shown inline and saved under its displayed name; an SVG is sandboxed\nso any script in it cannot run.",
         "operationId": "get_wfc_artifact_api_wfc_run__run_id__artifact__artifact_path__get",
         "parameters": [
           {
@@ -2154,7 +5353,13 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RunArtifact"
+                  },
+                  "title": "Response List Wfc Artifacts Api Wfc Run  Run Id  Artifacts Get",
+                  "type": "array"
+                }
               }
             },
             "description": "Successful Response"
@@ -2209,6 +5414,222 @@
           }
         },
         "summary": "Get Wfc Cancelled Descendants"
+      }
+    },
+    "/api/wfc/run/{run_id}/image-info/{artifact_path}": {
+      "get": {
+        "description": "Say what the image route's preview of a raster image shows, read from its header.\n\nThe file's and the preview's dimensions, whether the bit depth is\nreduced, its page count, the memory converting it takes, the smallest\n``[previews] memory_mb`` that admits it, and why the image route would\nrefuse it. Never decodes the file. An SVG, any other kind and a file\nPillow cannot read are a 415.",
+        "operationId": "get_wfc_image_info_api_wfc_run__run_id__image_info__artifact_path__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "artifact_path",
+            "required": true,
+            "schema": {
+              "title": "Artifact Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": "view",
+              "enum": [
+                "thumb",
+                "view",
+                "large"
+              ],
+              "title": "Size",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Wfc Image Info"
+      }
+    },
+    "/api/wfc/run/{run_id}/image/{artifact_path}": {
+      "get": {
+        "description": "Serve an image artifact as a PNG of at most 260, 2048 or 4096 px on its longer side.\n\nEvery raster image is converted, browser formats included, so the browser\nnever gets more than 4096 px; an image that fits ``size`` keeps its own\nsize. An SVG is served as it is, sandboxed. ``[previews] memory_mb`` is a\nceiling on the memory image previews use at once: two conversions run at\nonce and each may use up to half. An image whose conversion needs more,\nreckoned from its header (decoded size plus the resize, 8-bit and encode\nworking images), is a 422 with its dimensions and the ``memory_mb`` that\nwould admit it, never decoded. ``image-info`` tells what the preview shows.\n\nA converted PNG is kept in the preview cache (``[previews] cache_mb``,\nleast recently used dropped first), keyed by the output's content: a\nsecond request for the same image and size is answered from it, without\nconverting or queueing. Otherwise conversions queue for the two\nconversion threads, first come first served. The route is ``async`` so a\nqueued request holds none of the server's shared worker threads; the\nconfig read and the path's resolution run on one, the decode on the\nconversion pool.",
+        "operationId": "get_wfc_image_api_wfc_run__run_id__image__artifact_path__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "artifact_path",
+            "required": true,
+            "schema": {
+              "title": "Artifact Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": "view",
+              "enum": [
+                "thumb",
+                "view",
+                "large"
+              ],
+              "title": "Size",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/png": {},
+              "image/svg+xml": {}
+            },
+            "description": "The preview PNG; an SVG as it is, sandboxed."
+          },
+          "415": {
+            "description": "Not a raster image or SVG, or a file Pillow cannot read."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageTooLarge"
+                }
+              }
+            },
+            "description": "Converting the image would need more than half of [previews] memory_mb; the body names the memory_mb that admits it (an invalid size is FastAPI's validation error)."
+          }
+        },
+        "summary": "Get Wfc Image"
+      }
+    },
+    "/api/wfc/run/{run_id}/preview/{artifact_path}": {
+      "get": {
+        "description": "Preview the start of a table, JSON or text artifact, saying what was cut.\n\nA table shows at most 100 rows read from at most 2 MB, its delimiter and\nheader row guessed unless ``delimiter`` or ``header`` is given; text shows\nat most 1 MB; JSON is parsed up to 5 MB, and a larger or invalid file\ncomes back as text with its reason. Any other kind is a 415. An invalid\nproject config is a 409 with ``read_config``'s message.",
+        "operationId": "get_wfc_preview_api_wfc_run__run_id__preview__artifact_path__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "artifact_path",
+            "required": true,
+            "schema": {
+              "title": "Artifact Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "delimiter",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "comma",
+                    "tab",
+                    "semicolon",
+                    "pipe",
+                    "space"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Delimiter"
+            }
+          },
+          {
+            "in": "query",
+            "name": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Header"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactPreview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Wfc Preview"
       }
     },
     "/api/wfc/run/{run_id}/stream-logs": {
@@ -2374,7 +5795,7 @@
     },
     "/api/workflow/run": {
       "post": {
-        "description": "Submit a pipeline for execution via Snakemake.\n\nEnriches the PipelineJSON with script paths and slot_outputs from the DB,\nwrites it to a temp file, and spawns a background thread running\n``run_pipeline()``. Returns the pipeline_id as the job_id immediately.\n\nRejects empty pipelines with HTTP 400.  Before spawning the run thread it\npre-flights Docker and git: a not-ready\nenvironment is rejected with HTTP 409 carrying a kind-tagged\n``{kind, message, hint}`` payload (the same shape the frontend renders for\npre-run errors), so no orphan run is started.  Multiple pipelines may run\nconcurrently \u2014 each gets its own pipeline_id-scoped workspace.",
+        "description": "Submit a pipeline for execution via Snakemake.\n\nEnriches the PipelineJSON with script paths and slot_outputs from the DB,\nwrites it to a temp file, and spawns a background thread running\n``run_pipeline()``. Returns the pipeline_id as the job_id immediately.\n\nBefore spawning the run thread it pre-flights Docker and git: a not-ready\nenvironment is rejected with HTTP 409 carrying a kind-tagged\n``{kind, message, hint}`` payload (the same shape the frontend renders for\npre-run errors), so no orphan run is started.  Multiple pipelines may run\nconcurrently \u2014 each gets its own pipeline_id-scoped workspace.\n\nHTTP 400, with the refusal's text as its detail, answers a document the\npreparation refuses: an empty pipeline, an undeclared variable, an\nunregistered method, or the validator's refusals. The validator reads\neach draft's ``method.yaml`` now, so a draft node that cannot run (no\ndraft, another folder, its folder gone, an unreadable ``method.yaml``)\nand a param or ``param_sets`` value its contract does not accept are\n400s too.\n\nA draft node that passes the validator but cannot run is a 409 whose\ndetail is a ``draft_refused`` payload listing each refusal of\nExecution's draft preflight (which reads each draft again, so no Update\nis needed): its Registration check fails, its draft run is still\nrunning, it has no selected script, its env cannot be made runnable, or\na link names a slot its contract no longer declares or a required input\nit declares is unwired, each naming its node.",
         "operationId": "run_workflow_api_workflow_run_post",
         "requestBody": {
           "content": {
@@ -2394,6 +5815,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunRefusalBody"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "422": {
             "content": {
@@ -2451,7 +5882,7 @@
     },
     "/api/workflow/validate": {
       "post": {
-        "description": "Validate a pipeline graph against registered methods in the DB.\n\nThe thin wrapper over the Graph unit's structural core and the shared\nvalidation entry point: substitute the document's variables with Graph's\n``resolve_variables``, hand it to ``wfc.graph.validate_structure``\n(``{valid, errors, warnings}``) and merge in\n``wfc.execution.validation.validation_refusals``, the verdict submit,\n``run-pipeline`` and the runs preview give the same document.",
+        "description": "Validate a pipeline graph against registered methods in the DB.\n\nThe thin wrapper over Execution's ``document_verdict``, the verdict\n``wfc check-pipeline`` gives the same document: Graph's structural\ncheck over the substituted document, the validator's refusals and\n``draftRefusals``, each draft node that cannot run (no draft or its\nfolder gone, a failing Registration check, a draft run in progress).",
         "operationId": "validate_workflow_api_workflow_validate_post",
         "requestBody": {
           "content": {
@@ -2467,7 +5898,9 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/ValidateResponse"
+                }
               }
             },
             "description": "Successful Response"

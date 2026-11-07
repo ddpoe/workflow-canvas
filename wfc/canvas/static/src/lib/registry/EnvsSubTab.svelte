@@ -1,6 +1,8 @@
 <script lang="ts">
   import { fetchEnvs, fetchEnvPackages } from './api.js';
   import type { EnvRegistry, EnvRow, PackagesResponse, RegistryState } from './api.js';
+  import { kindColor } from '../shared/slotColor.js';
+  import EnvCliPointer from './EnvCliPointer.svelte';
 
   let { visible = true, filter = '' }: { visible?: boolean; filter?: string } = $props();
 
@@ -150,7 +152,8 @@
   {:else if loading && envs.length === 0}
     <div class="empty">Loading…</div>
   {:else if filteredEnvs.length === 0}
-    <div class="empty">No envs registered.</div>
+    <div class="empty">No envs registered.
+      {#if filter.trim() === ''}<div class="pointer-inline"><EnvCliPointer /></div>{/if}</div>
   {:else}
     <div class="body">
       <table class="reg-table">
@@ -175,7 +178,7 @@
             >
               <td class="mono">
                 <span class="chevron">{isExpanded ? '▼' : '▶'}</span>
-                <span class="chip chip-env">{env.spec}</span>
+                <span class="chip chip-env kind" style:--chip={kindColor('env')}>{env.spec}</span>
               </td>
               <td onclick={(e) => { e.stopPropagation(); toggleMethodsTooltip(env.spec); }}>
                 <span class="methods-count">{pluralize(env.methods.length, 'method')}</span>
@@ -190,7 +193,7 @@
               </td>
               <td>
                 {#if env.backend}
-                  <span class="chip chip-backend backend-{env.backend}">{env.backend}</span>
+                  <span class="chip chip-backend kind backend-{env.backend}" style:--chip={kindColor(env.backend)}>{env.backend}</span>
                 {:else}
                   <span class="dim">—</span>
                 {/if}
@@ -234,7 +237,7 @@
                     <div class="pkg-list" data-testid="packages-panel">
                       {#each pkgs as pkg}
                         <div class="pkg-row" data-testid="package-row">
-                          <span class="pkg-source src-{pkg.source}">{pkg.source}</span>
+                          <span class="pkg-source kind src-{pkg.source}" style:--chip={kindColor(pkg.source)}>{pkg.source}</span>
                           <span class="pkg-name mono">{pkg.name}=={pkg.version}</span>
                         </div>
                       {/each}
@@ -253,13 +256,13 @@
 <style>
   .envs { display: block; }
   .body { padding: 0; }
-  .empty, .error { padding: 28px 14px; color: #888; font-size: 12.5px; }
-  .error { color: #E74C3C; }
+  .empty, .error { padding: 28px 14px; color: var(--text-secondary); font-size: 12.5px; }
+  .error { color: var(--status-failed-ink); }
 
   .reg-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   .reg-table thead th {
     text-align: left;
-    color: #888;
+    color: var(--text-secondary);
     font-weight: 600;
     text-transform: uppercase;
     font-size: 10px;
@@ -276,12 +279,12 @@
     position: relative;
   }
   .env-row { cursor: pointer; }
-  .env-row:hover { background: #2d2d30; }
-  .env-row.expanded { background: #2d2d30; }
-  .chevron { color: #888; font-size: 9px; margin-right: 8px; display: inline-block; width: 8px; }
+  .env-row:hover { background: var(--bg-header); }
+  .env-row.expanded { background: var(--bg-header); }
+  .chevron { color: var(--text-secondary); font-size: 9px; margin-right: 8px; display: inline-block; width: 8px; }
 
   .mono { font-family: "JetBrains Mono", Consolas, monospace; font-size: 11.5px; }
-  .dim { color: #888; }
+  .dim { color: var(--text-secondary); }
 
   .chip {
     display: inline-block;
@@ -291,19 +294,22 @@
     font-family: "JetBrains Mono", Consolas, monospace;
     border: 1px solid;
   }
-  .chip-env { color: #9b59b6; background: rgba(155, 89, 182, 0.14); border-color: rgba(155, 89, 182, 0.35); }
-  .backend-pixi { color: var(--accent); background: rgba(74, 144, 217, 0.14); border-color: rgba(74, 144, 217, 0.35); }
-  .backend-conda { color: #50C878; background: rgba(80, 200, 120, 0.14); border-color: rgba(80, 200, 120, 0.35); }
-  .backend-byo { color: #E9A847; background: rgba(233, 168, 71, 0.14); border-color: rgba(233, 168, 71, 0.35); }
-  .backend-uv { color: #C77DDB; background: rgba(199, 125, 219, 0.14); border-color: rgba(199, 125, 219, 0.35); }
+  /* Env, backend and package-source chips are kinds with no run state:
+     a palette colour (`--chip`, from kindColor), never a protected one. */
+  .kind {
+    color: color-mix(in srgb, var(--chip, #808080), #fff 45%);
+    background: color-mix(in srgb, var(--chip, #808080) 16%, transparent);
+    border-color: color-mix(in srgb, var(--chip, #808080) 50%, transparent);
+  }
 
   .registry-cell { display: inline-flex; align-items: center; gap: 6px; cursor: help; }
-  .registry-pushed { color: #50C878; background: rgba(80, 200, 120, 0.14); border-color: rgba(80, 200, 120, 0.35); }
-  .registry-not_pushed, .registry-cannot_push { color: #E9A847; background: rgba(233, 168, 71, 0.14); border-color: rgba(233, 168, 71, 0.35); }
-  .registry-none, .registry-unknown { color: #888; background: rgba(136, 136, 136, 0.12); border-color: rgba(136, 136, 136, 0.35); }
-  .registry-missing { color: #E74C3C; background: rgba(231, 76, 60, 0.14); border-color: rgba(231, 76, 60, 0.45); }
-  .registry-count { color: #888; font-size: 10.5px; }
-  .registry-count-missing { color: #E74C3C; }
+  /* Pushed is a passed check (ok green); not pushed is a notice, neutral. */
+  .registry-pushed { color: var(--status-ok); background: color-mix(in srgb, var(--status-ok) 14%, transparent); border-color: color-mix(in srgb, var(--status-ok) 35%, transparent); }
+  .registry-not_pushed, .registry-cannot_push { color: var(--text-primary); background: transparent; border-color: var(--marker-light); }
+  .registry-none, .registry-unknown { color: var(--text-secondary); background: rgba(136, 136, 136, 0.12); border-color: rgba(136, 136, 136, 0.35); }
+  .registry-missing { color: var(--status-failed-ink); background: color-mix(in srgb, var(--status-failed) 14%, transparent); border-color: color-mix(in srgb, var(--status-failed) 45%, transparent); }
+  .registry-count { color: var(--text-secondary); font-size: 10.5px; }
+  .registry-count-missing { color: var(--status-failed-ink); }
 
   .methods-count { color: var(--accent); border-bottom: 1px dotted var(--accent); cursor: help; padding-bottom: 1px; font-size: 11.5px; font-family: "JetBrains Mono", Consolas, monospace; }
 
@@ -311,7 +317,7 @@
     position: absolute;
     top: 30px;
     left: 10px;
-    background: #252526;
+    background: var(--bg-panel);
     border: 1px solid var(--border);
     border-radius: 4px;
     padding: 8px 12px;
@@ -322,7 +328,7 @@
     min-width: 200px;
   }
   .methods-tooltip .label {
-    color: #888; font-size: 9px; text-transform: uppercase;
+    color: var(--text-secondary); font-size: 9px; text-transform: uppercase;
     letter-spacing: 0.6px; margin-bottom: 4px; font-weight: 600;
   }
   .tooltip-method {
@@ -332,7 +338,7 @@
   .tooltip-method:hover { color: #5aa0e9; }
 
   .detail-row td {
-    background: #1e1e1e;
+    background: var(--bg-input);
     padding: 14px 18px 18px 28px;
     border-bottom: 1px solid var(--border);
   }
@@ -341,12 +347,13 @@
     text-transform: uppercase;
     font-size: 10px;
     letter-spacing: 0.6px;
-    color: #888;
+    color: var(--text-secondary);
     font-weight: 600;
     margin-bottom: 8px;
   }
 
   .empty-pkgs { font-size: 11.5px; }
+  .pointer-inline { margin-top: 16px; }
 
   .pkg-list {
     display: flex;
@@ -373,9 +380,5 @@
     font-family: "JetBrains Mono", Consolas, monospace;
     border: 1px solid;
   }
-  .src-conda { color: #50C878; background: rgba(80, 200, 120, 0.10); border-color: rgba(80, 200, 120, 0.30); }
-  .src-pixi  { color: var(--accent); background: rgba(74, 144, 217, 0.10); border-color: rgba(74, 144, 217, 0.30); }
-  .src-pip   { color: #E9A847; background: rgba(233, 168, 71, 0.10); border-color: rgba(233, 168, 71, 0.30); }
-  .src-uv    { color: #C77DDB; background: rgba(199, 125, 219, 0.10); border-color: rgba(199, 125, 219, 0.30); }
-  .pkg-name { color: #ccc; font-size: 11.5px; }
+  .pkg-name { color: var(--text-primary); font-size: 11.5px; }
 </style>

@@ -6,7 +6,7 @@
  * the pure compile functions.
  */
 import { get, writable, type Writable } from 'svelte/store';
-import { nodes, edges, pipelineName, clearRunState, resetNodeCounter, modules, pipelineVariables } from './stores.js';
+import { nodes, edges, pipelineName, clearRunState, resetNodeCounter, modules, pipelineVariables, newCanvasGeneration } from './stores.js';
 import { dispatchRun, paramEditorAggregator } from '../machines/root.js';
 import { methodNode, inputSelectorNode, runReferenceNode } from './nodeData.js';
 import { layoutByDepth } from './layout.js';
@@ -83,7 +83,7 @@ export const parsePipelineJSON = _parsePipelineJSON;
  *   - base:    `${nodeId}::${paramName}`
  *   - variant: `${nodeId}::${paramName}::${variantName}`
  */
-function collectBoundVariables(): BoundVariablesMap {
+export function collectBoundVariables(): BoundVariablesMap {
   const out: BoundVariablesMap = {};
   // Aggregator children is `Record<string, ChildActor>` — actors stored
   // directly, not wrapped in `{ actor }` — so iterate with `Object.entries`.
@@ -153,7 +153,9 @@ export function exportPipeline(): PipelineJSON {
 function findMethodDef(moduleName: string, methodName: string): MethodDef | undefined {
   const $modules = get(modules);
   const mod = $modules.find(m => m.name === moduleName);
-  return mod?.methods.find(m => m.name === methodName);
+  // A new method's draft is not among the registered methods.
+  return mod?.methods.find(m => m.name === methodName)
+    ?? mod?.drafts?.find(m => m.name === methodName);
 }
 
 /**
@@ -162,6 +164,7 @@ function findMethodDef(moduleName: string, methodName: string): MethodDef | unde
  * reset, so a caller may send it the next event (Watch in canvas).
  */
 export function loadPipeline(pipeline: PipelineJSON): Promise<void> {
+  newCanvasGeneration();
   if (pipeline.name) pipelineName.set(pipeline.name);
   let maxId = 0;
   const {
@@ -224,6 +227,7 @@ export function loadPipeline(pipeline: PipelineJSON): Promise<void> {
         sampleOverrides: nodeSampleOverrides[pn.id],
         sampleVariants: nodeSampleVariants[pn.id],
         version: pn.version,
+        folder: pn.folder,
       });
     }
   });

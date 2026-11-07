@@ -8,11 +8,15 @@
  */
 import { describe, expect, it } from 'vitest';
 import { createActor, fromCallback, type EventObject } from 'xstate';
-import { makeStreamingMachine } from '../streaming.machine';
+import {
+  makeStreamingMachine,
+  type StreamingEvent,
+  type StreamingInput,
+} from '../streaming.machine';
 
 function makeStubService() {
-  let sendBackRef: ((evt: EventObject) => void) | null = null;
-  const stub = fromCallback<EventObject, EventObject>(({ sendBack }) => {
+  let sendBackRef: ((evt: StreamingEvent) => void) | null = null;
+  const stub = fromCallback<EventObject, StreamingInput>(({ sendBack }) => {
     sendBackRef = sendBack;
     return () => {
       sendBackRef = null;
@@ -20,15 +24,15 @@ function makeStubService() {
   });
   return {
     stub,
-    emit: (evt: EventObject) => {
+    emit: (evt: StreamingEvent) => {
       sendBackRef?.(evt);
     },
   };
 }
 
-function startActor(stub: ReturnType<typeof fromCallback>) {
+function startActor(stub: ReturnType<typeof makeStubService>['stub']) {
   const m = makeStreamingMachine().provide({
-    actors: { subscribeSSE: stub as never },
+    actors: { subscribeSSE: stub },
   });
   const actor = createActor(m, {
     input: { runId: 'run-1', fullMode: false },

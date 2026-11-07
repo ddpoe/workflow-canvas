@@ -2,6 +2,82 @@
 
 Notable changes to Workflow Canvas. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.0b2] — 2026-11-06
+
+### Upgrading
+- `wfc run-pipeline` takes the pipeline file with `--pipeline` only, and its `--wfc-root` option is gone (it was ignored).
+- A draft reads its `method.yaml` on every run. A pipeline or `wfc try --params` that sets a parameter the draft no longer declares, gives it a value of the wrong type, or links a slot that is gone is now refused, naming the node and the field, where it used to keep the draft's old contract until ↻ Update.
+
+### Added
+- `wfc list-methods`, `wfc list-modules` and `wfc list-samples` list what is registered, beside `wfc list-envs`.
+- `wfc show-run --run <id>` shows one run's detail: its method and version, sample, parameters, metrics, outputs and logs; `--log stderr` or `--log stdout` prints the log, so a failed run's error can be read from the command line.
+- `wfc check-pipeline --pipeline <file>` gives the verdict the canvas's Validate gives, and the load's, without running anything or needing Docker.
+- `wfc run-method <module>.<method> --sample <sample>` runs one registered method on one sample, recorded and cached like any run, with `--params` as JSON, `--name` for the pipeline it saves in `pipelines/`, and `--save <path>` to save it elsewhere.
+- `wfc delete-draft <module>.<method>` removes a method's draft (wfc's record of it, its draft run and results, never the method folder), or with `--outputs-only` only its draft run. It prints what it removes and asks first; pass `--yes` in a script.
+- `--json` on `wfc runs`, `show-run`, the `list-*` commands, `check-pipeline`, `share`, `verify` and `doctor`.
+- The demo has three modules in three colours, 400-cell samples and a KDE figure.
+- The `wfc` plugin's skills cover the new commands, fix what would make a rerun give different files (an unset seed, a file that stores when it was made) and say why, answer questions about how wfc works, and keep an intake record of each registered version in `wfc-intake/<module>.<method>.md` when you want one.
+
+### Changed
+- A refused `wfc try` leaves the previous draft run in place.
+- A pipeline the loader refuses prints one `ERROR:` line naming the node and the field, in place of a Python traceback.
+- `wfc --help` lists the commands a user runs and calls the program `wfc`; each command's `--help` keeps its description; output reads correctly in Git Bash on Windows, with context lines printed before the error they belong to.
+- `wfc share` lists what a collaborator needs to run your methods (the git remote, the registry login and base, unpushed images, versions that cannot run) and says that runs, samples and outputs stay in your local `wfc.db`, pointing to `wfc export-run` for handing over a run. Its archive row is gone; `wfc doctor` still checks the archive.
+- `wfc try`'s export hint no longer suggests `--dest .`, and `wfc export --path --all` names draft and recorded outputs by slot alike.
+- Registration warns about a declared parameter the script never reads.
+- The user guide is reorganised into step-by-step task pages, with tutorials for drafting a method and for working with an AI agent.
+
+### Fixed
+- `wfc share` with no git remote says there is none, instead of "the git remote is not on GitHub".
+- The guide's footer names the version it documents, and a pre-release's guide gives its install command with the version (`pip install workflow-canvas==0.8.0b2`).
+- On macOS, opening several previews of a folder output at once no longer fails some of them.
+
+## [0.8.0b1] — 2026-11-05
+
+### Upgrading
+- Column declarations in `method.yaml` are now output options. `columns:` on an output becomes `options:`, and `strict:` inside it becomes `fixed:`. `columns:` on an input is removed: declare `options:` on the upstream method's output instead. `column_of_input: <input>` on a parameter becomes `options_from: <input>`, and `new_column` is removed with no replacement. `wfc register-method` refuses the old forms, naming what to write instead. Method versions registered earlier keep running.
+- wfc now requires `wfc-client` 0.3.0. With it installed in an env, `ctx.input("<input>")` returns one path for an input that takes one file, a list for an input declared `multiple: true`, and `None` for an optional input with nothing connected (it used to return an empty list). Scripts that write `ctx.input("data")[0]` or loop over the result keep working, and the step log notes once that the `[0]` is not needed; other list operations, such as `len()`, need `multiple: true` on the input. An env built with an older `wfc-client` still returns lists: to drop `[0]` from your scripts, install `wfc-client` 0.3.0 in the env and run `wfc register-env <name> --force`.
+- A pipeline that sends more than one file into an input without `multiple: true`, such as an Input Selector bundling several samples into it, is refused before it runs, naming the node and the input, in the canvas and from `wfc run-pipeline`. Add `multiple: true` to that input in `method.yaml` and run `wfc register-method` again.
+- wfc no longer installs pandas, numpy or pyarrow. If you use them in the Python environment wfc is installed in, install them there yourself. Env images are not affected.
+- In an existing demo project, run `wfc demo --force` to get this version's demo, whose methods read their inputs without `[0]` and whose plot step picks its column with the options picker.
+
+### Added
+- `wfc try <method-dir> --module <module> --sample <sample>` runs a method folder, registered or not, in its env's container, on a sample or, with `--parent-run-id`, on other runs' outputs, with `--params` as for `wfc run-step`. Nothing is registered or recorded: no run, cache entry or archive entry is added. The folder becomes the module's draft of that method, its outputs stay until the draft runs again, and the command ends with a `wfc export` line for each output.
+- A draft step is named by a draft string, `draft:<module>.<method>/<node>@<sample>`, which `wfc export --run` and `--parent-run-id` take in place of a run ID. `wfc runs` lists each draft step that still exists, with its draft string in the RUN column. A draft string missing a part is refused with the full form shown.
+- `wfc jupyter --method <dir> --module <module>` and `wfc shell --method <dir> --module <module>` start the session in the env the method's `method.yaml` names, with the inputs, parameters and run folder a step of that method gets, so `RunContext()` works inside it. Both take `--sample`, `--params` and `--parent-run-id`.
+- Drafts in the canvas. **+ Draft from folder…** on the Registry's Methods tab makes a method folder a module's draft, of the next version of a method the module has or of a new method, listed under **DRAFT**. A draft's panel shows the **Registration check** (each check ✓ or ✗, with nothing written), **Update** to read a changed `method.yaml` again, **Register as v<N>**, and a **Draft run** tab with its last run's outputs, **⤓ Download zip** and **Delete outputs**. In the Builder, drag a draft from the palette's Drafts group or pick `draft` as a node's version; the canvas shows **Draft mode** while a pipeline holds a draft.
+- A draft node runs as a draft, and so does every step downstream of it. Draft-mode steps always run and never read or fill the cache; steps upstream of a draft can still be cache hits. Only a draft's latest results are kept, and History shows its steps marked **DRAFT**. Their outputs can be downloaded but not exported as a rerun bundle. Registering the method records its future runs.
+- A method's output can declare `options:` (`fixed` names, names built `from_params`, and glob `patterns`), the names it offers downstream: column names, gene names, sample labels. A string parameter with `options_from: <input>` (or a list of inputs) gets a picker in the Inspector, with one section per wired upstream step, a filter as you type, a tick on the option that matches the value, and a **Built from** link to the upstream parameter a name was built from. Free text is always accepted, and wfc checks nothing against the options.
+- The run detail panel's Artifacts tab groups outputs under headers you can collapse, gives every image a preview on demand (**show all** / **hide all**), and shortens long names in the middle, with the full name on hover. Clicking a file opens a viewer over the canvas for images (zoom, **1:1**, **Fit**, **Full screen**), tables (first 100 rows, **Delimiter**, **Header row**), JSON (a tree, or **Raw**), text (line numbers, **Wrap**) and PDFs, stepping through a folder's files with ‹ and › or the arrow keys. TIFF, 16-bit and large images are converted for the screen, with a line saying how the copy differs from the file.
+- New section `[previews]` in `.wfc/wf-canvas.toml`: `memory_mb` (default 1024) caps the memory image previews use at once, and `cache_mb` (default 500) the disk saved previews take in `.wfc/cache/previews/`. An image too large for `memory_mb` shows "Too large to preview" with the value that would let it show. `wfc cache prune` empties the preview folder.
+- Drag the run detail panel's left edge to widen it, between 360 and 720 pixels; double-click the edge to set it back.
+- A module's colour can be changed in the Registry's **COLOUR** picker and is shown the same in the Builder, Registry and History. It is kept in `.wfc/registry/modules.json` and committed, so every clone sees the same colours. Colours the canvas uses for run status cannot be chosen.
+- `wfc push-env --registry <base>` naming another base than the project's asks to switch the project to it, then changes and commits `[registry] url`. `wfc push-env --all` then pushes every image recorded at the old base to the new one, pulling an image no longer on this machine from the old base by its digest first. Cached results stay reusable.
+- `wfc share` has an archive row, saying whether the archive is configured and reachable from this machine; it waits up to 10 seconds and the other rows still print. With no git remote, its packages row links each package's settings page, where you give a recipient access under **Manage access**, and names the `read:packages` login the recipient needs.
+- `wfc --version` prints the installed version.
+- A `wfc` plugin for AI agents in Claude Code and Codex, with two skills: `using-wfc`, for working with wfc (its model, its commands, setting up a project), and `creating-a-wfc-method`, which brings a script into wfc as a method: it tries the method with `wfc try` and as a draft first, registers it only when you agree, and writes up what changed between your machine and the Linux container. Both note a suspected wfc bug at the end of a task and file an issue only when you agree. In Claude Code, run `/plugin marketplace add ddpoe/workflow-canvas`, then `/plugin install wfc@workflow-canvas`. In Codex, run `codex plugin marketplace add ddpoe/workflow-canvas`, then `codex plugin add wfc@workflow-canvas`.
+- A tutorial, Drafting a Method, takes a method folder through `wfc try` and a draft in the canvas to registration.
+
+### Changed
+- The canvas follows one colour standard: a module's colour is the only fill, a node's or card's run status is shown on its border, and every view uses the same module colour.
+- A failed step shows one error box in the Inspector and at the top of the run detail panel, on every tab: **This step failed**, the error cut to two lines (its full text on hover), and **See output**, which opens the log. The Overview tab no longer repeats the error. The Output tabs mark a failed run ✗, start a finished log at its first line, follow a running step's newest line, and have **Show more** for a taller box and **Copy** for the lines shown. A failed Descendants card in History reads "✗ Failed after <duration>" and opens the run on its Output tab.
+- A method's prints reach its step log as they happen, without `flush=True`, and the Inspector's Output tab follows them while the step runs.
+- `ctx.input` asked for an input the method does not declare fails, listing the declared inputs, and `ctx.save_artifact` with an undeclared output name writes a warning to the step log listing the declared outputs.
+- Pipeline load no longer compares the columns declared by connected steps.
+- wfc commits as you when git has your name and email, and as `wfc <wfc@wfc>` otherwise, for `wfc init` and every registration commit.
+- With no terminal (a script or CI job) and no `--yes`, `wfc delete-env`, `wfc cache prune` and `wfc demo --remove` change nothing and say to pass `--yes`, as the other confirming commands do. `wfc delete-env` takes `--yes`; `--force` does the same.
+- The Registry's Envs tab says that envs are registered from the command line and gives `wfc register-env --help` to copy, also when no env is registered.
+- The wheel ships only the `wfc` package, the built canvas and the demo assets, and is 2.9 MB.
+- Your First Pipeline starts from a conda env, checks the project with `wfc doctor` before registering anything, and writes the `method.yaml` before the script. Write an R Method and Registering an Environment cover an R env captured from conda.
+
+### Fixed
+- A parameter bound to a pipeline variable with 🔗 in the Inspector is saved with its node as `{"$var": <name>}`, so it reaches Run and Export after the Inspector shows another node, and shows bound when its node is opened again. It used to be dropped, and the method ran with its declared default.
+- A conda env registered from Windows or macOS is solved for Linux from the channels its packages came from. A conda-forge env used to be refused with "no linux-64 build … in defaults".
+- A pixi env with R and no Python, registered from its lock file, builds; it used to fail with `exit code: 127`. A pixi env for R no longer needs `python` and `pip`, unless you capture an installed env with `pixi:<project>:<env>`.
+- On Windows, a confirming command run with stdin from `NUL` refuses and names `--yes` instead of reading the empty input as "no".
+- Inside `wfc exec`, `wfc shell` and `wfc jupyter`, `python` is the env's own interpreter, the one its methods run under. It used to be the base image's Python for a uv env.
+- A results file whose output entry is not one path, or whose metric is not one value, fails its step with a message naming the file and the field. It used to fail as "failed (orphaned run)" with no reason.
+
 ## [0.7.0] — 2026-10-27
 
 ### Upgrading

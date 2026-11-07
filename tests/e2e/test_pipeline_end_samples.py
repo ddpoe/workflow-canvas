@@ -21,8 +21,6 @@ from tests.fixtures.conftest import create_sample_csv as _create_sample_csv
 from wfc import layout
 from wfc.execution import run_pipeline
 
-WFC_ROOT = Path(__file__).resolve().parent.parent.parent
-
 # Real pipelines through the container dispatch path (register_fixture_methods
 # builds a real image): deselected from the default suite, skipped without Docker.
 pytestmark = [pytest.mark.integration, requires_docker]
@@ -53,7 +51,7 @@ def _transform_pipeline(pipeline_factory, name: str, suffix: str, *, crash: bool
 
 def _run(pipeline_path: Path, project_dir: Path) -> None:
     run_pipeline(pipeline_path=str(pipeline_path), project_root=str(project_dir),
-                 wfc_root=str(WFC_ROOT), cores=1)
+                 cores=1)
 
 
 @workflow(

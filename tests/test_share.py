@@ -158,9 +158,12 @@ def test_share_names_the_fix_for_every_missing_item(git_project, monkeypatch,
     images = _row(out, "images")
     assert images.startswith("  [WARN] images") and f"{ENV}:fp-" in images, images
     assert "wfc push-env --all" in images
+    from wfc.cli import github_images_guide_url
+    from wfc.version import installed_wfc_version
+
     assert out.rstrip().endswith(
-        "See your images on GitHub: https://workflow-canvas.readthedocs.io/"
-        "en/latest/how-to/see-your-images-on-github.html"), out
+        "See your images on GitHub: "
+        + github_images_guide_url(installed_wfc_version())), out
 
     口 = Step(step_num=3, name="Pushed, but the package is not connected",
              purpose="push-env --all sets the base and pushes; share then "
@@ -299,6 +302,138 @@ def test_share_lists_the_versions_that_cannot_run(git_project, monkeypatch,
     assert rc == 0, out
     row = _row(out, "versions")
     assert row.startswith("  [WARN] versions") and "cannot tell" in row, row
+
+
+@workflow(purpose="Case 16, Execution half: share's checklist with no git remote "
+                  "says the project has no git remote in the login and base "
+                  "rows, as push-env words it, and has no archive row; with a "
+                  "remote that is not on GitHub the two rows name that remote")
+def test_share_says_when_the_project_has_no_git_remote(git_project, monkeypatch):
+    """No remote is not "not on GitHub"; share covers no archive."""
+    from wfc.execution.readiness import share_checks
+
+    project = _project(git_project, monkeypatch)
+    root = project.root
+    stub_docker_image_inspect(monkeypatch, HELD)
+    stub_docker_read_manifest(monkeypatch, _never_the_registry)
+    _no_push_or_tag(monkeypatch)
+    stub_gh(monkeypatch)
+
+    口 = Step(step_num=1, name="No git remote",
+             purpose="login and base say the project has no git remote; the rows "
+                     "are remote, login, base, images, packages, versions")
+    rows = {row.name: row for row in share_checks(root)}
+    assert list(rows) == ["remote", "login", "base", "images", "packages",
+                          "versions"], list(rows)
+    assert "the project has no git remote" in rows["login"].message, rows["login"]
+    assert "the project has no git remote" in rows["base"].fix_hint, rows["base"]
+    assert "not on GitHub" not in rows["login"].message + rows["base"].fix_hint
+
+    口 = Step(step_num=2, name="A remote that is not on GitHub",
+             purpose="The two rows name the remote and say it is not on GitHub")
+    other = "https://gitlab.example.org/lab/tools.git"
+    _git(root, "remote", "add", "origin", other)
+    rows = {row.name: row for row in share_checks(root)}
+    assert f"the git remote {other} is not on GitHub" in rows["login"].message
+    assert f"the git remote {other} is not on GitHub" in rows["base"].fix_hint
+
+
+@workflow(purpose="Case 16, CLI half: wfc share with no git remote says so, says "
+                  "runs, samples and outputs stay in the local wfc.db and that a "
+                  "collaborator registers samples again, and names wfc export-run "
+                  "(--with-image for unpushed images); --json is one object with "
+                  "ok and the rows; --help says the same")
+def test_share_says_what_it_covers_and_points_to_export_run(
+        git_project, monkeypatch, capsys):
+    import json
+
+    import pytest
+
+    from wfc.cli import cli_main
+
+    project = _project(git_project, monkeypatch)
+    root = project.root
+    stub_docker_image_inspect(monkeypatch, HELD)
+    stub_docker_read_manifest(monkeypatch, _never_the_registry)
+    _no_push_or_tag(monkeypatch)
+    stub_gh(monkeypatch)
+
+    口 = Step(step_num=1, name="The plain output",
+             purpose="No git remote; what stays local; the hand-off command")
+    rc, out = _share(monkeypatch, capsys, root)
+    assert rc == 0, out
+    assert "the project has no git remote" in out, out
+    assert "wfc.db" in out and "register" in out, out
+    assert "wfc export-run" in out and "--with-image" in out, out
+
+    口 = Step(step_num=2, name="--json",
+             purpose="One object on stdout: ok, the rows by name, the same notes")
+    capsys.readouterr()
+    assert cli_main(["share", "--json"]) == 0
+    answer = json.loads(capsys.readouterr().out)
+    assert answer["ok"] is True
+    assert [row["name"] for row in answer["checks"]] == [
+        "remote", "login", "base", "images", "packages", "versions"]
+    assert any("wfc export-run" in note for note in answer["notes"])
+
+    口 = Step(step_num=3, name="--help",
+             purpose="The help says what stays local and names wfc export-run")
+    with pytest.raises(SystemExit):
+        cli_main(["share", "--help"])
+    shown = " ".join(capsys.readouterr().out.split())
+    assert "wfc export-run" in shown and "wfc.db" in shown, shown
+    assert "archive" not in shown, shown
+
+
+@pytest.mark.parametrize(("version", "channel"), [
+    ("0.8.0b1", "/en/latest/"), ("0.8.0.dev3", "/en/latest/"),
+    ("0.8.0", "/en/stable/"), (None, "/en/latest/")])
+def test_the_images_guide_url_follows_the_installed_version(version, channel):
+    """A pre-release reads the latest docs; a release the stable ones."""
+    from wfc.cli import github_images_guide_url
+
+    url = github_images_guide_url(version)
+    assert channel in url and url.endswith("how-to/see-your-images-on-github.html")
+
+
+@workflow(purpose="wfc share with no git remote and an image pushed to GHCR "
+                  "under a set base: the packages row warns naming each "
+                  "package's settings page and its Manage access section and "
+                  "the read:packages login the recipient needs, asks gh "
+                  "nothing, and does not send the user to connect a repository")
+def test_share_without_a_git_remote_names_how_to_grant_package_access(
+        git_project, monkeypatch, capsys):
+    """A rerun-bundle hand-off: access is granted on the package, not a repository."""
+    from wfc.cli import cli_main
+
+    project = _project(git_project, monkeypatch)
+    root = project.root
+    stub_docker_image_inspect(monkeypatch, HELD)
+    stub_docker_read_manifest(monkeypatch, "found")
+    stub_docker_tag(monkeypatch)
+    stub_docker_push(monkeypatch)
+    stub_docker_image_labels(monkeypatch)
+    stub_docker_build(monkeypatch)
+    stub_docker_image_content(monkeypatch, HELD_CONTENT)
+    stub_gh(monkeypatch)
+    monkeypatch.chdir(root)
+    assert cli_main(["push-env", "--all", "--registry", BASE, "--yes"]) == 0
+    _no_push_or_tag(monkeypatch)
+
+    calls = stub_gh(monkeypatch)
+    rc, out = _share(monkeypatch, capsys, root)
+    assert rc == 0, out
+    assert _row(out, "images").startswith("  [  OK] images"), out
+    packages = _row(out, "packages")
+    assert packages.startswith("  [WARN] packages"), packages
+    assert ("https://github.com/users/lab/packages/container/"
+            "tools-project%2Fimage-io/settings") in packages, packages
+    assert '"Manage access"' in packages, packages
+    assert "gh auth login --scopes read:packages" in packages, packages
+    assert ("gh auth token | docker login ghcr.io -u <their GitHub user> "
+            "--password-stdin") in packages, packages
+    assert "Connect Repository" not in packages, packages
+    assert calls == [], calls
 
 
 def test_a_base_with_a_trailing_slash_is_read_the_same_by_every_reader(

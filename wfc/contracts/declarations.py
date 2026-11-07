@@ -18,9 +18,9 @@ from pathlib import Path
 
 from axiom_annotations import task
 
-from .columns import validate_columns_block
+from .options import validate_options_block
 from .param_check import normalize_param_value
-from .slots import validate_output_slot_type, validate_slot_name
+from .slots import validate_input_multiple, validate_output_slot_type, validate_slot_name
 from .vocabulary import PARAM_TYPE_ALIASES, PARAM_TYPES
 
 logger = logging.getLogger(__name__)
@@ -76,9 +76,11 @@ def parse_method_yaml(method_dir: Path) -> dict | None:
     ``outputs``, and ``params`` (default to empty dicts), ``executor``
     (default ``"python"``), ``env`` (required -- a missing or ``inherit``
     value is rejected), ``script`` and ``helpers`` (optional, default
-    ``None``), and ``gpus`` (default ``False``).  The ``columns`` key on
-    input/output slots and ``contents`` key on directory output slots are
-    preserved as-is from the YAML.  A param's ``type`` is written back in
+    ``None``), and ``gpus`` (default ``False``).  The ``options`` key on
+    output slots (its shape checked) and ``contents`` key on directory
+    output slots are preserved as-is from the YAML, as is any other slot
+    or param key.  An input's ``multiple`` must be a boolean when present
+    (absent: the input takes one file).  A param's ``type`` is written back in
     its canonical spelling (``PARAM_TYPES``); an accepted alias resolves,
     anything else is refused. A param's ``default`` is then normalized by
     its type (``normalize_param_value``: an ``int``'s ``1.0`` is stored as
@@ -171,6 +173,11 @@ def parse_method_yaml(method_dir: Path) -> dict | None:
     # the canonical form like outputs.
     if isinstance(inputs, dict):
         for slot_name, slot_spec in inputs.items():
+            # `multiple` says the input collects several files; without it
+            # an input takes one. Anything but a boolean is refused here,
+            # naming the input; an absent key is not written back, so a
+            # contract that never named it keeps its fingerprint.
+            validate_input_multiple(slot_name, slot_spec, source=yaml_path)
             if isinstance(slot_spec, dict) and "type" in slot_spec:
                 try:
                     slot_spec["type"] = validate_output_slot_type(
@@ -183,15 +190,16 @@ def parse_method_yaml(method_dir: Path) -> dict | None:
                         yaml_path, slot_name, exc,
                     )
 
-    # A `columns` block on an input or output slot is a declaration the
-    # canvas dropdown and the load-time cross-check read; a malformed one
-    # would parse clean and resolve to nothing, so its shape is refused
-    # here naming the slot. Well-formed blocks pass through untouched.
-    for slots in (inputs, outputs):
-        if isinstance(slots, dict):
-            for slot_name, slot_spec in slots.items():
-                if isinstance(slot_spec, dict) and slot_spec.get("columns") is not None:
-                    validate_columns_block(slot_name, slot_spec["columns"], source=yaml_path)
+    # An `options` block on an output slot is a declaration the canvas's
+    # options picker reads; a malformed one would parse clean and resolve to
+    # nothing, so its shape is refused here naming the slot. Well-formed
+    # blocks pass through untouched. Every other slot key passes through as
+    # written: a registered version's stored contract is re-read here, so a
+    # retired form is refused at registration, not by this parser.
+    if isinstance(outputs, dict):
+        for slot_name, slot_spec in outputs.items():
+            if isinstance(slot_spec, dict) and slot_spec.get("options") is not None:
+                validate_options_block(slot_name, slot_spec["options"], source=yaml_path)
 
     # Optional explicit script selector. Passed through verbatim; extension
     # recognition and file existence are validated at registration

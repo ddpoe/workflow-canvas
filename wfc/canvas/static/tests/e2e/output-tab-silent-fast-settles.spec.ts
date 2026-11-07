@@ -32,10 +32,13 @@ test('silent fast-completed run settles the Output tab, not stuck on Connecting�
   await page.locator('[data-id="method_a"]').click();
   await page.getByRole('button', { name: /output/i }).click();
 
-  // The badge must settle on the terminal success state, and no
-  // "Connecting…" placeholder may remain.
-  await expect(page.locator('.output-status-succeeded')).toBeVisible({
+  // The tab must settle on its terminal state — a finished run with no
+  // output says so — and no "Connecting…" placeholder may remain.
+  await expect(page.getByText('No output captured.')).toBeVisible({
     timeout: 5_000,
   });
   await expect(page.locator('text=Connecting…')).toHaveCount(0);
+  // "No output captured." reads the same for any ending: the node says
+  // which one it was.
+  await expect(page.locator('[data-id="method_a"]')).toContainText(/completed/i);
 });

@@ -228,3 +228,83 @@ def is_directory_slot(
     if not isinstance(slot_type, str):
         return False
     return slot_type.lower() in _DIRECTORY_TYPE_MARKERS
+
+
+def validate_input_multiple(slot_name: str, slot_spec: object, *,
+                            source: object = None) -> None:
+    """Refuse an input's ``multiple`` key unless it is a boolean.
+
+    An input without ``multiple`` takes one file. ``multiple: true`` says it
+    collects several (a fan-in, several references). Nothing is written back
+    for an absent key, so a contract that never named it keeps its
+    fingerprint.
+
+    Args:
+        slot_name: The input's declared name.
+        slot_spec: Its declaration (a mapping, or the shorthand value).
+        source: The declaring file, for the message.
+
+    Raises:
+        ValueError: ``multiple`` is present and not ``true`` or ``false``.
+    """
+    if not isinstance(slot_spec, Mapping) or "multiple" not in slot_spec:
+        return
+    value = slot_spec["multiple"]
+    if not isinstance(value, bool):
+        where = f"{source}: " if source is not None else ""
+        raise ValueError(
+            f"{where}input '{slot_name}' declares `multiple: {value!r}`; "
+            f"`multiple` is true (the input collects several files) or "
+            f"false (it takes one file, the same as leaving it out)."
+        )
+
+
+def input_takes_many(slot_spec: object) -> bool:
+    """Answer whether a declared input collects several files.
+
+    Args:
+        slot_spec: The input's declaration from a contract.
+
+    Returns:
+        True only for ``multiple: true``; an input without it takes one file.
+    """
+    return isinstance(slot_spec, Mapping) and slot_spec.get("multiple") is True
+
+
+def input_is_optional(slot_spec: object) -> bool:
+    """Answer whether a declared input may be left unwired.
+
+    Args:
+        slot_spec: The input's declaration from a contract.
+
+    Returns:
+        True for ``required: false``; an input is required by default.
+    """
+    return isinstance(slot_spec, Mapping) and slot_spec.get("required", True) is False
+
+
+def declared_names(inputs: Mapping[str, object] | None,
+                   outputs: Mapping[str, object] | None) -> dict:
+    """The names a method declares, in the shape the step's client reads.
+
+    The value of ``WFC_DECLARED_NAMES`` (JSON-encoded by the container
+    variables builder): each declared input with whether it collects several
+    files and whether it may be left unwired, and the declared output names.
+
+    Args:
+        inputs: The contract's input declarations (``inputs`` of a parsed
+            ``method.yaml``, or a registered contract's ``input_slots``).
+        outputs: The contract's output declarations.
+
+    Returns:
+        ``{"inputs": {name: {"multiple": bool, "optional": bool}},
+        "outputs": [name, ...]}``, names in declaration order.
+    """
+    return {
+        "inputs": {
+            str(name): {"multiple": input_takes_many(spec),
+                        "optional": input_is_optional(spec)}
+            for name, spec in (inputs or {}).items()
+        },
+        "outputs": [str(name) for name in (outputs or {})],
+    }

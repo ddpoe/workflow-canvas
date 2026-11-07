@@ -207,7 +207,6 @@ def test_keep_going_partial_prune_writes_cancelled_rows_for_failed_sample_only(
         run_pipeline(
             pipeline_path=str(project.pipeline_json),
             project_root=str(project.root),
-            wfc_root=str(project.root),
             pipeline_id=pid,
         )
 
@@ -287,7 +286,6 @@ def test_hard_abort_writes_cancelled_rows_for_all_sample_descendants(
             run_pipeline(
                 pipeline_path=str(project.pipeline_json),
                 project_root=str(project.root),
-                wfc_root=str(project.root),
                 pipeline_id=pid,
             )
 
@@ -363,7 +361,6 @@ def test_cancelled_run_keeps_its_rows_and_still_walks_and_raises(
             run_pipeline(
                 pipeline_path=str(project.pipeline_json),
                 project_root=str(project.root),
-                wfc_root=str(project.root),
                 pipeline_id=pid,
                 is_cancelled=lambda: True,
             )
@@ -441,7 +438,6 @@ def test_pack_counts_a_cache_hit_target_once_after_run_pipeline(git_project,
         run_pipeline(
             pipeline_path=str(obs.project.pipeline_json),
             project_root=str(obs.project.root),
-            wfc_root=str(obs.project.root),
             pipeline_id=pid,
         )
 
@@ -537,7 +533,6 @@ def test_a_filled_pipeline_cancelled_partway_walks_every_target_once(
             run_pipeline(
                 pipeline_path=str(project.pipeline_json),
                 project_root=str(project.root),
-                wfc_root=str(project.root),
                 pipeline_id=pid,
             )
 

@@ -2,7 +2,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/workflow-canvas)](https://pypi.org/project/workflow-canvas/)
 [![CI](https://github.com/ddpoe/workflow-canvas/actions/workflows/ci.yml/badge.svg)](https://github.com/ddpoe/workflow-canvas/actions/workflows/ci.yml)
-[![Documentation](https://readthedocs.org/projects/workflow-canvas/badge/?version=latest)](https://workflow-canvas.readthedocs.io)
+[![Documentation](https://readthedocs.org/projects/workflow-canvas/badge/?version=stable)](https://workflow-canvas.readthedocs.io/en/stable/)
 [![License: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 
 Workflow Canvas (`wfc`) is a Python tool for reproducible computational pipelines,
@@ -102,7 +102,30 @@ wfc canvas        # serves the UI at http://127.0.0.1:8500 by default
 Use the **Builder** to assemble pipelines by dragging and wiring method nodes, the
 **History** view to browse past runs (lineage chains, params, metrics, artifacts),
 and the **Registry** to inspect everything registered in the project. See the
-**Canvas** how-to in the documentation for a walkthrough.
+**Use the Canvas** how-to in the documentation for a walkthrough.
+
+## Use wfc with an AI agent
+
+The `wfc` plugin gives Claude Code and Codex two skills: `using-wfc`, for working with
+wfc, and `creating-a-wfc-method`, which brings a script into wfc as a method, trying it
+with `wfc try` and as a draft before anything is registered.
+
+In Claude Code:
+
+```
+/plugin marketplace add ddpoe/workflow-canvas
+/plugin install wfc@workflow-canvas
+```
+
+In Codex:
+
+```bash
+codex plugin marketplace add ddpoe/workflow-canvas
+codex plugin add wfc@workflow-canvas
+```
+
+Each skill is also a plain folder under `plugins/wfc/skills/`, with a `SKILL.md`, that
+you can copy into either tool's skills folder.
 
 ## Project Structure
 
@@ -130,9 +153,9 @@ archive (default `~/.wfc/archives/<project>`, outside the repo), indexed by
 ## Documentation
 
 Full user documentation is published at
-[workflow-canvas.readthedocs.io](https://workflow-canvas.readthedocs.io) and covers:
+[workflow-canvas.readthedocs.io](https://workflow-canvas.readthedocs.io/en/stable/) and covers:
 
-- **Tutorials** — Getting Started, Exploring the Demo, Authoring a Method Script, Registering an Environment, Writing Contracts
+- **Tutorials** — Getting Started, Exploring the Demo, Authoring a Method Script, Drafting a Method, Registering an Environment, Writing Contracts
 - **How-to** — Registration, the Canvas, Running & Inspecting Results, Sweeping Parameters & Fanning Out
 - **Reference** — CLI Reference, Python API (`wfc-client`), `method.yaml` schema, `wf-canvas.toml`
 - **Explanation** — How a Run Executes, Caching & Reproducibility, Project Anatomy, Storage & Provenance

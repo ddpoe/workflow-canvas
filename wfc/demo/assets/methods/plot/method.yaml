@@ -14,19 +14,25 @@ outputs:
   figure:
     type: .png
     required: true
-    description: "Histogram of value_column coloured by threshold side"
+    description: "Density of value_column over its histogram, shaded by threshold side"
 
 params:
   value_column:
     type: str
     required: false
     default: "intensity"
+    options_from: data
     description: "Column to histogram"
   bins:
     type: int
     required: false
     default: 20
-    description: "Number of histogram bins"
+    description: "Number of histogram bins drawn under the density curve"
+  smoothing:
+    type: float
+    required: false
+    default: 1.0
+    description: "Density curve smoothness; 1.0 is Silverman's bandwidth, higher is smoother"
 
 executor: local
 env: wfc-demo-env

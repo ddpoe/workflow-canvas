@@ -84,8 +84,8 @@ def _initial_commit(project_dir: Path, files: list[str]) -> str | None:
     """Commit exactly the files init wrote, by pathspec.
 
     Never the database file (it is ignored), and never anything else the user
-    had staged. Uses an inline git identity so no global git config is
-    required.
+    had staged. Authored as the user when git names one, else as
+    ``wfc <wfc@wfc>``, so no git identity is required.
 
     Args:
         project_dir: The project root.

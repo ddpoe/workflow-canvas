@@ -19,6 +19,7 @@ from axiom_annotations import AutoStep, Step, task
 from ..contracts import COLLAPSED_SAMPLE
 from ..graph import selector_slot as graph_selector_slot
 from ..persistence import project_root as get_project_root
+from .draft import draft_step_output
 from .parents import parse_parent_entries
 
 #: The step ending every materialize failure returns to the record tail.
@@ -83,7 +84,8 @@ def classify_input_sources(
         ValueError: A parent entry is malformed, or two entries wire
             different outputs of one run into one input slot.
     """
-    parents = parse_parent_entries(parent_run_ids or [], step=node_id)
+    parents = parse_parent_entries(parent_run_ids or [], step=node_id,
+                                   allow_drafts=True)
 
     # Sample-via-selector: the document's selector edge alone decides,
     # whatever parents or references also feed the node -- Graph's one
@@ -185,7 +187,17 @@ def run_materialize(
     entry = None
     try:
         for entry in input_sources["parents"]:
-            口 = AutoStep(step_num=2.1, name="Resolve the parent's output")
+            if entry.draft is not None:
+                # A draft step's output has no row: draft-run.json is where it is.
+                口 = AutoStep(step_num=2.1, name="Resolve a draft step's output")
+                found = draft_step_output(entry.draft, entry.source_slot)
+                if found.path is None:
+                    return _failed(f"node '{node_id}' could not resolve input slot "
+                                   f"'{entry.input_slot}' from {entry.draft}: "
+                                   f"{found.refusal}")
+                slot_paths.setdefault(entry.input_slot, []).append(str(found.path))
+                continue
+            口 = AutoStep(step_num=2.2, name="Resolve the parent's output")
             resolved = resolve_input(run_id=entry.run_id, slot=entry.source_slot)
             if not resolved:
                 hint = (

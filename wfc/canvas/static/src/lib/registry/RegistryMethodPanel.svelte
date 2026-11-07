@@ -12,7 +12,7 @@
    * the width it is given.
    */
   import { untrack } from 'svelte';
-  import { highlight } from './shikiHighlight.js';
+  import { highlight } from '../shared/shikiHighlight.js';
   import ContractTables from './ContractTables.svelte';
   import { CONTRACT_MAX, CONTRACT_MIN, clampWidth, contractWidth } from './contractWidth.js';
   import type { FileEntry, MethodDetail } from './api.js';
@@ -130,8 +130,8 @@
 
 <style>
   .panel-inner { min-width: 0; }
-  .version-note { margin-bottom: 8px; font-size: 11px; color: var(--color-running); }
-  .error { color: var(--color-failed); font-size: 12px; }
+  .version-note { margin-bottom: 8px; font-size: 11px; color: var(--marker-light); }
+  .error { color: var(--status-failed-ink); font-size: 12px; }
   .dim { color: var(--text-secondary); }
   .mono { font-family: "JetBrains Mono", Consolas, monospace; }
   /* Contract | divider | code: the contract its dragged share (30% to start),

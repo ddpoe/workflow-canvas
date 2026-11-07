@@ -13,7 +13,7 @@ import wfc_client as wfc
 
 @wfc.method
 def summarize(ctx):
-    with open(ctx.input("data")[0], newline="") as f:
+    with open(ctx.input("data"), newline="") as f:
         rows = list(csv.DictReader(f))
 
     group_by = ctx.params.get("group_by", "label")

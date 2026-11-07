@@ -25,9 +25,9 @@ import type { Node, Edge } from '@xyflow/svelte';
  * `--experimental-strip-types`, which erases type-only imports but cannot
  * resolve a runtime import of `../shared/types.js` (the source file is
  * `types.ts` with no compiled artifact). This is the only copy — there is no
- * second one to keep it in sync with.
+ * second one to keep it in sync with; other modules import it from here.
  */
-function isVarRef(v: unknown): v is VarRef {
+export function isVarRef(v: unknown): v is VarRef {
   return (
     typeof v === 'object'
     && v !== null
@@ -175,6 +175,12 @@ export function compilePipelineToJSON(state: AuthoringState): PipelineJSON {
       // A reference node is the run it names. Each outgoing edge names the
       // output it draws via sourceHandle, and the engine resolves per link
       // from the run's recorded outputs.
+    } else if (n.data.version === 'draft') {
+      // A draft node runs its method's draft folder: the document names the
+      // draft by `version: "draft"` and the folder its pointer names.
+      base.version = 'draft';
+      const folder = n.data.folder ?? n.data.draft?.folder;
+      if (folder) base.folder = folder;
     } else if (n.data.version) {
       // A pin is written only for an older version: a node set to the
       // newest follows the newest, so a later registration moves it.

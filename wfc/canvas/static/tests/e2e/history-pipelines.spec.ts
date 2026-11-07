@@ -22,7 +22,7 @@
  */
 import { expect, test, type Page } from '@playwright/test';
 import { setupRouteReplay } from '../../src/lib/__fixtures__/route-replay';
-import { behaviorCatalog, type Timeline } from '../../src/lib/__fixtures__/timelines';
+import { behaviorCatalog, nodeState, type Timeline } from '../../src/lib/__fixtures__/timelines';
 
 interface MockWfcRun {
   id: string;
@@ -319,11 +319,11 @@ test.describe('History pipelines view (smoke)', () => {
         job_id: 'pipe_running',
         overall_status: 'running',
         node_states: {
-          n_foo: {
+          n_foo: nodeState({
             status: 'running',
             run_ids: ['r1'],
             tally: { running: 1, completed: 0, failed: 0 },
-          },
+          }),
         },
         thread_alive: true,
         log: '',
@@ -374,8 +374,8 @@ test.describe('History pipelines view (smoke)', () => {
     // Its Output tab streams the running run's log.
     await node.click();
     await page.getByRole('button', { name: /output/i }).click();
-    await expect(page.locator('.output-status')).toContainText(/streaming/i, { timeout: 5_000 });
-    await expect(page.locator('.log-pane span').first()).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByTestId('log-note')).toHaveText('Streaming…', { timeout: 5_000 });
+    await expect(page.getByTestId('log-pane').locator('span').first()).toBeVisible({ timeout: 5_000 });
 
     // The Toolbar shows Stop, and Stop cancels the watched pipeline.
     expect(cancels).toEqual([]);

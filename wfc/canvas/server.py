@@ -18,6 +18,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .. import layout
+from ..execution.pipeline_outcome import backfill_pipeline_runs
 from . import state
 from .recovery import PipelineRecovery, start_recovery
 from .routes import (
@@ -56,7 +57,11 @@ _STATIC_DIR = Path(__file__).parent / "static" / "dist"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Load the provider for the resolved project root, and start the recovery.
+    """Bring pipeline_runs up to date, load the provider, and start the recovery.
+
+    With the project's database present, the start-up pass first gives every
+    pipeline the run rows name its ``pipeline_runs`` row and stores every
+    row's status and end (Execution's ``backfill_pipeline_runs``).
 
     With the project's database present, the recovery of the pipelines this
     server does not own starts on its daemon thread (startup does not wait
@@ -71,6 +76,12 @@ async def lifespan(app: FastAPI):
     db_path = layout.db_path(project_root)
     recovery: PipelineRecovery | None = None
     if db_path.exists():
+        # Every past pipeline gets its pipeline_runs row, and every row its
+        # stored status and end, before History reads the table.
+        try:
+            backfill_pipeline_runs(project_root)
+        except Exception as exc:  # pragma: no cover
+            print(f"[canvas] Warning: the pipeline_runs pass failed: {exc}")
         try:
             state._wfc_provider = WfcProvider(str(project_root))
             state._wfc_provider.load()

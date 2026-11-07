@@ -781,6 +781,151 @@ def fault_after_claim_input_rows(monkeypatch) -> None:
 
 
 @fake(
+    boundary="wfc.execution.recovery.hold_lock_file -- the close-out lock "
+             "file's hold, as close_out_lock enters it after making the "
+             "pipeline's run dir; the first entry removes that run dir and "
+             "raises FileNotFoundError, as a holder in another process does "
+             "when it leaves and removes the run dir it made",
+    preserves="close_out_lock's own loop: it makes the run dir again and "
+              "enters the real hold_lock_file from the second call on; the "
+              "real lock file, its release and the run dir's removal when "
+              "left empty",
+    not_proven="that another process's holder removes the run dir in exactly "
+               "that window; only what the waiter does when it has",
+    backed_by="undrivable: the window is between a waiter's mkdir and its "
+              "lock-file create while a holder in another process leaves, a "
+              "race no production path sequences",
+)
+def run_dir_removed_at_first_lock(monkeypatch, run_dir: Path) -> list[Path]:
+    """Remove the run dir and raise at close_out_lock's first lock-file hold.
+
+    Args:
+        monkeypatch: An active ``pytest.MonkeyPatch``.
+        run_dir: The pipeline's run dir, removed (it must be empty) at the
+            first hold.
+
+    Returns:
+        A list that receives the lock file of every hold entered, the
+        refused one first.
+    """
+    from wfc.execution import recovery
+
+    real_hold = recovery.hold_lock_file
+    holds: list[Path] = []
+
+    @contextmanager
+    def removed_first(lock):
+        holds.append(Path(lock))
+        if len(holds) == 1:
+            run_dir.rmdir()  # the other holder left and removed it
+            raise FileNotFoundError(lock)
+        with real_hold(lock):
+            yield
+
+    monkeypatch.setattr(recovery, "hold_lock_file", removed_first)
+    return holds
+
+
+@fake(
+    boundary="time.sleep as wfc.execution.pipeline_record calls it -- a lock "
+             "waiter's poll; the poll numbered ``after`` also removes the "
+             "takeover file another waiter holds, as that waiter does when it "
+             "has decided and leaves. "
+             "Why a test may take it: another waiter deciding inside its "
+             "takeover file at the moment this one arrives is a cross-process "
+             "race no test can time on demand; how this waiter waits is what "
+             "is under test.",
+    preserves="every poll's real sleep and duration, and everything else of "
+              "the time module as pipeline_record sees it; the real lock "
+              "file, its takeover and its release",
+    not_proven="that a real second waiter leaves its takeover file after any "
+               "particular number of polls",
+    backed_by="undrivable: the window is another process's stay inside its "
+              "takeover file, a race no production path sequences",
+)
+def takeover_left_after_polls(monkeypatch, guard: Path, after: int) -> list[float]:
+    """Record a lock waiter's polls; remove another waiter's takeover file at one.
+
+    Args:
+        monkeypatch: An active ``pytest.MonkeyPatch``.
+        guard: The takeover file another waiter holds.
+        after: The poll after whose sleep that file is removed.
+
+    Returns:
+        A list that receives each poll's sleep, in seconds.
+    """
+    import time
+    import types
+
+    from wfc.execution import pipeline_record
+
+    polls: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        time.sleep(seconds)
+        polls.append(seconds)
+        if len(polls) == after:
+            guard.unlink(missing_ok=True)
+
+    clock = types.SimpleNamespace(**{name: getattr(time, name) for name in dir(time)
+                                     if not name.startswith("__")})
+    clock.sleep = sleep
+    monkeypatch.setattr(pipeline_record, "time", clock)
+    return polls
+
+
+@fake(
+    boundary="os.rename as wfc.execution.pipeline_record calls it -- a "
+             "waiter's claim of a stale takeover file; just before the claim "
+             "the stale file is replaced by a fresh one, as when another "
+             "waiter removed it and a third made its own after this waiter "
+             "judged it stale. "
+             "Why a test may take it: that window is between two other "
+             "processes' steps inside this waiter's judgement and its claim, "
+             "a race no test can time on demand; what this waiter does with "
+             "the file it claimed is what is under test.",
+    preserves="the real rename (it runs after the replacement), every other "
+              "attribute of the os module as pipeline_record sees it, and the "
+              "real takeover and lock files",
+    not_proven="that two real waiters interleave in exactly this order",
+    backed_by="undrivable: the window is between other processes' removal and "
+              "creation of the takeover file, a race no production path "
+              "sequences",
+)
+def takeover_renewed_before_claim(monkeypatch, guard: Path, fresh: str) -> list[Path]:
+    """Replace a stale takeover file by a fresh one just before a waiter claims it.
+
+    Args:
+        monkeypatch: An active ``pytest.MonkeyPatch``.
+        guard: The takeover file.
+        fresh: The text the fresh takeover file holds, so a test can tell it
+            from the stale one.
+
+    Returns:
+        A list that receives the source of each rename pipeline_record makes.
+    """
+    import os
+    import types
+
+    from wfc.execution import pipeline_record
+
+    claims: list[Path] = []
+
+    def rename(src, dst) -> None:
+        claims.append(Path(src))
+        if Path(src) == guard and len(claims) == 1:
+            guard.unlink()
+            guard.write_text(fresh, encoding="utf-8")
+        os.rename(src, dst)
+
+    proxy = types.SimpleNamespace(**{name: getattr(os, name) for name in dir(os)
+                                     if not name.startswith("__")})
+    proxy.rename = rename
+    monkeypatch.setattr(pipeline_record, "os", proxy)
+    return claims
+
+
+@fake(
     boundary="wfc.version._git -- every git command registration runs, wrapped "
              "so the first `git commit -m` of two registering processes waits "
              "on a file barrier: each waits for the other to reach its own "

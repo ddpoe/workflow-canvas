@@ -104,6 +104,7 @@ from .docker import local_image_ref, save_image
 from .fingerprint import capture_env_content, resolve_env_fingerprint
 from .gh import (
     CONNECT_REPOSITORY_STEPS,
+    MANAGE_ACCESS_SECTION,
     PACKAGE_CONNECTED,
     PACKAGE_NOT_FOUND,
     PACKAGE_OTHER_REPOSITORY,
@@ -117,8 +118,9 @@ from .gh import (
     package_connection,
     package_name,
     package_page_url,
+    package_settings_url,
 )
-from .interpreter import default_python_for_backend, version_interpreter
+from .interpreter import default_python_for_backend, version_bin_dir, version_interpreter
 from .manifest import (
     MANIFEST_FILENAME,
     MANIFEST_SCHEMA_VERSION,
@@ -135,6 +137,7 @@ from .manifest import (
 from .packages import PIP_FREEZE_DELIMITER, parse_packages
 from .registry import (
     IMAGE_BYO_REGISTRY,
+    IMAGE_ELSEWHERE,
     IMAGE_LOCAL,
     IMAGE_MISSING,
     IMAGE_PUSHED,
@@ -176,6 +179,7 @@ from .runnable import (
 
 __all__ = [
     "CONNECT_REPOSITORY_STEPS",
+    "MANAGE_ACCESS_SECTION",
     "PACKAGE_CONNECTED",
     "PACKAGE_NOT_FOUND",
     "PACKAGE_OTHER_REPOSITORY",
@@ -189,7 +193,9 @@ __all__ = [
     "package_connection",
     "package_name",
     "package_page_url",
+    "package_settings_url",
     "IMAGE_BYO_REGISTRY",
+    "IMAGE_ELSEWHERE",
     "IMAGE_LOCAL",
     "IMAGE_MISSING",
     "IMAGE_PUSHED",
@@ -260,5 +266,6 @@ __all__ = [
     "save_image",
     "save_manifest",
     "strip_docker_scheme",
+    "version_bin_dir",
     "version_interpreter",
 ]

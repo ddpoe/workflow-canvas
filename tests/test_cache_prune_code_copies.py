@@ -111,6 +111,7 @@ def test_unreachable_remote_guard_still_removes_unused_copies(
     import shutil
 
     from tests.fixtures.conftest import project_archive_dir
+    from wfc.canvas.previews import PreviewCache
     from wfc.storage import cache_prune
     from wfc.storage.cache import _make_writable
 
@@ -120,6 +121,8 @@ def test_unreachable_remote_guard_still_removes_unused_copies(
     orphan = layout.artifact_store(project.root) / "00099999"
     orphan.mkdir(parents=True, exist_ok=True)
     (orphan / "output.csv").write_text("orphan data", encoding="utf-8")
+    previews = PreviewCache(layout.preview_cache_dir(project.root), 500)
+    previews.put("a-content-key", "thumb", b"\x89PNG converted")
     archive = project_archive_dir(project.root)
     if archive.exists():
         _make_writable(archive)
@@ -134,4 +137,7 @@ def test_unreachable_remote_guard_still_removes_unused_copies(
     assert "unreachable" in (captured.out + captured.err).lower()
     assert "Proceed?" not in captured.out
     assert not copy.exists() and not stamp.exists()
+    assert previews.get("a-content-key", "thumb") is None
+    # Copies and previews both removed: what was held back is said once.
+    assert captured.out.count("were not pruned") == 1
     assert orphan.is_dir()

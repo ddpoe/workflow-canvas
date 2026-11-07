@@ -33,7 +33,6 @@ from sqlmodel import select
 from tests.fixtures.fakes import (
     stub_docker_image_content,
     stub_docker_image_inspect,
-    stub_interactive_prompt,
 )
 from tests.fixtures.routes import completed_run, create_sample_csv
 from tests.harness.scenario import Behavior
@@ -155,8 +154,6 @@ def test_prune_never_removes_an_unpushed_entry(tmp_project, monkeypatch, capsys,
     _set_status(*records[1], PushStatus.pending.value)
     if not remote:
         _without_remote(tmp_project)
-    if not force:
-        stub_interactive_prompt(monkeypatch, "y")
     capsys.readouterr()
 
     rc = cache_prune(include_local=True, force=force, env_hashes={old_env})

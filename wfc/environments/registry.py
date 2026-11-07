@@ -18,13 +18,19 @@ images in it:
   does not answer. It reads the image's captures folder and the local
   daemon only, never the registry;
 - :func:`pullable_ref`, the digest-pinned ref an image is pulled by at run
-  time (a pushed record's, or a byo registry image's own), read from the
-  captures folder and the config alone;
+  time (a pushed record's, at the base it was pushed to, or a byo registry
+  image's own), read from the captures folder and the config alone;
 - :func:`push_image`, the one push (tag, push, digest read, ``pushed.json``)
   that ``register`` and ``wfc push-env`` share, and ``push-env``'s body:
-  :func:`plan_push` states the base it sets and the images it pushes before
-  anything is written, :func:`apply_push` pushes them and commits the
-  records (and, on a first run, ``[registry] url``) in one commit.
+  :func:`plan_push` states the base it sets or switches to and the images
+  it pushes before anything is written, :func:`apply_push` pushes them and
+  commits the records (and, on a first run or a switch, ``[registry] url``)
+  in one commit.
+
+A project's base moves only by a confirmed switch: every push record is
+first made to name the base it was pushed to, then the new base is set,
+and each image recorded at another base is pushed again (pulled from its
+recorded base by digest and checked when it is not on this machine).
 
 Credentials never pass through this module: Docker's config and credential
 helpers are never read, and no token is taken.
@@ -32,6 +38,7 @@ helpers are never read, and no token is taken.
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from collections.abc import Mapping, Sequence
@@ -91,6 +98,7 @@ IMAGE_PUSHED: Final[str] = "pushed"
 IMAGE_BYO_REGISTRY: Final[str] = "byo-registry"
 IMAGE_MISSING: Final[str] = "missing"
 IMAGE_UNKNOWN: Final[str] = "unknown"
+IMAGE_ELSEWHERE: Final[str] = "elsewhere"
 
 
 # -----------------------------------------------------------------------------
@@ -436,10 +444,11 @@ class ImageState:
     Attributes:
         env: The env name.
         fingerprint: The image's ``env_fingerprint``.
-        state: :data:`IMAGE_PUSHED` (its captures folder records a push),
-            :data:`IMAGE_BYO_REGISTRY` (a byo image recorded by its own
-            registry's digest), :data:`IMAGE_LOCAL` (on this machine, not
-            pushed), :data:`IMAGE_MISSING` (neither) or
+        state: :data:`IMAGE_PUSHED` (its captures folder records a push to
+            the base asked about), :data:`IMAGE_ELSEWHERE` (it records a
+            push to another base), :data:`IMAGE_BYO_REGISTRY` (a byo image
+            recorded by its own registry's digest), :data:`IMAGE_LOCAL` (on
+            this machine, not pushed), :data:`IMAGE_MISSING` (neither) or
             :data:`IMAGE_UNKNOWN` (not pushed, and Docker did not answer).
         pushed: The push record, when the image has one.
         image: The recorded ``docker://`` ref, when one is known.
@@ -455,18 +464,22 @@ class ImageState:
 
     @property
     def in_registry(self) -> bool:
-        """Whether the image can be pulled: recorded as pushed, or a byo registry image."""
-        return self.state in (IMAGE_PUSHED, IMAGE_BYO_REGISTRY)
+        """Whether the image can be pulled: recorded as pushed (to any base), or a byo registry image."""
+        return self.state in (IMAGE_PUSHED, IMAGE_ELSEWHERE, IMAGE_BYO_REGISTRY)
 
 
 def image_state(env: str, fingerprint: str | None, project_dir: Path, *,
-                container: str | None = None) -> ImageState:
+                container: str | None = None,
+                base: str | None = None) -> ImageState:
     """Say where the image *env* recorded at *fingerprint* is.
 
     Reads the image's captures folder (``pushed.json``, ``image.json``) and
     asks the local daemon; never the registry. An image counts as in the
     registry when its folder records a push, or when it is a byo image
-    recorded by a registry's digest; the daemon is not asked about those.
+    recorded by a registry's digest; the daemon is not asked about those. A
+    push is ``pushed`` at the base it was pushed to
+    (:meth:`~wfc.environments.captures.PushedRecord.pushed_to`) and
+    ``elsewhere`` when that is not the base asked about.
 
     Args:
         env: The env name.
@@ -475,6 +488,8 @@ def image_state(env: str, fingerprint: str | None, project_dir: Path, *,
         container: The image's recorded ``docker://`` ref, when the caller
             has it (an env's current record); otherwise it is read from the
             image's ``image.json``.
+        base: The base to ask about; ``None`` for the project's
+            ``[registry] url``.
 
     Returns:
         The :class:`ImageState`. An image with no ref to ask about (no
@@ -491,7 +506,11 @@ def image_state(env: str, fingerprint: str | None, project_dir: Path, *,
         except CaptureMissingError:
             image = None
     if record is not None:
-        return ImageState(env, fingerprint, IMAGE_PUSHED, pushed=record, image=image)
+        project_base = _configured_base(project_dir)
+        at, wanted = record.pushed_to(project_base), base or project_base
+        state = (IMAGE_ELSEWHERE if at is not None and wanted is not None
+                 and at != wanted else IMAGE_PUSHED)
+        return ImageState(env, fingerprint, state, pushed=record, image=image)
     if image is None:
         return ImageState(env, fingerprint, IMAGE_MISSING)
     if not strip_docker_scheme(image).startswith(_LOCAL_REPOSITORY_PREFIX):
@@ -511,10 +530,12 @@ def pullable_ref(env: str, fingerprint: str | None, image: str,
     """Return the ref an image can be pulled by, if it can be pulled at all.
 
     A pushed image (its captures folder holds ``pushed.json``) is pulled by
-    ``<base>/<env>@<digest>``, the base being the project's
-    ``[registry] url``. A byo image recorded by its own registry's digest
-    is pulled by that recorded ref. Anything else (a ``local/`` image never
-    pushed) cannot be pulled. Nothing is asked of Docker or the registry.
+    ``<base>/<env>@<digest>``, the base being the one it was pushed to
+    (:meth:`~wfc.environments.captures.PushedRecord.pushed_to`: the base the
+    record names, else the project's ``[registry] url``). A byo image
+    recorded by its own registry's digest is pulled by that recorded ref.
+    Anything else (a ``local/`` image never pushed) cannot be pulled.
+    Nothing is asked of Docker or the registry.
 
     Args:
         env: The env name.
@@ -526,13 +547,14 @@ def pullable_ref(env: str, fingerprint: str | None, image: str,
         The digest-pinned registry ref without a scheme, or ``None``.
 
     Raises:
-        ValueError: The image is recorded as pushed but the project sets no
-            ``[registry] url``, or ``wf-canvas.toml`` cannot be read.
+        ValueError: The image is recorded as pushed, its record names no
+            base and the project sets no ``[registry] url``, or
+            ``wf-canvas.toml`` cannot be read.
         CaptureMismatchError: The folder's ``pushed.json`` is unreadable.
     """
     record = pushed_record(env, fingerprint, project_dir)
     if record is not None:
-        base = _project_base(project_dir)
+        base = record.pushed_to(_project_base(project_dir))
         if base is None:
             raise ValueError(
                 f"env {env!r}: its image is recorded as pushed "
@@ -665,7 +687,8 @@ def registry_chip(env: str, project_dir: Path, *, container: str,
             continue
         if state == IMAGE_MISSING:
             missing += count
-        elif state == IMAGE_LOCAL and base is not None and name_problem is None:
+        elif (state == IMAGE_ELSEWHERE or (state == IMAGE_LOCAL and base is not None
+                                           and name_problem is None)):
             not_pushed += 1
     return RegistryChip(state=current, base=base, older_not_pushed=not_pushed,
                         older_missing=missing, recreate=recreate_command(env),
@@ -782,14 +805,18 @@ def push_image(project_dir: Path, env: str, fingerprint: str, image: str,
     digest of what was pushed.
 
     The record is written only after the push succeeded; a folder that
-    already holds ``pushed.json`` keeps it.
+    already holds ``pushed.json`` at the project's base keeps it, and one
+    naming another base has it replaced
+    (:func:`wfc.environments.captures.write_pushed`).
 
     Args:
         project_dir: The project root.
         env: The env name.
         fingerprint: The image's ``env_fingerprint``.
-        image: The image's recorded ``docker://local/...`` ref.
-        base: The registry base.
+        image: The image to push: its recorded ``docker://local/...`` ref,
+            or, for an image pushed again from another base, the registry
+            ref it was pulled and checked by.
+        base: The registry base, the project's.
 
     Returns:
         ``(record, created)`` as :func:`wfc.environments.captures.write_pushed`
@@ -816,7 +843,7 @@ def push_image(project_dir: Path, env: str, fingerprint: str, image: str,
     docker_runner.tag(source, target)
     digest = (docker_runner.push(target)
               or docker_runner.repo_digest(target, image_repository(base, env)))
-    return write_pushed(project_dir, env, fingerprint, digest=digest,
+    return write_pushed(project_dir, env, fingerprint, digest=digest, base=base,
                         tag=push_tag(fingerprint))
 
 
@@ -877,6 +904,8 @@ class PushRefused(ValueError):
 
 #: The commit message of a push-env commit; the base is appended.
 PUSH_COMMIT_MESSAGE: Final[str] = "Push env images to"
+#: The commit message of a push-env commit that switches the base.
+SWITCH_COMMIT_MESSAGE: Final[str] = "Move the registry base from {old} to {new}"
 
 
 def check_base(url: str) -> str:
@@ -937,7 +966,8 @@ class PushItem:
         env: The env name.
         fingerprint: The image's ``env_fingerprint``, or ``None`` for a
             version entry that records none.
-        state: An :func:`image_state` answer: ``local`` images are pushed.
+        state: An :func:`image_state` answer for the plan's base: ``local``
+            images are pushed, and so are ``elsewhere`` ones (*pushed_to*).
         image: The recorded ``docker://`` ref, when known.
         current: Whether this is the env's current record's image.
         versions: The method versions recording the image (``module/method vN``).
@@ -947,6 +977,8 @@ class PushItem:
             ``unknown``) whose env name no registry accepts,
             :func:`push_name_problem`'s reason; it takes precedence over the
             state's own reason. Else ``""``.
+        pushed_to: For a ``pushed`` image recorded at another base than the
+            one pushed to, that base: apply pushes it again. Else ``""``.
     """
 
     env: str
@@ -957,6 +989,7 @@ class PushItem:
     versions: tuple[str, ...] = ()
     detail: str = ""
     name_problem: str = ""
+    pushed_to: str = ""
 
     @property
     def label(self) -> str:
@@ -976,8 +1009,11 @@ class PushItem:
         """Whether apply pushes it.
 
         It does when the image is on this machine, unpushed, with a folder
-        to record in and a name a registry accepts.
+        to record in and a name a registry accepts; or when it is recorded
+        at another base than the one pushed to.
         """
+        if self.pushed_to:
+            return True
         return self.state == IMAGE_LOCAL and not self.detail and not self.name_problem
 
 
@@ -988,9 +1024,11 @@ class PushPlan:
     Attributes:
         project_dir: The project root.
         base: The registry base pushed to.
-        set_base: Whether apply writes ``[registry] url`` (a first run).
+        set_base: Whether apply writes ``[registry] url`` on a first run.
         base_from: Where a base to set came from, for the message.
         items: The worklist, one per ``(env, fingerprint)``.
+        switch_from: The project's base when *base* switches away from it
+            (a ``--registry`` naming another base); else ``None``.
     """
 
     project_dir: Path
@@ -998,13 +1036,14 @@ class PushPlan:
     set_base: bool
     base_from: str
     items: tuple[PushItem, ...] = field(default_factory=tuple)
+    switch_from: str | None = None
 
     def _with(self, *states: str) -> list[PushItem]:
         return [item for item in self.items if item.state in states]
 
     @property
     def to_push(self) -> list[PushItem]:
-        """The local, unpushed images apply pushes."""
+        """The images apply pushes: local and unpushed, or recorded at another base."""
         return [item for item in self.items if item.pushable]
 
     @property
@@ -1021,7 +1060,7 @@ class PushPlan:
     @property
     def writes(self) -> bool:
         """Whether apply writes anything: the base, or a push record."""
-        return self.set_base or bool(self.to_push)
+        return self.set_base or self.switch_from is not None or bool(self.to_push)
 
     @property
     def message(self) -> str:
@@ -1033,9 +1072,18 @@ class PushPlan:
                 f"  set: [registry] url = \"{self.base}\" in {config} "
                 f"({self.base_from}), committed with the push records. It is "
                 f"set once: a later change of git remote does not move it.")
+        if self.switch_from is not None:
+            lines.append(
+                f"  switch: [registry] url from \"{self.switch_from}\" to "
+                f"\"{self.base}\" in {config}, committed with the push records. "
+                f"Every push record is first marked as at {self.switch_from}, "
+                f"and an image there is pulled from it until it is pushed to "
+                f"{self.base} (`wfc push-env --all` pushes every one).")
         for item in self.to_push:
-            lines.append(f"  push: {item.label} to {image_repository(self.base, item.env)} "
-                         f"(needed by {item.recorded_by})")
+            moved = (f" from {item.pushed_to} (pulled by its digest when it is "
+                     f"not on this machine)" if item.pushed_to else "")
+            lines.append(f"  push: {item.label} to {image_repository(self.base, item.env)}"
+                         f"{moved} (needed by {item.recorded_by})")
         for item in self._with(IMAGE_PUSHED):
             lines.append(f"  already pushed: {item.label}")
         for item in self._with(IMAGE_BYO_REGISTRY):
@@ -1097,10 +1145,11 @@ def _project_base(project_dir: Path) -> str | None:
 @task(purpose="Plan wfc push-env before anything is written: the registry "
               "base (the one set; else --registry; else the GitHub remote's "
               "proposal; else refuse naming --registry; a --registry that "
-              "differs from a set base is refused), and the "
+              "differs from a set base is a switch to it), and the "
               "worklist, every env's current image plus every image a method "
-              "version records, each classified as to push, already pushed, "
-              "a byo registry image, or not pushable from this machine",
+              "version records, each classified as to push (local and "
+              "unpushed, or recorded at another base), already pushed, a byo "
+              "registry image, or not pushable from this machine",
       inputs="project root, the env (or None for every env), the versions "
              "recording each env as values, --registry",
       outputs="a PushPlan")
@@ -1116,7 +1165,12 @@ def plan_push(project_dir: Path, env: str | None, *,
     or a captures folder names, and every env in *recorded*, is covered.
 
     Only the captures folder (``pushed.json``) and the local daemon are
-    read; the registry is not asked.
+    read; the registry is not asked. A pushed image counts as pushed only
+    at the base it was pushed to
+    (:meth:`~wfc.environments.captures.PushedRecord.pushed_to`); recorded at
+    another, it is to push. A ``--registry`` naming another base than the
+    set one plans a switch to it (:attr:`PushPlan.switch_from`), so every
+    image pushed so far is recorded at another base.
 
     Args:
         project_dir: The project root.
@@ -1129,29 +1183,27 @@ def plan_push(project_dir: Path, env: str | None, *,
         The :class:`PushPlan`.
 
     Raises:
-        PushRefused: No base is set and none is given or proposed; a given
-            base differs from the set one; the env is neither registered
-            nor recorded by a version; the manifest or config is unreadable.
+        PushRefused: No base is set and none is given or proposed; the env
+            is neither registered nor recorded by a version; the manifest
+            or config is unreadable.
     """
     from ..version import git_remote_url
     from .manifest import list_envs, recreate_command
 
     口 = Step(step_num=1, name="Settle the registry base",
-             purpose="The base already set wins and is never re-derived; a "
-                     "first run takes --registry, else the GitHub remote's "
-                     "proposal; with neither, refuse naming --registry",
-             critical="a --registry differing from a set base is refused: "
-                      "the base never moves")
+             purpose="The base already set is never re-derived; a --registry "
+                     "naming another base switches to it; a first run takes "
+                     "--registry, else the GitHub remote's proposal; with "
+                     "neither, refuse naming --registry",
+             critical="the base moves only by a switch the plan states and "
+                      "the user confirms; a git remote never moves it")
     current = _project_base(project_dir)
     given = check_base(registry) if registry is not None else None
+    switch_from: str | None = None
     if current is not None:
-        if given is not None and given != current:
-            raise PushRefused(
-                f"the project's registry base is already {current}; "
-                f"--registry {given} would move it, and a project's registry "
-                f"base cannot be changed once set. Omit --registry to push to "
-                f"{current}.")
         base, set_base, base_from = current, False, ""
+        if given is not None and given != current:
+            base, switch_from = given, current
     elif given is not None:
         base, set_base, base_from = given, True, "from --registry"
     else:
@@ -1196,7 +1248,8 @@ def plan_push(project_dir: Path, env: str | None, *,
             wanted.setdefault(fingerprint, []).append(version)
         for fingerprint, versions in wanted.items():
             口 = Step(step_num=2.1, name="Say where the image is",
-                     purpose="pushed.json, a byo registry ref, or a daemon "
+                     purpose="pushed.json (at the base pushed to: another one "
+                             "is to push), a byo registry ref, or a daemon "
                              "inspect; never the registry")
             is_current = record is not None and fingerprint == record.env_fingerprint
             if not fingerprint:
@@ -1208,7 +1261,8 @@ def plan_push(project_dir: Path, env: str | None, *,
                 state = image_state(name, fingerprint, project_dir,
                                     container=(record.container
                                                if record is not None and is_current
-                                               else None))
+                                               else None),
+                                    base=base)
             except CaptureError as exc:
                 raise PushRefused(
                     f"cannot read the image record for {name}: {exc}") from exc
@@ -1217,55 +1271,119 @@ def plan_push(project_dir: Path, env: str | None, *,
                     project_dir, name, fingerprint).is_dir()):
                 detail = ("it has no captures folder to record the push in; "
                           f"`{recreate_command(name)}` registers it again")
+            elsewhere = (state.pushed.pushed_to(current) or ""
+                         if state.state == IMAGE_ELSEWHERE and state.pushed is not None
+                         else "")
             items.append(PushItem(name, fingerprint, state.state, image=state.image,
                                   current=is_current, versions=tuple(versions),
                                   detail=detail,
                                   name_problem=(name_problem
                                                 if state.state in never_pushed
-                                                else "")))
+                                                else ""),
+                                  pushed_to=elsewhere))
     return PushPlan(project_dir=Path(project_dir), base=base, set_base=set_base,
-                    base_from=base_from, items=tuple(items))
+                    base_from=base_from, items=tuple(items), switch_from=switch_from)
 
 
-@workflow(purpose="Apply a confirmed wfc push-env plan: push every local, "
-                  "unpushed image (tag, push, digest, pushed.json), write "
-                  "[registry] url on a first run, and commit the new push "
-                  "records and the config in one pathspec commit; images not "
-                  "on this machine are reported by name and exit 1",
+@workflow(purpose="Apply a confirmed wfc push-env plan: make every image "
+                  "recorded at another base available (the local one, else "
+                  "pulled by its recorded digest and checked against its env "
+                  "fingerprint), stopping before any write when one cannot "
+                  "be; on a switch name the old base in every push record and "
+                  "set the new one; push every image to push (tag, push, "
+                  "digest, pushed.json); write [registry] url on a first run; "
+                  "and commit the records and the config in one pathspec "
+                  "commit; images not on this machine are reported by name "
+                  "and exit 1",
           inputs="the PushPlan the user confirmed",
           outputs="a PushResult with the exit code")
 def apply_push(plan: PushPlan) -> PushResult:
     """Push what *plan* names and commit the records.
 
-    A push that fails stops the run: the images pushed before it keep their
-    records and are committed, the rest are not attempted. The base of a
-    first run is written only once a push succeeded, or when there was
-    nothing to push, so a first run whose every push fails writes nothing.
+    An image recorded at another base is pushed from this machine's copy,
+    or, when this machine has none, from its recorded base: pulled by its
+    digest and checked against its env fingerprint
+    (:func:`wfc.environments.runnable.ensure_version_runnable`). Every such
+    image is made available before anything is written, so one that cannot
+    be pulled, or whose content is another image, changes nothing.
+
+    A switch then names the old base in every push record that names none
+    and sets the new base, before any push. A push that fails stops the
+    run: the images pushed before it keep their records and are committed
+    with the switch, the rest are not attempted. The base of a first run is
+    written only once a push succeeded, or when there was nothing to push,
+    so a first run whose every push fails writes nothing.
 
     Args:
         plan: The plan :func:`plan_push` made, confirmed by the user.
 
     Returns:
-        The :class:`PushResult`; its ``exit_code`` is 1 when a push or the
-        commit failed or an image could not be pushed from this machine.
+        The :class:`PushResult`; its ``exit_code`` is 1 when a pull, a push,
+        the switch or the commit failed or an image could not be pushed
+        from this machine.
     """
     from ..persistence import set_registry_url
     from ..version import commit_paths
+    from .captures import name_pushed_bases
+    from .runnable import ensure_version_runnable
 
     result = PushResult()
     project_dir = plan.project_dir
-    口 = Step(step_num=1, name="Push each local, unpushed image",
+    口 = Step(step_num=1, name="Make each image from another base available",
+             purpose="This machine's copy, else a pull by the recorded digest "
+                     "checked against the env fingerprint",
+             critical="the first image that cannot be made available stops "
+                      "the run before anything is written")
+    sources: dict[tuple[str, str], str] = {}
+    for item in plan.to_push:
+        if not item.pushed_to or item.fingerprint is None:
+            continue
+        try:
+            sources[(item.env, item.fingerprint)] = ensure_version_runnable(
+                item.env, item.fingerprint, project_dir, image=item.image)
+        except RuntimeError as exc:
+            result.failure = (
+                f"Could not push {item.label} to the registry {plan.base}: it "
+                f"is recorded at {item.pushed_to}, and {exc}\nNothing was "
+                f"pushed or written.")
+            break
+
+    口 = Step(step_num=2, name="Switch the base",
+             purpose="Name the old base in every push record that names none, "
+                     "then set [registry] url to the new base",
+             critical="every record keeps saying where its image is before "
+                      "the base moves")
+    paths: list[Path] = []
+    if result.failure is None and plan.switch_from is not None:
+        try:
+            paths.extend(name_pushed_bases(project_dir, plan.switch_from))
+            paths.append(set_registry_url(project_dir, plan.base))
+            result.base_written = True
+        except (CaptureError, OSError, ValueError) as exc:
+            result.config_error = (
+                f"the switch to {plan.base} could not be written: {exc}\n"
+                f"Nothing was pushed or committed. The push records already "
+                f"marked name {plan.switch_from}, where their images are; fix "
+                f"the cause and run `wfc push-env --registry {plan.base}` "
+                f"again.")
+
+    口 = Step(step_num=3, name="Push each image to push",
              purpose="In worklist order; the first failure stops the run",
              critical="a record is written only after its push succeeded")
     for item in plan.to_push:
-        if item.fingerprint is None or item.image is None:
-            continue  # not pushable: PushItem.pushable needs a local image
+        if result.failure is not None or result.config_error is not None:
+            break
+        if item.fingerprint is None:
+            continue
+        source = sources.get((item.env, item.fingerprint), item.image)
+        if source is None:
+            continue  # not pushable: a local image always has its ref
         print(f"  pushing {item.label} to {image_repository(plan.base, item.env)} ...",
               flush=True)
         try:
-            口 = AutoStep(step_num=1.1, name="Push one image")
+            口 = AutoStep(step_num=3.1, name="Push one image")
             record, _ = push_image(project_dir, item.env, item.fingerprint,
-                                   item.image, plan.base)
+                                   source, plan.base)
         except (RuntimeError, OSError, ValueError) as exc:
             if isinstance(exc, docker_runner.DockerTimeoutError):
                 remedy = "Docker did not answer; check that Docker is running"
@@ -1278,12 +1396,13 @@ def apply_push(plan: PushPlan) -> PushResult:
         result.pushed.append((item, record))
         print(f"  pushed {item.label} ({record.digest})")
 
-    口 = Step(step_num=2, name="Write the base on a first run",
+    口 = Step(step_num=4, name="Write the base on a first run",
              purpose="[registry] url by a text edit that keeps every other byte",
              critical="not written when every push failed")
-    paths: list[Path] = [
+    pushed_paths = [
         layout.env_capture_dir(project_dir, item.env, item.fingerprint or "")
         / layout.CAPTURE_PUSHED_FILENAME for item, _ in result.pushed]
+    paths.extend(path for path in pushed_paths if path not in paths)
     if plan.set_base and (result.pushed or not plan.to_push):
         try:
             paths.append(set_registry_url(project_dir, plan.base))
@@ -1295,18 +1414,26 @@ def apply_push(plan: PushPlan) -> PushResult:
                 f"`wfc push-env` again to set it; the images pushed are "
                 f"recorded and not pushed again.")
 
-    口 = Step(step_num=3, name="Commit the records and the base",
-             purpose="One pathspec commit of every new pushed.json and the "
-                     "config; none outside a git repository")
-    if paths:
+    口 = Step(step_num=5, name="Commit the records and the base",
+             purpose="One pathspec commit of every pushed.json written and "
+                     "the config; none outside a git repository, and none "
+                     "when the switch could not be written")
+    switched = plan.switch_from is None or result.base_written
+    if paths and switched:
+        message = (SWITCH_COMMIT_MESSAGE.format(old=plan.switch_from, new=plan.base)
+                   if plan.switch_from is not None
+                   else f"{PUSH_COMMIT_MESSAGE} {plan.base}")
         try:
-            result.commit = commit_paths(
-                project_dir, paths, f"{PUSH_COMMIT_MESSAGE} {plan.base}",
-                require_repo=False)
+            result.commit = commit_paths(project_dir, paths, message,
+                                         require_repo=False)
         except RuntimeError as exc:
+            # Name each file: a re-run plans no switch, so it would never
+            # commit the config a switch wrote.
+            written = ", ".join(sorted(
+                Path(os.path.relpath(path, project_dir)).as_posix() for path in paths))
             result.commit_error = (
-                f"{exc}\nThe pushes succeeded and their records are written "
-                f"but not committed; commit them with git.")
+                f"{exc}\nThese are written but not committed; commit them "
+                f"with git: {written}.")
 
     out, err = _result_lines(plan, result)
     for line in out:
@@ -1322,7 +1449,10 @@ def _result_lines(plan: PushPlan,
                   result: PushResult) -> tuple[list[str], list[str]]:
     """Return the summary :func:`apply_push` prints: (stdout lines, stderr lines)."""
     out: list[str] = []
-    if result.base_written:
+    if result.base_written and plan.switch_from is not None:
+        out.append(f"  switched [registry] url from \"{plan.switch_from}\" to "
+                   f"\"{plan.base}\"")
+    elif result.base_written:
         out.append(f"  set [registry] url = \"{plan.base}\"")
     if result.commit is not None:
         out.append(f"  git: committed as {result.commit[:12]}")

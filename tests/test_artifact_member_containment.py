@@ -18,6 +18,7 @@ about the member route, not that race.
 from __future__ import annotations
 
 import os
+from urllib.parse import quote
 
 import pytest
 from axiom_annotations import workflow
@@ -78,6 +79,62 @@ def test_member_route_serves_members_and_refuses_traversal(tmp_project,
     refused = client.get(f"/api/wfc/run/{rid}/artifact/tiles%5Ct0.tif")
     assert refused.status_code == 400
     assert "backslash" in refused.json()["detail"]
+
+
+#: The routes that read an artifact by its displayed name besides the file route.
+READING_ROUTES = ["preview", "image", "image-info"]
+
+
+def _url_path(name):
+    """Encode a displayed name so the route receives it exactly as written.
+
+    Each segment is percent-encoded whole, dots included, so the client never
+    resolves a ``..`` segment; and encoded twice, because the test client
+    decodes a path twice before the route sees it (a literal ``%2e`` must
+    arrive as ``%2e``). The reasons asserted below fail if that changes.
+    """
+    once = (quote(seg, safe="").replace(".", "%2E") for seg in name.split("/"))
+    return "/".join(quote(seg, safe="") for seg in once)
+
+
+@pytest.mark.parametrize("route", READING_ROUTES)
+@workflow(purpose="Every route that reads an artifact by name refuses each unsafe "
+                  "name the file route refuses, with the file route's status and reason")
+def test_reading_routes_refuse_what_the_file_route_refuses(tmp_project, monkeypatch, route):
+    rid, provider = _archived_run(tmp_project, monkeypatch)
+    client = canvas_client(tmp_project, monkeypatch)
+    bind_provider(monkeypatch, provider)
+
+    for name, reason in TRAVERSALS:
+        path = _url_path(name)
+        by_file = client.get(f"/api/wfc/run/{rid}/artifact/{path}")
+        by_route = client.get(f"/api/wfc/run/{rid}/{route}/{path}")
+        assert by_file.status_code == 400, (name, by_file.text)
+        assert reason in by_file.json()["detail"], name
+        assert (by_route.status_code, by_route.json()) == (400, by_file.json()), name
+
+
+@pytest.mark.parametrize("route", READING_ROUTES)
+@workflow(purpose="A symlink planted in a directory output's checkout is never read "
+                  "through any route that reads an artifact by name")
+def test_reading_routes_never_follow_a_planted_symlink(tmp_project, monkeypatch, route):
+    rid, provider = _archived_run(tmp_project, monkeypatch)
+    checkout = provider.get_artifact_path(rid, "tiles")
+    outside = tmp_project / "outside.txt"
+    outside.write_text("not an output\n")
+    os.chmod(checkout, 0o755)
+    try:
+        (checkout / "leak.txt").symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"this host cannot create a symlink ({exc})")
+    client = canvas_client(tmp_project, monkeypatch)
+    bind_provider(monkeypatch, provider)
+
+    by_file = client.get(f"/api/wfc/run/{rid}/artifact/tiles/leak.txt")
+    by_route = client.get(f"/api/wfc/run/{rid}/{route}/tiles/leak.txt")
+
+    assert by_file.status_code == 404
+    assert (by_route.status_code, by_route.json()) == (404, by_file.json())
 
 
 def _checkout_tree(checkout):

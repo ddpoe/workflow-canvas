@@ -24,44 +24,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/contracts/{method_full}/output_columns": {
+    "/api/contracts/{method_full}/output_options": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
+        get?: never;
+        put?: never;
         /**
-         * Get Output Columns
-         * @description Resolve declared output columns for a method's slot.
+         * Resolve Output Options
+         * @description Resolve the options an upstream method's output slot offers.
          *
-         *     The canvas inspector calls this for params declared with
-         *     ``column_of_input: <slot>`` to populate a dropdown of candidate column
-         *     names. Reuses ``wfc.contracts.resolve_columns`` against the upstream
-         *     method's contract.
+         *     The Inspector's options picker calls this for a parameter declared with
+         *     ``options_from: <input>``, once per upstream wired to that input. Each
+         *     param set is filled with the version's declared defaults and the slot's
+         *     ``options`` block is expanded over them with
+         *     ``wfc.contracts.resolve_options``. A Run Reference upstream resolves
+         *     through its run: the run's method and version, and one param set, the
+         *     params it ran with. *method_full* is then not read (the canvas sends a
+         *     placeholder).
          *
          *     Args:
-         *         method_full: ``module.method`` (e.g. ``data_preprocessing.regionprops``).
-         *         slot: Output slot name to resolve columns for.
-         *         params: JSON-encoded dict of upstream node's current canvas params
-         *             (used by ``from_params`` expansion). Optional; missing/empty
-         *             falls back to ``{}``.
-         *         run_id: When the upstream is a ``run_reference`` node, pass the
-         *             referenced run id; the endpoint then uses Run.params from the
-         *             DB as the resolution context.
-         *         version: The upstream node's pinned version (its content identity);
-         *             the columns are that version's. Absent: the newest version's.
-         *             A version no entry carries is a 404.
+         *         method_full: ``module.method`` (e.g. ``features.regionprops``).
+         *         request: The slot, and either the version and param sets or a run id.
          *
          *     Returns:
-         *         ``{strict, from_params, patterns, all}`` where ``all`` is the
-         *         union of resolved column names produced by ``resolve_columns``.
-         *         ``patterns`` are returned literally (resolution requires a CSV;
-         *         not done here per the no-introspection constraint).
+         *         ``{fixed, built: [{params, names}], patterns, all}`` in declaration
+         *         order, each name once; ``patterns`` are returned literally (matching
+         *         one needs the data, which is not read here). A Run Reference's
+         *         answer also names the run's ``module`` and ``method``.
+         *
+         *     Raises:
+         *         HTTPException: 400 for a method name with no dot or a run id that is
+         *             not an integer; 404 for an unknown run, or, without a run id, an
+         *             unknown module, method or version.
          */
-        get: operations["get_output_columns_api_contracts__method_full__output_columns_get"];
-        put?: never;
-        post?: never;
+        post: operations["resolve_output_options_api_contracts__method_full__output_options_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -104,11 +104,14 @@ export interface paths {
          * Get Modules
          * @description Return modules as a nested dict keyed by module/method name for the builder UI.
          *
-         *     Shape: {moduleName: {description, methods: {methodName: {inputs, outputs,
-         *     params_schema, executor, env, description, versions}}}}. The method's
-         *     own contract fields and env are its newest version's; ``versions`` lists
-         *     every version (label, identity, registered_at, env, newest) with its
-         *     contract. The builder's module palette reads this shape.
+         *     Shape: {moduleName: {description, color, methods: {methodName: {inputs,
+         *     outputs, params_schema, executor, env, description, versions}}, drafts:
+         *     {methodName: {kind, folder, ...contract, env, valid, reasons}}}}. The
+         *     method's own contract fields and env are its newest version's;
+         *     ``versions`` lists every version (label, identity, registered_at, env,
+         *     newest) with its contract. ``color`` is the module's stored colour and
+         *     ``drafts`` the module's drafts (the palette's Drafts group). The
+         *     builder's module palette reads this shape.
          */
         get: operations["get_modules_api_modules_get"];
         put?: never;
@@ -204,6 +207,197 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/registry/drafts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Registry Drafts
+         * @description List every draft, each with its Registration check and latest draft run.
+         */
+        get: operations["get_registry_drafts_api_registry_drafts_get"];
+        put?: never;
+        /**
+         * Add Registry Draft
+         * @description Add a method folder as a draft of a module.
+         *
+         *     The dry run states the kind (a DRAFT version of the module's method of
+         *     the folder's name, or a DRAFT method) and the dialog's sentence, writing
+         *     nothing. A folder whose method already has a draft from another folder
+         *     is a 400 naming that folder.
+         */
+        post: operations["add_registry_draft_api_registry_drafts_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/registry/drafts/snapshot-check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Check Draft Snapshots
+         * @description Check each draft's folder against its pointer's stat snapshot; nothing is written.
+         */
+        post: operations["check_draft_snapshots_api_registry_drafts_snapshot_check_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/registry/drafts/{module_name}/{method_name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove Registry Draft
+         * @description Remove draft: delete its draft folder (pointer and draft run); the method folder is untouched.
+         *
+         *     As method registration's route: the dry run returns Execution's delete
+         *     plan (what goes, the text ``wfc delete-draft`` prints) and its token,
+         *     deleting nothing. The real request sends the token back as ``planned``
+         *     and deletes only when a fresh plan has the same token; a different one
+         *     is a 409 having deleted nothing, and a request with no token is a 400.
+         */
+        delete: operations["remove_registry_draft_api_registry_drafts__module_name___method_name__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/registry/drafts/{module_name}/{method_name}/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Check Registry Draft
+         * @description The draft's Registration check: every line ✓ or ✗; nothing is written.
+         */
+        get: operations["check_registry_draft_api_registry_drafts__module_name___method_name__check_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/registry/drafts/{module_name}/{method_name}/detail": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Registry Draft Detail
+         * @description A draft's files and contract for its expanded row.
+         */
+        get: operations["get_registry_draft_detail_api_registry_drafts__module_name___method_name__detail_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/registry/drafts/{module_name}/{method_name}/draft-run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Registry Draft Run
+         * @description The draft's latest draft run; a 404 says why there is none.
+         */
+        get: operations["get_registry_draft_run_api_registry_drafts__module_name___method_name__draft_run_get"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete Registry Draft Run
+         * @description Delete outputs: remove the draft run, keeping the draft.
+         *
+         *     The dry run and the token as :func:`remove_registry_draft` takes them,
+         *     over the Delete outputs plan.
+         */
+        delete: operations["delete_registry_draft_run_api_registry_drafts__module_name___method_name__draft_run_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/registry/drafts/{module_name}/{method_name}/draft-run/zip": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Registry Draft Run
+         * @description Download the draft run's outputs as a zip.
+         *
+         *     Args:
+         *         module_name: The draft's module.
+         *         method_name: The draft's method.
+         *         node: Only this node's steps.
+         *         sample: Only this sample's steps.
+         */
+        get: operations["download_registry_draft_run_api_registry_drafts__module_name___method_name__draft_run_zip_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/registry/drafts/{module_name}/{method_name}/update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Update Registry Draft
+         * @description Update: Registration's writing re-read of the draft, with no run.
+         *
+         *     The contract read now is stored on the pointer; the entry carries the
+         *     re-read's own Registration check. Nothing is registered.
+         */
+        post: operations["update_registry_draft_api_registry_drafts__module_name___method_name__update_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/registry/envs": {
         parameters: {
             query?: never;
@@ -215,9 +409,9 @@ export interface paths {
          * Get Registry Envs
          * @description List distinct env specs referenced by registered methods.
          *
-         *     One row per ``Method.env`` value. Aggregates method names, total run
-         *     count, and most-recent run timestamp (``Run.started_at``) across all
-         *     methods sharing that env, and resolves the registered env's ``backend``
+         *     One row per ``Method.env`` value. Lists the method names sharing that
+         *     env, takes its run count and most-recent run start from Execution's run
+         *     tallies (:func:`wfc.execution.run_tallies`), and resolves the registered env's ``backend``
          *     plus a ``has_packages`` flag: whether the captures folder of the env's
          *     current image holds a package list (a byo image's holds none). It does
          *     not verify the list: ``GET .../packages`` does, and refuses one whose
@@ -305,7 +499,10 @@ export interface paths {
          *     resolver refuses the record. `versions` lists every version in label
          *     order (:func:`_version_out`); the method's `env` is its newest
          *     version's. A version is named by its identity in the detail and export
-         *     routes; the label is for display.
+         *     routes; the label is for display. The methods are Registration's
+         *     listing (:func:`~wfc.registration.list_methods`); the run counts are
+         *     Execution's run tallies (:func:`~wfc.execution.run_tallies`), merged on
+         *     the listed row ids.
          */
         get: operations["get_registry_methods_api_registry_methods_get"];
         put?: never;
@@ -415,9 +612,10 @@ export interface paths {
          * Get Registry Modules
          * @description List registered modules for the Registry tab.
          *
-         *     Shape: `{modules: [{name, description, contracts[], methods, source}]}`.
-         *     `color` is intentionally omitted -- the frontend assigns it from the
-         *     `MOD_COLORS` cycle by registration order.
+         *     Shape: `{modules: [{name, description, contracts[], methods, source,
+         *     color}]}`. `color` is the module's stored colour (`#rrggbb`), the one
+         *     every view shows. The modules are Registration's listing
+         *     (:func:`~wfc.registration.list_modules`).
          */
         get: operations["get_registry_modules_api_registry_modules_get"];
         put?: never;
@@ -430,6 +628,49 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/registry/modules/color-check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Check Module Color
+         * @description Check a colour against the colour standard's six tests; nothing is written.
+         */
+        post: operations["check_module_color_api_registry_modules_color_check_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/registry/modules/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Patch Registry Module
+         * @description Set a module's colour (its own commit); null resets it to the default.
+         *
+         *     A colour the colour check refuses is a 400 whose detail is the check's
+         *     result, and nothing is written.
+         */
+        patch: operations["patch_registry_module_api_registry_modules__name__patch"];
         trace?: never;
     };
     "/api/registry/samples": {
@@ -447,7 +688,11 @@ export interface paths {
          *     registered_at}]}`.
          *
          *     `pushed` is `True` when a DVC content hash is present (indicates the sample
-         *     is in the DVC cache and pushable to the remote); `False` otherwise.
+         *     is in the DVC cache and pushable to the remote); `False` otherwise. The
+         *     samples are Registration's listing
+         *     (:func:`~wfc.registration.list_samples`); the run counts are
+         *     Execution's run tallies (:func:`~wfc.execution.run_tallies`), merged by
+         *     sample name.
          */
         get: operations["get_registry_samples_api_registry_samples_get"];
         put?: never;
@@ -585,6 +830,78 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/wfc/draft-step": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Wfc Draft Step
+         * @description History's run panel for one draft step.
+         *
+         *     Args:
+         *         ref: The draft string, ``draft:<module>.<method>/<node>@<sample>``.
+         *             A malformed string is a 400 showing the full form; a draft step
+         *             that is gone is a 404 saying why.
+         */
+        get: operations["get_wfc_draft_step_api_wfc_draft_step_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/wfc/draft-step/artifact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Wfc Draft Step Artifact
+         * @description Serve one file of a draft step's folder.
+         *
+         *     Args:
+         *         ref: The draft string.
+         *         name: The file's name inside the step's folder.
+         */
+        get: operations["get_wfc_draft_step_artifact_api_wfc_draft_step_artifact_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/wfc/draft-steps": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Wfc Draft Steps
+         * @description Every draft step that still exists, for Lineages and Descendants.
+         *
+         *     Args:
+         *         pipeline_id: Only the draft steps of this pipeline run.
+         */
+        get: operations["get_wfc_draft_steps_api_wfc_draft_steps_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/wfc/export-artifacts": {
         parameters: {
             query?: never;
@@ -597,6 +914,8 @@ export interface paths {
         /**
          * Export Wfc Artifacts
          * @description Zip download of wfc run artifacts, optionally filtered by file type.
+         *
+         *     An invalid project config is a 409 with ``read_config``'s message.
          */
         post: operations["export_wfc_artifacts_api_wfc_export_artifacts_post"];
         delete?: never;
@@ -708,6 +1027,10 @@ export interface paths {
         /**
          * Get Wfc Pipelines
          * @description Return each pipeline's status and the number of runs it expects.
+         *
+         *     Each pipeline also names whether it ran in draft mode, its drafts, its
+         *     draft-step count, the draft steps that still exist and, once they are
+         *     cleared, the one line that says why.
          */
         get: operations["get_wfc_pipelines_api_wfc_pipelines_get"];
         put?: never;
@@ -730,6 +1053,8 @@ export interface paths {
         /**
          * Preview Wfc Artifacts
          * @description Preview what would be exported (all file types) without downloading.
+         *
+         *     An invalid project config is a 409 with ``read_config``'s message.
          */
         post: operations["preview_wfc_artifacts_api_wfc_preview_artifacts_post"];
         delete?: never;
@@ -786,7 +1111,15 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Wfc Artifact */
+        /**
+         * Get Wfc Artifact
+         * @description Serve one artifact's bytes, typed and named by its displayed name.
+         *
+         *     The media type comes from ``artifact_path``, never the resolved cache
+         *     path (a top-level file output's cache entry has no extension). The file
+         *     is shown inline and saved under its displayed name; an SVG is sandboxed
+         *     so any script in it cannot run.
+         */
         get: operations["get_wfc_artifact_api_wfc_run__run_id__artifact__artifact_path__get"];
         put?: never;
         post?: never;
@@ -825,6 +1158,96 @@ export interface paths {
          * @description Return runs cancelled because ``run_id`` (or its subtree) failed.
          */
         get: operations["get_wfc_cancelled_descendants_api_wfc_run__run_id__cancelled_descendants_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/wfc/run/{run_id}/image-info/{artifact_path}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Wfc Image Info
+         * @description Say what the image route's preview of a raster image shows, read from its header.
+         *
+         *     The file's and the preview's dimensions, whether the bit depth is
+         *     reduced, its page count, the memory converting it takes, the smallest
+         *     ``[previews] memory_mb`` that admits it, and why the image route would
+         *     refuse it. Never decodes the file. An SVG, any other kind and a file
+         *     Pillow cannot read are a 415.
+         */
+        get: operations["get_wfc_image_info_api_wfc_run__run_id__image_info__artifact_path__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/wfc/run/{run_id}/image/{artifact_path}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Wfc Image
+         * @description Serve an image artifact as a PNG of at most 260, 2048 or 4096 px on its longer side.
+         *
+         *     Every raster image is converted, browser formats included, so the browser
+         *     never gets more than 4096 px; an image that fits ``size`` keeps its own
+         *     size. An SVG is served as it is, sandboxed. ``[previews] memory_mb`` is a
+         *     ceiling on the memory image previews use at once: two conversions run at
+         *     once and each may use up to half. An image whose conversion needs more,
+         *     reckoned from its header (decoded size plus the resize, 8-bit and encode
+         *     working images), is a 422 with its dimensions and the ``memory_mb`` that
+         *     would admit it, never decoded. ``image-info`` tells what the preview shows.
+         *
+         *     A converted PNG is kept in the preview cache (``[previews] cache_mb``,
+         *     least recently used dropped first), keyed by the output's content: a
+         *     second request for the same image and size is answered from it, without
+         *     converting or queueing. Otherwise conversions queue for the two
+         *     conversion threads, first come first served. The route is ``async`` so a
+         *     queued request holds none of the server's shared worker threads; the
+         *     config read and the path's resolution run on one, the decode on the
+         *     conversion pool.
+         */
+        get: operations["get_wfc_image_api_wfc_run__run_id__image__artifact_path__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/wfc/run/{run_id}/preview/{artifact_path}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Wfc Preview
+         * @description Preview the start of a table, JSON or text artifact, saying what was cut.
+         *
+         *     A table shows at most 100 rows read from at most 2 MB, its delimiter and
+         *     header row guessed unless ``delimiter`` or ``header`` is given; text shows
+         *     at most 1 MB; JSON is parsed up to 5 MB, and a larger or invalid file
+         *     comes back as text with its reason. Any other kind is a 415. An invalid
+         *     project config is a 409 with ``read_config``'s message.
+         */
+        get: operations["get_wfc_preview_api_wfc_run__run_id__preview__artifact_path__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -976,12 +1399,27 @@ export interface paths {
          *     writes it to a temp file, and spawns a background thread running
          *     ``run_pipeline()``. Returns the pipeline_id as the job_id immediately.
          *
-         *     Rejects empty pipelines with HTTP 400.  Before spawning the run thread it
-         *     pre-flights Docker and git: a not-ready
+         *     Before spawning the run thread it pre-flights Docker and git: a not-ready
          *     environment is rejected with HTTP 409 carrying a kind-tagged
          *     ``{kind, message, hint}`` payload (the same shape the frontend renders for
          *     pre-run errors), so no orphan run is started.  Multiple pipelines may run
          *     concurrently — each gets its own pipeline_id-scoped workspace.
+         *
+         *     HTTP 400, with the refusal's text as its detail, answers a document the
+         *     preparation refuses: an empty pipeline, an undeclared variable, an
+         *     unregistered method, or the validator's refusals. The validator reads
+         *     each draft's ``method.yaml`` now, so a draft node that cannot run (no
+         *     draft, another folder, its folder gone, an unreadable ``method.yaml``)
+         *     and a param or ``param_sets`` value its contract does not accept are
+         *     400s too.
+         *
+         *     A draft node that passes the validator but cannot run is a 409 whose
+         *     detail is a ``draft_refused`` payload listing each refusal of
+         *     Execution's draft preflight (which reads each draft again, so no Update
+         *     is needed): its Registration check fails, its draft run is still
+         *     running, it has no selected script, its env cannot be made runnable, or
+         *     a link names a slot its contract no longer declares or a required input
+         *     it declares is unwired, each naming its node.
          */
         post: operations["run_workflow_api_workflow_run_post"];
         delete?: never;
@@ -1041,12 +1479,11 @@ export interface paths {
          * Validate Workflow
          * @description Validate a pipeline graph against registered methods in the DB.
          *
-         *     The thin wrapper over the Graph unit's structural core and the shared
-         *     validation entry point: substitute the document's variables with Graph's
-         *     ``resolve_variables``, hand it to ``wfc.graph.validate_structure``
-         *     (``{valid, errors, warnings}``) and merge in
-         *     ``wfc.execution.validation.validation_refusals``, the verdict submit,
-         *     ``run-pipeline`` and the runs preview give the same document.
+         *     The thin wrapper over Execution's ``document_verdict``, the verdict
+         *     ``wfc check-pipeline`` gives the same document: Graph's structural
+         *     check over the substituted document, the validator's refusals and
+         *     ``draftRefusals``, each draft node that cannot run (no draft or its
+         *     folder gone, a failing Registration check, a draft run in progress).
          */
         post: operations["validate_workflow_api_workflow_validate_post"];
         delete?: never;
@@ -1083,6 +1520,28 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * ArtifactPreview
+         * @description ``GET /api/wfc/run/{id}/preview/{path}``: the start of a table, JSON or text file.
+         */
+        ArtifactPreview: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "table" | "json" | "text";
+            /** Reason */
+            reason?: string | null;
+            /** Shown Bytes */
+            shown_bytes: number;
+            table?: components["schemas"]["TablePreview"] | null;
+            /** Text */
+            text?: string | null;
+            /** Total Bytes */
+            total_bytes: number;
+            /** Truncated */
+            truncated: boolean;
+        };
+        /**
          * CacheStatusOutput
          * @description Where one output of the source run can be read from.
          */
@@ -1115,6 +1574,11 @@ export interface components {
         CacheStatusRowModel: {
             /** Cache Key */
             cache_key?: string | null;
+            /**
+             * Draft Mode
+             * @default false
+             */
+            draft_mode: boolean;
             /** Key */
             key: string;
             /** Node Id */
@@ -1140,6 +1604,68 @@ export interface components {
             /** Variant */
             variant: string;
         };
+        /**
+         * ClearedDraft
+         * @description Why one draft's steps of a pipeline run were cleared.
+         */
+        ClearedDraft: {
+            /** At */
+            at: string;
+            /** Draft */
+            draft: string;
+            /**
+             * Reason
+             * @enum {string}
+             */
+            reason: "replaced" | "outputs_deleted" | "registered" | "removed";
+            /** Registeredas */
+            registeredAs?: number | null;
+            /** Replacedbypipelineid */
+            replacedByPipelineId?: string | null;
+        };
+        /**
+         * ColorCheckRequest
+         * @description A colour the picker asks about.
+         */
+        ColorCheckRequest: {
+            /** Color */
+            color: string;
+        };
+        /**
+         * ColorCheckResult
+         * @description Whether a colour can be a module colour, and the nearest one that can.
+         *
+         *     ``failedTest`` names the first of the colour standard's six tests the
+         *     colour fails: ``distance`` (too close to a protected colour),
+         *     ``hue_guard``, ``chroma`` (too grey), ``white_text``, ``background``
+         *     (too dark on the canvas backgrounds) or ``module_ink``. ``reserved`` is
+         *     the meaning of the protected colour it is too close to, in plain words
+         *     ("completed", "running", "failed", "cancelled", "cached results",
+         *     "buttons and links", "system nodes"); None for a contrast failure.
+         */
+        ColorCheckResult: {
+            /** Color */
+            color: string;
+            /** Failedtest */
+            failedTest?: ("distance" | "hue_guard" | "chroma" | "white_text" | "background" | "module_ink") | null;
+            /** Message */
+            message?: string | null;
+            /** Ok */
+            ok: boolean;
+            /** Reserved */
+            reserved?: string | null;
+            /** Suggested */
+            suggested?: string | null;
+            /** Suggestedname */
+            suggestedName?: string | null;
+        };
+        /**
+         * ColorRefusalBody
+         * @description The 400 body of a refused colour change: the check's result.
+         */
+        ColorRefusalBody: {
+            detail: components["schemas"]["ColorCheckResult"];
+        };
         /** ContractSpec */
         ContractSpec: {
             /** Name */
@@ -1154,12 +1680,613 @@ export interface components {
             /** Value Type */
             value_type?: string | null;
         };
+        /**
+         * DraftActionResponse
+         * @description Remove draft and Delete outputs: the plan (dry run) or what was done.
+         */
+        DraftActionResponse: {
+            /** Message */
+            message: string;
+            /** Ok */
+            ok: boolean;
+            plan?: components["schemas"]["DraftDeletePlan"] | null;
+        };
+        /**
+         * DraftAddRequest
+         * @description ``+ Draft from folder…``: the module first, then the method folder.
+         */
+        DraftAddRequest: {
+            /** Folder */
+            folder: string;
+            /** Module */
+            module: string;
+        };
+        /**
+         * DraftAddResponse
+         * @description What adding the folder as a draft does (the dry run) or did.
+         *
+         *     ``message`` is the dialog's sentence, e.g. "Module __demo__ already has a
+         *     method called __demo__label (newest version v3). This folder becomes its
+         *     DRAFT version; registering it adds v4."
+         */
+        DraftAddResponse: {
+            draft?: components["schemas"]["DraftEntry"] | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "version" | "method";
+            /** Message */
+            message: string;
+            /** Method */
+            method: string;
+            /** Module */
+            module: string;
+            /** Newestlabel */
+            newestLabel?: number | null;
+            /** Ok */
+            ok: boolean;
+            /** Registersas */
+            registersAs: number;
+        };
+        /**
+         * DraftCheck
+         * @description A draft's Registration check: every line, ✓ or ✗. Nothing is written.
+         */
+        DraftCheck: {
+            /**
+             * Lines
+             * @default []
+             */
+            lines: components["schemas"]["DraftCheckLine"][];
+            /** Ok */
+            ok: boolean;
+        };
+        /**
+         * DraftCheckLine
+         * @description One line of a draft's Registration check (✓ or ✗).
+         */
+        DraftCheckLine: {
+            /** Ok */
+            ok: boolean;
+            /** Text */
+            text: string;
+        };
+        /**
+         * DraftContract
+         * @description The contract a draft folder's ``method.yaml`` declares.
+         */
+        DraftContract: {
+            /**
+             * Executor
+             * @default python
+             */
+            executor: string;
+            /**
+             * Inputs
+             * @default {}
+             */
+            inputs: {
+                [key: string]: unknown;
+            };
+            /**
+             * Outputs
+             * @default {}
+             */
+            outputs: {
+                [key: string]: unknown;
+            };
+            /**
+             * Params Schema
+             * @default {}
+             */
+            params_schema: {
+                [key: string]: unknown;
+            };
+        };
+        /**
+         * DraftDeleteLaterDraft
+         * @description A later draft whose results computed from the deleted one are cleared.
+         */
+        DraftDeleteLaterDraft: {
+            /** Draft */
+            draft: string;
+            /** Run */
+            run: string;
+        };
+        /**
+         * DraftDeletePipeline
+         * @description A pipeline whose cleared line a delete changes.
+         */
+        DraftDeletePipeline: {
+            /** Name */
+            name: string;
+            /** Pipelineid */
+            pipelineId: string;
+        };
+        /**
+         * DraftDeletePlan
+         * @description What Remove draft or Delete outputs deletes, planned before anything is.
+         */
+        DraftDeletePlan: {
+            /**
+             * Deletes
+             * @default []
+             */
+            deletes: string[];
+            /** Draftrun */
+            draftRun?: string | null;
+            /** Folder */
+            folder: string;
+            /**
+             * Hint
+             * @default
+             */
+            hint: string;
+            /**
+             * Keeps
+             * @default []
+             */
+            keeps: string[];
+            /**
+             * Laterdrafts
+             * @default []
+             */
+            laterDrafts: components["schemas"]["DraftDeleteLaterDraft"][];
+            /** Message */
+            message: string;
+            /** Method */
+            method: string;
+            /** Module */
+            module: string;
+            /** Outputsonly */
+            outputsOnly: boolean;
+            /**
+             * Pipelines
+             * @default []
+             */
+            pipelines: components["schemas"]["DraftDeletePipeline"][];
+            /** Source */
+            source: string;
+            /** Token */
+            token: string;
+        };
+        /**
+         * DraftDetail
+         * @description A draft's files and contract for its expanded Registry row.
+         */
+        DraftDetail: {
+            /**
+             * @default {
+             *       "executor": "python",
+             *       "inputs": {},
+             *       "outputs": {},
+             *       "params_schema": {}
+             *     }
+             */
+            contract: components["schemas"]["DraftContract"];
+            draft: components["schemas"]["DraftEntry"];
+            /** Env */
+            env?: string | null;
+            /**
+             * Files
+             * @default []
+             */
+            files: components["schemas"]["MethodFile"][];
+        };
+        /**
+         * DraftEntry
+         * @description One draft as the Registry's Drafts group lists it.
+         */
+        DraftEntry: {
+            check: components["schemas"]["DraftCheck"];
+            /**
+             * @default {
+             *       "executor": "python",
+             *       "inputs": {},
+             *       "outputs": {},
+             *       "params_schema": {}
+             *     }
+             */
+            contract: components["schemas"]["DraftContract"];
+            draftRun?: components["schemas"]["DraftRunSummary"] | null;
+            /** Env */
+            env?: string | null;
+            /**
+             * Filesupdated
+             * @default false
+             */
+            filesUpdated: boolean;
+            /** Folder */
+            folder: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "version" | "method";
+            /** Method */
+            method: string;
+            /** Module */
+            module: string;
+            /** Newestlabel */
+            newestLabel?: number | null;
+            /**
+             * Reasons
+             * @default []
+             */
+            reasons: string[];
+            /** Registersas */
+            registersAs: number;
+            /**
+             * Stale
+             * @default false
+             */
+            stale: boolean;
+            /**
+             * Valid
+             * @default true
+             */
+            valid: boolean;
+        };
+        /**
+         * DraftRef
+         * @description A draft named by its module and method.
+         */
+        DraftRef: {
+            /** Method */
+            method: string;
+            /** Module */
+            module: string;
+        };
+        /**
+         * DraftRefusal
+         * @description Why one draft node cannot run or validate.
+         *
+         *     ``draft_invalid``: the draft cannot be read for a run, its Registration
+         *     check fails (``reasons`` lists each failed line), it selects no script,
+         *     or its env cannot run. ``draft_in_use``: the draft's draft run is still
+         *     running in ``pipelineId``. ``draft_mismatch`` (Run only): the document
+         *     does not match the draft's contract read now -- a param or variant, a
+         *     link slot, or a required input nothing is connected to; the message
+         *     names the node and the field. A changed ``method.yaml`` is never a
+         *     refusal: Run and Validate read it again.
+         */
+        DraftRefusal: {
+            /** Draft */
+            draft: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "draft_invalid" | "draft_in_use" | "draft_mismatch";
+            /** Message */
+            message: string;
+            /** Nodeid */
+            nodeId: string;
+            /** Pipelineid */
+            pipelineId?: string | null;
+            /** Pipelinename */
+            pipelineName?: string | null;
+            /**
+             * Reasons
+             * @default []
+             */
+            reasons: string[];
+        };
+        /**
+         * DraftRunDetail
+         * @description The latest draft run of a draft (the Registry's Draft run tab).
+         */
+        DraftRunDetail: {
+            /** Keptuntil */
+            keptUntil: string;
+            /** Method */
+            method: string;
+            /** Module */
+            module: string;
+            /**
+             * Nodes
+             * @default []
+             */
+            nodes: components["schemas"]["DraftRunNode"][];
+            /** Pipelineid */
+            pipelineId: string;
+            /** Pipelinename */
+            pipelineName?: string | null;
+            /**
+             * Samples
+             * @default []
+             */
+            samples: string[];
+            /** Startedat */
+            startedAt: string;
+            /** Status */
+            status: string;
+            /**
+             * Tally
+             * @default {}
+             */
+            tally: {
+                [key: string]: number;
+            };
+            /**
+             * Totalbytes
+             * @default 0
+             */
+            totalBytes: number;
+        };
+        /**
+         * DraftRunNode
+         * @description One node line of the Registry's Draft run tab.
+         */
+        DraftRunNode: {
+            /** Isdraft */
+            isDraft: boolean;
+            /** Method */
+            method: string;
+            /** Module */
+            module: string;
+            /** Nodeid */
+            nodeId: string;
+            /** Sizebytes */
+            sizeBytes?: number | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "running" | "success" | "failed" | "cancelled";
+            /**
+             * Steps
+             * @default []
+             */
+            steps: components["schemas"]["DraftRunNodeStep"][];
+        };
+        /**
+         * DraftRunNodeStep
+         * @description One sample of one node in a draft run.
+         */
+        DraftRunNodeStep: {
+            /** Draftstring */
+            draftString: string;
+            /** Sample */
+            sample: string;
+            /** Sizebytes */
+            sizeBytes?: number | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "running" | "success" | "failed" | "cancelled";
+        };
+        /**
+         * DraftRunSummary
+         * @description The draft's latest draft run, in brief.
+         */
+        DraftRunSummary: {
+            /** Pipelineid */
+            pipelineId: string;
+            /** Pipelinename */
+            pipelineName?: string | null;
+            /**
+             * Running
+             * @default false
+             */
+            running: boolean;
+            /** Startedat */
+            startedAt: string;
+            /** Status */
+            status: string;
+        };
+        /**
+         * DraftStep
+         * @description One draft-mode step of the latest draft run of a draft.
+         *
+         *     The shape History's Pipelines rows, Lineages and Descendants draw. A step
+         *     is the draft's own (``isDraft``) or downstream of it; ``draft`` names the
+         *     draft that owns it (the nearest one upstream).
+         */
+        DraftStep: {
+            /** Draft */
+            draft: string;
+            /** Draftstring */
+            draftString: string;
+            /** Duration */
+            duration?: number | null;
+            /** Error Message */
+            error_message?: string | null;
+            /** Isdraft */
+            isDraft: boolean;
+            /** Method */
+            method: string;
+            /** Module */
+            module: string;
+            /** Nid */
+            nid?: string | null;
+            /** Nodeid */
+            nodeId: string;
+            /**
+             * Parentdraftsteps
+             * @default []
+             */
+            parentDraftSteps: string[];
+            /**
+             * Parentrunids
+             * @default []
+             */
+            parentRunIds: string[];
+            /** Pipelineid */
+            pipelineId: string;
+            /** Pipelinename */
+            pipelineName?: string | null;
+            /** Sample */
+            sample: string;
+            /** Sizebytes */
+            sizeBytes?: number | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "running" | "success" | "failed" | "cancelled";
+            /** Timestamp */
+            timestamp?: number | null;
+            /** Version */
+            version?: number | null;
+        };
+        /**
+         * DraftStepArtifact
+         * @description One file in a draft step's folder.
+         */
+        DraftStepArtifact: {
+            /**
+             * Extension
+             * @default
+             */
+            extension: string;
+            /** Name */
+            name: string;
+            /** Size */
+            size: number;
+            /** Viewer */
+            viewer?: ("image" | "table" | "json" | "text" | "pdf") | null;
+        };
+        /**
+         * DraftStepDetail
+         * @description History's run panel for a draft step.
+         */
+        DraftStepDetail: {
+            /**
+             * Artifacts
+             * @default []
+             */
+            artifacts: components["schemas"]["DraftStepArtifact"][];
+            /** Folder */
+            folder: string;
+            /**
+             * Inputs
+             * @default []
+             */
+            inputs: components["schemas"]["DraftStepInput"][];
+            /** Keptuntil */
+            keptUntil: string;
+            /** Log */
+            log?: string | null;
+            /**
+             * Metrics
+             * @default {}
+             */
+            metrics: {
+                [key: string]: unknown;
+            };
+            /**
+             * Outputs
+             * @default []
+             */
+            outputs: components["schemas"]["DraftStepOutput"][];
+            /**
+             * Params
+             * @default {}
+             */
+            params: {
+                [key: string]: unknown;
+            };
+            step: components["schemas"]["DraftStep"];
+            /** Versiontext */
+            versionText: string;
+        };
+        /**
+         * DraftStepInput
+         * @description What filled one input of a draft step.
+         *
+         *     ``source`` is ``sample`` (``sample`` set), ``run`` (a recorded run,
+         *     ``runId`` and ``sourceSlot`` set) or ``draft`` (an upstream draft step,
+         *     ``draftString`` and ``sourceSlot`` set).
+         */
+        DraftStepInput: {
+            /** Draftstring */
+            draftString?: string | null;
+            /** Runid */
+            runId?: string | null;
+            /** Sample */
+            sample?: string | null;
+            /** Slot */
+            slot: string;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "sample" | "run" | "draft";
+            /** Sourceslot */
+            sourceSlot?: string | null;
+        };
+        /**
+         * DraftStepOutput
+         * @description One output a draft step wrote.
+         */
+        DraftStepOutput: {
+            /** Filename */
+            filename?: string | null;
+            /** Sizebytes */
+            sizeBytes?: number | null;
+            /** Slot */
+            slot: string;
+        };
+        /**
+         * DraftStepsResponse
+         * @description ``GET /api/wfc/draft-steps``: every draft step that still exists.
+         */
+        DraftStepsResponse: {
+            /** Steps */
+            steps: components["schemas"]["DraftStep"][];
+        };
+        /**
+         * DraftUpdateResponse
+         * @description Update: the draft's ``method.yaml`` read again (nothing registered).
+         */
+        DraftUpdateResponse: {
+            /** Changed */
+            changed: boolean;
+            draft: components["schemas"]["DraftEntry"];
+            /** Message */
+            message: string;
+        };
+        /**
+         * DraftsResponse
+         * @description ``GET /api/registry/drafts``.
+         */
+        DraftsResponse: {
+            /** Drafts */
+            drafts: components["schemas"]["DraftEntry"][];
+        };
         /** ExportArtifactsRequest */
         ExportArtifactsRequest: {
             /** File Types */
             file_types?: string[] | null;
             /** Run Ids */
             run_ids?: string[] | null;
+        };
+        /**
+         * ExportRefusal
+         * @description Why the bundle cannot be written: the lead line and every reason.
+         *
+         *     A draft string asked for as a run is refused with a reason naming the
+         *     draft step and saying to register the draft and run the pipeline again.
+         *     A recorded run of a pipeline that ran a draft exports.
+         */
+        ExportRefusal: {
+            /** Message */
+            message: string;
+            /**
+             * Reasons
+             * @default []
+             */
+            reasons: string[];
+        };
+        /**
+         * ExportRefusalBody
+         * @description The 409 body of a refused or changed export.
+         */
+        ExportRefusalBody: {
+            detail: components["schemas"]["ExportRefusal"];
         };
         /**
          * ExportRunsRequest
@@ -1193,6 +2320,64 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /**
+         * ImageInfo
+         * @description ``GET /api/wfc/run/{id}/image-info/{path}``: what an image preview shows of its file.
+         *
+         *     Read from the file's header, never decoding it, for the size asked: the
+         *     facts the viewer's note states (smaller than the file, bit depth reduced,
+         *     page 1 of N) and whether the image route would refuse it.
+         */
+        ImageInfo: {
+            /** Bit Depth */
+            bit_depth: number;
+            /** Bit Depth Reduced */
+            bit_depth_reduced: boolean;
+            /** Decoded Bytes */
+            decoded_bytes: number;
+            /** Height */
+            height: number;
+            /** Memory Bytes */
+            memory_bytes: number;
+            /** Memory Mb Needed */
+            memory_mb_needed: number;
+            /** Pages */
+            pages: number;
+            /** Preview Height */
+            preview_height: number;
+            /** Preview Width */
+            preview_width: number;
+            /** Refused */
+            refused?: string | null;
+            /** Width */
+            width: number;
+        };
+        /**
+         * ImageTooLarge
+         * @description The image route's 422: an image whose conversion needs more than half of ``[previews] memory_mb``.
+         */
+        ImageTooLarge: {
+            /** Detail */
+            detail: string;
+            /** Height */
+            height: number;
+            /** Memory Mb Needed */
+            memory_mb_needed: number;
+            /** Width */
+            width: number;
+        };
+        /**
+         * MethodFile
+         * @description One file at the top of a method folder, with its content.
+         */
+        MethodFile: {
+            /** Content */
+            content: string;
+            /** Language */
+            language: string;
+            /** Name */
+            name: string;
+        };
         /** MethodRegisterRequest */
         MethodRegisterRequest: {
             /** Directory */
@@ -1203,6 +2388,16 @@ export interface components {
             module: string;
             /** Plan Token */
             plan_token?: string | null;
+        };
+        /**
+         * ModuleColorPatch
+         * @description ``PATCH /api/registry/modules/{name}``: the module's new colour.
+         *
+         *     ``color`` null resets the module to its default colour.
+         */
+        ModuleColorPatch: {
+            /** Color */
+            color: string | null;
         };
         /** ModuleRegisterRequest */
         ModuleRegisterRequest: {
@@ -1264,6 +2459,222 @@ export interface components {
             /** Upstream Run Id */
             upstream_run_id?: string | null;
         };
+        /**
+         * OutputOptionsRequest
+         * @description What the options picker asks of an upstream output slot.
+         *
+         *     A method upstream names its pinned ``version`` (absent: the newest) and
+         *     its ``param_sets``: the node's base values and each variant's and
+         *     per-sample override's, each as the node holds them. A Run Reference
+         *     upstream names its ``run_id`` instead; the run names its own method,
+         *     version and params, and the other fields are not read.
+         *
+         *     Attributes:
+         *         slot: The upstream's output slot.
+         *         version: The upstream node's pinned version (its content identity).
+         *         param_sets: The upstream's param sets; none is one empty set.
+         *         run_id: The referenced run's id.
+         */
+        OutputOptionsRequest: {
+            /** Param Sets */
+            param_sets?: {
+                [key: string]: unknown;
+            }[];
+            /** Run Id */
+            run_id?: number | string | null;
+            /** Slot */
+            slot: string;
+            /** Version */
+            version?: string | null;
+        };
+        /**
+         * PaletteDraft
+         * @description One draft in the palette's Drafts group, with the contract its folder declares.
+         *
+         *     A ``version`` draft is the next version of the registered method of the
+         *     same name in its module (the node's version menu shows it as ● DRAFT); a
+         *     ``method`` draft is a new method of the module.
+         */
+        PaletteDraft: {
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Env */
+            env?: string | null;
+            /**
+             * Executor
+             * @default python
+             */
+            executor: string;
+            /** Folder */
+            folder: string;
+            /**
+             * Inputs
+             * @default {}
+             */
+            inputs: {
+                [key: string]: unknown;
+            };
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "version" | "method";
+            /**
+             * Outputs
+             * @default {}
+             */
+            outputs: {
+                [key: string]: unknown;
+            };
+            /**
+             * Params Schema
+             * @default {}
+             */
+            params_schema: {
+                [key: string]: unknown;
+            };
+            /**
+             * Reasons
+             * @default []
+             */
+            reasons: string[];
+            /**
+             * Valid
+             * @default true
+             */
+            valid: boolean;
+        };
+        /**
+         * PaletteMethod
+         * @description One registered method; its contract fields and env are its newest version's.
+         */
+        PaletteMethod: {
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Env */
+            env?: string | null;
+            /**
+             * Executor
+             * @default python
+             */
+            executor: string;
+            /**
+             * Inputs
+             * @default {}
+             */
+            inputs: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Outputs
+             * @default {}
+             */
+            outputs: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Params Schema
+             * @default {}
+             */
+            params_schema: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Versions
+             * @default []
+             */
+            versions: components["schemas"]["PaletteVersion"][];
+        };
+        /**
+         * PaletteModule
+         * @description One module of ``GET /api/modules``, keyed by its name.
+         */
+        PaletteModule: {
+            /** Color */
+            color?: string | null;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /**
+             * Drafts
+             * @default {}
+             */
+            drafts: {
+                [key: string]: components["schemas"]["PaletteDraft"];
+            };
+            /**
+             * Methods
+             * @default {}
+             */
+            methods: {
+                [key: string]: components["schemas"]["PaletteMethod"];
+            };
+        };
+        /**
+         * PaletteVersion
+         * @description One registered version of a method, with its contract.
+         */
+        PaletteVersion: {
+            /** Env */
+            env?: string | null;
+            /**
+             * Executor
+             * @default python
+             */
+            executor: string;
+            /** Identity */
+            identity: string;
+            /**
+             * Inputs
+             * @default {}
+             */
+            inputs: {
+                [key: string]: unknown;
+            } | null;
+            /** Label */
+            label: number;
+            /** Newest */
+            newest: boolean;
+            /**
+             * Outputs
+             * @default {}
+             */
+            outputs: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Params Schema
+             * @default {}
+             */
+            params_schema: {
+                [key: string]: unknown;
+            } | null;
+            /** Registered At */
+            registered_at: string;
+        };
+        /**
+         * PipelineCleared
+         * @description The one greyed line of a pipeline run whose draft steps are gone.
+         */
+        PipelineCleared: {
+            /** Count */
+            count: number;
+            /**
+             * Drafts
+             * @default []
+             */
+            drafts: components["schemas"]["ClearedDraft"][];
+            /** Text */
+            text: string;
+        };
         /** PipelineInput */
         PipelineInput: {
             /** Explicit Combos */
@@ -1285,13 +2696,7 @@ export interface components {
             /** Nodes */
             nodes: components["schemas"]["PipelineNode"][];
             /** Param Sets */
-            param_sets?: {
-                [key: string]: {
-                    [key: string]: {
-                        [key: string]: unknown;
-                    };
-                };
-            } | null;
+            param_sets?: unknown;
             /**
              * Samples
              * @default []
@@ -1319,6 +2724,11 @@ export interface components {
         PipelineNode: {
             /** Fan Mode */
             fan_mode?: string | null;
+            /**
+             * Folder
+             * @description A draft node's method folder (with version "draft"), as the draft's pointer names it.
+             */
+            folder?: string | null;
             /** Id */
             id: string;
             /** Label */
@@ -1352,7 +2762,10 @@ export interface components {
              * @default method
              */
             type: string | null;
-            /** Version */
+            /**
+             * Version
+             * @description A method node's pinned version identity, or "draft" for a node that runs its method's draft folder.
+             */
             version?: string | null;
         } & {
             [key: string]: unknown;
@@ -1362,14 +2775,134 @@ export interface components {
          * @description One pipeline as History's Pipelines view lists it.
          */
         PipelineSummary: {
+            cleared?: components["schemas"]["PipelineCleared"] | null;
+            /**
+             * Draftmode
+             * @default false
+             */
+            draftMode: boolean;
+            /**
+             * Draftstepcount
+             * @default 0
+             */
+            draftStepCount: number;
+            /**
+             * Draftsteps
+             * @default []
+             */
+            draftSteps: components["schemas"]["DraftStep"][];
+            /**
+             * Drafts
+             * @default []
+             */
+            drafts: string[];
             /** Expected */
             expected?: number | null;
+            /** Name */
+            name?: string | null;
             /** Nodeorder */
             nodeOrder?: string[] | null;
             /** Pipelineid */
             pipelineId: string;
+            /** Startedat */
+            startedAt?: string | null;
             /** Status */
             status: string;
+        };
+        /**
+         * RegistryContract
+         * @description One module-level contract as the Registry lists it.
+         */
+        RegistryContract: {
+            /** Name */
+            name: string;
+            /**
+             * Required
+             * @default true
+             */
+            required: boolean;
+            /** Type */
+            type: string;
+            /** Value Type */
+            value_type?: string | null;
+        };
+        /**
+         * RegistryModule
+         * @description One module as the Registry's Modules tab lists it.
+         */
+        RegistryModule: {
+            /** Color */
+            color?: string | null;
+            /**
+             * Contracts
+             * @default []
+             */
+            contracts: components["schemas"]["RegistryContract"][];
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /**
+             * Methods
+             * @default 0
+             */
+            methods: number;
+            /** Name */
+            name: string;
+            /** Source */
+            source: string;
+        };
+        /**
+         * RegistryModulesResponse
+         * @description ``GET /api/registry/modules``.
+         */
+        RegistryModulesResponse: {
+            /** Modules */
+            modules: components["schemas"]["RegistryModule"][];
+        };
+        /**
+         * RunArtifact
+         * @description ``GET /api/wfc/run/{id}/artifacts``: one archived output of a run.
+         */
+        RunArtifact: {
+            /** Children */
+            children?: components["schemas"]["RunArtifactChild"][] | null;
+            /** Count */
+            count?: number | null;
+            /**
+             * Extension
+             * @default
+             */
+            extension: string;
+            /** Name */
+            name: string;
+            /** Size */
+            size: number;
+            /**
+             * Type
+             * @enum {string}
+             */
+            type: "file" | "dir";
+            /** Viewer */
+            viewer?: ("image" | "table" | "json" | "text" | "pdf") | null;
+        };
+        /**
+         * RunArtifactChild
+         * @description One direct child of a folder output: a file, or a subdirectory ``name/``.
+         */
+        RunArtifactChild: {
+            /**
+             * Extension
+             * @default
+             */
+            extension: string;
+            /** Name */
+            name: string;
+            /** Size */
+            size: number;
+            /** Viewer */
+            viewer?: ("image" | "table" | "json" | "text" | "pdf") | null;
         };
         /**
          * RunPatchRequest
@@ -1393,6 +2926,36 @@ export interface components {
             /** Tags */
             tags?: string[] | null;
         };
+        /**
+         * RunRefusal
+         * @description The run route's 409 detail when a draft node refuses the run.
+         *
+         *     The same kind-tagged ``{kind, message, hint}`` shape as the not-ready
+         *     refusals, with one entry per refusing draft node.
+         */
+        RunRefusal: {
+            /** Hint */
+            hint?: string | null;
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "draft_refused";
+            /** Message */
+            message: string;
+            /**
+             * Refusals
+             * @default []
+             */
+            refusals: components["schemas"]["DraftRefusal"][];
+        };
+        /**
+         * RunRefusalBody
+         * @description The run route's 409 body for a draft refusal.
+         */
+        RunRefusalBody: {
+            detail: components["schemas"]["RunRefusal"];
+        };
         /** SampleRegisterRequest */
         SampleRegisterRequest: {
             /** Description */
@@ -1406,6 +2969,100 @@ export interface components {
             registration_mode: string | null;
             /** Source */
             source: string;
+        };
+        /**
+         * SnapshotCheckEntry
+         * @description One draft folder against its pointer's stat snapshot.
+         *
+         *     ``current``: the draft can be read and its Registration check passes.
+         *     ``invalid``: the check fails. ``missing``: the draft or its folder is
+         *     gone. A changed ``method.yaml`` is information, not a state: Run and
+         *     Validate read it again.
+         */
+        SnapshotCheckEntry: {
+            /**
+             * Contractchanged
+             * @default false
+             */
+            contractChanged: boolean;
+            /**
+             * Filesupdated
+             * @default false
+             */
+            filesUpdated: boolean;
+            /** Message */
+            message?: string | null;
+            /** Method */
+            method: string;
+            /** Module */
+            module: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "current" | "invalid" | "missing";
+        };
+        /**
+         * SnapshotCheckRequest
+         * @description The drafts whose folders to check (on drag, and before Run or Validate).
+         */
+        SnapshotCheckRequest: {
+            /** Drafts */
+            drafts: components["schemas"]["DraftRef"][];
+        };
+        /**
+         * SnapshotCheckResponse
+         * @description ``POST /api/registry/drafts/snapshot-check``.
+         */
+        SnapshotCheckResponse: {
+            /** Drafts */
+            drafts: components["schemas"]["SnapshotCheckEntry"][];
+        };
+        /**
+         * TablePreview
+         * @description The rows a table preview shows, and how they were split.
+         */
+        TablePreview: {
+            /** Columns */
+            columns?: string[] | null;
+            /**
+             * Delimiter
+             * @enum {string}
+             */
+            delimiter: "comma" | "tab" | "semicolon" | "pipe" | "space";
+            /** Delimiter Guessed */
+            delimiter_guessed: boolean;
+            /** Header */
+            header: boolean;
+            /** Header Guessed */
+            header_guessed: boolean;
+            /** Rows */
+            rows: string[][];
+        };
+        /**
+         * ValidateResponse
+         * @description The validate route's verdict on a pipeline document.
+         */
+        ValidateResponse: {
+            /**
+             * Draftrefusals
+             * @default []
+             */
+            draftRefusals: components["schemas"]["DraftRefusal"][];
+            /**
+             * Errors
+             * @default []
+             */
+            errors: string[];
+            /** Valid */
+            valid: boolean;
+            /**
+             * Warnings
+             * @default []
+             */
+            warnings: string[];
+        } & {
+            [key: string]: unknown;
         };
         /** ValidationError */
         ValidationError: {
@@ -1471,21 +3128,20 @@ export interface operations {
             };
         };
     };
-    get_output_columns_api_contracts__method_full__output_columns_get: {
+    resolve_output_options_api_contracts__method_full__output_options_post: {
         parameters: {
-            query: {
-                slot: string;
-                params?: string | null;
-                run_id?: string | null;
-                version?: string | null;
-            };
+            query?: never;
             header?: never;
             path: {
                 method_full: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OutputOptionsRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -1553,7 +3209,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        [key: string]: components["schemas"]["PaletteModule"];
+                    };
                 };
             };
         };
@@ -1627,6 +3285,327 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_registry_drafts_api_registry_drafts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftsResponse"];
+                };
+            };
+        };
+    };
+    add_registry_draft_api_registry_drafts_post: {
+        parameters: {
+            query?: {
+                dryRun?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DraftAddRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftAddResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    check_draft_snapshots_api_registry_drafts_snapshot_check_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SnapshotCheckRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SnapshotCheckResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_registry_draft_api_registry_drafts__module_name___method_name__delete: {
+        parameters: {
+            query?: {
+                dryRun?: boolean;
+                planned?: string | null;
+            };
+            header?: never;
+            path: {
+                module_name: string;
+                method_name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftActionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    check_registry_draft_api_registry_drafts__module_name___method_name__check_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                module_name: string;
+                method_name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftCheck"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_registry_draft_detail_api_registry_drafts__module_name___method_name__detail_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                module_name: string;
+                method_name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_registry_draft_run_api_registry_drafts__module_name___method_name__draft_run_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                module_name: string;
+                method_name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftRunDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_registry_draft_run_api_registry_drafts__module_name___method_name__draft_run_delete: {
+        parameters: {
+            query?: {
+                dryRun?: boolean;
+                planned?: string | null;
+            };
+            header?: never;
+            path: {
+                module_name: string;
+                method_name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftActionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_registry_draft_run_api_registry_drafts__module_name___method_name__draft_run_zip_get: {
+        parameters: {
+            query?: {
+                node?: string | null;
+                sample?: string | null;
+            };
+            header?: never;
+            path: {
+                module_name: string;
+                method_name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_registry_draft_api_registry_drafts__module_name___method_name__update_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                module_name: string;
+                method_name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftUpdateResponse"];
                 };
             };
             /** @description Validation Error */
@@ -1829,7 +3808,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["RegistryModulesResponse"];
                 };
             };
         };
@@ -1856,6 +3835,83 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    check_module_color_api_registry_modules_color_check_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ColorCheckRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ColorCheckResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    patch_registry_module_api_registry_modules__name__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModuleColorPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegistryModule"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ColorRefusalBody"];
                 };
             };
             /** @description Validation Error */
@@ -2046,6 +4102,100 @@ export interface operations {
             };
         };
     };
+    get_wfc_draft_step_api_wfc_draft_step_get: {
+        parameters: {
+            query: {
+                ref: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftStepDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_wfc_draft_step_artifact_api_wfc_draft_step_artifact_get: {
+        parameters: {
+            query: {
+                ref: string;
+                name: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_wfc_draft_steps_api_wfc_draft_steps_get: {
+        parameters: {
+            query?: {
+                pipeline_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftStepsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     export_wfc_artifacts_api_wfc_export_artifacts_post: {
         parameters: {
             query?: never;
@@ -2101,6 +4251,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportRefusalBody"];
                 };
             };
             /** @description Validation Error */
@@ -2375,7 +4534,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["RunArtifact"][];
                 };
             };
             /** @description Validation Error */
@@ -2407,6 +4566,117 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_wfc_image_info_api_wfc_run__run_id__image_info__artifact_path__get: {
+        parameters: {
+            query?: {
+                size?: "thumb" | "view" | "large";
+            };
+            header?: never;
+            path: {
+                run_id: string;
+                artifact_path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImageInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_wfc_image_api_wfc_run__run_id__image__artifact_path__get: {
+        parameters: {
+            query?: {
+                size?: "thumb" | "view" | "large";
+            };
+            header?: never;
+            path: {
+                run_id: string;
+                artifact_path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The preview PNG; an SVG as it is, sandboxed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": unknown;
+                    "image/svg+xml": unknown;
+                };
+            };
+            /** @description Not a raster image or SVG, or a file Pillow cannot read. */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Converting the image would need more than half of [previews] memory_mb; the body names the memory_mb that admits it (an invalid size is FastAPI's validation error). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImageTooLarge"];
+                };
+            };
+        };
+    };
+    get_wfc_preview_api_wfc_run__run_id__preview__artifact_path__get: {
+        parameters: {
+            query?: {
+                delimiter?: ("comma" | "tab" | "semicolon" | "pipe" | "space") | null;
+                header?: boolean | null;
+            };
+            header?: never;
+            path: {
+                run_id: string;
+                artifact_path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtifactPreview"];
                 };
             };
             /** @description Validation Error */
@@ -2569,6 +4839,15 @@ export interface operations {
                     "application/json": unknown;
                 };
             };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunRefusalBody"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -2630,7 +4909,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ValidateResponse"];
                 };
             };
             /** @description Validation Error */

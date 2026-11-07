@@ -280,6 +280,49 @@ def refuse_path_unlink(monkeypatch, refused: pathlib.Path) -> None:
 
 
 @fake(
+    boundary="pathlib.Path.unlink -- the removal of one named file, refused "
+             "the first time only, as Windows refuses while another process "
+             "has the file open (WinError 32). "
+             "Why a test may take it: a reader holding the file open at the "
+             "moment of the removal is a cross-process race no test can time "
+             "on demand; the caller's retry is what is under test.",
+    preserves="every later removal of the file (the real unlink runs from "
+              "the second call on), every other path's real unlink, and "
+              "everything around the call",
+    not_proven="that a real sharing violation raises exactly the "
+               "PermissionError the replacement raises, or that one retry "
+               "outlasts a real reader",
+    backed_by="pm_mvp::tests.test_pipeline_recovery::"
+              "test_a_lock_file_left_by_a_gone_process_is_taken_over",
+)
+def refuse_path_unlink_once(monkeypatch, refused: pathlib.Path) -> list[pathlib.Path]:
+    """Make the first ``pathlib.Path.unlink`` of one file raise ``PermissionError``.
+
+    Args:
+        monkeypatch: An active ``pytest.MonkeyPatch``.
+        refused: The file whose first removal is refused; later removals of
+            it, and every other path's, run for real.
+
+    Returns:
+        A list that receives the file once its removal was refused.
+    """
+    real = pathlib.Path.unlink
+    key = os.path.normcase(os.path.abspath(refused))
+    refusals: list[pathlib.Path] = []
+
+    def unlink(self, *args, **kwargs):
+        if not refusals and os.path.normcase(os.path.abspath(self)) == key:
+            refusals.append(self)
+            raise PermissionError(32, "The process cannot access the file "
+                                      "because it is being used by another process",
+                                  str(self))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "unlink", unlink)
+    return refusals
+
+
+@fake(
     boundary="pathlib.Path.write_text -- a write to any file of one name. "
              "Why a test may take it: a file the OS refuses to write (a full "
              "disk, a directory the user cannot write) cannot be produced "
@@ -399,7 +442,8 @@ def redirect_home(monkeypatch, home: Path) -> Path:
 @fake(
     boundary="builtins.input -- the interactive prompt (init's registry "
              "prompt, delete-env's confirmation, register-method's, "
-             "export-run's and cancel's Proceed? prompts)",
+             "export-run's, cancel's, cache prune's and demo --remove's "
+             "Proceed? prompts)",
     preserves="the prompt text, recorded when asked",
     not_proven="that a user at a terminal is asked, or what they see",
     backed_by="undrivable: no terminal in the suite",
@@ -426,7 +470,8 @@ def stub_interactive_prompt(monkeypatch, answer: str = "", *,
     boundary="wfc.confirm.stdin_is_interactive -- whether stdin is a "
              "terminal (the CLI's shared confirm-or-refuse: init's "
              "existing-project confirmation and archive prompt, "
-             "register-method's, export-run's and cancel's Proceed? prompts)",
+             "register-method's, export-run's, cancel's and push-env's "
+             "Proceed? prompts, delete-env's question)",
     preserves="everything the verb decides from the answer: prompting, or "
               "refusing with nothing changed",
     not_proven="that a real terminal is detected as one",
@@ -435,15 +480,19 @@ def stub_interactive_prompt(monkeypatch, answer: str = "", *,
 def stub_terminal(monkeypatch, interactive: bool) -> None:
     """Make the CLI's confirm see stdin as a terminal, or as not one.
 
-    Signed by the user for four uses: the test that ``init`` in an existing
-    project, with a terminal present, lists its changes and asks; the test
-    that ``wfc export-run`` over an image only this machine holds asks,
-    writes nothing on a no and writes the bundle with ``--yes``; the tests
-    that ``wfc register-method`` with a terminal present asks before it adds
-    a version and changes nothing on a no; and the test that ``wfc cancel``
-    answered no at a terminal changes nothing.
-    The no-terminal refusals are tested with pytest's own stdin, which is
-    not a terminal, never through this fake.
+    Used by six tests. Five present a terminal and are signed by the user:
+    the test that ``init`` in an existing project, with a terminal present,
+    lists its changes and asks; the test that ``wfc export-run`` over an
+    image only this machine holds asks, writes nothing on a no and writes
+    the bundle with ``--yes``; the test that ``wfc register-method``
+    answered no (or nothing) at a terminal changes nothing; the test that
+    ``wfc cancel`` answered no at a terminal changes nothing; and the test
+    that ``wfc delete-env`` answered no at a terminal keeps everything. The
+    sixth, ``wfc push-env``'s first-push test, presents no terminal before
+    it checks the no-terminal refusal at ``Proceed?``; pytest's own stdin
+    already reads as no terminal, so that use changes nothing. Every other no-terminal refusal
+    uses pytest's own stdin, or, for ``register-method``, a real ``wfc``
+    process whose stdin is the null device.
 
     Args:
         monkeypatch: An active ``pytest.MonkeyPatch``.

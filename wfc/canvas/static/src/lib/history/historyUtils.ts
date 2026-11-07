@@ -71,10 +71,10 @@ export function formatRelativeTime(when: number | string): string {
  */
 export function statusColor(status: string): string {
   switch (status) {
-    case 'success': return 'var(--color-completed, #50C878)';
-    case 'failed': return 'var(--color-failed, #E74C3C)';
-    case 'running': return 'var(--color-running, #E9A847)';
-    case 'cancelled': return 'var(--color-cancelled, #7f8ea3)';
+    case 'success': return 'var(--status-ok)';
+    case 'failed': return 'var(--status-failed)';
+    case 'running': return 'var(--status-active)';
+    case 'cancelled': return 'var(--status-cancelled)';
     default: return 'var(--text-muted, #666)';
   }
 }
@@ -170,56 +170,6 @@ export function ranNewestVersion(
   const method = modules.find(m => m.name === run.module)
     ?.methods.find(m => m.name === run.method);
   return method?.versions?.find(v => v.newest)?.identity === run.versionIdentity;
-}
-
-/**
- * Deterministic module name to HSL color.
- *
- * Uses a simple string hash to pick a hue, with fixed saturation and lightness
- * for good contrast on dark backgrounds.
- */
-export function getModuleColor(moduleName: string): string {
-  let hash = 0;
-  for (let i = 0; i < moduleName.length; i++) {
-    hash = moduleName.charCodeAt(i) + ((hash << 5) - hash);
-    hash = hash & hash; // Convert to 32-bit integer
-  }
-  const hue = ((hash % 360) + 360) % 360;
-  return `hsl(${hue}, 55%, 55%)`;
-}
-
-/**
- * Convert an HSL color string to an RGBA string with the given alpha.
- *
- * Parses "hsl(H, S%, L%)" and returns "rgba(R, G, B, A)".
- */
-export function hslToRgba(hsl: string, alpha: number): string {
-  const match = hsl.match(/hsl\((\d+),\s*(\d+)%,\s*(\d+)%\)/);
-  if (!match) return `rgba(74, 144, 217, ${alpha})`;
-  const h = parseInt(match[1]) / 360;
-  const s = parseInt(match[2]) / 100;
-  const l = parseInt(match[3]) / 100;
-
-  let r: number, g: number, b: number;
-  if (s === 0) {
-    r = g = b = l;
-  } else {
-    const hue2rgb = (p: number, q: number, t: number) => {
-      if (t < 0) t += 1;
-      if (t > 1) t -= 1;
-      if (t < 1/6) return p + (q - p) * 6 * t;
-      if (t < 1/2) return q;
-      if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
-      return p;
-    };
-    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-    const p = 2 * l - q;
-    r = hue2rgb(p, q, h + 1/3);
-    g = hue2rgb(p, q, h);
-    b = hue2rgb(p, q, h - 1/3);
-  }
-
-  return `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${alpha})`;
 }
 
 /**

@@ -76,8 +76,9 @@ def run_collect(
         slot was not produced; or ``{"ok": False, "ending":
         "duplicate-output", "error_message": ..., "error_traceback": ...}``
         when two slots resolve to the same file; or ``{"ok": False,
-        "ending": "refused-output", ...}`` when a directory output holds a
-        symlink, a case-only name collision or no files; or ``{"ok": False,
+        "ending": "refused-output", ...}`` when the results file is
+        refused (naming the file and the field) or a directory output holds
+        a symlink, a case-only name collision or no files; or ``{"ok": False,
         "ending": "unrecorded-output", ...}`` when an output's stat record or
         its row could not be written (naming the slot; every slot when the
         row transaction failed to commit).
@@ -85,102 +86,16 @@ def run_collect(
     project_root = get_project_root()
     run_dir = layout.run_archive_dir(project_root, run_id)
 
-    口 = Step(step_num=1, name="Read results manifest",
-             purpose="Read _wfc_results.json (single channel) for metrics and "
-                     "manifest-recorded output paths")
-    from ..manifest import read_results_manifest
-    manifest = read_results_manifest(run_dir)
-    metrics = dict(manifest.metrics) if manifest is not None else {}
-    manifest_outputs = manifest.outputs if manifest is not None else {}
+    口 = AutoStep(step_num=1, name="Check the step's outputs")
+    checked = check_step_outputs(method_name, run_dir, node_cfg, slot_outputs,
+                                 project_root)
+    if not checked["ok"]:
+        return checked
+    located = checked["located"]
+    metrics = checked["metrics"]
+    collect_hashes = checked["collect_hashes"]
 
-    口 = Step(step_num=2, name="Locate each declared slot's output",
-             purpose="For each declared slot, take the path the manifest records "
-                     "for it, else scan run_dir for the declared file name, and "
-                     "verify it exists; fail the run on a missing declared slot")
-    # Scan outputs slot-first. Slot names come from the node's
-    # declared slot_outputs via resolve_node_outputs; a node with empty
-    # slot_outputs has one "output" slot with a generated file name. The base
-    # path passed here is irrelevant — only the slot names and the file names
-    # are used.
-    from ..contracts import resolve_node_outputs
-    slot_map = resolve_node_outputs(node_cfg, Path("."))  # {slot: filename path}
-
-    located: list[tuple[str, Path]] = []
-    for slot_name, fallback_path in slot_map.items():
-        filename = slot_outputs.get(slot_name, fallback_path.name)
-        # Prefer the manifest-recorded path for this output (Tier-1 may have
-        # written it under _workdir/); fall back to the run_dir scan path.
-        if slot_name in manifest_outputs:
-            archive_entry = manifest_outputs[slot_name]
-        else:
-            archive_entry = run_dir / filename
-        if not archive_entry.exists():
-            # Method honored pre_run but failed to produce a declared slot.
-            error_msg = (
-                f"Method '{method_name}' did not produce declared slot "
-                f"'{slot_name}' (expected at {archive_entry})"
-            )
-            return {"ok": False, "ending": "missing-slot",
-                    "error_message": error_msg, "error_traceback": error_msg}
-        located.append((slot_name, archive_entry))
-
-    口 = Step(step_num=3, name="Refuse two slots saved to one file",
-             purpose="Fail the run before any row is written when two slots "
-                     "resolve to the same path, naming both slots and the path")
-    # Outside the best-effort write below, so this failure ends the run.
-    seen: dict[str, str] = {}
-    for slot_name, archive_entry in located:
-        key = os.path.normcase(str(archive_entry.resolve()))
-        prior = seen.get(key)
-        if prior is not None:
-            error_msg = (
-                f"Method '{method_name}' saved output slots '{prior}' and "
-                f"'{slot_name}' to the same file ({archive_entry}); each "
-                f"output slot needs its own file"
-            )
-            return {"ok": False, "ending": "duplicate-output",
-                    "error_message": error_msg, "error_traceback": error_msg}
-        seen[key] = slot_name
-
-    口 = Step(step_num=4, name="Refuse an output wfc cannot identify",
-             purpose="List each directory output with Identity's stat-only walk "
-                     "before any row is written (under [integrity] inputs = hash, "
-                     "its manifest from the same walk, and each file output's "
-                     "hash); a symlink inside, a case-only name collision, an "
-                     "empty directory or, under hash, an output that cannot be "
-                     "read fails the run naming the slot and the offending path",
-             critical="Under the default no output byte is read here: collect "
-                      "is on the step's path, and the archive pass hashes")
-    hash_outputs = inputs_setting(project_root) == INTEGRITY_INPUTS_HASH
-    collect_hashes: dict[str, str] = {}
-    for slot_name, archive_entry in located:
-        try:
-            if archive_entry.is_dir():
-                if hash_outputs:
-                    collect_hashes[slot_name] = directory_manifest(archive_entry).hash
-                else:
-                    directory_listing(archive_entry)
-            elif hash_outputs:
-                collect_hashes[slot_name] = hash_path(archive_entry)
-        except DirectoryContentError as exc:
-            error_msg = (
-                f"Method '{method_name}' saved output slot '{slot_name}' as a "
-                f"directory wfc cannot store: {exc}"
-            )
-            return {"ok": False, "ending": "refused-output",
-                    "error_message": error_msg, "error_traceback": error_msg}
-        except OSError as exc:
-            # Under the default nothing is hashed here: only the listing
-            # of a directory reads the output.
-            cannot = "read to hash it" if hash_outputs else "read or list"
-            error_msg = (
-                f"Method '{method_name}' saved output slot '{slot_name}' at "
-                f"{archive_entry}, which wfc cannot {cannot}: {exc}"
-            )
-            return {"ok": False, "ending": "refused-output",
-                    "error_message": error_msg, "error_traceback": error_msg}
-
-    口 = Step(step_num=5, name="Take each output's stat record",
+    口 = Step(step_num=2, name="Take each output's stat record",
              purpose="Make each output read-only and take its stat record "
                      "through Storage (a directory's member list goes in its "
                      "member stamp), before any row is written; a failure "
@@ -195,13 +110,13 @@ def run_collect(
     stats: dict = {}
     for slot_name, archive_entry in located:
         try:
-            口 = AutoStep(step_num=5.1, name="Take the output's stat record")
+            口 = AutoStep(step_num=2.1, name="Take the output's stat record")
             stats[slot_name] = record_output(archive_entry, project_dir=project_root,
                                              run_id=run_id, slot=slot_name)
         except Exception as exc:  # noqa: BLE001 -- the run fails, naming it
             return _unrecorded(method_name, [slot_name], exc, archive_entry)
 
-    口 = Step(step_num=6, name="Write every output row in one transaction",
+    口 = Step(step_num=3, name="Write every output row in one transaction",
              purpose="Insert or update the RunOutput row keyed by (run_id, "
                      "slot) for every slot, with the saved file's name, the "
                      "stat columns and, under hash, the collect hash "
@@ -295,3 +210,139 @@ def _unrecorded(method_name: str, slots: list[str], exc: Exception,
                  f"but wfc could not record it: {exc}")
     return {"ok": False, "ending": "unrecorded-output",
             "error_message": error_msg, "error_traceback": error_msg}
+
+
+@task(purpose="Check a step's outputs before anything is stored: read the "
+              "results manifest, locate each declared slot's output, refuse two "
+              "slots saved to one file and a directory output wfc cannot identify",
+      inputs="method name, the step's output directory, node output-slot "
+             "declarations, the project root",
+      outputs="the located outputs, metrics and (under hash) collect hashes, or "
+              "the missing-slot, duplicate-output or refused-output ending",
+      critical="Writes nothing: a recorded run's collect stores what this "
+               "located, and the draft step stores nothing at all")
+def check_step_outputs(method_name: str, run_dir: Path, node_cfg: dict,
+                       slot_outputs: dict, project_root: Path) -> dict:
+    """Locate and check a step's declared outputs in its output directory.
+
+    Args:
+        method_name: Resolved method name (for the error messages).
+        run_dir: The directory the method wrote into (its run archive dir,
+            or a draft step's result folder).
+        node_cfg: The node's pipeline-JSON config (drives the slot scan).
+        slot_outputs: Declared output filenames per slot.
+        project_root: The project root, for ``[integrity] inputs``.
+
+    Returns:
+        ``{"ok": True, "located": [(slot, path), ...], "metrics": {...},
+        "collect_hashes": {...}}``, or the failure ending ``run_collect``
+        documents.
+    """
+    口 = Step(step_num=1, name="Read results manifest",
+             purpose="Read _wfc_results.json (single channel) for metrics and "
+                     "manifest-recorded output paths; a file the reader "
+                     "refuses (malformed, a path that is not a string, a "
+                     "metric that is not a scalar) fails the run with the "
+                     "refused-output ending, naming the file and the field")
+    from ..manifest import read_results_manifest
+    try:
+        manifest = read_results_manifest(run_dir)
+    except ValueError as exc:
+        # A results file wfc cannot read fails the step naming the file and
+        # the field; it never escapes collect (which would leave the run
+        # orphaned, naming nothing).
+        error_msg = f"Method '{method_name}' wrote a results file wfc cannot use: {exc}"
+        return {"ok": False, "ending": "refused-output",
+                "error_message": error_msg, "error_traceback": error_msg}
+    metrics = dict(manifest.metrics) if manifest is not None else {}
+    manifest_outputs = manifest.outputs if manifest is not None else {}
+
+    口 = Step(step_num=2, name="Locate each declared slot's output",
+             purpose="For each declared slot, take the path the manifest records "
+                     "for it, else scan run_dir for the declared file name, and "
+                     "verify it exists; fail the run on a missing declared slot")
+    # Scan outputs slot-first. Slot names come from the node's
+    # declared slot_outputs via resolve_node_outputs; a node with empty
+    # slot_outputs has one "output" slot with a generated file name. The base
+    # path passed here is irrelevant — only the slot names and the file names
+    # are used.
+    from ..contracts import resolve_node_outputs
+    slot_map = resolve_node_outputs(node_cfg, Path("."))  # {slot: filename path}
+
+    located: list[tuple[str, Path]] = []
+    for slot_name, fallback_path in slot_map.items():
+        filename = slot_outputs.get(slot_name, fallback_path.name)
+        # Prefer the manifest-recorded path for this output (Tier-1 may have
+        # written it under _workdir/); fall back to the run_dir scan path.
+        if slot_name in manifest_outputs:
+            archive_entry = manifest_outputs[slot_name]
+        else:
+            archive_entry = run_dir / filename
+        if not archive_entry.exists():
+            # Method honored pre_run but failed to produce a declared slot.
+            error_msg = (
+                f"Method '{method_name}' did not produce declared slot "
+                f"'{slot_name}' (expected at {archive_entry})"
+            )
+            return {"ok": False, "ending": "missing-slot",
+                    "error_message": error_msg, "error_traceback": error_msg}
+        located.append((slot_name, archive_entry))
+
+    口 = Step(step_num=3, name="Refuse two slots saved to one file",
+             purpose="Fail the run before any row is written when two slots "
+                     "resolve to the same path, naming both slots and the path")
+    # Outside the best-effort write below, so this failure ends the run.
+    seen: dict[str, str] = {}
+    for slot_name, archive_entry in located:
+        key = os.path.normcase(str(archive_entry.resolve()))
+        prior = seen.get(key)
+        if prior is not None:
+            error_msg = (
+                f"Method '{method_name}' saved output slots '{prior}' and "
+                f"'{slot_name}' to the same file ({archive_entry}); each "
+                f"output slot needs its own file"
+            )
+            return {"ok": False, "ending": "duplicate-output",
+                    "error_message": error_msg, "error_traceback": error_msg}
+        seen[key] = slot_name
+
+    口 = Step(step_num=4, name="Refuse an output wfc cannot identify",
+             purpose="List each directory output with Identity's stat-only walk "
+                     "before any row is written (under [integrity] inputs = hash, "
+                     "its manifest from the same walk, and each file output's "
+                     "hash); a symlink inside, a case-only name collision, an "
+                     "empty directory or, under hash, an output that cannot be "
+                     "read fails the run naming the slot and the offending path",
+             critical="Under the default no output byte is read here: collect "
+                      "is on the step's path, and the archive pass hashes")
+    hash_outputs = inputs_setting(project_root) == INTEGRITY_INPUTS_HASH
+    collect_hashes: dict[str, str] = {}
+    for slot_name, archive_entry in located:
+        try:
+            if archive_entry.is_dir():
+                if hash_outputs:
+                    collect_hashes[slot_name] = directory_manifest(archive_entry).hash
+                else:
+                    directory_listing(archive_entry)
+            elif hash_outputs:
+                collect_hashes[slot_name] = hash_path(archive_entry)
+        except DirectoryContentError as exc:
+            error_msg = (
+                f"Method '{method_name}' saved output slot '{slot_name}' as a "
+                f"directory wfc cannot store: {exc}"
+            )
+            return {"ok": False, "ending": "refused-output",
+                    "error_message": error_msg, "error_traceback": error_msg}
+        except OSError as exc:
+            # Under the default nothing is hashed here: only the listing
+            # of a directory reads the output.
+            cannot = "read to hash it" if hash_outputs else "read or list"
+            error_msg = (
+                f"Method '{method_name}' saved output slot '{slot_name}' at "
+                f"{archive_entry}, which wfc cannot {cannot}: {exc}"
+            )
+            return {"ok": False, "ending": "refused-output",
+                    "error_message": error_msg, "error_traceback": error_msg}
+
+    return {"ok": True, "located": located, "metrics": metrics,
+            "collect_hashes": collect_hashes}

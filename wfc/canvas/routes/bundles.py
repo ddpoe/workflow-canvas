@@ -42,12 +42,21 @@ class ExportRunsRequest(BaseModel):
     plan_token: str | None = None
 
 
-def _run_ids(raw: list[str]) -> list[int]:
-    """The request's run ids as run numbers, or a 400 naming the bad one."""
+def _run_ids(raw: list[str]) -> list[int | str]:
+    """The request's run ids as run numbers, or a 400 naming the bad one.
+
+    A draft string is passed through as written: Run bundle's plan refuses
+    it, naming the draft step.
+    """
+    from ...execution.draft import is_draft_ref
+
     if not raw:
         raise HTTPException(status_code=400, detail="Choose at least one run to export.")
-    ids: list[int] = []
+    ids: list[int | str] = []
     for value in raw:
+        if is_draft_ref(value):
+            ids.append(str(value))
+            continue
         try:
             ids.append(int(value))
         except (TypeError, ValueError):
@@ -62,7 +71,25 @@ def _refused(reasons: list[str]) -> HTTPException:
                          detail={"message": REFUSED_TEXT, "reasons": reasons})
 
 
-@router.post("/api/wfc/export-runs")
+class ExportRefusal(BaseModel):
+    """Why the bundle cannot be written: the lead line and every reason.
+
+    A draft string asked for as a run is refused with a reason naming the
+    draft step and saying to register the draft and run the pipeline again.
+    A recorded run of a pipeline that ran a draft exports.
+    """
+
+    message: str
+    reasons: list[str] = []
+
+
+class ExportRefusalBody(BaseModel):
+    """The 409 body of a refused or changed export."""
+
+    detail: ExportRefusal
+
+
+@router.post("/api/wfc/export-runs", responses={409: {"model": ExportRefusalBody}})
 def export_runs(req: ExportRunsRequest, dryRun: bool = False):
     """Plan, or download, the run bundle of the requested runs.
 

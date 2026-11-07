@@ -1,12 +1,13 @@
-<!-- generated from pm_mvp::docs/consumer/how-to/see-your-images-on-github @ 72c6a07cad8d; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/how-to/see-your-images-on-github @ eea8c5ce7efc; do not edit -->
 
-# How-to: See Your Images on GitHub
+# See Your Images on GitHub
 
 ## See your images on GitHub
 
-When a project's registry is GHCR (`ghcr.io`, GitHub's container registry), each environment image you push becomes a package on GitHub. This page shows where to find your packages, how a package's pages match what wfc records, and how to fix the two things `wfc share` checks on GitHub: the package's connection to the repository, and its visibility. [Share a Project](sharing-a-project.md) covers the rest of sharing: the repository, the archive, logins and who needs which access.
+When a project's registry is GHCR (`ghcr.io`, GitHub's container registry), each environment image you push becomes a package on GitHub. This page shows where to find your packages, how to connect each one to the repository, and how to change its visibility. [Share a Project](sharing-a-project.md) covers the rest of sharing: the repository, the archive, logins and who needs which access.
 
 To try it on a small project first, push the demo's image: [Share the demo](../tutorials/wfc-demo.md#share-the-demo).
+
 
 ## Find your packages
 
@@ -17,7 +18,8 @@ Each environment is one package. With the registry base `ghcr.io/<owner>/my-proj
 
 ## Read a package page
 
-A package page lists the package's versions. Each version is one image of the environment, tagged `fp-` and the first 12 characters of the environment's fingerprint: the identity wfc records for what the image runs. `wfc push-env` prints each image it pushes under that tag, for example `my-env:fp-fde24f9d4d5f`. Registering a changed environment and pushing it adds a version with a new tag. The older versions stay, so the method versions that use them still run.
+A package page lists the package's versions. Each version is one image of the environment, tagged `fp-` followed by a short code that identifies what the image runs. `wfc push-env` prints each image it pushes under that tag, for example `my-env:fp-fde24f9d4d5f`. Registering a changed environment and pushing it adds a version with a new tag. The older versions stay, so the method versions that use them still run.
+
 
 ## Check the connection to the repository
 

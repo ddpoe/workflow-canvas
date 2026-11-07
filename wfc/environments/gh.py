@@ -11,7 +11,8 @@ login:
   ``wfc share`` prints);
 - :func:`package_name` and :func:`package_page_url`: the GHCR package an
   env's images are pushed to, and its page on GitHub, where it is connected
-  to a repository;
+  to a repository; :func:`package_settings_url`: its settings page, where
+  people are given access to it;
 - :func:`package_connection`: the repository a package is connected to;
 - :func:`gh_scopes`: the scopes ``gh``'s login holds, so a package read that
   fails for want of a packages scope is named as that.
@@ -222,6 +223,31 @@ def package_page_url(owner: str, package: str, *, org: bool = False) -> str:
     kind = "orgs" if org else "users"
     return (f"https://github.com/{kind}/{owner}/packages/container/package/"
             f"{quote(package, safe='')}")
+
+
+#: The section of a package's settings page where people are given access
+#: to it, as GitHub names it.
+MANAGE_ACCESS_SECTION: Final[str] = '"Manage access"'
+
+
+def package_settings_url(owner: str, package: str, *, org: bool = False) -> str:
+    """Return a package's settings page on GitHub, where people are given access.
+
+    The page holds the section named in :data:`MANAGE_ACCESS_SECTION`; a
+    package that is not connected to a repository is shared from there.
+
+    Args:
+        owner: The account owning the package.
+        package: The package name (``<repo>/<env>``).
+        org: Whether *owner* is an organisation.
+
+    Returns:
+        ``https://github.com/users/<owner>/packages/container/<package>/settings``
+        (``/orgs/`` for an organisation), the package name URL-encoded.
+    """
+    kind = "orgs" if org else "users"
+    return (f"https://github.com/{kind}/{owner}/packages/container/"
+            f"{quote(package, safe='')}/settings")
 
 
 @dataclass(frozen=True)

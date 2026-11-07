@@ -26,8 +26,6 @@ from tests.fixtures.conftest import (
 from wfc import layout
 from wfc.execution import run_pipeline
 
-WFC_ROOT = Path(__file__).resolve().parent.parent.parent
-
 # Real pipelines through the container dispatch path (register_fixture_methods
 # builds a real image): deselected from the default suite, skipped without Docker.
 pytestmark = [pytest.mark.integration, requires_docker]
@@ -176,7 +174,7 @@ def test_after_a_pipeline_every_local_copy_is_a_view_of_the_cache_or_absent(
         samples=[],
     )
     run_pipeline(pipeline_path=str(pipeline), project_root=str(project_dir),
-                 wfc_root=str(WFC_ROOT), cores=1)
+                 cores=1)
     with get_session() as session:
         runs = session.exec(select(Run)).all()
         outputs = {(r.id, o.slot): o for r in runs for o in session.exec(

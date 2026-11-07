@@ -96,6 +96,104 @@ def test_artifact_listing_and_file_routes_serve_the_cache(canvas_client, archive
     assert unknown.status_code == 404, unknown.text
 
 
+PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+SVG_BYTES = b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'
+
+
+@pytest.fixture
+def typed_outputs_run(canvas_db, tmp_project, monkeypatch):
+    """One completed run with a top-level csv output and a folder output, archived.
+
+    The folder ``figs`` holds a png, an svg and a parquet file. A top-level
+    file output's cache entry has no extension, so only the displayed name
+    can say what it is.
+
+    Returns:
+        The run id as a string.
+    """
+    with Session(canvas_db) as session:
+        mod = Module(name="plots")
+        session.add(mod)
+        session.flush()
+        meth = Method(name="draw", module_id=mod.id, env="container:demo")
+        session.add(meth)
+        session.flush()
+        run = Run(method_id=meth.id, sample="s1", status="completed")
+        session.add(run)
+        session.flush()
+        staging = run_archive_dir(tmp_project, run.id)
+        figs = staging / "figs"
+        figs.mkdir(parents=True)
+        (staging / "out_table.csv").write_bytes(A_TABLE)
+        (figs / "plot.png").write_bytes(PNG_BYTES)
+        (figs / "logo.svg").write_bytes(SVG_BYTES)
+        (figs / "cells.parquet").write_bytes(b"PAR1")
+        session.add(RunOutput(run_id=run.id, slot="table", output_name="table",
+                              artifact_path=str(staging / "out_table.csv"),
+                              artifact_type="method_file"))
+        session.add(RunOutput(run_id=run.id, slot="figs", output_name="figs",
+                              artifact_path=str(figs),
+                              artifact_type="method_directory"))
+        session.commit()
+        run_id = run.id
+    archive_outputs(tmp_project, run_id=run_id)
+    bind_provider(monkeypatch, WfcProvider(str(tmp_project)))
+    return str(run_id)
+
+
+@pytest.mark.parametrize(
+    "path, content_type, body",
+    [
+        pytest.param("table.csv", "text/csv; charset=utf-8", A_TABLE, id="top-level-file"),
+        pytest.param("figs/plot.png", "image/png", PNG_BYTES, id="folder-member"),
+        pytest.param("figs/logo.svg", "image/svg+xml", SVG_BYTES, id="svg"),
+        pytest.param("figs/cells.parquet", "application/octet-stream", b"PAR1",
+                     id="download-only"),
+    ],
+)
+@workflow(
+    purpose="The file route types an artifact from its displayed name, never its "
+            "cache entry, names it for a save, and sandboxes an SVG so its script "
+            "cannot run",
+)
+def test_file_route_types_the_displayed_name_and_sandboxes_svg(
+    canvas_client, typed_outputs_run, path, content_type, body
+):
+    resp = canvas_client.get(f"/api/wfc/run/{typed_outputs_run}/artifact/{path}")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.content == body
+    assert resp.headers["content-type"] == content_type
+    # The browser is held to that type, never sniffing another.
+    assert resp.headers["x-content-type-options"] == "nosniff"
+    # Shown in the tab, saved under the displayed name.
+    assert resp.headers["content-disposition"] == (
+        f'inline; filename="{path.rsplit("/", 1)[-1]}"')
+    csp = resp.headers.get("content-security-policy")
+    assert csp == ("sandbox" if path.endswith(".svg") else None)
+
+
+def test_every_viewable_extension_has_its_own_media_type():
+    """A name some viewer opens never falls back to octet-stream; the rest do."""
+    from wfc.canvas.previews import media_type, viewer_kind
+    from wfc.canvas.previews import (BROWSER_IMAGE_EXTENSIONS, CONVERTED_IMAGE_EXTENSIONS,
+                                     JSON_EXTENSIONS, PDF_EXTENSIONS, TABLE_EXTENSIONS,
+                                     TEXT_EXTENSIONS)
+
+    viewable = (BROWSER_IMAGE_EXTENSIONS | CONVERTED_IMAGE_EXTENSIONS | TABLE_EXTENSIONS
+                | JSON_EXTENSIONS | TEXT_EXTENSIONS | PDF_EXTENSIONS)
+    for ext in viewable:
+        for name in (f"x.{ext}", f"dir/X.{ext.upper()}"):
+            assert viewer_kind(name) is not None
+            assert media_type(name) != "application/octet-stream", name
+    images = {ext for ext in viewable if viewer_kind(f"x.{ext}") == "image"}
+    assert all(media_type(f"x.{ext}").startswith("image/") for ext in images)
+    text = TEXT_EXTENSIONS
+    assert all(media_type(f"x.{ext}") == "text/plain" for ext in text)
+    for name in ("cells.parquet", "adata.h5ad", "page.html", "LICENSE", ".env"):
+        assert media_type(name) == "application/octet-stream", name
+
+
 @pytest.mark.parametrize(
     "file_types, expected_entries",
     [

@@ -3,7 +3,8 @@
 :func:`read_config` parses ``wf-canvas.toml`` — located through Layout's
 marker path — and returns the settings ``wfc`` reads back from it: the pixi
 and conda environment roots, the ``[dvc]`` archive entry, the
-``[integrity] inputs`` setting and the ``[registry]`` base.
+``[integrity] inputs`` setting, the ``[registry]`` base and the
+``[previews]`` memory and disk limits.
 
 :func:`set_registry_url` writes the one key ``wfc`` sets after ``wfc init``,
 ``[registry] url``, by a text edit that leaves every other byte of the file
@@ -34,10 +35,26 @@ INTEGRITY_INPUTS_HASH = "hash"
 #: The values ``[integrity] inputs`` accepts.
 INTEGRITY_INPUTS_VALUES = (INTEGRITY_INPUTS_STAT_THEN_HASH, INTEGRITY_INPUTS_HASH)
 
+#: ``[previews] memory_mb``: a ceiling, in MB, on the memory the canvas's
+#: image previews use at once. Two conversions run at once and each may use
+#: up to half; an image that needs more is refused.
+PREVIEWS_MEMORY_MB_KEY = "memory_mb"
+#: The default of ``[previews] memory_mb`` when the section or key is absent.
+PREVIEWS_MEMORY_MB_DEFAULT = 1024
+#: ``[previews] cache_mb``: the most disk, in MB, the preview cache may use.
+PREVIEWS_CACHE_MB_KEY = "cache_mb"
+#: The default of ``[previews] cache_mb`` when the section or key is absent.
+PREVIEWS_CACHE_MB_DEFAULT = 500
+#: Each ``[previews]`` key with its default, in the order a refusal checks them.
+PREVIEWS_DEFAULTS = {
+    PREVIEWS_MEMORY_MB_KEY: PREVIEWS_MEMORY_MB_DEFAULT,
+    PREVIEWS_CACHE_MB_KEY: PREVIEWS_CACHE_MB_DEFAULT,
+}
+
 
 @task(purpose="Read the project wf-canvas.toml and return the environment roots, "
-              "the [dvc] archive entry, the [integrity] inputs setting and the "
-              "[registry] base")
+              "the [dvc] archive entry, the [integrity] inputs setting, the "
+              "[registry] base and the [previews] memory and disk limits")
 def read_config(project_dir: Path) -> dict:
     """Read the project wf-canvas.toml and return parsed settings.
 
@@ -45,21 +62,26 @@ def read_config(project_dir: Path) -> dict:
         project_dir: Root directory of the wfc project.
 
     Returns:
-        Dict with ``pixi_root``, ``conda_root``, ``dvc``, ``integrity`` and
-        ``registry``. The two roots are resolved absolute path strings to
+        Dict with ``pixi_root``, ``conda_root``, ``dvc``, ``integrity``,
+        ``registry`` and ``previews``. The two roots are resolved absolute path strings to
         the pixi and conda environment root directories (``conda_root`` is
         ``""`` when no ``[conda]`` root is declared); ``dvc`` is the parsed
         ``[dvc]`` archive entry, or ``None``; ``integrity`` is
         ``{"inputs": ...}``, the ``[integrity] inputs`` setting
         (``stat-then-hash`` when absent); ``registry`` is ``{"url": ...}``,
         the base env images are pushed under, or ``None`` when
-        ``[registry] url`` is absent or empty.
+        ``[registry] url`` is absent or empty; ``previews`` is
+        ``{"memory_mb": ..., "cache_mb": ...}``, the canvas's limits on the
+        memory its image previews use at once (each conversion up to half)
+        and on the preview cache's disk use, in MB (1024 and 500 when absent).
 
     Raises:
         FileNotFoundError: If wf-canvas.toml does not exist.
         ValueError: ``[integrity] inputs`` names a value other than
-            ``stat-then-hash`` or ``hash``, or ``[registry] url`` is not a
-            string.
+            ``stat-then-hash`` or ``hash``, ``[registry] url`` is not a
+            string, ``[previews]`` is not a table, or ``[previews]
+            memory_mb`` or ``cache_mb`` is not a positive whole number (a
+            boolean, a float, zero, a negative or a string).
     """
     import tomllib
 
@@ -141,7 +163,75 @@ def read_config(project_dir: Path) -> dict:
 
     result["registry"] = _registry_entry(parsed, config_path)
 
+    口 = Step(step_num=8, name="Parse the preview limits",
+             purpose="Read [previews] memory_mb and cache_mb, 1024 and 500 when "
+                     "absent, and refuse any value that is not a positive whole "
+                     "number, naming the key, the value and the fix")
+
+    result["previews"] = _previews_entry(parsed, config_path)
+
     return result
+
+
+def _previews_entry(parsed: dict, config_path: Path) -> dict:
+    """Return ``{"memory_mb": ..., "cache_mb": ...}`` from a parsed config.
+
+    TOML ``true`` parses to a Python ``bool``, which is an ``int``: booleans
+    are refused before the whole-number check, as are floats (``512.0``),
+    zero, negatives and strings.
+
+    Args:
+        parsed: The config as ``tomllib`` parsed it.
+        config_path: The file, named in a refusal.
+
+    Returns:
+        Each ``[previews]`` key mapped to its value, or to its default when
+        the section or the key is absent.
+
+    Raises:
+        ValueError: ``[previews]`` is not a table, or a key's value is not a
+            positive whole number.
+    """
+    section = parsed.get("previews", {})
+    if not isinstance(section, dict):
+        example = " ".join(f"{key} = {default}" for key, default in PREVIEWS_DEFAULTS.items())
+        raise ValueError(
+            f"{config_path}: previews = {_toml_spelling(section)} is not a table; "
+            f"write the limits as keys under a [previews] header (e.g. [previews] "
+            f"then {example}, one per line), or delete the line to use the defaults"
+        )
+    entry: dict = {}
+    for key, default in PREVIEWS_DEFAULTS.items():
+        value = section.get(key, default)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(
+                f"{config_path}: [previews] {key} = {_toml_spelling(value)} is not a positive "
+                f"whole number of MB; write it without quotes or a decimal "
+                f"point, e.g. {key} = {default} (the default), or delete the "
+                f"line to use the default"
+            )
+        entry[key] = value
+    return entry
+
+
+def _toml_spelling(value: object) -> str:
+    """Spell a parsed TOML value the way it is written in the file, for a refusal.
+
+    Args:
+        value: A value as ``tomllib`` parsed it.
+
+    Returns:
+        ``true``/``false`` for a boolean, a double-quoted string for a
+        string, an array of spellings for an array, and Python's ``str``
+        for anything else (numbers spell the same in both).
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_spelling(item) for item in value) + "]"
+    return str(value)
 
 
 def _registry_entry(parsed: dict, config_path: Path) -> dict | None:

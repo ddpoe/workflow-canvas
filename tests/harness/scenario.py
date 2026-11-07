@@ -54,7 +54,8 @@ class Behavior:
 
     Attributes:
         exit_code: Process exit status.
-        outputs: Slot name -> file content. A directory slot may instead
+        outputs: Slot name -> file content, text (written as UTF-8) or
+            ``bytes`` (written as they are). A directory slot may instead
             map to ``{filename: content}`` for its children. Slots not
             named here are written with generated content; use
             ``skip_slots`` to declare a slot the method deliberately fails
@@ -97,10 +98,18 @@ class Behavior:
             file name for the slot, which is the shape that proves an
             output is found by its slot rather than by a file name.
         delete_paths: Project-relative paths the method deletes before
-            exiting — fault injection at a real boundary.
+            exiting — fault injection at a real boundary. The project root
+            is found from where the method runs (a version's or a draft's
+            code copy, on the host or in a container); a path that does not
+            exist, or a root that cannot be found, fails the method naming
+            it.
         write_beside_script: File names the method writes into its own
             script's directory (the version's code copy) before exiting:
             the write a read-only code mount forbids.
+        listed_outputs: Slots the method writes as usual but records in
+            ``_wfc_results.json`` as a one-item list of their path, the
+            shape R's ``jsonlite::write_json`` writes without
+            ``auto_unbox = TRUE``.
         raises: When set, the method ends by raising
             ``RuntimeError(<text>)`` uncaught, so the interpreter writes a
             real traceback to stderr and the process exits non-zero. A
@@ -129,6 +138,7 @@ class Behavior:
     saved_files: Mapping[str, str] | None = None
     delete_paths: tuple[str, ...] = ()
     write_beside_script: tuple[str, ...] = ()
+    listed_outputs: tuple[str, ...] = ()
     raises: str | None = None
     launch_error: str | None = None
 
@@ -155,17 +165,12 @@ class NodeSpec:
             Defaults to ``<slot>.csv``. Naming a file that differs from
             its slot is what proves the *declared filename* — not the slot
             name — is the source of truth for the published artifact.
-        input_columns: Input slot -> its ``columns`` block (``strict``,
+        output_options: Output slot -> its ``options`` block (``fixed``,
             ``from_params``, ``patterns``), written verbatim beneath the
-            slot's declaration in ``method.yaml``. Registration stores the
-            block and the load-time cross-check reads it; the stub script
-            never consults it, so it is a declaration the harness carries
-            through and nothing the harness interprets.
-        output_columns: Output slot -> its ``columns`` block, written
-            verbatim beneath the slot's declaration in ``method.yaml`` the
-            same way. Registration stores it on the contract and the
-            canvas's columns route resolves it; the harness interprets
-            nothing.
+            slot's declaration in ``method.yaml``. Registration stores it on
+            the contract and the canvas's options route resolves it; the
+            stub script never consults it, so it is a declaration the
+            harness carries through and nothing the harness interprets.
         params: Node-level default params.
         variants: This node's own variant sweep (variant name -> params),
             written as its ``param_sets`` entry in place of the scenario's
@@ -178,6 +183,12 @@ class NodeSpec:
         param_defaults: Param name -> the default ``method.yaml`` declares
             for it. A name here is declared even when no node passes it, so
             a node that leaves it out runs at this default.
+        param_options_from: Param name -> the input slot (or list of input
+            slots) whose upstream output's options the parameter picks
+            from, written as the parameter's ``options_from`` in
+            ``method.yaml``. A name here is declared even when no node
+            passes it. Like ``output_options``, a declaration the harness
+            carries through and never interprets.
         undeclared_params: Params the node passes that ``method.yaml`` does
             not declare at all -- the shape of a run whose params its
             version's contract does not name.
@@ -229,12 +240,12 @@ class NodeSpec:
     outputs: dict[str, str] = field(default_factory=lambda: {"data": ".csv"})
     optional_inputs: tuple[str, ...] = ()
     output_files: dict[str, str] = field(default_factory=dict)
-    input_columns: dict[str, dict] = field(default_factory=dict)
-    output_columns: dict[str, dict] = field(default_factory=dict)
+    output_options: dict[str, dict] = field(default_factory=dict)
     params: dict = field(default_factory=dict)
     variants: dict[str, dict] | None = None
     param_types: dict[str, str] = field(default_factory=dict)
     param_defaults: dict = field(default_factory=dict)
+    param_options_from: dict[str, str | list[str]] = field(default_factory=dict)
     undeclared_params: tuple[str, ...] = ()
     behavior: Behavior = field(default_factory=Behavior)
     behavior_by_sample: dict[str, Behavior] = field(default_factory=dict)
@@ -402,6 +413,14 @@ class Scenario:
             row needs a description or module-level contracts. A module a
             node names but this mapping does not is registered with no
             description and an empty contract list, as before.
+        drafts: Method node ids pinned to their method's draft. The
+            harness adds the draft through Registration's own
+            ``add_draft`` from the folder it wrote the method's source to
+            (the registered version's own source, so the draft runs the
+            same script), and the document pins the node to
+            ``version: "draft"`` with that folder, as the Builder does.
+            The node and every step downstream of it then run in draft
+            mode.
     """
 
     nodes: list[NodeSpec] = field(default_factory=lambda: list(_default_nodes()))
@@ -421,6 +440,7 @@ class Scenario:
     sample_ready_sentinel: bool = False
     image_digest: str | None = None
     modules: Mapping[str, ModuleSpec] = field(default_factory=dict)
+    drafts: tuple[str, ...] = ()
 
     def method_nodes(self) -> list[NodeSpec]:
         """Return the scenario's method nodes in declaration order."""

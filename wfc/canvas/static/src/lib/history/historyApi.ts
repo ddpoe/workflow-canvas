@@ -3,7 +3,7 @@
  * This is the only file that knows about URL paths.
  */
 
-import type { components } from '../types/api.js';
+import type { components, operations } from '../types/api.js';
 import type { PARAM_TYPES } from '../shared/types.js';
 
 // ---------- Response types ----------
@@ -19,6 +19,19 @@ export type CancelReason =
  * nodes in document order.
  */
 export type PipelineSummary = components['schemas']['PipelineSummary'];
+
+/**
+ * One draft-mode step of a draft's latest draft run: the draft's own step
+ * (`isDraft`) or one downstream of it, owned by `draft` (`<module>.<method>`).
+ * Kept but not recorded; `draftString` names it.
+ */
+export type DraftStep = components['schemas']['DraftStep'];
+
+/** History's run panel for one draft step (`/api/wfc/draft-step`). */
+export type DraftStepDetail = components['schemas']['DraftStepDetail'];
+
+/** The one greyed line of a pipeline run whose draft steps are gone. */
+export type PipelineCleared = components['schemas']['PipelineCleared'];
 
 /** One output's availability in the run payload (`WfcRun.outputAvailability`). */
 export type OutputAvailability = 'available' | 'changed';
@@ -149,24 +162,24 @@ export interface WfcRun {
   // in slot order, then ``cacheSourceRunId`` for a cache-hit row. The server
   // always sends it. The History views walk this field and none re-derives it.
   upstreamRunIds: string[];
-}
-
-export interface Artifact {
-  name: string;
-  size: number;
-  is_image: boolean;
-  extension: string;
-  // TODO(backend): server should return `type: 'file' | 'dir'` explicitly and, for
-  // directories, `count` and optionally `children`. Until then, the frontend
-  // derives type from the name via `deriveArtifactType()` below.
-  type?: 'file' | 'dir';
-  count?: number;
-  children?: Artifact[];
+  // Set on a row History draws for a draft step (historyDrafts.ts): the step
+  // itself. Such a row is never a recorded run; its id is the draft string.
+  draftStep?: DraftStep;
 }
 
 /**
- * Heuristic: treat any artifact whose name ends with "/" as a directory.
- * TODO(backend): remove once the API returns an explicit `type` field.
+ * One archived output of a run (`/api/wfc/run/{id}/artifacts`): a file, or a
+ * folder with its `count` and direct `children`. `viewer` is the server's
+ * viewer kind for it (null for a folder or a file no viewer opens).
+ */
+export type Artifact = components['schemas']['RunArtifact'];
+
+/** One direct child of a folder output; a subdirectory's name ends in `/`. */
+export type ArtifactChild = components['schemas']['RunArtifactChild'];
+
+/**
+ * The artifact's kind: its `type`, or, for a value without one, a name ending
+ * in "/" is a directory.
  */
 export function deriveArtifactType(a: Artifact): 'file' | 'dir' {
   if (a.type) return a.type;
@@ -233,6 +246,34 @@ export function fetchRuns(): Promise<WfcRun[]> {
 
 export function fetchPipelineSummaries(): Promise<PipelineSummary[]> {
   return fetchJson('/api/wfc/pipelines');
+}
+
+/** Every draft step that still exists (Lineages and Descendants draw them). */
+export async function fetchDraftSteps(): Promise<DraftStep[]> {
+  const body = await fetchJson<{ steps: DraftStep[] }>('/api/wfc/draft-steps');
+  return body.steps;
+}
+
+/** One draft step's run panel, by its draft string. */
+export function fetchDraftStep(ref: string): Promise<DraftStepDetail> {
+  return fetchJson(`/api/wfc/draft-step?ref=${encodeURIComponent(ref)}`);
+}
+
+/** The URL serving one file of a draft step's folder. */
+export function draftStepArtifactUrl(ref: string, name: string): string {
+  return `/api/wfc/draft-step/artifact?ref=${encodeURIComponent(ref)}&name=${encodeURIComponent(name)}`;
+}
+
+/**
+ * The URL of one draft step's outputs as a zip: the owning draft's draft-run
+ * zip route, for the step's node and sample.
+ */
+export function draftStepZipUrl(step: Pick<DraftStep, 'draft' | 'nodeId' | 'sample'>): string {
+  const dot = step.draft.indexOf('.');
+  const module = step.draft.slice(0, dot);
+  const method = step.draft.slice(dot + 1);
+  return `/api/registry/drafts/${encodeURIComponent(module)}/${encodeURIComponent(method)}`
+    + `/draft-run/zip?node=${encodeURIComponent(step.nodeId)}&sample=${encodeURIComponent(step.sample)}`;
 }
 
 export function fetchRun(runId: string): Promise<WfcRun> {
@@ -486,8 +527,152 @@ export async function downloadExportRuns(
   return { blob, filename };
 }
 
+// ---------- Artifact files, previews and images ----------
+
+/** The viewer the server gives a file (`Artifact.viewer`), never inferred here. */
+export type ViewerKind = NonNullable<Artifact['viewer']>;
+
+/** The start of a table, JSON or text file (`/api/wfc/run/{id}/preview/{path}`). */
+export type ArtifactPreview = components['schemas']['ArtifactPreview'];
+
+/** The rows a table preview shows, its columns and how they were split. */
+export type TablePreview = components['schemas']['TablePreview'];
+
+/** A table delimiter, by name, as the preview route takes and answers it. */
+export type TableDelimiter = TablePreview['delimiter'];
+
+/** What an image preview shows of its file, read from its header. */
+export type ImageInfo = components['schemas']['ImageInfo'];
+
+/** The image route's 422 body: decoding the image would exceed the memory limit. */
+export type ImageTooLarge = components['schemas']['ImageTooLarge'];
+
+/** The image route's sizes: the list's thumb, the viewer's view and its large 1:1. */
+export type ImageSize = NonNullable<
+  NonNullable<operations['get_wfc_image_api_wfc_run__run_id__image__artifact_path__get']['parameters']['query']>['size']
+>;
+
+/** The table preview's overrides; an absent one is the server's guess. */
+export interface PreviewOptions {
+  delimiter?: TableDelimiter | null;
+  header?: boolean | null;
+}
+
+/**
+ * Encode an artifact path for a URL: each `/`-separated segment
+ * percent-encoded, the separators kept.
+ *
+ * A name with a space, `#`, `?` or `%` would otherwise end the path or start
+ * a query or fragment; the server decodes each segment back to the name.
+ *
+ * Args:
+ *     artifactPath: The artifact's displayed path, e.g. `figures/umap 1.png`.
+ *
+ * Returns:
+ *     The path with every segment encoded.
+ */
+export function encodeArtifactPath(artifactPath: string): string {
+  return artifactPath.split('/').map(encodeURIComponent).join('/');
+}
+
+function runArtifactUrl(route: string, runId: string, artifactPath: string): string {
+  return `/api/wfc/run/${encodeURIComponent(runId)}/${route}/${encodeArtifactPath(artifactPath)}`;
+}
+
+/**
+ * The URL serving one artifact file as it is (inline, with its content type).
+ *
+ * A download is an `<a download>` at this URL; the PDF viewer's iframe loads it.
+ *
+ * Args:
+ *     runId: The run holding the artifact.
+ *     artifactPath: The artifact's displayed path (`name` or `folder/member`).
+ *
+ * Returns:
+ *     The file route's URL, the path encoded segment by segment.
+ */
 export function artifactDownloadUrl(runId: string, artifactPath: string): string {
-  return `/api/wfc/run/${encodeURIComponent(runId)}/artifact/${artifactPath}`;
+  return runArtifactUrl('artifact', runId, artifactPath);
+}
+
+/**
+ * The URL of an image artifact's preview at one size: a PNG, or an SVG as it is.
+ *
+ * Args:
+ *     runId: The run holding the image.
+ *     artifactPath: The image's displayed path.
+ *     size: `thumb` for the list, `view` for the viewer, `large` for its 1:1.
+ *
+ * Returns:
+ *     The image route's URL.
+ */
+export function artifactImageUrl(runId: string, artifactPath: string, size: ImageSize): string {
+  return `${runArtifactUrl('image', runId, artifactPath)}?size=${size}`;
+}
+
+/**
+ * Start loading an image preview the viewer is likely to show next, so
+ * stepping to it does not wait for its conversion.
+ *
+ * Args:
+ *     runId: The run holding the image.
+ *     artifactPath: The image's displayed path.
+ *     size: The size the viewer will show it at.
+ */
+export function prefetchArtifactImage(runId: string, artifactPath: string, size: ImageSize): void {
+  const img = new Image();
+  img.src = artifactImageUrl(runId, artifactPath, size);
+}
+
+/**
+ * Fetch what an image preview at one size shows of its file.
+ *
+ * Read from the file's header, never decoding it: the original and preview
+ * dimensions, whether the bit depth is reduced, the page count, and `refused`
+ * when the image route would answer 422 (too large to decode).
+ *
+ * Args:
+ *     runId: The run holding the image.
+ *     artifactPath: The image's displayed path.
+ *     size: The size the preview will be shown at.
+ *
+ * Returns:
+ *     The image's facts.
+ *
+ * Raises:
+ *     Error: The server's `detail` on a non-2xx answer (415 for an SVG or a
+ *         file that is not a readable image).
+ */
+export function fetchImageInfo(runId: string, artifactPath: string, size: ImageSize): Promise<ImageInfo> {
+  return fetchJson(`${runArtifactUrl('image-info', runId, artifactPath)}?size=${size}`);
+}
+
+/**
+ * Fetch the start of a table, JSON or text artifact.
+ *
+ * Args:
+ *     runId: The run holding the file.
+ *     artifactPath: The file's displayed path.
+ *     options: A table's delimiter and header-row overrides; absent ones are
+ *         the server's guess.
+ *
+ * Returns:
+ *     The preview, saying whether and why it was cut.
+ *
+ * Raises:
+ *     Error: The server's `detail` on a non-2xx answer (415 for a kind the
+ *         preview route does not read).
+ */
+export function fetchArtifactPreview(
+  runId: string,
+  artifactPath: string,
+  options: PreviewOptions = {},
+): Promise<ArtifactPreview> {
+  const params = new URLSearchParams();
+  if (options.delimiter) params.set('delimiter', options.delimiter);
+  if (options.header !== undefined && options.header !== null) params.set('header', String(options.header));
+  const qs = params.toString();
+  return fetchJson(`${runArtifactUrl('preview', runId, artifactPath)}${qs ? `?${qs}` : ''}`);
 }
 
 /**

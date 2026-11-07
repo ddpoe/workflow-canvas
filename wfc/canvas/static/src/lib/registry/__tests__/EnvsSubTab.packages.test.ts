@@ -16,6 +16,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent, cleanup } from '@testing-library/svelte';
 import { within } from '@testing-library/dom';
 import EnvsSubTab from '../EnvsSubTab.svelte';
+import { PALETTE } from '../../shared/palette';
 
 function jsonResponse(body: unknown): Response {
   return {
@@ -131,6 +132,53 @@ describe('EnvsSubTab packages panel — uv env', () => {
     expect(pkg).toHaveTextContent('requests==2.32.3');
     expect(within(pkg).getByText('uv')).toHaveClass('pkg-source', 'src-uv');
     expect(getByText('requests==2.32.3')).toBeInTheDocument();
+  });
+});
+
+describe('EnvsSubTab kind chips take palette colours', () => {
+  beforeEach(() => {
+    installFetch((url) => {
+      if (url.endsWith('/packages')) {
+        return {
+          spec: 'container:analysis',
+          backend: 'conda',
+          captured: true,
+          packages: [
+            { name: 'numpy', version: '1.26.4', source: 'conda' },
+            { name: 'pandas', version: '2.1.0', source: 'pip' },
+          ],
+        };
+      }
+      return {
+        envs: [
+          {
+            spec: 'container:analysis', methods: ['seg.segment'], backend: 'conda',
+            has_packages: true, last_run_at: null, run_count: 0,
+          },
+        ],
+      };
+    });
+  });
+
+  it('the env, backend and package-source chips each carry a palette colour (case shared-slot-colors)', async () => {
+    const palette = new Set(PALETTE.map(c => c.hex));
+    const { findByTestId } = render(EnvsSubTab, { props: { visible: true } });
+    const row = await findByTestId('env-row');
+    await fireEvent.click(row);
+    const panel = await findByTestId('packages-panel');
+
+    const chips = [
+      within(row).getByText('container:analysis'),
+      within(row).getByText('conda'),
+      ...within(panel).getAllByText(/^(conda|pip)$/),
+    ];
+    expect(chips).toHaveLength(4);
+    for (const chip of chips) {
+      expect(palette.has(chip.style.getPropertyValue('--chip'))).toBe(true);
+    }
+    // Different kinds read as different colours.
+    expect(within(panel).getByText('pip').style.getPropertyValue('--chip'))
+      .not.toBe(within(panel).getByText('conda').style.getPropertyValue('--chip'));
   });
 });
 

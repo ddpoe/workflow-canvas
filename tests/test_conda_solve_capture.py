@@ -3,8 +3,8 @@
 A Windows or macOS conda env cannot be installed into a linux-64 image from
 its own explicit list, so live capture records what the user asked for
 instead: each requested package (``conda env export --from-history``) pinned
-to the version installed (``conda list --json``), the channels the export
-names, and the pip set (the ``pypi``-channel packages). The host's own
+to the version installed (``conda list --json``), the channels the installed
+packages came from, and the pip set (the ``pypi``-channel packages). The host's own
 capture is kept for the env's ``host/`` folder.
 
 Everything is driven from the files under ``tests/fixtures/conda_solve/``;
@@ -64,7 +64,8 @@ def _windows_env(tmp_path: Path) -> tuple[Path, Path]:
 @workflow(
     purpose="Live capture of conda:<env> on a Windows host solves for "
             "linux-64: the source carries each requested package pinned "
-            "name=<installed version> from the --from-history channels, a pip "
+            "name=<installed version> from the channels its packages came "
+            "from, a pip "
             "set of only the pypi-channel packages and no host explicit list; "
             "the host's explicit list, export, pinned spec, full pip freeze "
             "and platform/conda version/capture time are kept for host/; and "
@@ -126,9 +127,9 @@ def test_a_windows_live_capture_pins_requested_packages_and_keeps_the_host_recor
 
 
 def test_the_pinned_spec_pins_each_requested_package_to_its_installed_version():
-    """The spec keeps the export's channels and order, and any ``channel::``
-    prefix, and replaces each request's constraint with ``=<installed
-    version>`` (no build string)."""
+    """The spec keeps the export's channels and order when the packages came
+    from them, and any ``channel::`` prefix, and replaces each request's
+    constraint with ``=<installed version>`` (no build string)."""
     from wfc.environments.introspect import pinned_spec
 
     spec = pinned_spec(_fixture("from-history.yml").replace("\n", "\r\n"),
@@ -143,6 +144,95 @@ def test_the_pinned_spec_pins_each_requested_package_to_its_installed_version():
         "  - python=3.11.16\n"
         "  - conda-forge::scipy=1.13.1\n"
     )
+
+
+@workflow(
+    purpose="Live capture of a Windows conda env made from conda-forge with "
+            "--override-channels, whose history lists only the configured "
+            "defaults channel, solves from conda-forge: the spec's channels "
+            "are the ones the installed packages came from, and each request "
+            "is pinned to conda-forge"
+)
+def test_a_capture_whose_packages_came_from_conda_forge_solves_them_there(
+        tmp_path, monkeypatch):
+    from wfc.environments.introspect import SOLVE_SOURCE_KEY
+    from wfc.environments.verbs import _stage_live_env_source
+
+    project_dir, _ = _windows_env(tmp_path)
+    stub_host_conda_platform(monkeypatch, "win-64")
+    fake_conda_list_explicit(monkeypatch, _fixture("win-64-explicit-list.txt"))
+    fake_conda_solve_capture(
+        monkeypatch,
+        from_history=_fixture("conda-forge-only/from-history.yml")
+        .replace("\n", "\r\n"),
+        list_json=json.loads(_fixture("conda-forge-only/conda-list.json")))
+    fake_pip_freeze(monkeypatch, "")
+
+    spec = _stage_live_env_source("conda:imaging", project_dir)[SOLVE_SOURCE_KEY]
+
+    assert spec.channels == ("conda-forge",)
+    assert spec.specs == ("conda-forge::python=3.12.16",
+                          "conda-forge::pyfiglet=1.0.4")
+
+
+@pytest.mark.parametrize(("listed", "channels", "specs"), [
+    (["defaults"], ("defaults", "conda-forge"),
+     ("numpy=2.4.6", "conda-forge::scipy=1.13.1")),
+    # A history channel given as a URL is the channel of the packages whose
+    # base_url it is.
+    (["https://conda.anaconda.org/conda-forge", "defaults"],
+     ("https://conda.anaconda.org/conda-forge", "defaults"),
+     ("numpy=2.4.6", "https://conda.anaconda.org/conda-forge::scipy=1.13.1")),
+    # A history channel that ends a package's base_url is that package's.
+    (["pkgs/main"], ("pkgs/main", "conda-forge"),
+     ("pkgs/main::numpy=2.4.6", "conda-forge::scipy=1.13.1")),
+])
+def test_each_requested_package_is_pinned_to_the_channel_it_was_installed_from(
+        listed, channels, specs):
+    """In an env mixing channels, a request installed from a channel the
+    history does not list is pinned to that channel and the channel is
+    added after the history's; a request from Anaconda's own channels is
+    solved from ``defaults``. A history channel named by URL or by the end
+    of a package's ``base_url`` is that package's channel."""
+    from wfc.environments.introspect import pinned_spec
+
+    from_history = ("channels:\n" + "".join(f"  - {c}\n" for c in listed)
+                    + "dependencies:\n  - numpy\n  - scipy\n")
+    installed = [p for p in _installed() if p["name"] in {"numpy", "scipy"}]
+
+    spec = pinned_spec(from_history, installed)
+
+    assert spec.channels == channels
+    assert spec.specs == specs
+
+
+@pytest.mark.parametrize("local_channel", [
+    {"channel": "local",
+     "base_url": "file:///C:/Users/someone/anaconda3/conda-bld"},
+    {"channel": "file:///C:/Users/someone/builds",
+     "base_url": "file:///C:/Users/someone/builds"},
+    {"channel": "<unknown>"},
+])
+def test_a_package_from_a_local_build_is_solved_from_the_other_channels(
+        local_channel):
+    """A package installed from a local build or tarball (``local``,
+    ``<unknown>`` or a ``file:`` channel) comes from a channel the linux
+    image cannot reach: the channel is left out of the solve, and a request
+    from it is pinned with no ``channel::`` prefix."""
+    from wfc.environments.introspect import pinned_spec
+
+    from_history = _fixture("conda-forge-only/from-history.yml").replace(
+        "  - pyfiglet\n", "  - pyfiglet\n  - mytool\n")
+    installed = json.loads(_fixture("conda-forge-only/conda-list.json")) + [
+        {**local_channel, "name": name, "version": version,
+         "build_string": "0", "platform": "win-64"}
+        for name, version in [("libmytool", "0.3"), ("mytool", "1.0")]]
+
+    spec = pinned_spec(from_history, installed)
+
+    assert spec.channels == ("conda-forge",)
+    assert spec.specs == ("conda-forge::python=3.12.16",
+                          "conda-forge::pyfiglet=1.0.4", "mytool=1.0")
 
 
 def test_a_requested_package_that_is_not_installed_is_refused_by_name():

@@ -15,9 +15,14 @@
 import type { ArchiveStatus } from './archiveStatus.js';
 import { PARAM_TYPES } from '../shared/types.js';
 import type {
-  ContractType, MethodDef, MethodVersionDef, ModuleDef, ParamDef, PipelineJSON, SampleInfo, SlotDef,
+  ContractType, DraftDef, MethodDef, MethodVersionDef, ModuleDef, ParamDef, PipelineJSON, SampleInfo, SlotDef,
 } from '../shared/types.js';
 import type { CacheStatusResponse } from './runsPreviewStatus.js';
+import type { components } from '../types/api.js';
+import { rememberModuleColors } from '../shared/moduleColor.svelte.js';
+// `stores.ts` imports this module too; neither reads the other at load time
+// (`modules` is written only when `refreshPalette` runs).
+import { modules } from './stores.js';
 
 /**
  * Fetch the scaffolded demo pipeline document.
@@ -26,7 +31,7 @@ import type { CacheStatusResponse } from './runsPreviewStatus.js';
  *     The parsed document, or ``null`` when no demo is scaffolded (non-2xx),
  *     which leaves the canvas boot inert.
  */
-export async function fetchDemoPipelineDocument(): Promise<unknown | null> {
+export async function fetchDemoPipelineDocument(): Promise<PipelineJSON | null> {
   const resp = await fetch('/api/pipelines/demo');
   if (!resp.ok) return null;
   return resp.json();
@@ -54,11 +59,10 @@ export function fetchDevStatus(): Promise<{ dev?: boolean } | null> {
 export async function fetchModuleRegistry(): Promise<Record<string, unknown> | null> {
   const resp = await fetch('/api/modules');
   if (!resp.ok) return null;
-  return resp.json();
+  const raw: Record<string, { color?: string | null }> = await resp.json();
+  rememberModuleColors(Object.entries(raw).map(([name, mod]) => ({ name, color: mod?.color })));
+  return raw;
 }
-
-/** Module accent colours, by the module's position in the registry. */
-const MODULE_COLORS = ['#1ABC9C', '#2ecc71', '#9b59b6', '#E9A847', '#4A90D9', '#E74C3C', '#3498db', '#e67e22'];
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Raw = any;
@@ -94,6 +98,7 @@ function paramsFrom(raw: Raw): ParamDef[] {
       description: pData.description ?? undefined,
       required: pData.required || false,
       constraints: pData.constraints || undefined,
+      options_from: pData.options_from ?? undefined,
     };
   });
 }
@@ -103,20 +108,18 @@ function paramsFrom(raw: Raw): ParamDef[] {
  *
  * Each method carries its versions in label order (newest last), each with
  * its own contract; the method's own slots and params are its newest
- * version's, which is what a node that follows the newest draws.
+ * version's, which is what a node that follows the newest draws. Module
+ * colours are not copied here: views read them through `moduleColor`.
  *
  * Args:
- *     raw: ``{module_name: {description, methods: {method_name: {...}}}}``.
+ *     raw: ``{module_name: {description, color, methods: {method_name: {...}}}}``.
  *
  * Returns:
  *     One ``ModuleDef`` per module, in the payload's order.
  */
 export function moduleDefsFromRegistry(raw: Record<string, unknown>): ModuleDef[] {
-  return Object.entries(raw).map(([modName, modData]: [string, Raw], i: number) => ({
-    name: modName,
-    description: modData.description,
-    color: MODULE_COLORS[i % MODULE_COLORS.length],
-    methods: Object.entries(modData.methods || {}).map(([methName, methData]: [string, Raw]): MethodDef => ({
+  return Object.entries(raw).map(([modName, modData]: [string, Raw]) => {
+    const methods = Object.entries(modData.methods || {}).map(([methName, methData]: [string, Raw]): MethodDef => ({
       name: methName,
       module: modName,
       description: methData.description,
@@ -133,9 +136,78 @@ export function moduleDefsFromRegistry(raw: Record<string, unknown>): ModuleDef[
       inputs: slotsFrom(methData.inputs, true),
       outputs: slotsFrom(methData.outputs, false),
       params: paramsFrom(methData.params_schema),
-      color: MODULE_COLORS[i % MODULE_COLORS.length],
-    })),
-  }));
+    }));
+    // A `version` draft rides on its registered method (the node's version
+    // menu offers it as ● DRAFT); a `method` draft is a method with no
+    // versions yet. Either way the Drafts group lists it.
+    const drafts = Object.entries(modData.drafts || {}).map(([methName, d]: [string, Raw]): MethodDef => {
+      const draft: DraftDef = {
+        module: modName,
+        method: methName,
+        kind: d.kind === 'method' ? 'method' : 'version',
+        folder: d.folder,
+        valid: d.valid !== false,
+        reasons: d.reasons ?? [],
+        env: d.env ?? undefined,
+        description: d.description || undefined,
+        inputs: slotsFrom(d.inputs, true),
+        outputs: slotsFrom(d.outputs, false),
+        params: paramsFrom(d.params_schema),
+      };
+      const registered = methods.find(m => m.name === methName);
+      if (registered) {
+        registered.draft = draft;
+        return registered;
+      }
+      return {
+        name: methName, module: modName, description: draft.description, versions: [], draft,
+        inputs: draft.inputs, outputs: draft.outputs, params: draft.params,
+      };
+    });
+    return { name: modName, description: modData.description, methods, drafts };
+  });
+}
+
+/**
+ * Refetch the palette (modules, methods and drafts) into the `modules` store.
+ *
+ * Called after anything that adds, updates or removes a draft, and after a
+ * snapshot check finds a draft changed, so the Drafts group and every draft
+ * node's ● DRAFT entry show the folder as the server last read it.
+ */
+export async function refreshPalette(): Promise<void> {
+  try {
+    const raw = await fetchModuleRegistry();
+    if (raw) modules.set(moduleDefsFromRegistry(raw));
+  } catch { /* the palette keeps what it had */ }
+}
+
+/** One draft folder against its pointer's stat snapshot (the route's answer). */
+export type SnapshotCheckEntry = components['schemas']['SnapshotCheckEntry'];
+
+/**
+ * Check draft folders against their stat snapshots; nothing is written.
+ *
+ * Args:
+ *     drafts: The drafts to check, by module and method.
+ *
+ * Returns:
+ *     One entry per draft (``current``, ``stale``, ``invalid`` or ``missing``).
+ *
+ * Raises:
+ *     Error: On any non-2xx response or wire failure.
+ */
+export async function checkDraftSnapshots(
+  drafts: { module: string; method: string }[],
+): Promise<SnapshotCheckEntry[]> {
+  const resp = await fetch('/api/registry/drafts/snapshot-check', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ drafts }),
+  });
+  if (!resp.ok) throw new Error(`status ${resp.status}`);
+  const body: components['schemas']['SnapshotCheckResponse'] = await resp.json();
+  return body.drafts ?? [];
 }
 
 /**

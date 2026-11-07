@@ -76,7 +76,7 @@ def test_no_push_worker_outlives_run_pipeline(git_project, monkeypatch, ending):
     with gen_patch, popen_patch, pytest.raises(raised):
         run_pipeline(pipeline_path=str(project.pipeline_json),
                      project_root=str(project.root),
-                     wfc_root=str(project.root), pipeline_id=pid,
+                     pipeline_id=pid,
                      is_cancelled=(lambda: True) if cancelled else None)
 
     assert seen_running == [1]

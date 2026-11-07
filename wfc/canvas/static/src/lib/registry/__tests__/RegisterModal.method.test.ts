@@ -17,7 +17,7 @@ import { within } from '@testing-library/dom';
 import RegisterModal from '../RegisterModal.svelte';
 import RegistryTab from '../RegistryTab.svelte';
 
-vi.mock('../shikiHighlight.js', () => ({
+vi.mock('../../shared/shikiHighlight.js', () => ({
   highlight: async (content: string) => `<pre class="shiki"><code>${content}</code></pre>`,
 }));
 
@@ -81,7 +81,7 @@ const NEW_PLAN = {
     code: { changed: [], added: ['volcano_plot.py'], removed: [] },
     slots: [
       { name: 'deseq2_results', kind: 'input', change: 'added', before: null,
-        after: { type: '.csv', required: true, columns: { strict: ['padj'] } } },
+        after: { type: '.csv', required: true } },
       { name: 'volcano', kind: 'output', change: 'added', before: null, after: { type: '.pdf' } },
     ],
     params: [

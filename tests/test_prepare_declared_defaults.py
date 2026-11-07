@@ -227,7 +227,7 @@ def test_a_required_parameter_with_a_default_runs_at_it(tmp_project, monkeypatch
     path.write_text(json.dumps(document), encoding="utf-8")
     with fake_engine_process(only_snakemake=True):
         run_pipeline(pipeline_path=str(path), project_root=str(project.root),
-                     wfc_root=str(project.root), pipeline_id="required-default-cli")
+                     pipeline_id="required-default-cli")
     frozen = json.loads(layout.pipeline_doc_path(
         project.root, "required-default-cli").read_text(encoding="utf-8"))
     assert _fit(frozen)["params"] == filled

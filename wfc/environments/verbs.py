@@ -13,13 +13,15 @@ so this package never imports Execution.
 ``delete-env`` takes the method versions that record the env (or the error
 reading them) as a value, and ``register-env`` the methods whose newest
 version uses it (its dependants). The caller reads them from Registration,
-so this package never imports Registration.
+so this package never imports Registration. ``delete-env``'s question
+arrives as a callable too: the CLI asks it through :mod:`wfc.confirm`.
 """
 
 from __future__ import annotations
 
 import sys
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -71,7 +73,9 @@ def _registry_lines(name: str, record: EnvRecord, project_dir: Path,
                     versions_of: VersionsOf | None) -> list[tuple[str, str]]:
     """show-env's registry lines: the chip's word, the base, the refs, the fixes.
 
-    The pushed ref and digest come from the image's ``pushed.json``; a byo
+    The pushed ref and digest come from the image's ``pushed.json``, at the
+    base it was pushed to, which after a base switch may not be the
+    project's (the chip then says ``not pushed``); a byo
     image's own registry ref and a name's reason come from the chip; the
     notes are the canvas tooltip's lines (:func:`wfc.environments.chip_notes`).
     """
@@ -83,27 +87,79 @@ def _registry_lines(name: str, record: EnvRecord, project_dir: Path,
              ("registry_base", chip.base or "")]
     if chip.state == CHIP_PUSHED and chip.own_registry:
         lines.append(("own_registry", chip.own_registry))
-    elif chip.state == CHIP_PUSHED:
+    else:  # a push record, at this base or one the project moved from
         try:
             pushed = pushed_record(name, record.env_fingerprint, project_dir)
         except CaptureError:
             pushed = None
         if pushed is not None:
-            if chip.base:
-                lines.append(("pushed_ref", registry_ref(chip.base, name, pushed.digest)))
+            at = pushed.pushed_to(chip.base)
+            if at:
+                lines.append(("pushed_ref", registry_ref(at, name, pushed.digest)))
             lines.append(("pushed_digest", pushed.digest))
     lines.extend(("registry_note", note) for note in chip_notes(name, chip))
     return lines
 
 
+@dataclass(frozen=True)
+class EnvListing:
+    """One row of ``wfc list-envs``.
+
+    Attributes:
+        name: The env's name (its manifest key).
+        backend: Its backend.
+        container: Its container image reference.
+        built_at: When it was built, or ``""``.
+        registry: Where its image is, in the canvas Registry chip's words.
+    """
+
+    name: str
+    backend: str
+    container: str
+    built_at: str
+    registry: str
+
+
+@task(purpose="List every env in the manifest with where its image is, in the "
+              "canvas Registry chip's words",
+      inputs="project dir, a reader of the method versions recording an env",
+      outputs="list[EnvListing], by name",
+      critical="reads the captures folders and the local daemon, never the "
+               "registry; an unreadable manifest is a ValueError")
+def env_listing(project_dir: Path, *,
+                versions_of: VersionsOf | None = None) -> list[EnvListing]:
+    """Every env in ``.wfc/envs.json``, with its registry state.
+
+    The registry state is :func:`wfc.environments.chip_label` of the same
+    :func:`wfc.environments.registry_chip` the canvas row reads; Docker not
+    answering is ``unknown``.
+
+    Args:
+        project_dir: The project root.
+        versions_of: Reads the method versions recording an env (the caller
+            reads Registration); ``None`` counts no older images.
+
+    Returns:
+        One :class:`EnvListing` per env, sorted by name.
+
+    Raises:
+        ValueError: The manifest is unreadable.
+    """
+    from .. import environments as envs_mod
+    from .registry import chip_label
+
+    return [EnvListing(name=name, backend=r.backend, container=r.container,
+                       built_at=r.built_at or "",
+                       registry=chip_label(_registry_chip(name, r, project_dir,
+                                                          versions_of)))
+            for name, r in envs_mod.list_envs(project_dir)]
+
+
 def list_envs(*, versions_of: VersionsOf | None = None) -> int:
     """``wfc list-envs``: print every env in ``.wfc/envs.json`` as a table.
 
-    The REGISTRY column says where each env's image is, in the canvas
-    Registry chip's words (:func:`wfc.environments.chip_label` of the same
-    :func:`wfc.environments.registry_chip`): read from the captures folders
-    and the local daemon, never the registry; Docker not answering is
-    ``unknown``.
+    The rows are :func:`env_listing`'s; the REGISTRY column says where each
+    env's image is, in the canvas Registry chip's words.
 
     Args:
         versions_of: Reads the method versions recording an env (the caller
@@ -112,9 +168,6 @@ def list_envs(*, versions_of: VersionsOf | None = None) -> int:
     Returns:
         0 on success; 1 when no project is found or the manifest is unreadable.
     """
-    from .. import environments as envs_mod
-    from .registry import chip_label
-
     try:
         project_dir = get_project_root()
     except RuntimeError as exc:
@@ -122,25 +175,20 @@ def list_envs(*, versions_of: VersionsOf | None = None) -> int:
         return 1
 
     try:
-        records = envs_mod.list_envs(project_dir)
+        listing = env_listing(project_dir, versions_of=versions_of)
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
-    if not records:
+    if not listing:
         print("No container envs registered. "
               "Use `wfc register-env` to add one.")
         return 0
 
-    # records is list[tuple[str, EnvRecord]] (name is the manifest dict KEY,
-    # not a record field).
     # Fixed-width table: name | backend | container | built_at | registry
     headers = ("NAME", "BACKEND", "CONTAINER", "BUILT AT", "REGISTRY")
-    rows = [
-        (name, r.backend, r.container, r.built_at or "",
-         chip_label(_registry_chip(name, r, project_dir, versions_of)))
-        for name, r in records
-    ]
+    rows = [(e.name, e.backend, e.container, e.built_at, e.registry)
+            for e in listing]
     widths = [
         max(len(headers[i]), *(len(row[i]) for row in rows))
         for i in range(len(headers))
@@ -211,14 +259,14 @@ def show_env(name: str, *, versions_of: VersionsOf | None = None) -> int:
 
 
 def delete_env(name: str, *, references: list[str], read_error: str | None = None,
-               force: bool = False) -> int:
+               ask: Callable[[str], bool] | None = None) -> int:
     """``wfc delete-env <name>``: remove an env no method version records.
 
     While any version of any method records the env, the verb refuses and
-    names every such version, ``--force`` or not: removing the env would
+    names every such version, ``--yes`` or not: removing the env would
     strand them. It refuses too when the caller could not read a version
-    list, since an unreadable record is no permission. Otherwise it prompts
-    (unless *force*), removes the env's record and its captures folder
+    list, since an unreadable record is no permission. Otherwise it asks
+    *ask*, then removes the env's record and its captures folder
     ``.wfc/captures/<env>/``, and commits both in one commit (no commit
     outside a git repository). Registry images are never touched.
 
@@ -228,12 +276,14 @@ def delete_env(name: str, *, references: list[str], read_error: str | None = Non
             *name*, read by the caller from the committed version lists.
         read_error: The caller's error when a version list could not be
             read (it names the file), or ``None``.
-        force: Skip the confirmation prompt.
+        ask: Asks the question and returns True to delete. The CLI's asks
+            through :mod:`wfc.confirm` and prints why it did not go ahead
+            (a no, or no terminal and no ``--yes``). ``None`` asks nothing.
 
     Returns:
         0 when the env was deleted; 1 when no project is found, the manifest
         is unreadable, no env has that name, a version records it, a version
-        list is unreadable, the user aborts, or git refuses the commit.
+        list is unreadable, *ask* answers no, or git refuses the commit.
     """
     from .. import environments as envs_mod
 
@@ -264,15 +314,8 @@ def delete_env(name: str, *, references: list[str], read_error: str | None = Non
               file=sys.stderr)
         return 1
 
-    if not force:
-        try:
-            answer = input(f"Delete env {name!r}? [y/N] ")
-        except (EOFError, KeyboardInterrupt):
-            print("\nAborted.")
-            return 1
-        if answer.strip().lower() != "y":
-            print("Aborted.")
-            return 1
+    if ask is not None and not ask(f"Delete env {name!r}?"):
+        return 1
 
     try:
         sha = _remove_env(name, project_dir)

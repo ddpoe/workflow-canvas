@@ -29,13 +29,16 @@ from typing import TYPE_CHECKING
 
 from .. import layout
 from ..execution.readiness import check_docker
-from ..reserved import DEMO_ENV_NAME
+from ..reserved import DEMO_ENV_NAME, RESERVED_DEMO_PREFIX
 from ..storage import DvcNotConfiguredError, ensure_dvc_ready
 
 if TYPE_CHECKING:
     from ..execution.readiness import CheckResult
 
-DEMO_MODULE = "__demo__"
+#: The reserved prefix every name the demo registers carries: its modules,
+#: methods and samples. ``wfc demo --remove`` finds the demo's modules and
+#: samples by it, so an older wfc's single ``__demo__`` module is found too.
+DEMO_PREFIX = RESERVED_DEMO_PREFIX
 DEMO_ENV = DEMO_ENV_NAME
 DEMO_IMAGE_TAG = "local/wfc-demo-env:latest"
 #: The demo schema: what ``wfc demo`` creates, as a number. Bump it when a
@@ -43,15 +46,24 @@ DEMO_IMAGE_TAG = "local/wfc-demo-env:latest"
 #: project does not have (a renamed entity, a changed asset contract), so
 #: ``wfc demo`` and ``wfc doctor`` send that project to ``wfc demo --force``.
 #: A project with no stamp counts as 1; the env rename to ``wfc-demo-env``
-#: is the first bump.
-DEMO_SCHEMA = 2
+#: is the first bump, the split into three modules the second.
+DEMO_SCHEMA = 3
 #: The schema a demo with no stamp, or an unreadable one, counts as.
 _UNSTAMPED_SCHEMA = 1
 #: The demo's pipeline document, at the project root.
 DEMO_PIPELINE_FILENAME = "demo-pipeline.json"
+#: The demo's modules and the method sources each holds, in registration
+#: order. Three modules, so the canvas shows the demo in three module
+#: colours; each module's default colour is its own free palette slot.
+DEMO_MODULES = {
+    f"{DEMO_PREFIX}cleanup": ("preprocess", "filter_cells"),
+    f"{DEMO_PREFIX}labeling": ("label", "summarize"),
+    f"{DEMO_PREFIX}plotting": ("plot",),
+}
 #: Asset directory names under ``assets/methods/`` — the names the demo's
 #: source is authored and shipped under. Each holds ``<name>.py``.
-DEMO_METHOD_SOURCES = ("preprocess", "filter_cells", "label", "summarize", "plot")
+DEMO_METHOD_SOURCES = tuple(src for sources in DEMO_MODULES.values()
+                            for src in sources)
 #: The names the demo's methods are REGISTERED under.
 #:
 #: They carry the reserved demo prefix. ``register_method`` snapshots each
@@ -59,7 +71,7 @@ DEMO_METHOD_SOURCES = ("preprocess", "filter_cells", "label", "summarize", "plot
 #: so a user's method of the same name in another module does not collide with
 #: a demo method; the prefix only marks the names as the demo's. Dropping it
 #: renames the demo's methods.
-DEMO_METHODS = tuple(f"{DEMO_MODULE}{n}" for n in DEMO_METHOD_SOURCES)
+DEMO_METHODS = tuple(f"{DEMO_PREFIX}{n}" for n in DEMO_METHOD_SOURCES)
 DEMO_SAMPLES = ("ctrl_01", "treat_01", "treat_02")
 ASSETS_DIR = Path(__file__).parent / "assets"
 
@@ -151,6 +163,50 @@ def _refuse_a_foreign_database(target: Path) -> None:
     )
 
 
+def demo_modules(session) -> list:
+    """Return the demo's Module rows: every module named with :data:`DEMO_PREFIX`.
+
+    The prefix is reserved, so these are the demo's modules and only them:
+    the three this wfc registers and an older wfc's single ``__demo__``.
+
+    Args:
+        session: An open database session.
+
+    Returns:
+        The rows, by name.
+    """
+    from sqlmodel import col, select
+
+    from ..persistence import Module
+
+    # autoescape: `_` is a single-char LIKE wildcard, so an unescaped
+    # LIKE '__demo__%' would also match a user module like 'mydemo__x'.
+    return list(session.exec(
+        select(Module)
+        .where(col(Module.name).startswith(DEMO_PREFIX, autoescape=True))
+        .order_by(Module.name)
+    ).all())
+
+
+def demo_snapshot_dirs(target: Path) -> list[Path]:
+    """Return the demo modules' snapshot directories that exist on disk.
+
+    Found by the reserved prefix under ``.wfc/registry/methods/``, not
+    through the database, so a partial scaffold's directory is found too.
+
+    Args:
+        target: Resolved project root directory.
+
+    Returns:
+        The directories, sorted.
+    """
+    root = layout.methods_dir(target)
+    if not root.is_dir():
+        return []
+    return sorted(p for p in root.iterdir()
+                  if p.is_dir() and p.name.startswith(DEMO_PREFIX))
+
+
 def _existing_demo_entities(target: Path) -> list[str]:
     """Return human-readable labels of demo entities already present.
 
@@ -161,25 +217,21 @@ def _existing_demo_entities(target: Path) -> list[str]:
         target: Resolved project root directory.
 
     Returns:
-        Labels like ``"module __demo__"`` for everything found.
+        Labels like ``"module __demo__cleanup"`` for everything found.
     """
     from sqlmodel import col, select
 
     from ..environments import load_manifest_for_register
-    from ..persistence import Module, Sample, get_session
+    from ..persistence import Sample, get_session
 
     found: list[str] = []
     with get_session() as session:
-        module = session.exec(
-            select(Module).where(Module.name == DEMO_MODULE)
-        ).first()
-        if module is not None:
-            found.append(f"module {DEMO_MODULE}")
+        found.extend(f"module {m.name}" for m in demo_modules(session))
         # autoescape: `_` is a single-char LIKE wildcard, so an unescaped
         # LIKE '__demo__%' would also match user samples like 'mydemo__x'.
         samples = session.exec(
             select(Sample).where(
-                col(Sample.name).startswith(DEMO_MODULE, autoescape=True)
+                col(Sample.name).startswith(DEMO_PREFIX, autoescape=True)
             )
         ).all()
         found.extend(f"sample {s.name}" for s in samples)
@@ -205,7 +257,7 @@ def demo_owned_envs(target: Path) -> list[str]:
     """Return the envs the demo owns: :data:`DEMO_ENV` and every env its methods name.
 
     Read before anything is deleted: each demo Method row's ``env`` and every
-    entry of every version list under the demo module's snapshot directory.
+    entry of every version list under the demo modules' snapshot directories.
     Demo methods are registered only from the bundled assets with the
     opt-in, so every env they name is the demo's, including an older wfc's
     demo env. Values that are not env names are skipped. Must be called
@@ -220,27 +272,24 @@ def demo_owned_envs(target: Path) -> list[str]:
     from sqlmodel import select
 
     from ..contracts import parse_env_spec
-    from ..persistence import Method, Module, get_session
+    from ..persistence import Method, get_session
     from ..registration import read_version_list
 
     named: list[str | None] = []
     with get_session() as session:
-        module = session.exec(
-            select(Module).where(Module.name == DEMO_MODULE)
-        ).first()
-        if module is not None:
+        for module in demo_modules(session):
             named.extend(m.env for m in session.exec(
                 select(Method).where(Method.module_id == module.id)
             ).all())
-    snapshot_dir = layout.module_methods_dir(target, DEMO_MODULE)
     suffix = layout.METHOD_VERSIONS_SUFFIX
-    for path in sorted(snapshot_dir.glob(f"*{suffix}")):
-        try:
-            entries = read_version_list(
-                target, DEMO_MODULE, path.name[: -len(suffix)]) or []
-        except (OSError, ValueError):
-            continue
-        named.extend(e.env_name for e in entries)
+    for snapshot_dir in demo_snapshot_dirs(target):
+        for path in sorted(snapshot_dir.glob(f"*{suffix}")):
+            try:
+                entries = read_version_list(
+                    target, snapshot_dir.name, path.name[: -len(suffix)]) or []
+            except (OSError, ValueError):
+                continue
+            named.extend(e.env_name for e in entries)
     envs = {DEMO_ENV}
     for value in named:
         if not value:
@@ -296,8 +345,8 @@ def write_demo_stamp(target: Path) -> Path:
 def demo_schema_check(project_dir: Path | str) -> CheckResult | None:
     """Return ``wfc doctor``'s demo row: a warn for a demo an older wfc made.
 
-    A demo is present when the project has the ``__demo__`` module or a
-    stamp. The row appears only when one is present and its stamp is
+    A demo is present when the project has a ``__demo__``-prefixed module
+    (this wfc's three or an older wfc's one) or a stamp. The row appears only when one is present and its stamp is
     missing or records another schema.
 
     Args:
@@ -307,19 +356,15 @@ def demo_schema_check(project_dir: Path | str) -> CheckResult | None:
         A warn :class:`~wfc.execution.readiness.CheckResult` naming
         ``wfc demo --force``, or ``None`` (no demo, or a current one).
     """
-    from sqlmodel import select
-
     from ..execution.readiness import CheckResult
-    from ..persistence import Module, get_session, use_project
+    from ..persistence import get_session, use_project
 
     target = Path(project_dir)
     present = layout.demo_stamp_path(target).exists()
     if not present:
         try:
             with use_project(target), get_session() as session:
-                present = session.exec(
-                    select(Module).where(Module.name == DEMO_MODULE)
-                ).first() is not None
+                present = bool(demo_modules(session))
         except Exception:
             present = False
     if not present or demo_schema_of(target) == DEMO_SCHEMA:
@@ -479,30 +524,31 @@ def run_demo(
         # ---- Step 6: module + methods ----
         from ..registration import register_method, register_module
 
-        register_module(
-            name=DEMO_MODULE,
-            contracts=[],
-            description=(
-                "Demo pipeline created by `wfc demo` — remove with "
-                "`wfc demo --remove`"
-            ),
-            allow_reserved=True,
-        )
         # Registered straight from the bundled assets: registration copies
-        # them into the demo module's snapshots. The assets keep their bare
+        # them into each demo module's snapshots. The assets keep their bare
         # names; the prefix is applied on the way in, so no demo method ever
         # claims a bare name a user might want.
-        for src_name, m in zip(DEMO_METHOD_SOURCES, DEMO_METHODS):
-            register_method(
-                method_dir=ASSETS_DIR / layout.METHODS_DIR_NAME / src_name,
-                module_name=DEMO_MODULE,
-                method_name=m,
-                # The script keeps its authored name, so the
-                # `{method_name}.py` probe would miss it — name it outright.
-                script_name=f"{src_name}.py",
+        for module_name, sources in DEMO_MODULES.items():
+            register_module(
+                name=module_name,
+                contracts=[],
+                description=(
+                    "Part of the demo pipeline created by `wfc demo` — "
+                    "remove with `wfc demo --remove`"
+                ),
                 allow_reserved=True,
-                assume_yes=True,
             )
+            for src_name in sources:
+                register_method(
+                    method_dir=ASSETS_DIR / layout.METHODS_DIR_NAME / src_name,
+                    module_name=module_name,
+                    method_name=f"{DEMO_PREFIX}{src_name}",
+                    # The script keeps its authored name, so the
+                    # `{method_name}.py` probe would miss it — name it outright.
+                    script_name=f"{src_name}.py",
+                    allow_reserved=True,
+                    assume_yes=True,
+                )
 
         # ---- Step 7: samples (tagged names, clean filenames) ----
         # Registered straight from the bundled assets: registration caches
@@ -512,7 +558,7 @@ def run_demo(
 
         for s in DEMO_SAMPLES:
             src = ASSETS_DIR / layout.SAMPLES_DIR_NAME / f"{s}.csv"
-            tagged = f"{DEMO_MODULE}{s}"
+            tagged = f"{DEMO_PREFIX}{s}"
             register_sample(
                 name=tagged,
                 source_path=src,
@@ -530,9 +576,10 @@ def run_demo(
         write_demo_stamp(target)
 
     print(
-        f"\nDemo scaffolded: module {DEMO_MODULE} (5 methods), 3 samples, env "
-        f"{DEMO_ENV}. The module, its methods and the samples carry the "
-        f"{DEMO_MODULE} prefix, so the demo never takes a name you want for "
+        f"\nDemo scaffolded: modules {', '.join(DEMO_MODULES)} "
+        f"({len(DEMO_METHODS)} methods), {len(DEMO_SAMPLES)} samples, env "
+        f"{DEMO_ENV}. The modules, their methods and the samples carry the "
+        f"{DEMO_PREFIX} prefix, so the demo never takes a name you want for "
         f"your own work. Remove everything later with `wfc demo --remove`."
     )
 

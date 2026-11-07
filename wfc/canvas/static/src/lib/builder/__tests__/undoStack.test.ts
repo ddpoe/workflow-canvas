@@ -23,7 +23,6 @@ function mkNode(id: string): Node<CanvasNodeData> {
       label: id,
       method: 'm',
       module: 'mod',
-      color: '#ccc',
       inputs: [],
       outputs: [{ name: 'out', type: 'csv' }],
       params: [],

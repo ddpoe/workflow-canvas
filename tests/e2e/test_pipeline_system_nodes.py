@@ -23,8 +23,6 @@ from wfc.persistence import get_session, Run, RunOutput
 from tests.fixtures.conftest import create_sample_csv as _create_sample_csv
 from tests.conftest import requires_docker
 
-WFC_ROOT = Path(__file__).resolve().parent.parent.parent
-
 # these tests execute pipelines end-to-end through the
 # container dispatch path (register_fixture_methods builds a real image).
 # Deselected from the default suite (integration) and skipped without Docker.
@@ -98,7 +96,6 @@ def test_input_selector_pipeline(pipeline_factory, register_fixture_methods):
     run_pipeline(
         pipeline_path=str(pipeline_path),
         project_root=str(project_dir),
-        wfc_root=str(WFC_ROOT),
         cores=1,
         archive=False,
     )
@@ -178,7 +175,6 @@ def test_run_reference_pipeline(pipeline_factory, register_fixture_methods):
     run_pipeline(
         pipeline_path=str(initial_pipeline_path),
         project_root=str(project_dir),
-        wfc_root=str(WFC_ROOT),
         cores=1,
         archive=False,
     )
@@ -234,7 +230,6 @@ def test_run_reference_pipeline(pipeline_factory, register_fixture_methods):
     run_pipeline(
         pipeline_path=str(pipeline_path),
         project_root=str(project_dir),
-        wfc_root=str(WFC_ROOT),
         cores=1,
         archive=False,
     )
@@ -307,7 +302,6 @@ def test_run_reference_bad_path_fails(pipeline_factory, register_fixture_methods
     run_pipeline(
         pipeline_path=str(initial_pipeline_path),
         project_root=str(project_dir),
-        wfc_root=str(WFC_ROOT),
         cores=1,
         archive=False,
     )
@@ -352,7 +346,6 @@ def test_run_reference_bad_path_fails(pipeline_factory, register_fixture_methods
         run_pipeline(
             pipeline_path=str(pipeline_path),
             project_root=str(project_dir),
-            wfc_root=str(WFC_ROOT),
             cores=1,
             archive=False,
         )
@@ -391,7 +384,6 @@ def test_input_selector_empty_samples(pipeline_factory, register_fixture_methods
         run_pipeline(
             pipeline_path=str(pipeline_path),
             project_root=str(project_dir),
-            wfc_root=str(WFC_ROOT),
             cores=1,
             archive=False,
         )

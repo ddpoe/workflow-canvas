@@ -5,30 +5,35 @@
    * last run's log stream. The header above it is the Inspector's.
    *
    * The non-markup logic — the override and variant writes, the constraint
-   * hint and the `column_of_input` lookup — lives in `./nodeEdits.ts`. The
+   * hint and the `options_from` lookup — lives in `./nodeEdits.ts`. The
    * `$derived` and `$effect` that drive the lookup live here, where their
    * dependencies are read.
    */
   import type { Node } from '@xyflow/svelte';
   import {
-    nodes, edges, updateNodeData,
+    nodes, edges, pipelineVariables, updateNodeData,
   } from '../builder/stores.js';
   import type { CanvasNodeData } from '../shared/types.js';
+  import type { ParamOptions } from './options.js';
   import ValueList from './ValueList.svelte';
+  import LogPane from '../shared/LogPane.svelte';
+  import { withEndingTraceback } from '../shared/errorSummary.js';
+  import ErrorBox from '../shared/ErrorBox.svelte';
   import { pipelineRunActor, paramEditorAggregator,
            awaitAllCommitted, nodeHasDirtyEditors } from '../machines/root.js';
   import { openLockSummary } from '../builder/lockFlow.js';
-  import { onDestroy, untrack } from 'svelte';
-  import { openNodeHistoricalLogStream, type ColumnOptionsResp } from './api.js';
+  import { onDestroy, tick, untrack } from 'svelte';
+  import { inspectParamRequest } from '../shared/uiState.js';
+  import { openNodeHistoricalLogStream } from './api.js';
   import { RenderTick } from './renderTick.svelte.js';
   import {
-    clearSampleOverrideAndVariants, columnResolutionKey, constraintHint,
-    resolveColumnOptions, updateSampleOverride, updateSampleVariants,
-    updateVariants,
+    clearSampleOverrideAndVariants, constraintHint, lookupPipeline,
+    optionsLookupKey, optionsLookupPlan, resolveOptionsLookup,
+    updateSampleOverride, updateSampleVariants, updateVariants,
   } from './nodeEdits.js';
 
   let { node, data }: {
-    node: Node<CanvasNodeData> | undefined;
+    node: Node<CanvasNodeData> | null;
     data: CanvasNodeData;
   } = $props();
 
@@ -54,7 +59,31 @@
   let activeTab = $state<'config' | 'output'>('config');
   let paramSubTab = $state<'all' | 'per-sample'>('all');
   let selectedOverrideSample = $state<string>('');
-  let nodeErrorExpanded = $state(false);
+
+  // Landing from a Built-from `param ↗` link: when the request names this
+  // node, show Config / All Samples, scroll the parameter's row into view
+  // and highlight it for about 1.2 s, then reset the request.
+  let rootEl: HTMLDivElement | undefined = $state();
+  let landedParam = $state<string | null>(null);
+  let landTimer: ReturnType<typeof setTimeout> | null = null;
+  $effect(() => {
+    const req = $inspectParamRequest;
+    const id = node?.id;
+    if (!req || req.nodeId !== id) return;
+    inspectParamRequest.set(null);
+    untrack(() => {
+      activeTab = 'config';
+      paramSubTab = 'all';
+      landedParam = req.param;
+      if (landTimer) clearTimeout(landTimer);
+      landTimer = setTimeout(() => { landedParam = null; landTimer = null; }, 1200);
+      tick().then(() => {
+        const row = rootEl?.querySelector(`.param-block[data-param="${CSS.escape(req.param)}"]`);
+        row?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      });
+    });
+  });
+  onDestroy(() => { if (landTimer) clearTimeout(landTimer); });
 
   // Builder Output tab state — last-run-only scope. The run_id
   // comes from the current pipeline's node_states (populated on each poll);
@@ -72,14 +101,17 @@
   type LogPhase = 'idle' | 'connecting' | 'streaming' | 'succeeded' | 'failed' | 'cancelled';
   let logLines = $state<LogLine[]>([]);
   let logPhase = $state<LogPhase>('idle');
-  let logTerminalStatus = $state<string | null>(null);
-  let logTerminalError = $state<string | null>(null);
-  let logTerminalTraceback = $state<string | null>(null);
+  // The stream dropped before its terminal frame. The live streaming
+  // machine reports that by its own terminal error text, "Connection lost"
+  // (streaming.machine.ts); the historical fetch below sets it directly.
+  let logConnectionLost = $state(false);
+  // The terminal frame's traceback: shown after the log when the log does
+  // not already hold its last line (see shownLines).
+  let logTraceback = $state<string | null>(null);
   // Tracks which runId we've already loaded historical logs for, so the
   // post-run fallback only fetches once per (node, runId) — not on every
   // parent-actor tick after the node entered a terminal state.
   let historicalLoadedForRunId = $state<string | null>(null);
-  let logFullMode = $state(false);
 
   // Snapshot of the spawned `nodeRunActor` for the currently-selected
   // node. Recomputes whenever the parent ticks (selection change OR
@@ -102,20 +134,42 @@
   });
 
   /**
-   * Selected node's most recent failure reason, read from the spawned
-   * `nodeRunActor`'s context. Only shown when the actor is in the
-   * `failed` or `completed_with_failures` state so stale errors from
-   * earlier attempts don't shadow a currently-running node.
+   * Whether the selected node's run failed (or partly failed), read from
+   * the spawned `nodeRunActor`. Only its `failed` and
+   * `completed_with_failures` states count, so an earlier attempt's error
+   * never shadows a node that is running again.
    */
-  let nodeError = $derived.by(() => {
+  let nodeFailed = $derived.by(() => {
     void actorTick.count;
-    const snap = nodeActorSnap;
-    if (!snap) return null;
-    const v = snap.value;
+    const v = nodeActorSnap?.value;
+    if (!v) return false;
     const stateKey = typeof v === 'string' ? v : Object.keys(v)[0];
-    if (stateKey !== 'failed' && stateKey !== 'completed_with_failures') return null;
-    return snap.context.error_message ?? null;
+    return stateKey === 'failed' || stateKey === 'completed_with_failures';
   });
+
+  /** The failed run's message, when it has one. */
+  let nodeError = $derived(nodeFailed ? (nodeActorSnap?.context.error_message ?? null) : null);
+
+  /** The node's run is still going: its log follows the newest line. A
+   *  finished run's log replays fast but opens at its top. */
+  let nodeIsRunning = $derived.by(() => {
+    const v = nodeActorSnap?.value;
+    if (!v) return false;
+    return (typeof v === 'string' ? v : Object.keys(v)[0]) === 'running';
+  });
+
+  /** The log bar's note: the stream's own state, never the run's error. */
+  let logNote = $derived(
+    logPhase === 'connecting' ? 'Connecting…'
+      : logPhase === 'streaming' ? 'Streaming…'
+        : logConnectionLost ? 'Connection lost'
+          : null,
+  );
+
+  /** The log as shown: what the run printed, then the traceback its ending
+   *  carried when the log does not already hold that ending's last line (a
+   *  launch failure's, or wfc's own one-line ending after the method ran). */
+  let shownLines = $derived(withEndingTraceback(logLines, logTraceback));
 
   // Cache-hit detection.  When the spawned nodeRunActor is in the
   // `cached` substate, the Output tab must (a) render a banner naming
@@ -210,43 +264,40 @@
     return nodeHasDirtyEditors(node.id);
   });
 
-  // ─── column_of_input combobox resolution ───
+  // ─── options_from lookup ───
   //
-  // Cache shape: `{ [paramName]: { strict, from_params, patterns, all } | null }`
-  // — a `null` entry means "lookup failed / no upstream / no contract", which
-  // ValueList treats as "render plain input".
-  let columnOptionsByParam = $state<Record<string, ColumnOptionsResp | null>>({});
+  // One entry per `options_from` param: its inputs and every upstream wired
+  // to them with that upstream's answer (`null` where the lookup failed or
+  // was not asked). An absent entry is a lookup still pending.
+  let optionsByParam = $state<Record<string, ParamOptions>>({});
 
   /**
-   * Fingerprint of the current "what params need column resolution?" set,
-   * including upstream identity + the upstream's current params (so a sweep
-   * on the upstream's chmap re-resolves downstream).
+   * The lookup for every `options_from` param: the wiring and the request
+   * each upstream sends (its value sets and pin, or its run). Recomputed
+   * when the canvas or the pipeline variables change.
    */
-  let resolutionKey = $derived(columnResolutionKey(node, data, $edges, $nodes));
+  let lookupPlan = $derived(optionsLookupPlan(
+    node, data, $edges, $nodes, lookupPipeline($nodes, $edges, $pipelineVariables)));
+
+  /** Changes only when the wiring or a request changes, not on this node's own edits. */
+  let lookupKey = $derived(optionsLookupKey(lookupPlan));
 
   /**
-   * Effect: re-resolve column options whenever the resolution key changes
-   * (selected node, its params, or any upstream's identity/params).
-   * Updates `columnOptionsByParam` atomically.
+   * Effect: re-run the lookup whenever its key changes, and replace
+   * `optionsByParam` in one write.
    */
   $effect(() => {
-    void resolutionKey;
+    if (!lookupKey) {
+      optionsByParam = {};
+      return;
+    }
     const currentNode = node;
-    if (!currentNode || data?.nodeType !== 'method') {
-      columnOptionsByParam = {};
-      return;
-    }
-    const params = data?.params ?? [];
-    const targets = params.filter(p => p.column_of_input && !p.new_column);
-    if (targets.length === 0) {
-      columnOptionsByParam = {};
-      return;
-    }
+    const plan = untrack(() => lookupPlan);
     let cancelled = false;
     (async () => {
-      const next = await resolveColumnOptions(currentNode, targets);
+      const next = await resolveOptionsLookup(plan);
       if (!cancelled && currentNode === node) {
-        columnOptionsByParam = next;
+        optionsByParam = next;
       }
     })();
     return () => { cancelled = true; };
@@ -260,10 +311,8 @@
     void lastRunId;
     logLines = [];
     logPhase = 'idle';
-    logTerminalStatus = null;
-    logTerminalError = null;
-    logTerminalTraceback = null;
-    logFullMode = false;
+    logConnectionLost = false;
+    logTraceback = null;
     historicalLoadedForRunId = null;
   });
 
@@ -292,7 +341,6 @@
         value: string | Record<string, string>;
         context: {
           lines: LogLine[];
-          terminalStatus: string | null;
           terminalError: string | null;
           terminalTraceback: string | null;
         };
@@ -310,9 +358,8 @@
               : 'idle';
         logPhase = phase;
         logLines = snap.context.lines;
-        logTerminalStatus = snap.context.terminalStatus;
-        logTerminalError = snap.context.terminalError;
-        logTerminalTraceback = snap.context.terminalTraceback;
+        logConnectionLost = phase === 'failed' && snap.context.terminalError === 'Connection lost';
+        logTraceback = snap.context.terminalTraceback;
       };
       // Apply initial snapshot synchronously — xstate v5 actor.subscribe
       // does NOT fire the callback for actors that have already reached
@@ -384,9 +431,7 @@
               : p.status === 'cancelled'
                 ? 'cancelled'
                 : 'failed';
-          logTerminalStatus = p.status ?? null;
-          logTerminalError = p.error_message ?? null;
-          logTerminalTraceback = p.error_traceback ?? null;
+          logTraceback = p.error_traceback ?? null;
           // Mark loaded only now that the terminal frame has landed.
           historicalLoadedForRunId = lastRunId;
           es.close();
@@ -403,9 +448,7 @@
         logPhase === 'succeeded' || logPhase === 'failed' || logPhase === 'cancelled';
       if (!isFinal) {
         logPhase = 'failed';
-        logTerminalStatus = 'failed';
-        logTerminalError = 'Connection lost';
-        logTerminalTraceback = null;
+        logConnectionLost = true;
       }
       // Wire failure is a definitive outcome — mark loaded so we don't
       // refetch in a loop on a genuinely broken stream.
@@ -415,46 +458,22 @@
     return () => es.close();
   });
 
-  // The Output tab has no full-log action: full-mode dispatch through the
-  // streaming machine is not implemented, so `logFullMode` stays false.
-  void logFullMode;
 </script>
 
-<!-- Failure summary: visible on BOTH tabs so the user doesn't need to
-     open Output to see what went wrong. Long messages collapse to the
-     first line by default; click expands. "View log" jumps to Output
-     tab where the full streamed log is already wired up. -->
-{#if nodeError}
-  {@const firstLine = nodeError.split('\n')[0]}
-  {@const isMulti = nodeError.includes('\n') || nodeError.length > firstLine.length}
-  <div class="node-error-box" data-testid="node-error-box">
-    <div class="node-error-head">
-      <span class="ne-icon" aria-hidden="true">✖</span>
-      <span class="ne-title">This step failed</span>
-      {#if lastRunId}
-        <button class="ne-link" type="button"
-                onclick={() => { activeTab = 'output'; }}
-                title="Open Output tab for the failed run">View log</button>
-      {/if}
-    </div>
-    {#if nodeErrorExpanded || !isMulti}
-      <pre class="ne-body">{nodeError}</pre>
-    {:else}
-      <div class="ne-body-line">{firstLine}</div>
-    {/if}
-    {#if isMulti}
-      <button class="ne-toggle" type="button"
-              onclick={() => { nodeErrorExpanded = !nodeErrorExpanded; }}>
-        {nodeErrorExpanded ? 'Collapse' : 'Show full error'}
-      </button>
-    {/if}
+<!-- Failure summary: above the tabs so it reads the same on Config and
+     Output. The message is cut to two lines (hover for all of it); the
+     traceback is the Output tab's stderr, never repeated here. -->
+{#if nodeFailed}
+  <div class="node-error-wrap">
+    <ErrorBox testid="node-error-box" message={nodeError}
+              onSeeOutput={lastRunId ? () => { activeTab = 'output'; } : undefined} />
   </div>
 {/if}
 
 <!-- Tabs -->
 <div class="tabs">
   <button class="tab" class:active={activeTab === 'config'} onclick={() => { activeTab = 'config'; }}>Config</button>
-  <button class="tab" class:active={activeTab === 'output'} onclick={() => { activeTab = 'output'; }}>Output</button>
+  <button class="tab" class:active={activeTab === 'output'} onclick={() => { activeTab = 'output'; }}>Output{#if nodeFailed}<span class="tab-x" aria-hidden="true">✗</span><span class="sr-only"> (failed)</span>{/if}</button>
 </div>
 
 <!-- Tab content -->
@@ -468,7 +487,7 @@
         onclick={() => { paramSubTab = 'per-sample'; }}>Per Sample</button>
     </div>
 
-    <div class="param-form">
+    <div class="param-form" bind:this={rootEl}>
       {#if paramSubTab === 'all'}
         <!-- Node-level header: Lock All commits every dirty row on this node. -->
         <div class="node-param-header">
@@ -485,7 +504,7 @@
         {#each data.params as param}
           {@const hint = constraintHint(param)}
           {@const variants = (data.variants ?? {})[param.name] ?? {}}
-          <div class="param-block">
+          <div class="param-block" data-param={param.name} class:landed={landedParam === param.name}>
             <div class="param-label-row">
               <span class="pname cap-trim">{param.name}</span>
               {#if param.type || param.contractType}
@@ -512,7 +531,7 @@
               {param}
               baseValue={data.paramValues[param.name] ?? param.default}
               variants={variants}
-              columnOptions={columnOptionsByParam[param.name] ?? null}
+              options={optionsByParam[param.name]}
               onBaseChange={(v) => updateParam(param.name, v)}
               onVariantsChange={(next) => { if (node) updateVariants(node, param.name, next); }} />
           </div>
@@ -564,7 +583,7 @@
                   {param}
                   baseValue={effective}
                   variants={paramSampleVariants}
-                  columnOptions={columnOptionsByParam[param.name] ?? null}
+                  options={optionsByParam[param.name]}
                   dirtyKeySuffix={`::ovr:${selectedOverrideSample}`}
                   onBaseChange={(v) => { if (node) updateSampleOverride(node, selectedOverrideSample, param.name, v); }}
                   onVariantsChange={(next) => { if (node) updateSampleVariants(node, selectedOverrideSample, param.name, next); }} />
@@ -616,33 +635,17 @@
           {/if}
         </div>
       {/if}
-      <div class="output-block">
-        <div class="output-header">
-          <span class="output-status output-status-{logPhase}">
-            {#if logPhase === 'connecting'}Connecting…
-            {:else if logPhase === 'streaming'}Streaming
-            {:else if logPhase === 'succeeded'}Success
-            {:else if logPhase === 'failed'}
-              {logTerminalError ? `Failed: ${logTerminalError}` : 'Failed'}
-            {:else if logPhase === 'cancelled'}
-              {logTerminalError ? `Cancelled: ${logTerminalError}` : 'Cancelled'}
-            {:else}Idle{/if}
-          </span>
-          <span class="output-run-id">#{lastRunId}</span>
-          <!-- No "Load full log" button: full-mode fanout through the
-               streaming machine is not implemented, and the streaming
-               actor's invoke passes `fullMode: false`. -->
-          {#if logFullMode}{/if}
-        </div>
-        <pre class="log-pane">{#each logLines as l}<span class={l.kind === 'stderr' ? 'log-stderr' : 'log-stdout'}>{l.line}
-</span>{/each}</pre>
-        {#if (logPhase === 'failed' || logPhase === 'cancelled') && (logTerminalError || logTerminalTraceback)}
-          <div class="err-block">
-            {#if logTerminalError}<div class="err-msg">{logTerminalError}</div>{/if}
-            {#if logTerminalTraceback}<pre class="err-trace">{logTerminalTraceback}</pre>{/if}
-          </div>
-        {/if}
-      </div>
+      {#if !lastRunId}
+        <!-- Cancelled before it ran (an upstream step failed): the banner
+             says why, and there is no log to show. -->
+      {:else if shownLines.length === 0 && (logPhase === 'succeeded' || logPhase === 'failed' || logPhase === 'cancelled') && logNote === null}
+        <div class="output-empty">No output captured.</div>
+      {:else}
+        {#key lastRunId}<LogPane lines={shownLines} live={nodeIsRunning} note={logNote}
+                 noteTone={logNote === 'Connection lost' ? 'failed' : 'muted'}>
+          {#snippet actions()}<span class="output-run-id" title="Run #{lastRunId}">#{lastRunId}</span>{/snippet}
+        </LogPane>{/key}
+      {/if}
     {/if}
   {/if}
 </div>
@@ -658,7 +661,7 @@
     padding: 7px;
     text-align: center;
     font-size: 12px;
-    color: #666;
+    color: var(--text-muted);
     background: none;
     border: none;
     border-bottom: 2px solid transparent;
@@ -675,24 +678,30 @@
   }
   .param-form { display: flex; flex-direction: column; gap: 10px; }
   .field { display: flex; flex-direction: column; gap: 3px; }
-  .field label { font-size: 12px; color: #888; }
+  .field label { font-size: 12px; color: var(--text-secondary); }
   .field select {
-    background: #1e1e1e;
+    background: var(--bg-input);
     border: 1px solid var(--border);
     border-radius: 3px;
     padding: 6px 8px !important;
-    color: #ccc;
+    color: var(--text-primary);
     font-size: 13px;
     outline: none;
     width: 100%;
     box-sizing: border-box;
     min-height: 28px;
   }
-  .required { color: #E74C3C; font-weight: 600; }
+  .required { color: var(--status-failed-ink); font-weight: 600; }
 
   /* ValueList per-param layout */
   .param-block { margin-bottom: 14px; }
   .param-block:last-child { margin-bottom: 0; }
+  /* The row a Built-from link lands on, for about 1.2 s: the controls blue. */
+  .param-block { border-radius: 4px; transition: background-color .4s, box-shadow .4s; }
+  .param-block.landed {
+    background: color-mix(in oklab, var(--accent) 14%, transparent);
+    box-shadow: 0 0 0 4px color-mix(in oklab, var(--accent) 14%, transparent), 0 0 0 5px var(--accent);
+  }
   /* Name, type, required mark and help badge share one centre line: each
      text box is trimmed to cap height, so flex centring lines up the letters
      rather than the fonts' ascenders and descenders. */
@@ -739,8 +748,8 @@
   .node-param-header .nph-spacer { flex: 1; }
   .lock-all {
     font-size: 11px;
-    color: #ccc;
-    background: #1e1e1e;
+    color: var(--text-primary);
+    background: var(--bg-input);
     border: 1px solid var(--border);
     border-radius: 3px;
     padding: 4px 10px;
@@ -770,13 +779,13 @@
   /* Builder Output tab — last-run-scoped log stream */
   .output-empty {
     padding: 12px;
-    color: #7f8ea3;
+    color: var(--status-cancelled-ink);
     font-size: 11px;
     text-align: center;
   }
   .causality-banner {
-    background: rgba(127, 142, 163, 0.10);
-    border: 1px solid rgba(127, 142, 163, 0.35);
+    background: color-mix(in srgb, var(--status-cancelled) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--status-cancelled) 35%, transparent);
     border-radius: 3px;
     padding: 8px 10px;
     font-size: 11px;
@@ -786,8 +795,8 @@
   .causality-method { font-weight: 600; color: #e6edf3; }
   /* Cache-hit banner. */
   .cache-hit-banner {
-    background: rgba(80, 200, 120, 0.08);
-    border: 1px solid rgba(80, 200, 120, 0.35);
+    background: color-mix(in srgb, var(--status-ok) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--status-ok) 35%, transparent);
     border-radius: 3px;
     padding: 8px 10px;
     margin: 8px 8px 4px;
@@ -797,7 +806,7 @@
     flex-direction: column;
     gap: 4px;
   }
-  .cache-hit-title { font-weight: 600; color: #50C878; }
+  .cache-hit-title { font-weight: 600; color: var(--status-ok); }
   .cache-hit-body { color: #c6d0de; }
   .cache-hit-run { font-family: Consolas, monospace; color: #e6edf3; }
   .cache-hit-key {
@@ -807,132 +816,23 @@
     margin-top: 2px;
   }
   .cache-hit-empty { color: #8a98ac; font-style: italic; margin-top: 2px; }
-  .output-block {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 4px 8px 8px;
-    min-height: 0;
-  }
-  .output-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 2px 4px;
-  }
-  .output-status {
-    font-size: 10px;
-    padding: 2px 6px;
-    border-radius: 3px;
-    background: rgba(127, 142, 163, 0.15);
-    color: #c6d0de;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-  }
-  .output-status-streaming { background: rgba(74, 144, 217, 0.20); color: #7fb4ed; }
-  .output-status-succeeded { background: rgba(60, 180, 100, 0.15); color: #9fd9b3; }
-  .output-status-failed    { background: rgba(231, 76, 60, 0.18); color: #e79993; }
-  .output-status-cancelled { background: rgba(200, 160, 60, 0.16); color: #d8c08a; }
   .output-run-id {
     font-family: 'Consolas', monospace;
     font-size: 10px;
-    color: var(--accent, #4A90D9);
-  }
-  .log-pane {
-    background: #1e1e1e;
-    border: 1px solid var(--border);
-    border-radius: 3px;
-    color: #d0d0d0;
-    font-family: 'Consolas', 'Courier New', monospace;
-    font-size: 11px;
-    line-height: 1.4;
-    max-height: 300px;
-    overflow: auto;
-    padding: 6px 8px;
-    margin: 0;
-    white-space: pre-wrap;
-  }
-  .log-stderr { color: #e79993; }
-  .log-stdout { color: #d0d0d0; }
-  .err-block {
-    background: rgba(231, 76, 60, 0.08);
-    border: 1px solid rgba(231, 76, 60, 0.30);
-    border-radius: 3px;
-    padding: 8px 10px;
-  }
-  /* Top-of-inspector failure summary — matches err-block but sits above the
-     tabs so it's visible before the user has selected Output. */
-  .node-error-box {
-    margin: 8px 10px 0;
-    background: rgba(231, 76, 60, 0.08);
-    border-left: 3px solid #E74C3C;
-    border-top: 1px solid rgba(231, 76, 60, 0.25);
-    border-right: 1px solid rgba(231, 76, 60, 0.25);
-    border-bottom: 1px solid rgba(231, 76, 60, 0.25);
-    border-radius: 3px;
-    padding: 8px 10px;
-    font-size: 11.5px;
-  }
-  .node-error-head {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-bottom: 4px;
-  }
-  .ne-icon { color: #E74C3C; font-weight: 700; }
-  .ne-title { color: #E74C3C; font-weight: 600; flex: 1; }
-  .ne-link {
-    background: transparent;
-    border: 1px solid rgba(231, 76, 60, 0.5);
-    color: #ffbaba;
-    font-size: 10.5px;
-    padding: 1px 6px;
-    border-radius: 3px;
-    cursor: pointer;
-  }
-  .ne-link:hover { background: rgba(231, 76, 60, 0.15); }
-  .ne-body {
-    margin: 0;
-    color: #ecc;
-    font-size: 11px;
-    white-space: pre-wrap;
-    word-break: break-word;
-    line-height: 1.4;
-    max-height: 180px;
-    overflow: auto;
-  }
-  .ne-body-line {
-    color: #ecc;
-    font-size: 11px;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: var(--text-muted);
+    white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    white-space: nowrap;
+    min-width: 0;
+    max-width: 90px;
   }
-  .ne-toggle {
-    margin-top: 4px;
-    background: transparent;
-    border: none;
-    color: #f0c4c4;
-    font-size: 10.5px;
-    padding: 0;
-    cursor: pointer;
-    text-decoration: underline dotted;
-  }
-  .ne-toggle:hover { color: #ffdede; }
-  .err-msg { color: var(--color-failed, #E74C3C); font-size: 11px; font-weight: 600; }
-  .err-trace {
-    margin: 6px 0 0;
-    color: #c88;
-    font-size: 10px;
-    white-space: pre-wrap;
-    line-height: 1.4;
-    font-family: 'Consolas', 'Courier New', monospace;
-  }
+  /* The failure box sits above the tabs, the same on Config and Output. */
+  .node-error-wrap { margin: 8px 10px 0; }
+  .tab-x { color: var(--status-failed-ink); font-weight: 700; margin-left: 4px; }
   .sub-tabs {
     display: flex;
     gap: 2px;
-    background: #1e1e1e;
+    background: var(--bg-input);
     padding: 3px;
     border-radius: 4px;
     margin-bottom: 10px;
@@ -943,23 +843,23 @@
     background: none;
     border: none;
     border-radius: 3px;
-    color: #888;
+    color: var(--text-secondary);
     font-size: 11px;
     cursor: pointer;
   }
   .sub-tab.active {
-    background: #2d2d30;
+    background: var(--bg-header);
     color: var(--accent);
   }
   .override-dot {
-    color: #E9A847;
+    color: var(--marker-light);
     font-size: 10px;
   }
   .clear-override-btn {
     background: none;
     border: 1px solid var(--border);
     border-radius: 3px;
-    color: #888;
+    color: var(--text-secondary);
     font-size: 10px;
     padding: 2px 6px;
     cursor: pointer;
@@ -967,8 +867,8 @@
     margin-top: 3px;
   }
   .clear-override-btn:hover {
-    color: #E9A847;
-    border-color: #E9A847;
+    color: var(--marker-light);
+    border-color: var(--marker-light);
   }
   .param-desc {
     display: inline-flex;

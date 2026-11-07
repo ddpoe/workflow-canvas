@@ -18,6 +18,8 @@ Hard errors (raise ``ValueError`` — fail registration):
 Soft warnings (returned, not raised):
   - Dynamic save name (f-string / variable / call) — static check skipped.
   - Save inside obviously-unreachable code (``if False:`` / ``if 0:``).
+  - A declared param the script never reads by a literal name
+    (:func:`unread_param_warnings`); any dynamic ``ctx.params`` access skips it.
 """
 
 from __future__ import annotations
@@ -44,6 +46,12 @@ def _is_save_artifact_call(node: ast.Call) -> bool:
     """Return True if the call is ``<something>.save_artifact(...)``."""
     func = node.func
     return isinstance(func, ast.Attribute) and func.attr == "save_artifact"
+
+
+def _is_input_call(node: ast.Call) -> bool:
+    """Return True if the call is ``<something>.input(...)``."""
+    func = node.func
+    return isinstance(func, ast.Attribute) and func.attr == "input"
 
 
 def _literal_name_arg(node: ast.Call) -> str | None:
@@ -78,14 +86,18 @@ def validate_save_artifacts(
     script_path: Path | str,
     declared_outputs: list[str],
     required_outputs: list[str] | None = None,
+    declared_inputs: list[str] | None = None,
 ) -> list[str]:
-    """Validate ``ctx.save_artifact`` literal names against declared outputs.
+    """Validate ``ctx.save_artifact`` and ``ctx.input`` literal names.
 
     Args:
         script_path: Path to the method script to scan.
         declared_outputs: All output names declared in ``method.yaml``.
         required_outputs: Output names that are required. Defaults to all
             declared outputs when omitted.
+        declared_inputs: All input names declared in ``method.yaml``. When
+            given, a literal ``ctx.input("<name>")`` naming none of them is
+            refused, naming the declared inputs; ``None`` skips the check.
 
     Returns:
         A list of human-readable warning strings (dynamic names,
@@ -112,9 +124,17 @@ def validate_save_artifacts(
         if isinstance(n, ast.FunctionDef) and _is_wfc_method_decorator(n)
     ]
 
+    unknown_inputs: list[str] = []
     for func in decorated:
         # Walk with a parent stack so we can detect unreachable `if False:`.
         for call, stack in _iter_calls_with_stack(func):
+            if declared_inputs is not None and _is_input_call(call):
+                # A computed name is caught at the call instead: the client
+                # raises listing the declared inputs.
+                input_name = _literal_name_arg(call)
+                if input_name is not None and input_name not in declared_inputs:
+                    unknown_inputs.append(input_name)
+                continue
             if not _is_save_artifact_call(call):
                 continue
             name = _literal_name_arg(call)
@@ -137,6 +157,14 @@ def validate_save_artifacts(
             else:
                 saved_literals.add(name)
 
+    if unknown_inputs:
+        raise ValueError(
+            f"Method script {script_path.name} calls ctx.input() with input "
+            f"name(s) not declared in method.yaml: {sorted(set(unknown_inputs))}. "
+            f"Declared inputs: {sorted(declared_inputs or [])}. Add the input "
+            f"to method.yaml or fix the ctx.input name."
+        )
+
     if unknown_literals:
         raise ValueError(
             f"Method script {script_path.name} calls ctx.save_artifact() with "
@@ -157,6 +185,80 @@ def validate_save_artifacts(
         )
 
     return warnings
+
+
+#: The environment variable the client reads params from; a script naming it
+#: reads them without ``ctx.params``.
+_PARAMS_ENV = "WFC_PARAMS"
+
+
+def _literal_param_read(node: ast.Attribute, parents: dict[ast.AST, ast.AST]) -> str | None:
+    """The param name a ``<x>.params`` use reads literally, or ``None`` when dynamic.
+
+    Literal: ``<x>.params["name"]``, ``<x>.params.get("name"[, default])`` and
+    ``"name" in <x>.params`` (or ``not in``). Anything else (a variable key,
+    iteration, ``.items()``, passing ``<x>.params`` on) is dynamic.
+    """
+    parent = parents.get(node)
+    if isinstance(parent, ast.Subscript) and parent.value is node:
+        key = parent.slice
+        if isinstance(key, ast.Constant) and isinstance(key.value, str):
+            return key.value
+        return None
+    if isinstance(parent, ast.Attribute) and parent.attr == "get":
+        call = parents.get(parent)
+        if isinstance(call, ast.Call) and call.func is parent and call.args:
+            key = call.args[0]
+            if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                return key.value
+        return None
+    if (isinstance(parent, ast.Compare) and len(parent.ops) == 1
+            and isinstance(parent.ops[0], (ast.In, ast.NotIn))
+            and parent.comparators[0] is node
+            and isinstance(parent.left, ast.Constant)
+            and isinstance(parent.left.value, str)):
+        return parent.left.value
+    return None
+
+
+def unread_param_warnings(script_path: Path | str, declared_params: list[str]) -> list[str]:
+    """Warn about each declared param the script never reads by a literal name.
+
+    The whole file is scanned, helpers included. A read is
+    ``ctx.params["name"]``, ``ctx.params.get("name")`` or ``"name" in
+    ctx.params`` (any ``<x>.params``). Any other use of ``.params`` (a
+    variable key, iteration, ``.items()``, passing it on) or a
+    ``"WFC_PARAMS"`` literal means the script may read any param, so no
+    warning is given for that script. This never refuses.
+
+    Args:
+        script_path: Path to the method script to scan.
+        declared_params: The param names ``method.yaml`` declares.
+
+    Returns:
+        One warning per declared param never read, in declared order; empty
+        when every param is read or the script reads params dynamically.
+    """
+    script_path = Path(script_path)
+    tree = ast.parse(script_path.read_text(encoding="utf-8"), filename=str(script_path))
+    parents = {child: parent for parent in ast.walk(tree)
+               for child in ast.iter_child_nodes(parent)}
+    read: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and node.value == _PARAMS_ENV:
+            return []
+        if not (isinstance(node, ast.Attribute) and node.attr == "params"):
+            continue
+        name = _literal_param_read(node, parents)
+        if name is None:
+            return []
+        read.add(name)
+    return [
+        f"{script_path.name}: param '{name}' is declared in method.yaml but the "
+        f"script never reads it (no ctx.params[\"{name}\"] or "
+        f"ctx.params.get(\"{name}\")), so a value set for it changes nothing."
+        for name in declared_params if name not in read
+    ]
 
 
 def _iter_calls_with_stack(root: ast.AST):

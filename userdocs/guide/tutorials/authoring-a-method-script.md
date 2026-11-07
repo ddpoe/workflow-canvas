@@ -1,16 +1,16 @@
-<!-- generated from pm_mvp::docs/consumer/tutorials/authoring-a-method-script @ 13d90e300f92; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/tutorials/authoring-a-method-script @ 238ce1946465; do not edit -->
 
-# Tutorial: Writing a Method in Python
+# Write a Method in Python
 
 ## Writing a Method in Python
 
 A *method* is one step of a pipeline: it takes input files and parameters, does its work, and writes output files. In this tutorial you write a small Python method that keeps the rows of a CSV whose `score` is above a threshold, then register it.
 
-The script uses the `wfc-client` decorator: you decorate one function, read inputs from a context object, and declare each output you write. Methods can also be written in R or bash; see [Write an R Method](../how-to/write-an-r-method.md) and the [Method Script Contract](../reference/method-script-contract.md).
+The script uses the `wfc-client` decorator: you decorate one function, read inputs from a context object, and declare each output you write. Methods can also be written in R or bash; see [Write a Method in R](../how-to/write-an-r-method.md) and the [Method Script Contract](../reference/method-script-contract.md).
 
-You need a project first; [Getting Started](getting-started.md) sets one up. The commands on this page run from the project root, called `wfc_project_root` here (`wfc init --dir wfc_project_root`, then `cd wfc_project_root`).
+You need a project first; [Your First Pipeline](getting-started.md) sets one up. The commands on this page run from the project root, called `wfc_project_root` here (`wfc init --dir wfc_project_root`, then `cd wfc_project_root`).
 
-Each step runs in a container: a packaged copy of the software and dependencies your method needs (see [How the Pieces Fit Together](../explanation/how-the-pieces-fit-together.md)). wfc calls this an environment, and you need one registered for the method to run in; [Registering an Environment](registering-an-environment.md) covers it.
+Each step runs in a container: a packaged copy of the software and dependencies your method needs (see [The Tools Behind Workflow Canvas](../explanation/how-the-pieces-fit-together.md)). wfc calls this an environment, and you need one registered for the method to run in; [Register an Environment](registering-an-environment.md) covers it.
 
 
 ## Step 1 — Create the method directory
@@ -40,7 +40,7 @@ Create those directories now, and write a one-line `src/my_analysis/module.yaml`
 description: Filtering steps for scored data
 ```
 
-A `module.yaml` can also list outputs every method in the module must provide; [Writing Contracts](writing-contracts.md) covers that. wfc keeps its own registered copy of each method under `.wfc/registry/methods/<module>/<name>/`; write your code under `src/`, not there.
+A `module.yaml` can also list outputs every method in the module must provide; [Register a Module](../how-to/register-a-module.md) covers that. When you register a method, wfc keeps its own copy of it; edit your code under `src/`.
 
 To use a different script name, set `script:` in `method.yaml` (see the [method.yaml Schema](../reference/method-yaml-schema.md)).
 
@@ -77,7 +77,8 @@ env: my-analysis
 - **`params`**: each parameter gets an editor in the canvas inspector.
 - **`env`**: the name of a registered environment. Replace `my-analysis` with yours.
 
-Every key and field is listed in the [method.yaml Schema](../reference/method-yaml-schema.md). Column declarations are covered in [Writing Contracts](writing-contracts.md).
+Every key and field is listed in the [method.yaml Schema](../reference/method-yaml-schema.md). To let users pick an output's columns from a list in the canvas, see [Let Users Pick Columns in the Canvas](../how-to/pick-columns-in-the-canvas.md).
+
 
 ## Step 3 — Write the script with the wfc-client decorator
 
@@ -90,10 +91,9 @@ import pandas as pd
 
 import wfc_client as wfc
 
-
 @wfc.method
 def filter_data(ctx):
-    data_path = ctx.input("data")[0]              # the file wired into the "data" slot
+    data_path = ctx.input("data")                 # the file wired into the "data" input
     threshold = float(ctx.params["threshold"])
 
     df = pd.read_csv(data_path)
@@ -105,7 +105,6 @@ def filter_data(ctx):
     ctx.save_artifact("filtered", out_path)       # "filtered" is the output slot
     ctx.log_metric("kept_rows", len(kept))
 
-
 if __name__ == "__main__":
     wfc.run()
 ```
@@ -113,7 +112,7 @@ if __name__ == "__main__":
 | Member | Purpose |
 |---|---|
 | `@wfc.method` | Marks the method's function. A script has exactly one. |
-| `ctx.input(slot)` | The input files for a slot, as a list of paths. |
+| `ctx.input(slot)` | The file wired into an input, as a path. For an input declared `multiple: true`, a list of paths. |
 | `ctx.params` | The node's parameter values, as a dict. A parameter you leave unset is in it at its declared default. |
 | `ctx.run_dir` | The run directory. Everything you save must be inside it. |
 | `ctx.workdir` | A scratch directory inside the run directory. |
@@ -121,11 +120,9 @@ if __name__ == "__main__":
 | `ctx.log_metric(name, value)` | Records a number or short string for this run. |
 | `wfc.run()` | Runs the decorated function. |
 
-A parameter you leave unset in the canvas arrives at the `default` you wrote in `method.yaml` (here `threshold` is `0.5`), and the run records it. A parameter with no `default` arrives only when it is set.
+A parameter with no `default` is in `ctx.params` only when it is set.
 
 When you register the method, wfc checks each `ctx.save_artifact` call in the decorated function against `method.yaml`: an output name that isn't declared, or a declared output that is never saved, stops the registration. Write the output name as a string literal in the decorated function so the check can see it.
-
-When the function returns, `wfc.run()` writes a small `_wfc_results.json` file listing your saved outputs and metrics. wfc reads it after the method exits.
 
 The decorator is optional. Underneath it, wfc passes the method its inputs and parameters in environment variables and collects the files it writes. The [Method Script Contract](../reference/method-script-contract.md) lists them, with this method written using only the standard library.
 
@@ -139,13 +136,19 @@ wfc register-module --name my_analysis --module-dir src/my_analysis
 wfc register-method src/my_analysis/filter_data --module my_analysis
 ```
 
-`--module-dir` points at the directory holding `module.yaml`. `wfc register-method <method-dir> --module <module>` takes the method's directory as its one positional argument, and `--module` names the module it joins. See the [CLI Reference](../reference/cli-reference.md) for every flag.
+Once the module is registered, you can try the method before you register it:
 
-Registration reads `method.yaml`, checks it, and checks that the environment named in `env:` is registered. It copies the method's script files and `method.yaml` into `.wfc/registry/methods/my_analysis/filter_data/` and commits that copy to the project's git repository. It first says whether this registers a new method, adds a new version or adds nothing, and asks `Proceed? [y/N]` before it adds one (pass `--yes` to skip the question). A run executes the registered code, and wfc compares against it to decide whether a step must recompute.
+```bash
+wfc try src/my_analysis/filter_data --module my_analysis --sample <sample>
+```
+
+Nothing is registered or recorded. The command ends with a `wfc export` line for each output, which copies that output out. [Draft a Method](drafting-a-method.md) covers trying a method before you register it, from the command line or in the canvas.
+
+See the [Registration Commands](../reference/cli-registration.md#wfc-register-method) for every flag.
+
+Registration checks `method.yaml` and that its environment is registered, then saves a copy of the method in the project and commits it to git; runs use that copy. It says first whether this adds a new method or a new version, and asks `Proceed? [y/N]`.
 
 To change the method, edit the script (or `method.yaml`) in `src/my_analysis/filter_data/`, then run `wfc register-method` again. Each change adds a new version; earlier versions stay runnable, and a pipeline node can pin one.
-
-A method name is unique within its module; two modules may each have a method of the same name.
 
 The method now appears in the canvas sidebar under its module, ready to drop into a pipeline.
 
@@ -155,17 +158,17 @@ The method now appears in the canvas sidebar under its module, ready to drop int
 When someone reruns an exported run, each output is compared byte for byte with the recorded one. A method that writes the same bytes every time gives a clean `same`. To get there:
 
 - Fix random seeds, and take them from a parameter so they are recorded with the run.
-- Don't embed the time the file was made. Most plotting and PDF libraries can leave it out.
-- Sort rows before writing them, so the order does not depend on which parallel job finished first.
+- Don't embed the time the file was made. Most plotting and PDF libraries can leave it out: with matplotlib, `savefig("plot.pdf", metadata={"CreationDate": None})`. A gzip file stores one in its header too: `gzip.GzipFile(path, "wb", mtime=0)`.
+- Sort rows before writing them, so the order does not depend on which parallel job finished first. Loop over a Python `set` of strings in sorted order too: Python orders it differently in each new process.
 - Set the precision of numbers in final tables, so the last digits don't vary between machines.
 - Use one thread when exact repeatability matters.
 
-If an output still says `DIFFERENT`, see [If a step says DIFFERENT](../how-to/run-and-inspect-results.md#if-a-step-says-different).
+If an output still says `DIFFERENT`, see [If a step says DIFFERENT](../how-to/share-bundle.md#if-a-step-says-different).
 
 ## Next steps
 
-- Wire the method into a pipeline and run it: [Build, Run and Inspect in the Canvas](../how-to/canvas.md).
-- Declare the columns your slots carry and add column pickers: [Writing Contracts](writing-contracts.md).
+- Wire the method into a pipeline and run it: [Wire a Pipeline](../how-to/wire-a-pipeline.md).
+- Declare the options your outputs offer and add options pickers: [Let Users Pick Columns in the Canvas](../how-to/pick-columns-in-the-canvas.md).
 - Look up any `method.yaml` key: [method.yaml Schema](../reference/method-yaml-schema.md).
 - See what happens when a step runs: [How a Run Executes](../explanation/how-a-run-executes.md).
 

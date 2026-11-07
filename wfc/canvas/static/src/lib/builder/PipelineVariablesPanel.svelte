@@ -164,13 +164,13 @@
 <style>
   .pv-panel {
     border-bottom: 1px solid var(--border);
-    background: #252526;
+    background: var(--bg-panel);
   }
   .pv-header {
     width: 100%;
     background: none;
     border: none;
-    color: #ccc;
+    color: var(--text-primary);
     padding: 8px 12px;
     display: flex;
     align-items: center;
@@ -183,27 +183,27 @@
     text-align: left;
   }
   .pv-header:hover { background: #2a2a2c; }
-  .pv-caret { font-size: 10px; color: #666; }
-  .pv-title { flex: 1; font-size: 11px; color: #888; }
+  .pv-caret { font-size: 10px; color: var(--text-muted); }
+  .pv-title { flex: 1; font-size: 11px; color: var(--text-secondary); }
   .pv-count { color: var(--accent); font-size: 11px; }
   .pv-body { padding: 8px 12px 10px; display: flex; flex-direction: column; gap: 4px; }
   .pv-add-btn {
     background: transparent;
     border: 1px dashed var(--border);
-    color: #888;
+    color: var(--text-secondary);
     padding: 4px 8px;
     border-radius: 3px;
     font-size: 11px;
     cursor: pointer;
     font-family: inherit;
   }
-  .pv-add-btn:hover { color: #ccc; border-color: #555; }
+  .pv-add-btn:hover { color: var(--text-primary); border-color: #555; }
   .pv-add-row {
     display: flex;
     flex-direction: column;
     gap: 4px;
     padding: 6px;
-    background: #1e1e1e;
+    background: var(--bg-input);
     border: 1px solid var(--accent);
     border-radius: 3px;
   }
@@ -218,18 +218,18 @@
     outline: none;
   }
   .pv-json { resize: vertical; min-height: 40px; }
-  .pv-add-error { color: #E74C3C; font-size: 11px; }
+  .pv-add-error { color: var(--status-failed-ink); font-size: 11px; }
   .pv-add-actions { display: flex; gap: 4px; justify-content: flex-end; }
   .pv-confirm, .pv-cancel {
     background: transparent;
     border: none;
-    color: #888;
+    color: var(--text-secondary);
     padding: 2px 6px;
     cursor: pointer;
     font-size: 12px;
   }
   .pv-confirm:hover { color: #6aa84f; }
-  .pv-cancel:hover { color: #E74C3C; }
+  .pv-cancel:hover { color: var(--status-failed-ink); }
   .pv-empty { color: #555; font-size: 11px; font-style: italic; padding: 4px 0; }
   .pv-row {
     display: grid;
@@ -237,13 +237,13 @@
     gap: 6px;
     align-items: center;
     padding: 4px 6px;
-    background: #1e1e1e;
+    background: var(--bg-input);
     border-radius: 2px;
     font-size: 11px;
     font-family: Consolas, monospace;
   }
   .pv-name { color: #ddd; overflow: hidden; text-overflow: ellipsis; }
-  .pv-type { color: #888; font-size: 10px; }
+  .pv-type { color: var(--text-secondary); font-size: 10px; }
   .pv-value { color: #6aa84f; max-width: 80px; overflow: hidden; text-overflow: ellipsis; }
   .pv-bindings { color: var(--accent); font-size: 10px; padding: 0 4px; }
   .pv-delete {
@@ -254,5 +254,5 @@
     font-size: 13px;
     padding: 0 4px;
   }
-  .pv-delete:hover { color: #E74C3C; }
+  .pv-delete:hover { color: var(--status-failed-ink); }
 </style>

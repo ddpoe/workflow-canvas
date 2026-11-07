@@ -7,9 +7,12 @@ in-process through ``run_cli``.
 
 from __future__ import annotations
 
+import pytest
 from axiom_annotations import workflow
 
 from tests.fixtures.routes import completed_run, run_cli
+from wfc import layout
+from wfc.execution.draft import list_draft_steps
 
 
 def _rows(stdout: str) -> list[list[str]]:
@@ -85,3 +88,22 @@ def test_wfc_runs_method_filter_takes_a_qualified_name(tmp_project, monkeypatch)
     assert both.returncode == 0, both
     assert [(row[0], row[3]) for row in _rows(both.stdout)] == [
         (str(there.run_id), "other_mod.m_plot v1")]
+
+
+def test_wfc_runs_refuses_an_unreadable_draft_store_instead_of_listing_no_drafts(
+        tmp_project):
+    # A pointer file wfc did not write: no production path writes one, so it
+    # is written by hand.
+    pointer = (layout.drafts_dir(tmp_project) / "harness_mod" / "m_one"
+               / layout.DRAFT_POINTER_FILENAME)
+    pointer.parent.mkdir(parents=True)
+    pointer.write_text("not json", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        list_draft_steps(root=tmp_project)
+
+    listed = run_cli("runs")
+    assert listed.returncode == 1, listed
+    assert "Cannot read the draft store" in listed.stderr
+    assert "Traceback" not in listed.stderr
+    assert listed.stdout == ""

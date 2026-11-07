@@ -1,0 +1,31 @@
+{
+  "name": "wfc",
+  "version": "0.8.0-beta.1",
+  "description": "Skills for working with Workflow Canvas (wfc): set up a project, run and read pipelines, and bring a script into wfc as a method, trying and drafting it before anything is registered.",
+  "author": {
+    "name": "Dante Poe",
+    "url": "https://github.com/ddpoe"
+  },
+  "homepage": "https://workflow-canvas.readthedocs.io/",
+  "repository": "https://github.com/ddpoe/workflow-canvas",
+  "license": "BSD-3-Clause",
+  "keywords": ["wfc", "workflow-canvas", "pipelines", "reproducibility", "snakemake", "containers"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Workflow Canvas",
+    "shortDescription": "Use wfc and bring in scripts",
+    "longDescription": "Teaches the agent how Workflow Canvas (wfc) works: projects, modules, methods, samples, envs, pipelines, runs and drafts, with the wfc commands and the rules that matter. It brings a script into wfc as a method by trying it with wfc try and drafting it in the canvas, registers it only when you agree, and writes up what changed between your machine and the Linux container.",
+    "developerName": "Dante Poe",
+    "category": "Coding",
+    "capabilities": ["Read", "Write"],
+    "websiteURL": "https://workflow-canvas.readthedocs.io/",
+    "defaultPrompt": [
+      "Make this script a wfc method.",
+      "Set up a new wfc project here.",
+      "Why did my wfc run fail?"
+    ],
+    "brandColor": "#0D9488",
+    "composerIcon": "./assets/icon.svg",
+    "logo": "./assets/icon.svg"
+  }
+}

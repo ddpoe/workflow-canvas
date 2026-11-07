@@ -192,14 +192,13 @@ async function runBehaviorRow(
         await page.locator('[data-id="method_a"]').click();
         const errBox = page.getByTestId('node-error-box');
         await expect(errBox).toBeVisible({ timeout: 5_000 });
-        // First line of the traceback string is enough to prove the
-        // single `error` field made it through unmangled.
-        await expect(errBox).toContainText('Traceback (most recent call last)');
-        // Expanded view (click "Show full error") includes the
-        // ValueError line — proves the multi-line body survived the
-        // bridge.
-        await page.getByRole('button', { name: /show full error/i }).click();
+        // The box summarises a traceback to its exception line, and its
+        // hover title keeps the whole multi-line body — proves the single
+        // `error` field made it through the bridge unmangled.
         await expect(errBox).toContainText('ValueError: bad input column');
+        await expect(errBox.locator('.err-box-msg')).toHaveAttribute(
+          'title', /Traceback \(most recent call last\)[\s\S]*ValueError: bad input column/,
+        );
         break;
       }
 
@@ -230,7 +229,7 @@ async function runBehaviorRow(
 
       case 'queuedBehindRunning': {
         // Trajectory: capture A and B in parallel; assert that at
-        // some point A is running while B is still pending.
+        // some point A is running while B is still queued (the node's pending state).
         const aLoc = page.locator('[data-id="method_a"]');
         const bLoc = page.locator('[data-id="method_b"]');
         const samples: { a: string; b: string }[] = [];
@@ -240,7 +239,7 @@ async function runBehaviorRow(
           const a = (await aLoc.innerText().catch(() => '')).toLowerCase();
           const b = (await bLoc.innerText().catch(() => '')).toLowerCase();
           samples.push({ a, b });
-          if (a.includes('running') && b.includes('pending')) {
+          if (a.includes('running') && b.includes('queued')) {
             coOccurrence = true;
             break;
           }
@@ -249,7 +248,7 @@ async function runBehaviorRow(
         }
         expect(
           coOccurrence,
-          `never observed A=running + B=pending; samples=${JSON.stringify(samples.slice(-10))}`,
+          `never observed A=running + B=queued; samples=${JSON.stringify(samples.slice(-10))}`,
         ).toBe(true);
         break;
       }
@@ -305,7 +304,7 @@ async function runBehaviorRow(
         // failed-sample error for completed_with_failures, same as
         // the `failed` state.
         const node = page.locator('[data-id="method_a"]');
-        await expect(node).toContainText(/mixed/i, { timeout: 8_000 });
+        await expect(node).toContainText(/partial/i, { timeout: 8_000 });
         // Asserting the status-label span specifically (not the whole
         // node body) catches a regression where `mixed -> completed`
         // would change the pill word but leave the method label
@@ -313,7 +312,7 @@ async function runBehaviorRow(
         const pillText = (
           await node.locator('.status-label').innerText()
         ).toLowerCase();
-        expect(pillText).toContain('mixed');
+        expect(pillText).toContain('partial');
         // Click the node so the Inspector renders its node-error-box
         // (lives above the tab strip — no Output click needed).
         await node.click();
@@ -335,7 +334,7 @@ async function runBehaviorRow(
         );
         const aStatus = page.locator('[data-id="method_a"] .status-label');
         await expect(aStatus).toContainText('cached', { timeout: 5_000 });
-        await expect(aStatus).not.toContainText('completed');
+        await expect(aStatus.locator('.cached-pill')).toBeVisible(); // a cache hit is completed with the CACHED pill
         // A: click + Output tab + banner.
         await page.locator('[data-id="method_a"]').click();
         await page.getByRole('button', { name: /output/i }).click();
@@ -355,11 +354,12 @@ async function runBehaviorRow(
         const banner = page.getByTestId('pipeline-error-banner');
         await expect(banner).toBeVisible({ timeout: 5_000 });
         // submitPipeline wraps the validate errors in a SubmitError
-        // whose .message starts with "Cannot run — validation errors:"
-        // and joins each error on a new line.  Asserting on the actual
-        // validate error string proves the .message extraction works
+        // whose .message is the header "Cannot run — validation errors:"
+        // and whose items are the errors, one bullet each.  Asserting on
+        // the actual validate error string proves the extraction works
         // and a regression to `String(err)` would surface here.
-        await expect(banner).toContainText('Pipeline has no nodes');
+        await expect(banner.locator('.pe-head')).toHaveText('Cannot run — validation errors:');
+        await expect(banner.locator('li')).toContainText(['Pipeline has no nodes']);
         // No polling was started — no node transitioned beyond pending.
         await expect(page.locator('[data-id="method_a"]')).not.toContainText(
           /running|completed|failed|cancelled/i,
@@ -393,25 +393,26 @@ async function runBehaviorRow(
         // wiring drops the SSE fixture (`row.sseStream` not plumbed into
         // RouteReplayOptions — the EventSource then falls through to the
         // single-frame terminal stub and the run looks "idle" with no
-        // text).  The badge transitions: Idle → Streaming → Terminal.
+        // text).  The log bar's note reads Streaming… while lines arrive
+        // and clears once the terminal frame lands.
         const node = page.locator('[data-id="method_a"]');
         await expect(node).toContainText(/running/i, { timeout: 8_000 });
         await node.click();
         await page.getByRole('button', { name: /output/i }).click();
-        const badge = page.locator('.output-status');
-        // Badge flips to Streaming once first SSE_LINE arrives.
-        await expect(badge).toContainText(/streaming/i, { timeout: 5_000 });
+        const note = page.getByTestId('log-note');
+        // The note reads Streaming… once the first SSE_LINE arrives.
+        await expect(note).toHaveText('Streaming…', { timeout: 5_000 });
         // At least 2 log lines have rendered before the run terminates,
         // proving paced delivery (a one-shot bundle would show all
         // lines instantly — passing this assertion specifically — but
         // would also fail to keep the badge in `streaming` long enough
         // for the next assertion below).
-        await expect(page.locator('.log-pane span').nth(1)).toBeVisible({
+        await expect(page.getByTestId('log-pane').locator('span').nth(1)).toBeVisible({
           timeout: 5_000,
         });
-        // Badge flips to Success once the SSE terminal event lands
-        // (~11.1s into the run, before polling's 14th-frame completed flip).
-        await expect(badge).toContainText(/success/i, { timeout: 13_000 });
+        // The note clears once the SSE terminal event lands (~11.1s into
+        // the run, before polling's 14th-frame completed flip).
+        await expect(note).toHaveCount(0, { timeout: 13_000 });
         await expect(node).toContainText(/completed/i, { timeout: 6_000 });
         break;
       }
@@ -437,7 +438,7 @@ async function runBehaviorRow(
         // ~1.5s apart, then a stderr crash + traceback + terminal:failed
         // at ~5.4s.  Polling holds `running` for ~6s, then flips to
         // `failed` carrying the error string for the Inspector
-        // node-error-box.  Asserts on the streaming badge mid-run +
+        // node-error-box.  Asserts on the Streaming… note mid-run +
         // node-error-box at end so a regression that drops SSE pacing
         // (single-frame terminal stub, bundled-fulfill, etc.) fails
         // here instead of silently producing an idle-looking video.
@@ -445,9 +446,8 @@ async function runBehaviorRow(
         await expect(node).toContainText(/running/i, { timeout: 8_000 });
         await node.click();
         await page.getByRole('button', { name: /output/i }).click();
-        const badge = page.locator('.output-status');
-        await expect(badge).toContainText(/streaming/i, { timeout: 5_000 });
-        await expect(page.locator('.log-pane span').first()).toBeVisible({
+        await expect(page.getByTestId('log-note')).toHaveText('Streaming…', { timeout: 5_000 });
+        await expect(page.getByTestId('log-pane').locator('span').first()).toBeVisible({
           timeout: 5_000,
         });
         await expect(node).toContainText(/failed/i, { timeout: 12_000 });

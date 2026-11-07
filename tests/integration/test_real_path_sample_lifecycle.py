@@ -63,11 +63,6 @@ from tests.fixtures.conftest import (
 )
 
 
-# run_pipeline's wfc_root is unused (kept for its frozen signature); the
-# framework root is passed so the invocation matches the CLI's shape.
-_WFC_ROOT = Path(__file__).resolve().parent.parent.parent
-
-
 def launched_pipeline_ids(project: Path) -> set[str]:
     """The pipeline ids ``prepare_launch`` has minted a run directory for.
 
@@ -507,7 +502,7 @@ def test_pipeline_restores_a_sample_it_never_staged(
     hold_for_pipeline(InUseKind.sample_view, "sample_a", "observer")
     result = run_cli("run-pipeline", "--pipeline", str(pipeline_path),
                      "--project-root", str(project),
-                     "--wfc-root", str(_WFC_ROOT), "--cores", "1")
+                     "--cores", "1")
     assert result.returncode == 0, (
         f"wfc run-pipeline exited {result.returncode}\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
@@ -552,7 +547,7 @@ def test_pipeline_restores_a_sample_it_never_staged(
     hold_for_pipeline(InUseKind.sample_view, "sample_a", "observer")
     result = run_cli("run-pipeline", "--pipeline", str(pipeline_path),
                      "--project-root", str(project),
-                     "--wfc-root", str(_WFC_ROOT), "--cores", "1")
+                     "--cores", "1")
     assert result.returncode == 0, (
         f"the re-run exited {result.returncode}\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
@@ -634,7 +629,7 @@ def test_a_pipeline_refuses_an_unreachable_sample_before_any_run_row(
     )
     result = run_cli("run-pipeline", "--pipeline", str(pipeline_path),
                      "--project-root", str(project),
-                     "--wfc-root", str(_WFC_ROOT), "--cores", "1")
+                     "--cores", "1")
 
     口 = Step(step_num=3, name="One message, and it is the whole repair",
              purpose="The sample, its content hash and the register-sample "

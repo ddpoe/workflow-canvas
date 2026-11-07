@@ -167,7 +167,6 @@ def test_mixed_pipeline_walk_cancels_the_per_sample_descendants_only(
         run_pipeline(
             pipeline_path=str(project.pipeline_json),
             project_root=str(project.root),
-            wfc_root=str(project.root),
             pipeline_id=pid,
         )
 
@@ -318,7 +317,6 @@ def test_pack_sees_the_cancelled_walk_after_run_pipeline(git_project, monkeypatc
         run_pipeline(
             pipeline_path=str(obs.project.pipeline_json),
             project_root=str(obs.project.root),
-            wfc_root=str(obs.project.root),
             pipeline_id=pid,
         )
 

@@ -71,3 +71,5 @@ site/
 
 # axiom-graph -> Sphinx HTML build (regenerable from DocJSON; see userdocs/_sphinx/conf.py)
 userdocs/guide-html/
+# wfc-plugin.zip, built from plugins/wfc on every docs build (userdocs/_sphinx/plugin_zip.py)
+userdocs/guide/wfc-plugin.zip

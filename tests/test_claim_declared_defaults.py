@@ -4,9 +4,9 @@
 the ``int``/``float`` normalization and the declared-default fill against the
 version a claim runs. ``run_claim`` passes each claim through it once and
 hands dispatch its output (its ``pre_run`` call does not resolve again), a
-direct ``pre_run`` passes its claim through it, and the ``check_cache`` and
-``register_run`` verbs go through it against the newest version. So a run row records every value
-the method received, ``WFC_PARAMS`` is that same dict, a hand-run verb gets
+direct ``pre_run`` passes its claim through it, and ``candidate_cache_key``
+and ``register_run`` go through it against the newest version. So a run row records every value
+the method received, ``WFC_PARAMS`` is that same dict, a hand-built claim gets
 the pipeline's verdict and the pipeline's key, and the cache-status preview's
 key for a sparse document is the key the claim builds.
 
@@ -20,6 +20,7 @@ dispatch boundary only.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -32,6 +33,7 @@ from tests.harness import Scenario, build_project, node, selector, wire
 from tests.harness.drivers import STUB, drive_target
 from tests.harness.observe import TargetRun
 from tests.fixtures.routes import register_again_with_params
+from tests.fixtures.routes.runs import cache_hit
 from tests.harness.scenario import DEFAULT_MODULE, SELECTOR_ID
 
 M = DEFAULT_MODULE
@@ -146,52 +148,49 @@ def test_a_sparse_pipeline_records_runs_and_keys_its_filled_params(
     assert resolve_claim_params(M, "fit", prepared["params"]) == prepared["params"]
 
 
-@workflow(purpose="The hand-run verbs check-cache, pre-run and register, given "
-                  "params that leave a default out and write an int as 2.0, "
-                  "normalize and fill them as the pipeline does: check-cache "
-                  "finds the pipeline's run under the pipeline's key, pre-run "
-                  "is a cache hit, and register records the filled params")
+@workflow(purpose="The hand-built claims (the cache lookup, pre_run and "
+                  "register_run), given params that leave a default out and "
+                  "write an int as 2.0, normalize and fill them as the pipeline "
+                  "does: the lookup finds the pipeline's run under the "
+                  "pipeline's key, pre_run is a cache hit, and register_run "
+                  "records the filled params")
 def test_hand_run_verbs_key_and_record_what_the_pipeline_does(
-        tmp_project, monkeypatch, cli):
+        tmp_project, monkeypatch):
+    from wfc.execution.claim import pre_run, register_run
+
     口 = Step(step_num=1, name="Run the node in the pipeline",
              purpose="Its run row carries the pipeline path's key")
     project = _project(tmp_project, monkeypatch, "claim-verbs")
     obs = drive_target(project, TARGET, monkeypatch=monkeypatch)
     run_id = int(obs.run_id_sidecars[TARGET])
-    sparse = json.dumps({"count": 2.0})
-    common = ["--method", "fit", "--module", M, "--sample", "S1",
-              "--params", sparse]
+    sparse = {"count": 2.0}
+    common = dict(method_name="fit", module_name=M, sample="S1", params=sparse)
 
-    口 = Step(step_num=2, name="check-cache looks up the pipeline's key",
+    口 = Step(step_num=2, name="The cache lookup finds the pipeline's key",
              purpose="count 2.0 keyed as 2, ratio and label filled: the "
                      "pipeline's run is the hit")
-    result = cli("check_cache", *common)
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == str(run_id)
+    assert cache_hit("fit", M, "S1", sparse) == run_id
 
-    口 = Step(step_num=3, name="pre-run is a cache hit recording the filled params",
+    口 = Step(step_num=3, name="pre_run is a cache hit recording the filled params",
              purpose="The audit row's params are the filled dict")
-    result = cli("pre_run", *common, "--git-commit", "abc123")
-    assert result.returncode == 0, result.stderr
-    flag, audit_id = result.stdout.strip().split(":")
+    flag, audit_id = pre_run(**common, git_commit="abc123")
     assert flag == "CACHED"
     assert _run_row(audit_id).params == FILLED
 
-    口 = Step(step_num=4, name="register records the filled params",
-             purpose="The legacy verb writes the same dict")
-    result = cli("register_run", *common)
-    assert result.returncode == 0, result.stderr
-    assert _run_row(result.stdout.strip()).params == FILLED
+    口 = Step(step_num=4, name="register_run records the filled params",
+             purpose="The legacy function writes the same dict")
+    assert _run_row(register_run(**common)).params == FILLED
 
 
 @workflow(purpose="run-step --params hands the method, as WFC_PARAMS, the "
                   "normalized and filled dict its run row records; an "
-                  "undeclared parameter is refused at run-step, check-cache, "
-                  "pre-run and register with the pipeline validator's message "
-                  "and no run row is written")
+                  "undeclared parameter is refused at run-step, the cache "
+                  "lookup, pre_run and register_run with the pipeline "
+                  "validator's message and no run row is written")
 @pytest.mark.usefixtures("ready_preflight")
 def test_run_step_params_are_filled_and_an_undeclared_one_is_refused_everywhere(
-        tmp_project, monkeypatch, cli):
+        tmp_project, monkeypatch, cli, capsys):
+    from wfc.execution.claim import pre_run, register_run
     from wfc.execution.validation import validation_refusals
     from wfc.persistence import Run, get_session
     from sqlmodel import select
@@ -231,11 +230,16 @@ def test_run_step_params_are_filled_and_an_undeclared_one_is_refused_everywhere(
     result = cli(*run_step, "--params", bad)
     assert result.returncode == 1
     assert f"ERROR: pre_run failed: {pipeline_line}" in result.stderr
-    common = ["--method", "fit", "--module", M, "--sample", "S1", "--params", bad]
-    for verb, extra in (("check_cache", []), ("pre_run", ["--git-commit", "abc123"]),
-                        ("register_run", [])):
-        result = cli(verb, *common, *extra)
-        assert result.returncode == 1, verb
-        assert f"ERROR: {method_line}" in result.stderr, (verb, result.stderr)
+    bogus = {"count": 2, "bogus": 1}
+    with pytest.raises(ValueError, match=re.escape(method_line)):
+        cache_hit("fit", M, "S1", bogus)
+    with pytest.raises(ValueError, match=re.escape(method_line)):
+        pre_run(method_name="fit", module_name=M, sample="S1", params=bogus,
+                git_commit="abc123")
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as exited:
+        register_run(method_name="fit", module_name=M, sample="S1", params=bogus)
+    assert exited.value.code == 1
+    assert f"ERROR: {method_line}" in capsys.readouterr().err
     with get_session() as session:
         assert len(session.exec(select(Run)).all()) == before

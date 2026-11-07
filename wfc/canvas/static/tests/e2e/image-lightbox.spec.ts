@@ -1,142 +1,308 @@
 /**
- * Browser smoke for the wfc demo: a run with a PNG artifact
- * renders an inline <img> in the Artifacts tab; clicking opens the
- * lightbox; Escape closes it. Non-image artifacts keep their
- * download-link rows.
+ * The run panel's artifact viewer, end to end in the browser.
  *
- * Route strategy mirrors history-pipelines.spec.ts: mock the /api/wfc/*
- * endpoints the History view and RunDetailPanel poll.
+ * A finished run with an artifact of every kind (`fixtures/artifact-run.ts`),
+ * its listing, file, preview and image routes served through route replay.
+ * From the Artifacts tab: a row opens the viewer, which steps through a
+ * folder's viewable files by arrow button and key, skipping download-only
+ * ones, and closes on Esc with focus back on the row; the image zoom
+ * controls and full screen act; the table, JSON, text and PDF bodies render;
+ * a folder's DIR pill with a 3- or 4-digit count overlaps nothing at 360 px;
+ * a row's arrow sits halfway between the arrow above it and the row's
+ * icon, with icons, names and the tail column aligned, at 360 px;
+ * the panel's left edge drags, steps by arrow key and resets on double-click
+ * within 360-720 px, and the width survives a reload (catalog case 15).
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
+import { ARTIFACTS, LONG_CSV_NAME, openRunArtifacts, setupArtifactRun } from './fixtures/artifact-run';
 
-// 1x1 transparent PNG.
-const PNG_BYTES = Buffer.from(
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
-  'base64',
-);
+test.use({ viewport: { width: 1440, height: 900 } });
 
-const RUN = {
-  id: 'r1',
-  module: '__demo__',
-  method: 'plot',
-  version: 1,
-  timestamp: 1_700_000_000_000,
-  duration: 1.5,
-  status: 'success',
-  inputs: {},
-  outputs: {},
-  outputAvailability: {},
-  metrics: {},
-  dataSource: '__demo__ctrl_01',
-  parentRunIds: [],
-  parents: [],
-  versionIdentity: null,
-  codeFingerprint: null,
-  envName: null,
-  envFingerprint: null,
-  gitCommit: null,
-  wfcVersion: null,
-  pipelineDocHash: null,
-  keyedUnderEarlierRule: false,
-  experimentId: 'exp1',
-  runName: 'pipe_a/plot_1',
-  nid: 'v1',
-  user: 'tester',
-  favorite: false,
-  pipelineId: 'pipe_a',
-  scriptPath: null,
-};
-
-const ARTIFACTS = [
-  { name: 'figure.png', size: PNG_BYTES.length, is_image: true, extension: 'png', type: 'file' },
-  { name: 'summary.csv', size: 42, is_image: false, extension: 'csv', type: 'file' },
-];
-
-async function setupRoutes(page: Page): Promise<void> {
-  // Artifact bytes — registered FIRST so the bare-run route (which
-  // route.fallback()s on subpaths) hands artifact URLs down to it.
-  await page.route('**/api/wfc/run/r1/artifact/**', async (route) => {
-    await route.fulfill({ status: 200, contentType: 'image/png', body: PNG_BYTES });
-  });
-  await page.route('**/api/wfc/run/*/artifacts', async (route) => {
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(ARTIFACTS) });
-  });
-  await page.route('**/api/wfc/run/*/cancelled-descendants', async (route) => {
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([]) });
-  });
-  await page.route('**/api/wfc/run/*', async (route) => {
-    const url = route.request().url();
-    const m = url.match(/\/api\/wfc\/run\/([^/?]+)(?:\?.*)?$/);
-    if (!m) {
-      await route.fallback();
-      return;
+test.beforeEach(async ({ page }) => {
+  // Every test starts at the default width.
+  await page.addInitScript(() => {
+    try {
+      if (!sessionStorage.getItem('spec-width-kept')) localStorage.removeItem('wfc.history.runDetailWidth');
+    } catch {
+      // A document with no storage (about:blank).
     }
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(RUN) });
   });
-  await page.route('**/api/wfc/runs', async (route) => {
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([RUN]) });
-  });
-  await page.route('**/api/wfc/modules', async (route) => {
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(['__demo__']) });
-  });
-  await page.route('**/api/wfc/methods', async (route) => {
-    await route.fulfill({
-      status: 200, contentType: 'application/json',
-      body: JSON.stringify([{ name: 'plot', module: '__demo__', script_path: null, env: 'x' }]),
-    });
-  });
-  await page.route('**/api/wfc/status', async (route) => {
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ loaded: true, path: '/x', modules: 1, runs: 1 }) });
-  });
-  await page.route('**/api/dev/status', async (route) => {
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ dev: false }) });
-  });
-  await page.route('**/api/samples', async (route) => {
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([]) });
+});
+
+const viewer = (page: Page) => page.getByTestId('artifact-viewer');
+const row = (page: Page, name: string) => page.getByTestId('artifact-row').filter({ hasText: name });
+
+test('a folder member opens the viewer, which steps over the folder and closes back to the row', async ({ page }) => {
+  await setupArtifactRun(page);
+  await openRunArtifacts(page);
+
+  // Previews start closed; the caret opens one, and its card opens the viewer.
+  await expect(page.getByTestId('artifact-preview')).toHaveCount(0);
+  await row(page, 'umap.png').getByTestId('preview-toggle').click();
+  await expect(page.getByTestId('artifact-preview')).toHaveCount(1);
+  await page.getByTestId('artifact-preview').click();
+  await expect(viewer(page)).toBeVisible();
+  await expect(page.getByTestId('viewer-name')).toHaveText('umap.png');
+  await page.keyboard.press('Escape');
+  await expect(viewer(page)).toHaveCount(0);
+
+  // The folder: three images, a download-only file, a text file, a subfolder.
+  await page.getByRole('button', { name: 'Open folder qc_plots/' }).click();
+  const first = row(page, '01_n_genes.png').locator('.name-btn');
+  await first.click();
+  await expect(viewer(page)).toBeVisible();
+  await expect(page.getByTestId('viewer-path')).toHaveText('qc_plots/');
+  await expect(page.getByTestId('viewer-count')).toHaveText('1 / 4');
+  await expect(page.getByTestId('viewer-strip').getByRole('button')).toHaveCount(4);
+
+  await page.getByRole('button', { name: 'Next file' }).click();
+  await expect(page.getByTestId('viewer-name')).toHaveText('02_total_counts.png');
+  await page.keyboard.press('ArrowRight');
+  await expect(page.getByTestId('viewer-name')).toHaveText('03_pct_mito_16bit.tif');
+  // A 16-bit, three-page TIFF larger than the view size: the amber note says all three.
+  await expect(page.getByTestId('viewer-image-note')).toContainText('Preview 2048 x 1638 of 5000 x 4000');
+  await expect(page.getByTestId('viewer-image-note')).toContainText('16-bit shown as 8-bit');
+  await expect(page.getByTestId('viewer-image-note')).toContainText('page 1 of 3');
+  // matrix.h5 is download only: the next file is notes.txt.
+  await page.keyboard.press('ArrowRight');
+  await expect(page.getByTestId('viewer-name')).toHaveText('notes.txt');
+  await expect(page.getByTestId('viewer-count')).toHaveText('4 / 4');
+  await expect(page.getByTestId('viewer-text')).toContainText('QC plots for TP132_ctrl_01.');
+  await expect(page.getByRole('button', { name: 'Next file' })).toBeDisabled();
+  await page.keyboard.press('ArrowLeft');
+  await expect(page.getByTestId('viewer-name')).toHaveText('03_pct_mito_16bit.tif');
+
+  await page.keyboard.press('Escape');
+  await expect(viewer(page)).toHaveCount(0);
+  await expect(first).toBeFocused();
+});
+
+test('the zoom controls and full screen act on an image', async ({ page }) => {
+  const { imageRequests } = await setupArtifactRun(page);
+  await openRunArtifacts(page);
+  await row(page, 'spatial_section_04.tif').locator('.name-btn').click();
+  const img = page.getByTestId('viewer-image');
+  const zoom = page.getByTestId('viewer-zoom');
+  await expect(img).toHaveAttribute('src', /size=view$/);
+  await expect(page.getByTestId('viewer-making-preview')).toHaveCount(0);
+  await expect(zoom).toHaveText('Fit');
+  const fitWidth = (await img.boundingBox())!.width;
+
+  const imgWidth = async () => (await img.boundingBox())!.width;
+  await page.getByRole('button', { name: 'Zoom in' }).click();
+  await expect(zoom).toHaveText(/^\d+%$/);
+  await expect.poll(imgWidth).toBeGreaterThan(fitWidth);
+  const zoomedIn = await imgWidth();
+  await page.getByRole('button', { name: 'Zoom out' }).click();
+  await expect.poll(imgWidth).toBeLessThan(zoomedIn);
+
+  // The wheel zooms too.
+  const before = await zoom.textContent();
+  const stage = (await img.boundingBox())!;
+  await page.mouse.move(stage.x + stage.width / 2, stage.y + stage.height / 2);
+  await page.mouse.wheel(0, -200);
+  await expect(zoom).not.toHaveText(before ?? '');
+
+  // 1:1 of an 8000 x 6000 file: the image route's large size (4096 px wide), loaded on demand.
+  await page.getByRole('button', { name: '1:1' }).click();
+  await expect(zoom).toHaveText('100%');
+  await expect(img).toHaveAttribute('style', /width: 4096px/);
+  await expect(img).toHaveAttribute('src', /size=large$/);
+  expect(imageRequests.some(r => r.path === 'spatial_section_04.tif' && r.size === 'large')).toBe(true);
+  await page.getByRole('button', { name: 'Fit', exact: true }).click();
+  await expect(zoom).toHaveText('Fit');
+
+  // Full screen: the dialog fills the screen, and the same button leaves it.
+  const fs = page.getByTestId('viewer-fullscreen');
+  await fs.click();
+  await expect(fs).toContainText('Exit full screen');
+  expect(await page.evaluate(() => document.fullscreenElement?.getAttribute('data-testid'))).toBe('artifact-viewer');
+  await fs.click();
+  await expect(fs).toContainText('Full screen');
+  expect(await page.evaluate(() => document.fullscreenElement)).toBeNull();
+});
+
+test('the table, JSON, text, PDF and too-large bodies render', async ({ page }) => {
+  await setupArtifactRun(page);
+  await openRunArtifacts(page);
+  await row(page, 'counts.tsv').locator('.name-btn').click();
+
+  const table = page.getByTestId('viewer-table');
+  await expect(table.locator('tbody tr')).toHaveCount(7);
+  await expect(table.locator('thead')).toContainText('ilc_01');
+  await expect(page.getByTestId('viewer-delimiter').locator('option').first()).toHaveText('Auto (tab)');
+
+  await page.getByRole('button', { name: 'Next file' }).click();
+  await expect(page.getByTestId('viewer-name')).toHaveText(LONG_CSV_NAME);
+  await expect(page.getByTestId('viewer-delimiter').locator('option').first()).toHaveText('Auto (comma)');
+  await expect(table.locator('tbody tr')).toHaveCount(12);
+
+  await page.getByRole('button', { name: 'Next file' }).click();
+  await expect(page.getByTestId('viewer-json-tree')).toContainText('leiden_resolution');
+  await page.getByRole('button', { name: 'Raw' }).click();
+  await expect(page.getByTestId('viewer-json-tree')).toHaveCount(0);
+  await expect(page.getByTestId('viewer-code').or(page.getByTestId('viewer-text'))).toContainText('"converged": true');
+
+  await page.getByRole('button', { name: 'Show qc_report.pdf' }).click();
+  await expect(page.getByTestId('viewer-pdf')).toHaveAttribute('src', /\/artifact\/qc_report\.pdf$/);
+  await expect(page.getByTestId('viewer-fullscreen')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Show whole_slide_scan.tif' }).click();
+  await expect(page.getByTestId('viewer-too-large'))
+    .toHaveText('Too large to preview (40000 x 38400). To view it, set [previews] memory_mb to at least 11750 '
+      + 'in wf-canvas.toml, or download it.');
+  // Nothing to zoom: the zoom, 1:1, Fit and Full screen controls are gone (the PDF had Full screen).
+  const viewer = page.getByTestId('artifact-viewer');
+  await expect(viewer.getByTestId('viewer-zoom')).toHaveCount(0);
+  for (const name of ['Zoom in', 'Zoom out', 'Fit', '1:1']) {
+    await expect(viewer.getByRole('button', { name, exact: true })).toHaveCount(0);
+  }
+  await expect(viewer.getByTestId('viewer-fullscreen')).toHaveCount(0);
+  await expect(viewer.getByRole('link', { name: '⤓ Download' })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Show run.log' }).click();
+  const text = page.getByTestId('viewer-text');
+  await expect(text).toContainText('leiden resolution=0.8');
+  await expect(text.locator('.tx.warn')).toHaveCount(2);
+  await expect(text.locator('.tx.err')).toHaveCount(1);
+
+  // A YAML file is coloured by shiki.
+  await page.getByRole('button', { name: 'Show config.yaml' }).click();
+  await expect(page.getByTestId('viewer-code')).toContainText('resolution');
+});
+
+for (const count of [123, 1234]) {
+  test(`a folder of ${count} files: its DIR pill overlaps neither show all, the name nor the size at 360 px`, async ({ page }) => {
+    const listing = (ARTIFACTS.listing as { name: string }[])
+      .map(a => (a.name === 'qc_plots/' ? { ...a, count } : a));
+    await setupArtifactRun(page, { ...ARTIFACTS, listing });
+    await openRunArtifacts(page);
+    await expect(page.getByTestId('run-detail-edge')).toHaveAttribute('aria-valuenow', '360');
+
+    const head = page.locator('.dir-head').filter({ hasText: 'qc_plots/' });
+    const pill = head.locator('.dir-pill');
+    await expect(pill).toHaveText(`DIR · ${count}`);
+    const box = async (target: Locator) => (await target.boundingBox())!;
+    const [name, showAll, dir, size, row] = await Promise.all([
+      box(head.locator('.dname')), box(head.getByTestId('show-all')), box(pill),
+      box(head.locator('.size')), box(head),
+    ]);
+    // Left to right, each ends before the next starts, and the size ends inside the row.
+    expect(name.x + name.width).toBeLessThanOrEqual(showAll.x);
+    expect(showAll.x + showAll.width).toBeLessThanOrEqual(dir.x);
+    expect(dir.x + dir.width).toBeLessThanOrEqual(size.x);
+    expect(size.x + size.width).toBeLessThanOrEqual(row.x + row.width);
   });
 }
 
-test.describe('Inline image preview + lightbox (smoke)', () => {
-  test('PNG artifact renders <img>; click opens lightbox; Escape closes', async ({ page }) => {
-    await setupRoutes(page);
-    await page.goto('/?fixture=history-pipelines');
-    await page.waitForSelector('.view-switcher', { timeout: 10_000 });
+test('a row arrow sits halfway between the arrow above it and the row icon; icons, names and the tail column stay aligned', async ({ page }) => {
+  await setupArtifactRun(page);
+  await openRunArtifacts(page);
+  await expect(page.getByTestId('run-detail-edge')).toHaveAttribute('aria-valuenow', '360');
+  await page.getByRole('button', { name: 'Open folder qc_plots/' }).click();
 
-    // Default History view is Descendants — switch to Pipelines first.
-    await page.locator('.view-switcher .seg', { hasText: 'Pipelines' }).click();
+  const box = async (target: Locator) => (await target.boundingBox())!;
+  const left = async (target: Locator) => (await box(target)).x;
+  const right = async (target: Locator) => {
+    const b = await box(target);
+    return b.x + b.width;
+  };
+  const centre = async (target: Locator) => {
+    const b = await box(target);
+    return b.x + b.width / 2;
+  };
+  const midway = async (arrow: Locator, above: Locator, icon: Locator) =>
+    Math.abs(await centre(arrow) - (await centre(above) + await centre(icon)) / 2);
+  const header = (cat: string) => page.getByTestId(`category-${cat}`).getByTestId('category-toggle');
+  const folderHead = page.locator('.dir-head').filter({ hasText: 'qc_plots/' });
+  const imageArrow = row(page, 'umap.png').getByTestId('preview-toggle');
+  const folderArrow = folderHead.getByTestId('dir-toggle');
+  const memberArrow = row(page, '01_n_genes.png').getByTestId('preview-toggle');
 
-    // Open the run's detail panel via its pipeline row.
-    const row = page.locator('.pipeline-row', { hasText: 'pipe_a' });
-    await expect(row).toBeVisible({ timeout: 5_000 });
-    await row.locator('.row-head').click();
-    await expect(row.locator('.children')).toBeVisible();
-    await row.locator('.children .child-row').first().click();
-    await expect(page.locator('.detail-panel')).toBeVisible({ timeout: 5_000 });
+  // A row's arrow is centred halfway between its category header's arrow and
+  // the header's icon (the row's icon shares that column), so it is never in
+  // line with the header's arrow; a folder member's arrow halfway between its
+  // folder's arrow and its own icon.
+  const headerIcon = (cat: string) => page.getByTestId(`category-${cat}`).locator('.cat-header .cat-icon');
+  expect(await midway(imageArrow, header('images'), headerIcon('images'))).toBeLessThan(1);
+  expect(await midway(folderArrow, header('directories'), headerIcon('directories'))).toBeLessThan(1);
+  expect(Math.abs(await left(headerIcon('images')) - await left(row(page, 'umap.png').locator('.slot')))).toBeLessThan(0.5);
+  expect(await midway(memberArrow, folderArrow, row(page, '01_n_genes.png').locator('.slot'))).toBeLessThan(1);
+  expect(await centre(imageArrow) - await centre(header('images'))).toBeGreaterThan(8);
 
-    // Switch to the Artifacts tab.
-    await page.locator('.detail-panel').getByText('Artifacts').first().click();
+  // Icons and names keep their columns: a Data row, an image row and a folder row line up.
+  const dataRow = row(page, 'counts.tsv');
+  const iconLeft = await left(dataRow.locator('.slot'));
+  const nameLeft = await left(dataRow.locator('.fname'));
+  for (const target of [row(page, 'umap.png'), row(page, 'qc_report.pdf'), folderHead]) {
+    expect(Math.abs(await left(target.locator('.slot')) - iconLeft)).toBeLessThan(0.5);
+  }
+  for (const target of [row(page, 'umap.png').locator('.fname'), row(page, 'qc_report.pdf').locator('.fname'), folderHead.locator('.dname')]) {
+    expect(Math.abs(await left(target) - nameLeft)).toBeLessThan(0.5);
+  }
+  // Folder members: an arrowed and an arrowless one share the icon column.
+  expect(Math.abs(await left(row(page, '01_n_genes.png').locator('.slot'))
+    - await left(row(page, 'matrix.h5').locator('.slot')))).toBeLessThan(0.5);
 
-    // The PNG renders an inline thumbnail; the CSV keeps ONLY its link row.
-    const thumb = page.locator('.thumb-card .thumb-img');
-    await expect(thumb).toHaveCount(1);
-    await expect(thumb).toBeVisible({ timeout: 5_000 });
-    // Both artifacts have their download-link rows, previewed or not.
-    await expect(page.locator('.file-row', { hasText: 'figure.png' })).toBeVisible();
-    await expect(page.locator('.file-row', { hasText: 'summary.csv' })).toBeVisible();
+  // The tail column still ends at one x on every row.
+  const dlRight = await right(dataRow.getByTestId('artifact-download'));
+  for (const name of ['umap.png', '01_n_genes.png', 'matrix.h5']) {
+    expect(Math.abs(await right(row(page, name).getByTestId('artifact-download')) - dlRight)).toBeLessThan(0.5);
+  }
+});
 
-    // Click the thumbnail — the lightbox overlay opens with the image.
-    await page.locator('.thumb-card').click();
-    await expect(page.locator('.lightbox-overlay')).toBeVisible();
-    await expect(page.locator('.lightbox-img')).toBeVisible();
+test('the panel edge drags, steps and resets within 360-720 px, and the width survives a reload', async ({ page }) => {
+  await setupArtifactRun(page);
+  await openRunArtifacts(page);
+  const panel = page.locator('.detail-panel');
+  const edge = page.getByTestId('run-detail-edge');
+  await expect(edge).toHaveAttribute('role', 'separator');
+  await expect(edge).toHaveAttribute('aria-valuenow', '360');
+  await expect(edge).toHaveAttribute('aria-valuemin', '360');
+  await expect(edge).toHaveAttribute('aria-valuemax', '720');
+  const panelWidth = async () => Math.round((await panel.boundingBox())!.width);
+  expect(await panelWidth()).toBe(360);
 
-    // Escape closes it.
-    await page.keyboard.press('Escape');
-    await expect(page.locator('.lightbox-overlay')).toHaveCount(0);
+  // Drag the edge 200 px left: the panel is 560 px wide.
+  const box = (await edge.boundingBox())!;
+  const y = box.y + 200;
+  await page.mouse.move(box.x + 2, y);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 2 - 200, y, { steps: 8 });
+  await page.mouse.up();
+  await expect(edge).toHaveAttribute('aria-valuenow', '560');
+  expect(await panelWidth()).toBe(560);
 
-    // Click-outside also closes: reopen, click the dark overlay.
-    await page.locator('.thumb-card').click();
-    await expect(page.locator('.lightbox-overlay')).toBeVisible();
-    await page.locator('.lightbox-overlay').click({ position: { x: 5, y: 5 } });
-    await expect(page.locator('.lightbox-overlay')).toHaveCount(0);
-  });
+  // Past the bounds the panel stops at them.
+  const at = (await edge.boundingBox())!;
+  await page.mouse.move(at.x + 2, y);
+  await page.mouse.down();
+  await page.mouse.move(at.x - 600, y, { steps: 8 });
+  await page.mouse.up();
+  await expect(edge).toHaveAttribute('aria-valuenow', '720');
+  expect(await panelWidth()).toBe(720);
+
+  // Arrow keys move the edge 16 px: right narrows, left widens, never past 720.
+  await edge.focus();
+  await page.keyboard.press('ArrowLeft');
+  await expect(edge).toHaveAttribute('aria-valuenow', '720');
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('ArrowRight');
+  await expect(edge).toHaveAttribute('aria-valuenow', '688');
+
+  // Double-click resets to 360, and the edge cannot go narrower.
+  await edge.dblclick();
+  await expect(edge).toHaveAttribute('aria-valuenow', '360');
+  await page.keyboard.press('ArrowRight');
+  await expect(edge).toHaveAttribute('aria-valuenow', '360');
+  expect(await panelWidth()).toBe(360);
+
+  // A width set before a reload is the width after it.
+  await page.keyboard.press('ArrowLeft');
+  await page.keyboard.press('ArrowLeft');
+  await expect(edge).toHaveAttribute('aria-valuenow', '392');
+  await page.evaluate(() => sessionStorage.setItem('spec-width-kept', '1'));
+  await openRunArtifacts(page);
+  await expect(page.getByTestId('run-detail-edge')).toHaveAttribute('aria-valuenow', '392');
+  expect(await panelWidth()).toBe(392);
 });

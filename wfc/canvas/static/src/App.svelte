@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { SvelteFlow, Background, Controls, type NodeTypes, type EdgeTypes, type Node, type Edge } from '@xyflow/svelte';
+  import { SvelteFlow, Background, Controls, type NodeTypes, type EdgeTypes, type Node, type Edge, type FitViewOptions } from '@xyflow/svelte';
   import type { Connection } from '@xyflow/system';
   import '@xyflow/svelte/dist/style.css';
   import './app.css';
@@ -19,14 +19,16 @@
   import DeletableEdge from './lib/builder/DeletableEdge.svelte';
   import ConfirmDialog from './lib/shared/ConfirmDialog.svelte';
   import LockSummary from './lib/builder/LockSummary.svelte';
+  import PipelineErrorBanner from './lib/builder/PipelineErrorBanner.svelte';
   import GraftToast from './lib/shared/GraftToast.svelte';
-  import { confirmDialogState, graftToastState, centerOnNodeRequest } from './lib/shared/uiState.js';
-  import { nodes, edges, selectedNodeId, nextNodeId, deleteNodes, loadSamples, runState, setPipelineError, flashToast, dismissFlash, modules as modulesStore } from './lib/builder/stores.js';
+  import { confirmDialogState, graftToastState, centerOnNodeRequest, tabRequest } from './lib/shared/uiState.js';
+  import { nodes, edges, selectedNodeId, nextNodeId, deleteNodes, loadSamples, runState, setPipelineError, flashToast, dismissFlash, showFlash, modules as modulesStore } from './lib/builder/stores.js';
   // Side-effect import — starts the singleton pipelineRunActor and (in
   // DEV) wires the Stately Inspector.
   import './lib/machines/root.js';
   import { pushState, initKeyboardShortcuts } from './lib/builder/undo.js';
-  import { nodeFromDragPayload } from './lib/builder/nodeData.js';
+  import { dropPaletteItem } from './lib/builder/drafts.js';
+  import DraftCanvasOverlay from './lib/builder/DraftCanvasOverlay.svelte';
   import { fetchDemoPipelineDocument, fetchDevStatus } from './lib/builder/api.js';
   // Playwright bootstrap. `?fixture=<key>` seeds the canvas
   // synchronously before mount and may ask for a starting tab. The seeding
@@ -41,13 +43,21 @@
   // A link from another view into the Registry (the run detail's Cache-key
   // inputs card) switches to its tab; RegistryTab takes the request itself.
   $effect(() => registryFocus.subscribe(focus => { if (focus) activeTab = 'registry'; }));
+  // A link from one tab into another (the Inspector's Run Reference
+  // `param ↗` link, the Registry's Draft run tab) asks for the tab through
+  // `tabRequest`.
+  $effect(() => tabRequest.subscribe(tab => {
+    if (!tab) return;
+    activeTab = tab;
+    tabRequest.set(null);
+  }));
   // Preview is on by default — it's the cheapest way for the user to see
   // what jobs the current canvas will compile to before committing a run.
   // A collapsed pull-tab on the right edge of the flow area reopens it
   // when the user hides it via the RunsPreview close button.
   let previewOpen = $state(true);
   let flowScreenToFlowPosition: ((pos: XYPosition) => XYPosition) | null = $state(null);
-  let flowFitView: (() => Promise<boolean>) | null = $state(null);
+  let flowFitView: ((options?: FitViewOptions) => Promise<boolean>) | null = $state(null);
 
   // Panel widths (resizable)
   let sidebarWidth = $state(210);
@@ -148,8 +158,12 @@
     pushState();
     const id = nextNodeId();
     // One writer per node type, in `nodeData.ts`: the payload decides which
-    // (a system node carries `_systemNode`; a method is its bare MethodDef).
-    nodes.update(n => [...n, nodeFromDragPayload(id, position, parsed)]);
+    // (a system node carries `_systemNode`, a draft `_draft`; a method is its
+    // bare MethodDef). A draft is checked against its folder first and may
+    // be refused.
+    dropPaletteItem(id, position, parsed).then(why => {
+      if (why) showFlash(why, 'error', 6000);
+    });
   }
 
   function onDragOver(event: DragEvent) {
@@ -198,13 +212,13 @@
   // The rule is the pure predicate in lib/graph/legality.ts — a preview of
   // the server's structural validation, kept aligned by the shared shape
   // corpus; this binds it to the canvas stores.
-  function isDuplicateSlotEdge(connection: Connection): boolean {
+  function isDuplicateSlotEdge(connection: Edge | Connection): boolean {
     return isDuplicateSlotEdgeOn(connection, get(edges), isReferenceSource);
   }
 
   // Svelte Flow hands this a connection candidate during drag. Return false
   // to prevent the drop.
-  function isValidConnection(conn: Connection): boolean {
+  function isValidConnection(conn: Edge | Connection): boolean {
     return !isDuplicateSlotEdge(conn);
   }
 
@@ -302,7 +316,7 @@
         nodes: [{ id }],
         duration: 400,
         padding: 0.4,
-      } as any);
+      });
     }
     centerOnNodeRequest.set(null);
   });
@@ -340,7 +354,7 @@
           ondelete={handleDelete}
           oninit={() => {}}
         >
-          <Background gap={20} size={2} color="#444" />
+          <Background gap={20} size={2} />
           <Controls />
           <FlowHelper onReady={({ screenToFlowPosition, fitView: fv }) => {
             flowScreenToFlowPosition = screenToFlowPosition;
@@ -350,6 +364,7 @@
         {#if devMode}
           <DevToolbar fitView={flowFitView} />
         {/if}
+        <DraftCanvasOverlay />
       </div>
       {#if previewOpen}
         <RunsPreview onClose={() => { previewOpen = false; }}
@@ -372,24 +387,7 @@
     </div>
   </div>
   {#if $runState.pipelineError}
-    <div class="pipeline-error-banner" role="alert" data-testid="pipeline-error-banner">
-      <div class="pe-icon" aria-hidden="true">
-        {#if $runState.pipelineError.kind === 'dirty_repo'}⚠{:else if $runState.pipelineError.kind === 'not_runnable_docker'}🐳{:else if $runState.pipelineError.kind === 'not_runnable_git'}🔧{:else}✖{/if}
-      </div>
-      <div class="pe-body">
-        <div class="pe-message">{$runState.pipelineError.message}</div>
-        {#if $runState.pipelineError.hint}
-          <div class="pe-hint">{$runState.pipelineError.hint}</div>
-        {/if}
-      </div>
-      <button
-        type="button"
-        class="pe-close"
-        aria-label="Dismiss error"
-        title="Dismiss"
-        onclick={() => setPipelineError(null)}
-      >×</button>
-    </div>
+    <PipelineErrorBanner error={$runState.pipelineError} onDismiss={() => setPipelineError(null)} />
   {/if}
   {#if rejectMessage}
     <div class="reject-toast" role="alert">{rejectMessage}</div>
@@ -445,7 +443,7 @@
     height: 100%;
     display: flex;
     flex-direction: column;
-    background: #1a1a1a;
+    background: var(--bg-canvas);
   }
   .main-content {
     display: flex;
@@ -475,10 +473,10 @@
     gap: 6px;
     height: 24px;
     flex-shrink: 0;
-    background: #252526;
+    background: var(--bg-panel);
     border: none;
     border-top: 1px solid var(--border);
-    color: #888;
+    color: var(--text-secondary);
     font-size: 11px;
     letter-spacing: 0.5px;
     text-transform: uppercase;
@@ -486,8 +484,8 @@
     transition: background 0.15s, color 0.15s;
   }
   .preview-reopen-tab:hover {
-    background: #2d2d30;
-    color: #ccc;
+    background: var(--bg-header);
+    color: var(--text-primary);
   }
   .reopen-chevron { font-size: 9px; line-height: 1; }
   .resize-handle {
@@ -546,65 +544,6 @@
     border-color: #4b8ac9;
     color: #d8e8ff;
   }
-  /* Pipeline-level error banner — persistent (user-dismissed) rather than
-     auto-fading like reject-toast, because these represent actionable
-     failures the user needs to address before the next Run. */
-  .pipeline-error-banner {
-    position: fixed;
-    top: 60px;
-    left: 50%;
-    transform: translateX(-50%);
-    display: flex;
-    align-items: flex-start;
-    gap: 12px;
-    background: #3b1e1e;
-    border: 1px solid #c94b4b;
-    color: #ffdede;
-    padding: 12px 14px 12px 16px;
-    border-radius: 6px;
-    font-size: 13px;
-    line-height: 1.4;
-    max-width: 720px;
-    min-width: 360px;
-    z-index: 1001;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
-  }
-  .pipeline-error-banner .pe-icon {
-    font-size: 18px;
-    color: #ff9a9a;
-    line-height: 1.1;
-    flex-shrink: 0;
-  }
-  .pipeline-error-banner .pe-body {
-    flex: 1;
-    min-width: 0;
-  }
-  .pipeline-error-banner .pe-message {
-    white-space: pre-wrap;
-    word-break: break-word;
-    font-weight: 500;
-  }
-  .pipeline-error-banner .pe-hint {
-    margin-top: 6px;
-    color: #f0c4c4;
-    font-size: 12px;
-    font-style: italic;
-  }
-  .pipeline-error-banner .pe-close {
-    background: transparent;
-    border: none;
-    color: #ffdede;
-    font-size: 20px;
-    line-height: 1;
-    cursor: pointer;
-    padding: 0 4px;
-    margin-left: 4px;
-    flex-shrink: 0;
-    opacity: 0.75;
-  }
-  .pipeline-error-banner .pe-close:hover {
-    opacity: 1;
-  }
   .resize-handle:hover,
   .resizing .resize-handle {
     background: var(--accent);
@@ -620,7 +559,7 @@
   }
   .context-menu {
     position: fixed;
-    background: #2d2d30;
+    background: var(--bg-header);
     border: 1px solid var(--border);
     border-radius: 4px;
     padding: 4px 0;
@@ -636,7 +575,7 @@
     padding: 6px 12px;
     background: none;
     border: none;
-    color: #ccc;
+    color: var(--text-primary);
     font-size: 12px;
     cursor: pointer;
     text-align: left;
@@ -646,7 +585,7 @@
   }
   .context-item.delete:hover {
     background: #5a1d1d;
-    color: #E74C3C;
+    color: var(--status-failed-ink);
   }
   .context-icon {
     font-size: 10px;

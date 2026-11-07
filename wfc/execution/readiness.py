@@ -621,9 +621,7 @@ def check_registry(project_dir: Path | str | None = None) -> CheckResult:
     if plan.to_push or stuck:
         parts, fixes = [], []
         if plan.to_push:
-            labels = ", ".join(item.label for item in plan.to_push)
-            parts.append(f"{len(plan.to_push)} env image(s) on this machine are "
-                         f"not in the registry {base}: {labels}.")
+            parts.append(_not_pushed_words(plan, f"the registry {base}"))
             fixes.append("Run `wfc push-env --all` to push them.")
         if stuck:
             parts.append(f"{len(stuck)} env image(s) on this machine cannot be "
@@ -636,6 +634,21 @@ def check_registry(project_dir: Path | str | None = None) -> CheckResult:
         name="registry", status="ok",
         message=f"The registry {base} answers, and every env image on this "
                 f"machine is pushed.")
+
+
+def _not_pushed_words(plan, where: str) -> str:
+    """Say the images ``push-env`` would push: on this machine, or at another base."""
+    local = [item.label for item in plan.to_push if not item.pushed_to]
+    moved = [f"{item.label} (at {item.pushed_to})"
+             for item in plan.to_push if item.pushed_to]
+    parts = []
+    if local:
+        parts.append(f"{len(local)} env image(s) on this machine are not in "
+                     f"{where}: {', '.join(local)}.")
+    if moved:
+        parts.append(f"{len(moved)} env image(s) are pushed to another registry, "
+                     f"not to {where}: {', '.join(moved)}.")
+    return " ".join(parts)
 
 
 def check_runnable_versions(project_dir: Path | str | None = None) -> CheckResult:
@@ -770,9 +783,10 @@ def env_image_checks(project_dir: Path | str | None = None) -> list[CheckResult]
 # =============================================================================
 #
 # ``wfc share``'s checklist: each row asks the unit that owns its answer
-# (the git remote: ``wfc.version``; the base: the project's config; the
-# login probe, the images and the package connections: Environments; the
-# versions that cannot run: :func:`check_runnable_versions`). The rows only
+# (the git remote: ``wfc.version``; the base: the
+# project's config; the login probe, the images and the package
+# connections: Environments; the versions that cannot run:
+# :func:`check_runnable_versions`). The rows only
 # warn and nothing is written: no commit, no push, no ``docker login``, and
 # ``gh auth token`` is printed for the user to run, never run.
 
@@ -781,9 +795,11 @@ class _ShareFacts:
 
     def __init__(self, proj: Path, base: str | None) -> None:
         from ..environments import project_github_repository
+        from ..version import git_remote_url
 
         self.proj = proj
         self.base = base
+        self.remote = git_remote_url(proj)
         self.repository = project_github_repository(proj)
         # The base `wfc push-env --all` pushes to: the plan's base once
         # _share_plan has made one (the set base, else its proposal).
@@ -807,9 +823,7 @@ class _ShareFacts:
 
 def _share_remote_row(facts: _ShareFacts) -> CheckResult:
     """The git remote a collaborator clones from."""
-    from ..version import git_remote_url
-
-    remote = git_remote_url(facts.proj)
+    remote = facts.remote
     if remote is None:
         return CheckResult(
             name="remote", status="warn",
@@ -822,6 +836,12 @@ def _share_remote_row(facts: _ShareFacts) -> CheckResult:
              else remote)
     return CheckResult(name="remote", status="ok",
                        message=f"git remote: {where}.")
+
+
+def _no_github_reason(facts: _ShareFacts) -> str:
+    """Why no base can be proposed, as ``wfc.environments.registry`` words it."""
+    return (f"the git remote {facts.remote} is not on GitHub" if facts.remote
+            else "the project has no git remote")
 
 
 def _share_login_fix(facts: _ShareFacts, host: str) -> str:
@@ -842,7 +862,7 @@ def _share_login_row(facts: _ShareFacts, ref: str | None) -> CheckResult:
     from ..environments import probe_registry, registry_host
 
     if not facts.target:
-        why = ("the git remote is not on GitHub" if facts.repository is None
+        why = (_no_github_reason(facts) if facts.repository is None
                else "the env images could not be listed to propose one (the "
                     "images row says why)")
         return CheckResult(
@@ -878,8 +898,8 @@ def _share_base_row(facts: _ShareFacts) -> CheckResult:
                      f"and pushes the images.")
     return CheckResult(
         name="base", status="warn", message=message,
-        fix_hint="Run `wfc push-env --all --registry <url>` (the git remote "
-                 "is not on GitHub, so no base can be proposed).")
+        fix_hint=f"Run `wfc push-env --all --registry <url>` "
+                 f"({_no_github_reason(facts)}, so no base can be proposed).")
 
 
 def _share_plan(facts: _ShareFacts):
@@ -938,12 +958,10 @@ def _share_images_row(facts: _ShareFacts, plan, error: str | None) -> CheckResul
         parts.append(f"{len(misnamed)} cannot be pushed under its env's name: "
                      + ", ".join(item.label for item in misnamed) + ".")
     if plan.to_push:
-        labels = ", ".join(item.label for item in plan.to_push)
         where = plan.base if facts.base else f"a registry (none is set; {plan.base} proposed)"
         return CheckResult(
             name="images", status="warn",
-            message=" ".join([f"{len(plan.to_push)} env image(s) on this "
-                              f"machine are not in {where}: {labels}.", *parts]),
+            message=" ".join([_not_pushed_words(plan, where), *parts]),
             fix_hint=" ".join(["Run `wfc push-env --all` to push them.",
                                *(line.removeprefix("ERROR: ")
                                  for line in unpushable_lines(plan, misnamed))]))
@@ -969,6 +987,7 @@ def _share_packages_row(facts: _ShareFacts, plan) -> CheckResult:
     from ..environments import (
         CONNECT_REPOSITORY_STEPS,
         IMAGE_PUSHED,
+        MANAGE_ACCESS_SECTION,
         PACKAGE_CONNECTED,
         PACKAGE_NOT_FOUND,
         PACKAGE_OTHER_REPOSITORY,
@@ -979,6 +998,8 @@ def _share_packages_row(facts: _ShareFacts, plan) -> CheckResult:
         package_connection,
         package_name,
         package_page_url,
+        package_settings_url,
+        registry_host,
     )
 
     if not facts.on_ghcr:
@@ -995,6 +1016,22 @@ def _share_packages_row(facts: _ShareFacts, plan) -> CheckResult:
     target = facts.target or ""
     names = [name for env in envs
              if (name := package_name(target, env)) is not None]
+    if facts.remote is None:
+        # No repository to connect a package to (a rerun-bundle hand-off):
+        # access is given on each package's own settings page.
+        pages = ", ".join(package_settings_url(owner, pkg) for owner, pkg in names)
+        return CheckResult(
+            name="packages", status="warn",
+            message=f"The project has no git remote, so the {len(names)} "
+                    f"pushed package(s) cannot be connected to a repository: "
+                    f"a recipient can pull a private package only once you "
+                    f"give them access to it.",
+            fix_hint=f"Give each recipient access in the {MANAGE_ACCESS_SECTION} "
+                     f"section of the package's settings page: {pages}. The "
+                     f"recipient logs Docker in with a GitHub login that holds "
+                     f"`read:packages`: `gh auth login --scopes read:packages`, "
+                     f"then `gh auth token | docker login {registry_host(target)} "
+                     f"-u <their GitHub user> --password-stdin`.")
     expected = (f"{facts.repository.owner}/{facts.repository.repo}"
                 if facts.repository is not None else None)
     repo_words = (f"the repository {facts.repository.source_url}"
@@ -1067,15 +1104,20 @@ def share_checks(project_dir: Path | str | None = None) -> list[CheckResult]:
 
     Rows, in order: ``remote`` (a git remote to clone), ``login`` (Docker
     logged in to the registry: one probe), ``base`` (``[registry] url``
-    set), ``images`` (every recorded image pushed, from the captures folders
-    and the daemon only; byo registry images listed as pullable from their
-    own registry), ``packages`` (each pushed GHCR package connected to the
-    repository, through ``gh api``; without ``gh`` the row says it cannot
-    tell and prints each package's page link; when ``gh`` cannot read a
-    package and its login holds no packages scope, the row names the
-    ``gh auth refresh`` line that adds it) and ``versions``
-    (:func:`check_runnable_versions`). Every non-ok row is a ``warn`` naming
-    its fix. Nothing is written, committed or pushed.
+    set; with none and no GitHub remote, the login and base rows say why no
+    base can be proposed: the project has no git remote, or its remote is
+    not on GitHub), ``images`` (every recorded image
+    pushed, from the captures folders and the daemon only; byo registry
+    images listed as pullable from their own registry), ``packages`` (each
+    pushed GHCR package connected to the repository, through ``gh api``;
+    without ``gh`` the row says it cannot tell and prints each package's
+    page link; when ``gh`` cannot read a package and its login holds no
+    packages scope, the row names the ``gh auth refresh`` line that adds it;
+    with no git remote, ``gh`` is not asked and the row names each package's
+    settings page, where access is given, and the ``read:packages`` login a
+    recipient needs) and ``versions`` (:func:`check_runnable_versions`).
+    Every non-ok row is a ``warn`` naming its fix. Nothing is written,
+    committed or pushed.
 
     Args:
         project_dir: Root directory of the wfc project.  Defaults to the

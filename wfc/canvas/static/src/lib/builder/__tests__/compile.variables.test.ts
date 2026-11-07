@@ -31,7 +31,6 @@ function mkMethodNode(
       label: id,
       method: 'do_thing',
       module: 'mymod',
-      color: '#ccc',
       inputs: [],
       outputs: [{ name: 'out', type: 'csv' }],
       params: [],

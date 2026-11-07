@@ -101,7 +101,8 @@
       },
       "input_slots": {
         "sources": {
-          "required": true
+          "required": true,
+          "multiple": true
         }
       },
       "script_path": "methods/merge/merge.py",

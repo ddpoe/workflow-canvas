@@ -25,23 +25,48 @@
   import RegisterModal from './RegisterModal.svelte';
   import EnvsSubTab from './EnvsSubTab.svelte';
   import MethodListRow from './MethodListRow.svelte';
+  import ModuleListRow from './ModuleListRow.svelte';
+  import ModulePanel from './ModulePanel.svelte';
+  import EnvCliPointer from './EnvCliPointer.svelte';
   import RegistryMethodPanel from './RegistryMethodPanel.svelte';
   import VersionDetailsCard from './VersionDetailsCard.svelte';
   import PopMenu from './PopMenu.svelte';
   import type { MenuItem } from './PopMenu.svelte';
   import LabelTag from '../shared/LabelTag.svelte';
-  import { getModuleColor } from '../history/historyUtils.js';
+  import { moduleColor } from '../shared/moduleColor.svelte.js';
   import { tick } from 'svelte';
   import { registryFocus } from './registryFocus.js';
   import type { RegistryFocus } from './registryFocus.js';
+  import DraftListRow from './DraftListRow.svelte';
+  import DraftPanel from './DraftPanel.svelte';
+  import DraftFromFolderDialog from './DraftFromFolderDialog.svelte';
+  import type { DraftTab } from './draftFormat.js';
+  import { draftRunRef, nodeDraftRef } from './draftFormat.js';
+  import { DRAFT_FOCUS_IDENTITY } from '../shared/draftLinks.js';
+  import { tabRequest } from '../shared/uiState.js';
+  import { refreshPalette } from '../builder/api.js';
+  import { expandedPipelineIds, historyView, jumpToPipelineRun, selectRun } from '../history/historyStore.js';
   import {
+    deleteDraftRun,
+    planDraftDelete,
+    type DraftDeletePlan,
+    fetchDraftCheck,
+    fetchDraftDetail,
+    fetchDraftRun,
+    fetchDrafts,
     fetchMethodDetail,
     fetchRegistryModules,
     fetchRegistryMethods,
     fetchRegistrySamples,
     methodExportUrl,
+    removeDraft,
+    updateDraft,
   } from './api.js';
   import type {
+    DraftDetail,
+    DraftEntry,
+    DraftRunDetail,
+    DraftRunNode,
     MethodDetail,
     ModuleRow,
     MethodRow,
@@ -217,10 +242,11 @@
     modules: 'module',
     methods: 'method',
     samples: 'sample',
-    envs: null, // no env register endpoint — falls back to 'module' below
+    envs: null, // no env register endpoint: Register opens the CLI pointer
   };
 
   function openRegister() {
+    if (sub === 'envs') { envPointerOpen = true; return; }
     registerTarget = null;
     registerKind = SUB_TO_KIND[sub] ?? 'module';
   }
@@ -252,14 +278,16 @@
     closeMenus();
     details = null;
     try {
-      const [mods, meths, sams] = await Promise.all([
+      const [mods, meths, sams, drs] = await Promise.all([
         fetchRegistryModules(),
         fetchRegistryMethods(),
         fetchRegistrySamples(),
+        fetchDrafts(),
       ]);
       modules = mods;
       methods = meths;
       samples = sams;
+      drafts = drs;
     } catch (err) {
       loadError = String(err);
     } finally {
@@ -268,9 +296,14 @@
     // Every cached detail may be stale: drop them, and open rows fetch theirs again.
     methodDetails = {};
     detailError = {};
-    await Promise.all(methods
-      .filter(m => expandedMethods.has(methodKey(m.module, m.name)))
-      .map(m => loadDetail(m, shownVersion(m))));
+    draftDetails = {};
+    draftDetailError = {};
+    await Promise.all([
+      ...methods
+        .filter(m => expandedMethods.has(methodKey(m.module, m.name)))
+        .map(m => loadDetail(m, shownVersion(m))),
+      ...drafts.filter(d => expandedDrafts.has(draftKey(d))).map(d => openDraft(d)),
+    ]);
     if (byUser) refreshedByUser = true;
     // A link from another view waits for the rows it names.
     if (pendingFocus) {
@@ -310,6 +343,11 @@
       bodyEl?.scrollTo({ top: 0 });
       return;
     }
+    // A link to a method's draft opens its draft row on the Draft run tab.
+    if (focus.versionIdentity === DRAFT_FOCUS_IDENTITY) {
+      await focusDraft(focus.module, focus.method);
+      return;
+    }
     const m = methods.find(r => r.module === focus.module && r.name === focus.method);
     if (!m) return;
     const key = methodKey(m.module, m.name);
@@ -345,8 +383,292 @@
   }
 
   function setAllModules(collapsed: boolean) {
+    if (sub === 'modules') {
+      expandedModuleRows = collapsed ? new Set() : new Set(modules.map(m => m.name));
+      if (collapsed) colourOpenFor = null;
+      return;
+    }
     collapsedModules = collapsed ? new Set(methods.map(m => m.module)) : new Set();
+    collapsedDraftModules = collapsed ? new Set(drafts.map(d => d.module)) : new Set();
   }
+
+  // ---- Modules sub-tab ----
+
+  // Module rows open on this page load (every row starts closed), and the
+  // module whose Colour picker is open.
+  let expandedModuleRows = $state<Set<string>>(new Set());
+  let colourOpenFor = $state<string | null>(null);
+
+  function toggleModuleRow(name: string) {
+    const next = new Set(expandedModuleRows);
+    if (next.has(name)) {
+      next.delete(name);
+      if (colourOpenFor === name) colourOpenFor = null;
+    } else {
+      next.add(name);
+    }
+    expandedModuleRows = next;
+  }
+
+  /** Colour opens the module's row with its picker. */
+  function openColour(name: string) {
+    expandedModuleRows = new Set(expandedModuleRows).add(name);
+    colourOpenFor = name;
+  }
+
+  /** The methods of one module, for its open row. */
+  function methodsOf(name: string): MethodRow[] {
+    return methods.filter(m => m.module === name);
+  }
+
+  // ---- Drafts ----
+
+  // The Methods tab ends with the Drafts group, sub-grouped by module. A
+  // draft row opens to its card, Registration check and Parameters | Draft
+  // run tabs; the details are cached per draft until the next refresh.
+  let drafts = $state<DraftEntry[]>([]);
+  let draftsOpen = $state(true);
+  let collapsedDraftModules = $state<Set<string>>(new Set());
+  let expandedDrafts = $state<Set<string>>(new Set());
+  let draftTab = $state<Record<string, DraftTab>>({});
+  let draftDetails = $state<Record<string, DraftDetail>>({});
+  let draftDetailError = $state<Record<string, string>>({});
+  let draftRuns = $state<Record<string, DraftRunDetail | null>>({});
+  let draftRunError = $state<Record<string, string>>({});
+  let draftRunLoading = $state<Set<string>>(new Set());
+  let updatingDraft = $state<string | null>(null);
+  // The last draft action's outcome, by draft (Update's message, a refusal).
+  let draftNotice = $state<Record<string, { text: string; bad: boolean }>>({});
+  let draftDialogOpen = $state(false);
+  let draftConfirm = $state<{ title: string; plan: DraftDeletePlan; action: string; run: () => Promise<void> } | null>(null);
+  let registerDraft = $state<DraftEntry | null>(null);
+
+  function draftKey(d: DraftEntry): string {
+    return methodKey(d.module, d.method);
+  }
+
+  async function loadDraftDetail(d: DraftEntry): Promise<void> {
+    const key = draftKey(d);
+    if (draftDetails[key]) return;
+    const res = await fetchDraftDetail(d.module, d.method).catch(err => ({ ok: false as const, error: String(err) }));
+    if (res.ok) draftDetails = { ...draftDetails, [key]: res.value };
+    else draftDetailError = { ...draftDetailError, [key]: res.error };
+  }
+
+  async function loadDraftRun(d: DraftEntry): Promise<void> {
+    const key = draftKey(d);
+    draftRunLoading = new Set(draftRunLoading).add(key);
+    const res = await fetchDraftRun(d.module, d.method).catch(err => ({ ok: false as const, error: String(err) }));
+    const loadingNow = new Set(draftRunLoading);
+    loadingNow.delete(key);
+    draftRunLoading = loadingNow;
+    if (res.ok) {
+      draftRuns = { ...draftRuns, [key]: res.value };
+      const { [key]: _gone, ...rest } = draftRunError;
+      draftRunError = rest;
+    } else {
+      draftRuns = { ...draftRuns, [key]: null };
+      draftRunError = { ...draftRunError, [key]: res.error };
+    }
+  }
+
+  async function openDraft(d: DraftEntry, tab: DraftTab | null = null): Promise<void> {
+    const key = draftKey(d);
+    expandedDrafts = new Set(expandedDrafts).add(key);
+    if (tab) draftTab = { ...draftTab, [key]: tab };
+    const loads: Promise<void>[] = [loadDraftDetail(d)];
+    if ((draftTab[key] ?? 'parameters') === 'run') loads.push(loadDraftRun(d));
+    await Promise.all(loads);
+  }
+
+  async function toggleDraft(d: DraftEntry): Promise<void> {
+    const key = draftKey(d);
+    if (expandedDrafts.has(key)) {
+      const next = new Set(expandedDrafts);
+      next.delete(key);
+      expandedDrafts = next;
+      return;
+    }
+    await openDraft(d);
+  }
+
+  function setDraftTab(d: DraftEntry, tab: DraftTab): void {
+    draftTab = { ...draftTab, [draftKey(d)]: tab };
+    if (tab === 'run') void loadDraftRun(d);
+  }
+
+  function toggleDraftModule(name: string): void {
+    const next = new Set(collapsedDraftModules);
+    if (next.has(name)) next.delete(name); else next.add(name);
+    collapsedDraftModules = next;
+  }
+
+  /** Forget one draft's cached detail and run, and fetch them again if it is open. */
+  async function reloadOpenDraft(key: string): Promise<void> {
+    const { [key]: _d, ...details } = draftDetails;
+    draftDetails = details;
+    const { [key]: _e, ...errors } = draftDetailError;
+    draftDetailError = errors;
+    const d = drafts.find(x => draftKey(x) === key);
+    if (d && expandedDrafts.has(key)) await openDraft(d);
+  }
+
+  /** After a draft is added, updated or removed: the list here and the Builder's palette. */
+  async function draftsChanged(key: string | null = null): Promise<void> {
+    drafts = await fetchDrafts();
+    void refreshPalette();
+    if (key) await reloadOpenDraft(key);
+  }
+
+  async function runUpdate(d: DraftEntry): Promise<void> {
+    const key = draftKey(d);
+    updatingDraft = key;
+    const res = await updateDraft(d.module, d.method).catch(err => ({ ok: false as const, error: String(err) }));
+    updatingDraft = null;
+    draftNotice = { ...draftNotice, [key]: res.ok ? { text: res.value.message, bad: false }
+                                                  : { text: res.error, bad: true } };
+    if (res.ok) {
+      drafts = drafts.map(x => (draftKey(x) === key ? res.value.draft : x));
+      void refreshPalette();
+      await reloadOpenDraft(key);
+    }
+  }
+
+  /** Refresh from disk: read the folder and its Registration check again; nothing is written. */
+  async function refreshFromDisk(d: DraftEntry): Promise<void> {
+    const key = draftKey(d);
+    const res = await fetchDraftCheck(d.module, d.method).catch(err => ({ ok: false as const, error: String(err) }));
+    if (!res.ok) draftNotice = { ...draftNotice, [key]: { text: res.error, bad: true } };
+    drafts = await fetchDrafts();
+    if (res.ok) {
+      drafts = drafts.map(x => (draftKey(x) === key
+        ? { ...x, check: res.value, valid: res.value.ok,
+            reasons: res.value.lines.filter(l => !l.ok).map(l => l.text) }
+        : x));
+    }
+    void refreshPalette();
+    await reloadOpenDraft(key);
+  }
+
+  /**
+   * Ask the server what Remove draft or Delete outputs would delete, then
+   * confirm with its plan; confirming sends the plan's token back.
+   */
+  async function planAndConfirm(d: DraftEntry, outputsOnly: boolean,
+                                confirm: (plan: DraftDeletePlan) => NonNullable<typeof draftConfirm>): Promise<void> {
+    const key = draftKey(d);
+    const res = await planDraftDelete(d.module, d.method, outputsOnly)
+      .catch(err => ({ ok: false as const, error: String(err) }));
+    if (!res.ok) { draftNotice = { ...draftNotice, [key]: { text: res.error, bad: true } }; return; }
+    draftConfirm = confirm(res.value);
+  }
+
+  function askRemove(d: DraftEntry): void {
+    void planAndConfirm(d, false, plan => ({
+      title: `Remove the draft of ${d.method}?`,
+      plan,
+      action: 'Remove draft',
+      run: async () => {
+        const key = draftKey(d);
+        const res = await removeDraft(d.module, d.method, plan.token).catch(err => ({ ok: false as const, error: String(err) }));
+        if (!res.ok) { draftNotice = { ...draftNotice, [key]: { text: res.error, bad: true } }; return; }
+        const next = new Set(expandedDrafts);
+        next.delete(key);
+        expandedDrafts = next;
+        await draftsChanged();
+      },
+    }));
+  }
+
+  function askDeleteOutputs(d: DraftEntry): void {
+    void planAndConfirm(d, true, plan => ({
+      title: `Delete the outputs of ${d.method}'s draft run?`,
+      plan,
+      action: 'Delete outputs',
+      run: async () => {
+        const key = draftKey(d);
+        const res = await deleteDraftRun(d.module, d.method, plan.token).catch(err => ({ ok: false as const, error: String(err) }));
+        draftNotice = { ...draftNotice, [key]: res.ok ? { text: res.value.message, bad: !res.value.ok }
+                                                      : { text: res.error, bad: true } };
+        if (res.ok) {
+          drafts = await fetchDrafts();
+          await loadDraftRun(d);
+        }
+      },
+    }));
+  }
+
+  async function confirmDraftAction(): Promise<void> {
+    const pending = draftConfirm;
+    draftConfirm = null;
+    if (pending) await pending.run();
+  }
+
+  function draftMenu(d: DraftEntry, anchor: HTMLElement) {
+    const key = `draft:${draftKey(d)}`;
+    if (menu?.key === key) { closeMenus(); return; }
+    menu = {
+      key, title: `${d.method} · DRAFT`, anchor, align: 'right', testid: 'draft-menu',
+      items: [
+        { label: 'Copy path', icon: '⧉', testid: 'menu-copy-path', run: () => copyText(d.folder) },
+        { label: 'Refresh from disk', icon: '↻', testid: 'menu-refresh-draft',
+          run: () => void refreshFromDisk(d) },
+        { label: 'Remove draft', icon: '✕', testid: 'menu-remove-draft', separated: true,
+          run: () => askRemove(d) },
+      ],
+    };
+  }
+
+  /** Show a draft run's pipeline in History's Pipelines view, its row open. */
+  function showPipelineInHistory(run: DraftRunDetail): void {
+    historyView.set('pipelines');
+    expandedPipelineIds.update(s => new Set(s).add(run.pipelineId));
+    tabRequest.set('history');
+  }
+
+  /**
+   * Show a draft run in History, naming its steps by draft string: the
+   * Pipelines view with the run's pipeline open and its step highlighted.
+   * With a node, that node's draft step is highlighted and its run panel
+   * opened; a node with no draft step yet shows the draft run as a whole.
+   */
+  function showDraftRunInHistory(run: DraftRunDetail, node?: DraftRunNode): void {
+    const stepRef = node ? nodeDraftRef(node) : null;
+    const ref = stepRef ?? draftRunRef(run);
+    if (!ref) { showPipelineInHistory(run); return; }
+    jumpToPipelineRun(run.pipelineId, ref);
+    if (stepRef) selectRun(stepRef);
+    tabRequest.set('history');
+  }
+
+  /** Open a draft's row on its Draft run tab: a link from the Builder or Inspector. */
+  async function focusDraft(module: string, method: string): Promise<void> {
+    const d = drafts.find(x => x.module === module && x.method === method);
+    if (!d) return;
+    draftsOpen = true;
+    if (collapsedDraftModules.has(module)) toggleDraftModule(module);
+    await openDraft(d, 'run');
+    await tick();
+    bodyEl?.querySelector(`[data-draft-key="${CSS.escape(draftKey(d))}"]`)?.scrollIntoView?.({ block: 'start' });
+  }
+
+  // The search box's text, trimmed and lower-cased: what every sub-tab's
+  // filter (drafts here, modules/methods/samples below) matches against.
+  const q = $derived(query.trim().toLowerCase());
+  const filteredDrafts = $derived(
+    q === '' ? drafts : drafts.filter(d => d.method.toLowerCase().includes(q) || d.module.toLowerCase().includes(q))
+  );
+  const draftsByModule = $derived.by(() => {
+    const groups: Record<string, DraftEntry[]> = {};
+    for (const d of filteredDrafts) (groups[d.module] ??= []).push(d);
+    return groups;
+  });
+
+  // ---- Envs pointer ----
+
+  // Envs are registered from the command line: Register on the Envs tab
+  // opens a pointer to the command, not a form.
+  let envPointerOpen = $state(false);
 
   function fmtSize(n: number | null): string {
     if (n == null) return '—';
@@ -362,7 +684,6 @@
   }
 
   // Case-insensitive substring filter over `name` per sub-tab.
-  const q = $derived(query.trim().toLowerCase());
   const filteredModules = $derived(
     q === '' ? modules : modules.filter(m => m.name.toLowerCase().includes(q))
   );
@@ -404,15 +725,23 @@
     <span class="refresh-note" data-testid="refresh-note" aria-live="polite">
       {loading ? 'Reloading…' : refreshedByUser ? 'Updated just now' : ''}
     </span>
-    {#if sub === 'methods'}
+    {#if sub === 'methods' || sub === 'modules'}
       <button class="btn-ghost" data-testid="collapse-all" onclick={() => setAllModules(true)}>Collapse all</button>
       <button class="btn-ghost" data-testid="expand-all" onclick={() => setAllModules(false)}>Expand all</button>
     {/if}
     <span class="spacer"></span>
-    {#if sub !== 'envs'}
-      <button class="btn-primary" onclick={openRegister}>+ Register {sub.slice(0, -1)}</button>
-    {/if}
+    <button class="btn-primary" onclick={openRegister}>+ Register {sub.slice(0, -1)}</button>
   </div>
+
+  {#if envPointerOpen}
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+    <div class="pointer-backdrop" onclick={(e) => { if (e.target === e.currentTarget) envPointerOpen = false; }}>
+      <div class="pointer-dialog" role="dialog" aria-modal="true" aria-labelledby="env-pointer-title"
+           tabindex="-1" onkeydown={(e) => { if (e.key === 'Escape') envPointerOpen = false; }}>
+        <EnvCliPointer headingId="env-pointer-title" onClose={() => (envPointerOpen = false)} />
+      </div>
+    </div>
+  {/if}
 
   {#if registerKind !== null}
     <RegisterModal
@@ -426,6 +755,64 @@
     />
   {/if}
 
+  {#if registerDraft}
+    <!-- A draft's Register as vN: the existing check-then-confirm flow, on its folder. -->
+    <RegisterModal
+      initialKind="method"
+      moduleNames={modules.map(m => m.name)}
+      {methods}
+      initialTarget={{ module: registerDraft.module, method: registerDraft.method }}
+      initialDirectory={registerDraft.folder}
+      initialNewMethod={registerDraft.kind === 'method'}
+      registeredMethodDirs={methods.map(m => `methods/${m.name}`)}
+      onClose={() => { registerDraft = null; }}
+      onRegistered={() => { void refresh(); void refreshPalette(); }}
+    />
+  {/if}
+
+  {#if draftDialogOpen}
+    <DraftFromFolderDialog moduleNames={modules.map(m => m.name)}
+                           onClose={() => (draftDialogOpen = false)}
+                           onCreated={() => void draftsChanged()} />
+  {/if}
+
+  {#if draftConfirm}
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+    <div class="pointer-backdrop" onclick={(e) => { if (e.target === e.currentTarget) draftConfirm = null; }}>
+      <div class="pointer-dialog" role="dialog" aria-modal="true" aria-labelledby="draft-confirm-title"
+           tabindex="-1" data-testid="draft-confirm"
+           onkeydown={(e) => { if (e.key === 'Escape') draftConfirm = null; }}>
+        <h3 id="draft-confirm-title" class="confirm-title">{draftConfirm.title}</h3>
+        <!-- Execution's plan, rendered as given (Deletes / Keeps / hint);
+             a plan with nothing to delete has only its message. -->
+        <div class="confirm-text" data-testid="draft-confirm-plan">
+          {#if draftConfirm.plan.deletes.length > 0}
+            <div class="confirm-list-head">Deletes</div>
+            <ul class="confirm-list" data-testid="draft-confirm-deletes">
+              {#each draftConfirm.plan.deletes as line}<li>{line}</li>{/each}
+            </ul>
+            {#if draftConfirm.plan.keeps.length > 0}
+              <div class="confirm-list-head">Keeps</div>
+              <ul class="confirm-list" data-testid="draft-confirm-keeps">
+                {#each draftConfirm.plan.keeps as line}<li>{line}</li>{/each}
+              </ul>
+            {/if}
+            {#if draftConfirm.plan.hint}
+              <p class="confirm-hint" data-testid="draft-confirm-hint">{draftConfirm.plan.hint}</p>
+            {/if}
+          {:else}
+            <p class="confirm-message">{draftConfirm.plan.message}</p>
+          {/if}
+        </div>
+        <div class="confirm-foot">
+          <button type="button" class="btn-ghost" onclick={() => (draftConfirm = null)}>Cancel</button>
+          <button type="button" class="btn-ghost danger" data-testid="draft-confirm-action"
+                  onclick={() => void confirmDraftAction()}>{draftConfirm.action}</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
   {#if loadError}
     <div class="error">Failed to load registry: {loadError}</div>
   {:else if loading && modules.length + methods.length + samples.length === 0}
@@ -436,55 +823,36 @@
         {#if filteredModules.length === 0}
           <div class="empty">No modules registered.</div>
         {:else}
-          <table class="reg-table">
-            <thead>
-              <tr><th>Name</th><th>Contracts</th><th>Methods</th><th>Source</th></tr>
-            </thead>
-            <tbody>
-              {#each filteredModules as mod}
-                <tr>
-                  <td>
-                    <div class="name mono">{mod.name}</div>
-                    {#if mod.description}<div class="sub">{mod.description}</div>{/if}
-                  </td>
-                  <td class="contracts-cell">
-                    {#if mod.contracts.length === 0}
-                      <span class="dim">—</span>
-                    {:else}
-                      {#each mod.contracts.slice(0, 3) as c}
-                        <span class="chip chip-{c.type}">{c.type} · {c.name}</span>
-                      {/each}
-                      {#if mod.contracts.length > 3}
-                        <span class="chip chip-more">+{mod.contracts.length - 3}</span>
-                      {/if}
-                    {/if}
-                  </td>
-                  <td>
-                    <button
-                      class="cross-link mono"
-                      title="View methods in {mod.name}"
-                      onclick={() => { sub = 'methods'; query = mod.name; }}
-                    >{mod.methods} methods →</button>
-                  </td>
-                  <td class="mono dim">{mod.source}</td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
+          <div class="modules-list">
+            {#each filteredModules as mod (mod.name)}
+              {@const open = expandedModuleRows.has(mod.name)}
+              <section class="module" style="--m: {moduleColor(mod.name)}">
+                <ModuleListRow module={mod} expanded={open}
+                               onToggle={() => toggleModuleRow(mod.name)}
+                               onMethods={() => { sub = 'methods'; query = mod.name; }}
+                               onColour={() => openColour(mod.name)} />
+                {#if open}
+                  <ModulePanel module={mod} methods={methodsOf(mod.name)}
+                               colourOpen={colourOpenFor === mod.name}
+                               onColourClose={() => (colourOpenFor = null)} />
+                {/if}
+              </section>
+            {/each}
+          </div>
         {/if}
       {:else if sub === 'methods'}
-        {#if filteredMethods.length === 0}
-          <div class="empty">No methods registered.</div>
-        {:else}
           <div class="methods-list">
+            {#if filteredMethods.length === 0}
+              <div class="empty">No methods registered.</div>
+            {/if}
             {#each Object.entries(methodsByModule) as [modName, rows] (modName)}
               {@const isOpen = moduleOpen(modName)}
               <section class="module" data-testid="module-group" data-module={modName}
-                       style="--m: {getModuleColor(modName)}">
+                       style="--m: {moduleColor(modName)}">
                 <button type="button" class="mod-row" data-testid="module-heading"
                         aria-expanded={isOpen} onclick={() => toggleModule(modName)}>
                   <span class="chev">{isOpen ? '▼' : '▶'}</span>
-                  <LabelTag kind="module" label="MODULE" value={modName} color={getModuleColor(modName)} />
+                  <LabelTag kind="module" label="MODULE" value={modName} color={moduleColor(modName)} />
                   <span class="mod-count" data-testid="module-count">{rows.length} {rows.length === 1 ? 'method' : 'methods'}</span>
                 </button>
                 {#if isOpen}
@@ -514,8 +882,69 @@
                 {/if}
               </section>
             {/each}
+            <!-- The Drafts group: laid out like a module group, sub-grouped by module. -->
+            <section class="module drafts" data-testid="drafts-group">
+              <div class="drafts-head">
+                <button type="button" class="drafts-toggle" data-testid="drafts-heading"
+                        aria-expanded={draftsOpen} onclick={() => (draftsOpen = !draftsOpen)}>
+                  <span class="chev">{draftsOpen ? '▼' : '▶'}</span>
+                  <b>Drafts</b>
+                  <span class="mod-count" data-testid="drafts-count">{filteredDrafts.length} · each runs its folder as it is now</span>
+                </button>
+                <button type="button" class="btn-ghost sm" data-testid="draft-from-folder"
+                        onclick={() => (draftDialogOpen = true)}>+ Draft from folder…</button>
+              </div>
+              {#if draftsOpen}
+                {#if filteredDrafts.length === 0}
+                  <div class="drafts-empty">No drafts. A draft runs a method folder as it is now, without registering it.</div>
+                {/if}
+                {#each Object.entries(draftsByModule) as [modName, rows] (modName)}
+                  {@const dOpen = q !== '' || !collapsedDraftModules.has(modName)}
+                  <div class="draft-module" data-testid="draft-module-group" data-module={modName}
+                       style="--m: {moduleColor(modName)}">
+                    <button type="button" class="mod-row msub" data-testid="draft-module-heading"
+                            aria-expanded={dOpen} onclick={() => toggleDraftModule(modName)}>
+                      <span class="chev">{dOpen ? '▼' : '▶'}</span>
+                      <LabelTag kind="module" label="MODULE" value={modName} color={moduleColor(modName)} />
+                      <span class="mod-count">{rows.length} {rows.length === 1 ? 'draft' : 'drafts'} · a draft version is matched to its method in this module; a new method joins this module when registered</span>
+                    </button>
+                    {#if dOpen}
+                      {#each rows as d (d.method)}
+                        {@const dkey = draftKey(d)}
+                        <DraftListRow draft={d} expanded={expandedDrafts.has(dkey)}
+                                      menuOpen={menu?.key === `draft:${dkey}`}
+                                      updating={updatingDraft === dkey}
+                                      onToggle={() => toggleDraft(d)}
+                                      onMenu={(anchor) => draftMenu(d, anchor)}
+                                      onUpdate={() => runUpdate(d)} />
+                        {#if draftNotice[dkey]}
+                          <div class="draft-notice" class:bad={draftNotice[dkey].bad} data-testid="draft-notice">{draftNotice[dkey].text}</div>
+                        {/if}
+                        {#if expandedDrafts.has(dkey)}
+                          <div class="panel">
+                            <div class="inner">
+                              <DraftPanel draft={d} detail={draftDetails[dkey] ?? null}
+                                          detailError={draftDetailError[dkey] ?? null}
+                                          tab={draftTab[dkey] ?? 'parameters'}
+                                          run={draftRuns[dkey] ?? null}
+                                          runLoading={draftRunLoading.has(dkey)}
+                                          runError={draftRunError[dkey] ?? null}
+                                          onTab={(t) => setDraftTab(d, t)}
+                                          onRegister={() => (registerDraft = d)}
+                                          onOpenHistory={(run) => showDraftRunInHistory(run)}
+                                          onViewPipeline={showPipelineInHistory}
+                                          onOpenStep={showDraftRunInHistory}
+                                          onDeleteOutputs={() => askDeleteOutputs(d)} />
+                            </div>
+                          </div>
+                        {/if}
+                      {/each}
+                    {/if}
+                  </div>
+                {/each}
+              {/if}
+            </section>
           </div>
-        {/if}
       {:else if sub === 'envs'}
         <EnvsSubTab visible={sub === 'envs'} filter={query} />
       {:else if sub === 'samples'}
@@ -657,7 +1086,7 @@
     color: var(--text-secondary);
     font-size: 12.5px;
   }
-  .error { color: var(--color-failed); }
+  .error { color: var(--status-failed-ink); }
 
   .reg-table {
     width: 100%;
@@ -683,7 +1112,34 @@
 
   /* One grid for the method rows and the open panel: the method two shares
      of the width, version and env one each, so they line up row to row. */
-  .methods-list { --reg-grid: 16px minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) 30px; }
+  .methods-list { --reg-grid: 16px minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) 96px 30px; }
+  /* The Drafts group: a plain group (no module colour) whose module
+     sub-headings take their module's colour, as module groups do. */
+  .drafts-head {
+    display: flex; align-items: center; gap: 10px; padding: 7px 10px 7px 7px; background: var(--bg-header);
+  }
+  .drafts-toggle {
+    display: flex; align-items: center; gap: 10px; flex: 1; background: none; border: none; padding: 0;
+    color: inherit; font: inherit; cursor: pointer; text-align: left;
+  }
+  .drafts-toggle .chev { color: var(--text-secondary); font-size: 9px; width: 16px; text-align: center; }
+  .drafts-toggle b { color: #e6e6e6; }
+  .btn-ghost.sm { font-size: 11.5px; padding: 3px 9px; }
+  .btn-ghost.danger {
+    color: var(--status-failed-ink); border-color: color-mix(in srgb, var(--status-failed) 55%, transparent);
+  }
+  .mod-row.msub { padding-left: 20px; border-top: 1px solid rgba(62, 62, 66, 0.5); background: #262628; }
+  .drafts-empty { padding: 10px 14px 12px 33px; color: var(--text-secondary); font-size: 12px; }
+  .draft-notice { padding: 4px 10px 6px 54px; font-size: 12px; color: var(--text-primary); }
+  .draft-notice.bad { color: var(--status-failed-ink); }
+  .confirm-title { margin: 0 0 8px; font-size: 15px; color: #eee; }
+  .confirm-text { margin: 0 0 14px; color: var(--text-primary); font-size: 12.5px; line-height: 1.5; }
+  .confirm-list-head { font-weight: 600; margin: 6px 0 2px; }
+  .confirm-list { margin: 0 0 6px; padding-left: 18px; }
+  .confirm-list li { margin: 2px 0; }
+  .confirm-hint { margin: 8px 0 0; color: var(--text-secondary); }
+  .confirm-message { margin: 0; white-space: pre-wrap; }
+  .confirm-foot { display: flex; justify-content: flex-end; gap: 8px; }
   .module {
     margin-top: 10px;
     border: 1px solid var(--border);
@@ -711,10 +1167,19 @@
   .sub { font-size: 10.5px; color: var(--text-secondary); margin-top: 2px; }
   .dim { color: var(--text-secondary); }
 
-  .contracts-cell {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
+  /* Module rows: one grid so the tag, description, methods link and Colour
+     line up row to row, as the Methods rows do. */
+  .modules-list { --mod-grid: 16px minmax(0, 260px) minmax(0, 1fr) 130px 110px; }
+  .modules-list .module { margin-top: 10px; }
+  .modules-list .module:first-child { margin-top: 0; }
+
+  .pointer-backdrop {
+    position: fixed; inset: 0; z-index: 50; display: flex; align-items: flex-start; justify-content: center;
+    padding-top: 12vh; background: rgba(0, 0, 0, 0.55);
+  }
+  .pointer-dialog {
+    width: 560px; max-width: calc(100vw - 32px); background: #242424; border: 1px solid #555;
+    border-radius: 8px; padding: 18px 20px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.8); outline: none;
   }
 
   .chip {
@@ -725,23 +1190,7 @@
     font-family: "JetBrains Mono", Consolas, monospace;
     border: 1px solid;
   }
-  .chip-output { color: var(--color-running); background: rgba(233, 168, 71, 0.14); border-color: rgba(233, 168, 71, 0.35); }
-  .chip-metric { color: var(--color-system); background: rgba(26, 188, 156, 0.14); border-color: rgba(26, 188, 156, 0.35); }
-  .chip-input  { color: var(--color-system); background: rgba(26, 188, 156, 0.14); border-color: rgba(26, 188, 156, 0.35); }
-  .chip-param  { color: var(--text-secondary); background: var(--bg-input); border-color: var(--border); }
-  .chip-more   { color: var(--text-secondary); background: var(--bg-input); border-color: var(--border); }
-  .chip-ok     { color: var(--color-completed); background: rgba(80, 200, 120, 0.14); border-color: rgba(80, 200, 120, 0.35); }
-  .chip-warn   { color: var(--color-running); background: rgba(233, 168, 71, 0.14); border-color: rgba(233, 168, 71, 0.35); }
-
-  .cross-link {
-    background: none;
-    border: none;
-    color: var(--accent);
-    font-size: 11.5px;
-    font-family: "JetBrains Mono", Consolas, monospace;
-    padding: 2px 6px;
-    cursor: pointer;
-    border-radius: 3px;
-  }
-  .cross-link:hover { background: rgba(74, 144, 217, 0.14); }
+  /* Pushed is a passed check (ok green); local-only is a notice, neutral. */
+  .chip-ok     { color: var(--status-ok); background: color-mix(in srgb, var(--status-ok) 14%, transparent); border-color: color-mix(in srgb, var(--status-ok) 35%, transparent); }
+  .chip-warn   { color: var(--text-primary); background: transparent; border-color: var(--marker-light); }
 </style>

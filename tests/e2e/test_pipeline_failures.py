@@ -23,8 +23,6 @@ from wfc.execution import run_pipeline
 from tests.fixtures.conftest import create_sample_csv as _create_sample_csv
 from tests.conftest import requires_docker
 
-WFC_ROOT = Path(__file__).resolve().parent.parent.parent
-
 # these tests execute pipelines end-to-end through the
 # container dispatch path (register_fixture_methods builds a real image).
 # Deselected from the default suite (integration) and skipped without Docker.
@@ -76,7 +74,6 @@ def test_script_crash(pipeline_factory, register_fixture_methods):
         run_pipeline(
             pipeline_path=str(pipeline_path),
             project_root=str(project_dir),
-            wfc_root=str(WFC_ROOT),
             cores=1,
             archive=False,
         )
@@ -180,7 +177,6 @@ def test_missing_output(pipeline_factory, register_fixture_methods):
         run_pipeline(
             pipeline_path=str(pipeline_path),
             project_root=str(project_dir),
-            wfc_root=str(WFC_ROOT),
             cores=1,
             archive=False,
         )
@@ -262,7 +258,6 @@ def test_nonzero_method_exit_fails_pipeline(pipeline_factory, register_fixture_m
         run_pipeline(
             pipeline_path=str(pipeline_path),
             project_root=str(project_dir),
-            wfc_root=str(WFC_ROOT),
             cores=1,
             archive=False,
         )
@@ -336,7 +331,6 @@ def test_downstream_of_failed_node_records_cancelled_run(
         run_pipeline(
             pipeline_path=str(pipeline_path),
             project_root=str(project_dir),
-            wfc_root=str(WFC_ROOT),
             cores=1,
             archive=False,
             keep_going=True,

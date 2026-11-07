@@ -730,7 +730,7 @@ def _registry_base(project_dir: Path) -> str | None:
               "push it, read back the digest the registry reported and write "
               "pushed.json into the captures folder. Nothing is pushed with no "
               "base, with --no-push, for a byo registry image, or when "
-              "pushed.json is already there; a failed push undoes the record "
+              "pushed.json already records it at the base; a failed push undoes the record "
               "step and refuses naming the registry and --no-push",
       inputs="env name, the resolved image, its env fingerprint, project root, "
              "the registry base, whether to push, what the record step changed",
@@ -792,6 +792,8 @@ def _push_image(name: str, image: _ResolvedImage, fingerprint: str,
     try:
         existing = pushed_record(name, fingerprint, project_dir)
         reading = False
+        if existing is not None and existing.pushed_to(base) != base:
+            existing = None  # recorded at a base the project has moved from
         if existing is None:
             口 = AutoStep(step_num=1, name="Tag, push and record the push")
             record, created = push_image(project_dir, name, fingerprint,

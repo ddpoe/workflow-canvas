@@ -21,7 +21,7 @@
  *     dirty (the natural Run-button case post-commit).
  */
 import { describe, expect, it } from 'vitest';
-import { createActor } from 'xstate';
+import { createActor, type Subscribable } from 'xstate';
 import {
   makeParamEditorAggregatorMachine,
   isChildEditing,
@@ -51,7 +51,10 @@ function bridgeChildToAggregator(
   child: ChildActor,
 ): () => void {
   let lastEditing = isChildEditing(child);
-  const sub = child.subscribe(() => {
+  // Subscribe through the common supertype, as root.ts does: a union of
+  // the two row machines' overloads is not callable.
+  const source: Subscribable<unknown> = child;
+  const sub = source.subscribe(() => {
     const editingNow = isChildEditing(child);
     if (lastEditing && !editingNow && isChildSettled(child)) {
       aggregator.send({ type: 'CHILD_SETTLED', id });

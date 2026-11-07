@@ -14,7 +14,7 @@ import { render, fireEvent, cleanup, waitFor } from '@testing-library/svelte';
 import { within } from '@testing-library/dom';
 import RegistryTab from '../RegistryTab.svelte';
 
-vi.mock('../shikiHighlight.js', () => ({
+vi.mock('../../shared/shikiHighlight.js', () => ({
   highlight: async (content: string) => `<pre class="shiki"><code>${content}</code></pre>`,
 }));
 

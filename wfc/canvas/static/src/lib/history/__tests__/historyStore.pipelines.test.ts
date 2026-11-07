@@ -21,7 +21,14 @@ import {
   expandedPipelineIds,
   highlightedRunId,
 } from '../historyStore';
-import type { WfcRun } from '../historyApi';
+import type { PipelineSummary, WfcRun } from '../historyApi';
+
+/** A pipeline summary as the server sends it: no draft steps unless named. */
+function mkSummary(
+  s: Pick<PipelineSummary, 'pipelineId' | 'status'> & Partial<PipelineSummary>,
+): PipelineSummary {
+  return { draftMode: false, draftStepCount: 0, draftSteps: [], drafts: [], ...s };
+}
 
 function mkRun(partial: Partial<WfcRun>): WfcRun {
   return {
@@ -29,6 +36,7 @@ function mkRun(partial: Partial<WfcRun>): WfcRun {
     module: 'm',
     method: 'method',
     version: 1,
+    versionIdentity: null,
     timestamp: 1,
     duration: 0,
     status: 'success',
@@ -40,6 +48,16 @@ function mkRun(partial: Partial<WfcRun>): WfcRun {
     parentRunIds: [],
     upstreamRunIds: partial.parentRunIds ?? [],
     parents: [],
+    codeFingerprint: null,
+    envName: null,
+    envFingerprint: null,
+    gitCommit: null,
+    wfcVersion: null,
+    pipelineDocHash: null,
+    keyedUnderEarlierRule: false,
+    paramsHash: null,
+    inputsHash: null,
+    paramTypes: {},
     experimentId: 'e',
     runName: 'pip/run',
     nid: 'v1',
@@ -68,7 +86,7 @@ describe('pipelineRuns derived store', () => {
       mkRun({ id: 'r4', pipelineId: null, status: 'success' }), // ignored — no pipelineId
     ]);
     pipelineSummaries.set([
-      { pipelineId: 'p1', status: 'mixed', expected: 2, nodeOrder: null },
+      mkSummary({ pipelineId: 'p1', status: 'mixed', expected: 2, nodeOrder: null }),
     ]);
     const rows = get(pipelineRuns);
     expect(rows).toHaveLength(2);
@@ -92,10 +110,10 @@ describe('pipelineRuns derived store', () => {
       mkRun({ id: 'r8', pipelineId: 'p3', status: 'success' }),
     ]);
     pipelineSummaries.set([
-      { pipelineId: 'p1', status: 'running', expected: 9, nodeOrder: null },
-      { pipelineId: 'p2', status: 'succeeded', expected: null, nodeOrder: null },
+      mkSummary({ pipelineId: 'p1', status: 'running', expected: 9, nodeOrder: null }),
+      mkSummary({ pipelineId: 'p2', status: 'succeeded', expected: null, nodeOrder: null }),
       // More runs than expected: pending never goes below zero.
-      { pipelineId: 'p3', status: 'succeeded', expected: 0, nodeOrder: null },
+      mkSummary({ pipelineId: 'p3', status: 'succeeded', expected: 0, nodeOrder: null }),
     ]);
     const rows = get(pipelineRuns);
     expect(rows.find(r => r.pipelineId === 'p1')!.buckets).toEqual({
@@ -115,7 +133,7 @@ describe('pipelineRuns derived store', () => {
       mkRun({ id: 'r6', pipelineId: 'p1', nodeId: 'n_seg1', method: 'segment', dataSource: 'b', timestamp: 6 }),
     ]);
     pipelineSummaries.set([
-      { pipelineId: 'p1', status: 'succeeded', expected: 6, nodeOrder: ['n_load', 'n_seg1', 'n_seg2'] },
+      mkSummary({ pipelineId: 'p1', status: 'succeeded', expected: 6, nodeOrder: ['n_load', 'n_seg1', 'n_seg2'] }),
     ]);
     const p1 = get(pipelineRuns)[0];
     expect(p1.runs.map(r => r.id)).toEqual(['r4', 'r2', 'r3', 'r6', 'r5', 'r1']);

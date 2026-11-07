@@ -271,9 +271,10 @@ def build_project(scn: Scenario, *, root: Path, monkeypatch) -> Project:
                       "be blind to the sample axis of the cache key")
     method_ids = _read_method_ids(scn)
     sample_ids = _record_samples(root, scn)
+    draft_folders = _add_drafts(root, scn)
 
     口 = AutoStep(step_num=7.1, name="Translate the node specs")
-    nodes = _pipeline_nodes(scn)
+    nodes = _pipeline_nodes(scn, draft_folders)
 
     口 = AutoStep(step_num=7.2, name="Translate the declared wiring")
     links = _pipeline_links(scn)
@@ -525,8 +526,16 @@ def _record_samples(root: Path, scn: Scenario) -> dict[str, int]:
                "scenario's full sample list — its own sample list IS the "
                "bundle the loader reads to set the consumer's "
                "collapsed_samples")
-def _pipeline_nodes(scn: Scenario) -> list[dict]:
-    """Translate node specs into ``build_pipeline_json`` node dicts."""
+def _pipeline_nodes(scn: Scenario,
+                    draft_folders: dict[str, str] | None = None) -> list[dict]:
+    """Translate node specs into ``build_pipeline_json`` node dicts.
+
+    Args:
+        scn: The scenario declaration.
+        draft_folders: Node id -> its draft's folder, for the nodes pinned to
+            their method's draft (``version: "draft"`` plus ``folder``).
+    """
+    draft_folders = draft_folders or {}
     out: list[dict] = []
     for spec in scn.nodes:
         if spec.type != "method":
@@ -560,9 +569,44 @@ def _pipeline_nodes(scn: Scenario) -> list[dict]:
             entry["label"] = spec.label
         if spec.output_files:
             entry["slot_outputs"] = dict(spec.output_files)
+        if spec.id in draft_folders:
+            entry["version"], entry["folder"] = "draft", draft_folders[spec.id]
 
         out.append(entry)
     return out
+
+
+@task(purpose="Add each declared draft through Registration's own add_draft, "
+              "from the folder the harness wrote the node's method source to",
+      inputs="The project root and the scenario declaration",
+      outputs="Node id -> the draft's folder; a draft pointer per drafted "
+              "method under the artifact store",
+      critical="A rebuild over the same root rewrites the method source, so "
+               "a draft whose method.yaml the rewrite touched is updated "
+               "through Registration's update_draft, as the Registry's Update "
+               "does; a draft never runs on a stale contract")
+def _add_drafts(root: Path, scn: Scenario) -> dict[str, str]:
+    """Add the scenario's drafts and return each drafted node's folder.
+
+    Args:
+        root: Project root.
+        scn: The scenario declaration.
+
+    Returns:
+        Node id -> the draft's folder, as the document pins it.
+    """
+    if not scn.drafts:
+        return {}
+    from wfc.registration import add_draft, draft_status, update_draft
+
+    folders: dict[str, str] = {}
+    for node_id in scn.drafts:
+        spec = scn.node_by_id(node_id)
+        pointer = add_draft(spec.module, method_source_dir(root, spec), root)
+        if draft_status(pointer, root).stale:
+            update_draft(pointer.module, pointer.method, root)
+        folders[node_id] = str(pointer.folder)
+    return folders
 
 
 @task(purpose="Translate the nodes' declared wiring into pipeline links",
@@ -641,7 +685,7 @@ def _write_method(root: Path, scn: Scenario, specs: list[NodeSpec]) -> Path:
                 f"nodes {spec.id!r} and {other.id!r} share method "
                 f"{spec.method_name!r} but declare different contracts; a "
                 f"method has one contract, so declare the same slots, "
-                f"files, columns, env, executor and gpus on both"
+                f"files, options, env, executor and gpus on both"
             )
     method_dir = method_source_dir(root, spec)
     method_dir.mkdir(parents=True, exist_ok=True)
@@ -659,17 +703,30 @@ def _write_method(root: Path, scn: Scenario, specs: list[NodeSpec]) -> Path:
                       "rather than at dispatch. A slotless node still "
                       "declares a default 'data' slot, because a method.yaml "
                       "with no inputs block is not a document production "
-                      "accepts. A slot's declared columns block is dumped "
-                      "verbatim beneath it")
+                      "accepts. An output slot's declared options block is "
+                      "dumped verbatim beneath it, and a parameter's "
+                      "options_from beneath the parameter")
     input_slots = ([(w.target_slot, w.target_slot not in spec.optional_inputs)
                     for w in _unique_target_slots(spec)]
                    or [("data", False)])
+    # A slot that receives several files -- several wires, or a selector
+    # that bundles its samples -- is declared `multiple: true`, as a method
+    # that collects several files declares it; every other input takes one.
+    fan_in_ids = {n.id for n in getattr(scn, "nodes", [])
+                  if getattr(n, "fan_mode", None) == "in"}
+    wires_per_slot: dict[str, int] = {}
+    multiple_slots: set[str] = set()
+    for w in spec.inputs:
+        wires_per_slot[w.target_slot] = wires_per_slot.get(w.target_slot, 0) + 1
+        if w.bundle or w.source in fan_in_ids:
+            multiple_slots.add(w.target_slot)
+    multiple_slots |= {s for s, n in wires_per_slot.items() if n > 1}
     inputs_yaml = "".join(
-        _slot_yaml(slot, ".csv", required, spec.input_columns.get(slot))
+        _slot_yaml(slot, ".csv", required, multiple=slot in multiple_slots)
         for slot, required in input_slots
     )
     outputs_yaml = "".join(
-        _slot_yaml(slot, slot_type, True, spec.output_columns.get(slot))
+        _slot_yaml(slot, slot_type, True, spec.output_options.get(slot))
         for slot, slot_type in spec.outputs.items()
     ) or "  data:\n    type: .csv\n    required: true\n"
 
@@ -684,12 +741,14 @@ def _write_method(root: Path, scn: Scenario, specs: list[NodeSpec]) -> Path:
         + [name for params in (scn.variants or {}).values() for name in params]
         + [name for s in specs for params in (s.variants or {}).values()
            for name in params]
-        + list(spec.param_defaults))
+        + list(spec.param_defaults) + list(spec.param_options_from))
         if name not in spec.undeclared_params]
     params_yaml = ("params:\n" + "".join(
         f"  {name}:\n    type: {spec.param_types.get(name, 'any')}\n"
         + (f"    default: {json.dumps(spec.param_defaults[name])}\n"
            if name in spec.param_defaults else "")
+        + (f"    options_from: {json.dumps(spec.param_options_from[name])}\n"
+           if name in spec.param_options_from else "")
         for name in param_names)
                    if param_names else "params: {}\n")
     env_spec = spec.env or scn.env_name
@@ -731,30 +790,35 @@ def _contract_shape(spec: NodeSpec) -> tuple:
         sorted(w.target_slot for w in _unique_target_slots(spec)),
         sorted(spec.optional_inputs),
         dict(spec.outputs), dict(spec.output_files),
-        dict(spec.input_columns), dict(spec.output_columns),
+        dict(spec.output_options),
         spec.env, spec.executor, spec.gpus, dict(spec.param_defaults),
+        dict(spec.param_options_from),
     )
 
 
 def _slot_yaml(slot: str, slot_type: str, required: bool,
-               columns: dict | None) -> str:
+               options: dict | None = None, *, multiple: bool = False) -> str:
     """Render one slot's declaration for the ``inputs:`` or ``outputs:`` mapping.
 
     Args:
         slot: The slot name.
         slot_type: The declared type string (``".csv"``, ``"directory"``).
         required: Whether the slot is declared ``required``.
-        columns: The slot's ``columns`` block, or ``None`` for none. Dumped
-            verbatim beneath the slot, indented into place.
+        options: An output slot's ``options`` block, or ``None`` for none.
+            Dumped verbatim beneath the slot, indented into place.
+        multiple: Whether the input is declared ``multiple: true`` (it
+            collects several files); inputs only.
 
     Returns:
         The slot's ``method.yaml`` lines.
     """
     text = (f"  {slot}:\n    type: {slot_type}\n"
             f"    required: {'true' if required else 'false'}\n")
-    if columns:
-        dumped = yaml.safe_dump(dict(columns), sort_keys=False)
-        text += "    columns:\n" + "".join(
+    if multiple:
+        text += "    multiple: true\n"
+    if options:
+        dumped = yaml.safe_dump(dict(options), sort_keys=False)
+        text += "    options:\n" + "".join(
             f"      {line}\n" for line in dumped.splitlines()
         )
     return text
@@ -787,7 +851,24 @@ run_dir.mkdir(parents=True, exist_ok=True)
 sample = os.environ.get("WFC_SAMPLE", "")
 variant = os.environ.get("WFC_VARIANT", "")
 node_id = os.environ.get("WFC_NODE_ID", "")
-project_root = Path(__file__).resolve().parents[2]
+STATE_DIR = {state_dir!r}
+
+
+def find_project_root():
+    """The directory holding STATE_DIR, found from where the script runs.
+
+    A registered version runs from its code copy inside the project's state
+    directory (on the host, or in the container's mounted project), and so
+    does a draft: its launch copies the author's folder, which may lie
+    outside the project, into the draft's run area first. No fixed depth:
+    the script's folder is walked up until a directory holding STATE_DIR
+    appears.
+    """
+    start = Path(__file__).resolve().parent
+    for candidate in (start, *start.parents):
+        if (candidate / STATE_DIR).is_dir():
+            return candidate
+    return None
 
 # One script serves every node that names this method. The node's entry
 # resolves its behavior by sample, then by variant, then the default --
@@ -879,24 +960,44 @@ for slot, filename in BEHAVIOR["slot_files"].items():
         for child_name, child_text in children.items():
             # A child name may carry subdirectories ("nested/b.csv").
             (target / child_name).parent.mkdir(parents=True, exist_ok=True)
-            (target / child_name).write_bytes(child_text.encode("utf-8"))
+            (target / child_name).write_bytes(
+                child_text if isinstance(child_text, bytes) else child_text.encode("utf-8"))
     else:
         # write_bytes, not write_text: newline translation on Windows would
         # make the artifact's bytes platform-dependent, and a test that
         # hashes a declared output needs exactly the declared bytes.
-        target.write_bytes(content.encode("utf-8"))
+        # A bytes output (an image) is written as it is; repr carries it
+        # into the generated script.
+        target.write_bytes(content if isinstance(content, bytes) else content.encode("utf-8"))
+
+for slot in BEHAVIOR["listed"]:
+    manifest_outputs[slot] = [manifest_outputs.get(slot, BEHAVIOR["slot_files"][slot])]
 
 if BEHAVIOR["write_manifest"]:
     (run_dir / "_wfc_results.json").write_text(
         json.dumps({{"outputs": manifest_outputs, "metrics": BEHAVIOR["metrics"]}})
     )
 
-for rel in BEHAVIOR["delete_paths"]:
-    victim = project_root / rel
-    if victim.is_dir():
-        shutil.rmtree(victim, ignore_errors=True)
-    elif victim.exists():
-        victim.unlink()
+if BEHAVIOR["delete_paths"]:
+    project_root = find_project_root()
+    if project_root is None:
+        sys.stderr.write(
+            "delete_paths: no project root (a directory holding %s) above %s\\n"
+            % (STATE_DIR, Path(__file__).resolve().parent)
+        )
+        sys.exit(2)
+    for rel in BEHAVIOR["delete_paths"]:
+        victim = project_root / rel
+        if victim.is_dir():
+            shutil.rmtree(victim)
+        elif victim.exists():
+            victim.unlink()
+        else:
+            sys.stderr.write(
+                "delete_paths: %r names no path under the project root %s\\n"
+                % (rel, project_root)
+            )
+            sys.exit(2)
 
 for name in BEHAVIOR["write_beside_script"]:
     (Path(__file__).resolve().parent / name).write_text("written by the run\\n")
@@ -940,7 +1041,9 @@ def _stub_script(specs: list[NodeSpec]) -> str:
         }
         for spec in specs
     }
-    return _STUB_TEMPLATE.format(by_node=repr(by_node))
+    return _STUB_TEMPLATE.format(
+        by_node=repr(by_node), state_dir=_layout().STATE_DIR_NAME
+    )
 
 
 def _behavior_payload(spec: NodeSpec, behavior) -> dict:
@@ -977,6 +1080,7 @@ def _behavior_payload(spec: NodeSpec, behavior) -> dict:
         "saved": dict(behavior.saved_files or {}),
         "delete_paths": list(behavior.delete_paths),
         "write_beside_script": list(behavior.write_beside_script),
+        "listed": list(behavior.listed_outputs),
         "slot_files": slot_files,
         "dir_slots": {
             slot: str(t).lower() in ("directory", "dir")

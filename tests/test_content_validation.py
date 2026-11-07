@@ -1,110 +1,86 @@
+"""Contracts unit: resolving an output's ``options`` block.
+
+``resolve_options`` turns an output's declared ``options`` and the
+upstream's param sets into the ordered answer the canvas's picker shows:
+the fixed names as declared, one built group per ``from_params`` entry,
+and the patterns as written. Catalog: ``option-resolution``.
 """
-Unit tests for content-level contract validation.
-
-Tests cover:
-  - Column resolution engine (strict, from_params, patterns)
-  - CSV/Parquet header reading
-  - Input validation gate (hard gate before method execution)
-  - Output soft validation (warnings after method execution)
-  - Directory content assertions
-  - Static cross-step column validation at pipeline-load time
-
-Test budget: ~18 tests across all subsystems.
-"""
-
 
 import pytest
+from axiom_annotations import workflow
+
+from wfc.contracts import resolve_options
 
 
-# =============================================================================
-# Column resolution engine
-# =============================================================================
-
-class TestColumnResolution:
-    """Column resolution from method.yaml column specs."""
-
-    @pytest.mark.parametrize("spec, params, expected", [
-        # strict columns returned verbatim
-        ({"strict": ["label", "area", "centroid-0"]}, {},
-         {"label", "area", "centroid-0"}),
-        # from_params single scalar -> one column
-        ({"from_params": [{"params": ["marker"], "pattern": "{}_nuc_mean"}]},
-         {"marker": "DAPI"}, {"DAPI_nuc_mean"}),
-        # from_params single list -> each value
-        ({"from_params": [{"params": ["features"], "pattern": "{}"}]},
-         {"features": ["DAPI_mean", "p27_mean"]}, {"DAPI_mean", "p27_mean"}),
-        # two list params -> cartesian product
-        ({"from_params": [{"params": ["markers", "measurements"], "pattern": "{}_{}"}]},
-         {"markers": ["DAPI", "p27"], "measurements": ["nuc_mean", "nuc_median"]},
-         {"DAPI_nuc_mean", "DAPI_nuc_median", "p27_nuc_mean", "p27_nuc_median"}),
-        # strict + from_params are unioned
-        ({"strict": ["label"],
-          "from_params": [{"params": ["marker"], "pattern": "{}_nuc_mean"}]},
-         {"marker": "DAPI"}, {"label", "DAPI_nuc_mean"}),
-    ])
-    def test_resolve_columns(self, spec, params, expected):
-        """resolve_columns handles strict, from_params (scalar/list/cartesian),
-        and their union."""
-        from wfc.contracts import resolve_columns
-        assert resolve_columns(spec, params=params) == expected
-
-    @pytest.mark.parametrize("spec", [
-        {},
-        None,
-        # a from_params referencing a param that isn't provided contributes nothing
-        {"from_params": [{"params": ["missing_param"], "pattern": "{}_nuc_mean"}]},
-    ])
-    def test_resolve_columns_empty_when_nothing_to_resolve(self, spec):
-        """Empty/None spec and unresolvable from_params both yield an empty set."""
-        from wfc.contracts import resolve_columns
-        assert resolve_columns(spec, params={}) == set()
+OPTIONS = {
+    "fixed": ["label", "area", "DAPI_nuc_mean"],
+    "from_params": [
+        {"params": ["marker"], "pattern": "{}_nuc_mean"},
+        {"params": ["markers", "stats"], "pattern": "{}_{}"},
+        {"params": ["missing"], "pattern": "{}_never"},
+    ],
+    "patterns": ["*_mean", "*_std", "*_mean"],
+}
 
 
-# =============================================================================
-# Static cross-step validation
-# =============================================================================
+@workflow(purpose="An output's options resolve in declaration order over "
+                  "every param set: the fixed names as declared, then one "
+                  "built group per from_params entry with its parameters and "
+                  "the names its pattern expands to (each list value an item, "
+                  "several parameters their cartesian product), first seen "
+                  "across the sets; a name appears once, where it first "
+                  "occurs; an entry with a parameter unset adds nothing; "
+                  "patterns are kept as written and never expanded",
+          inputs="An options block with fixed names, a one- and a "
+                 "two-parameter from_params entry, an entry whose parameter "
+                 "no set holds, and patterns; two param sets",
+          outputs="fixed, built [{params, names}], patterns and all, ordered")
+def test_options_resolve_in_order_over_every_param_set():
+    """Fixed, then built per entry, then patterns; each name once."""
+    base = {"marker": "DAPI", "markers": ["p27", "CycD1"], "stats": ["mean"]}
+    variant = {"marker": "p27", "markers": ["p27"], "stats": ["mean", "std"]}
 
-class TestStaticCrossStepValidation:
-    """Cross-step column compatibility checked at pipeline-load time."""
+    answer = resolve_options(OPTIONS, [base, variant])
 
-    def test_cross_check_compatible_columns(self):
-        """No warning when upstream output columns are a superset of downstream input."""
-        from wfc.contracts import cross_check_columns
+    assert answer["fixed"] == ["label", "area", "DAPI_nuc_mean"]
+    assert answer["built"] == [
+        # DAPI_nuc_mean is already fixed, so only the variant's name is built.
+        {"params": ["marker"], "names": ["p27_nuc_mean"]},
+        {"params": ["markers", "stats"],
+         "names": ["p27_mean", "CycD1_mean", "p27_std"]},
+    ]
+    assert answer["patterns"] == ["*_mean", "*_std"]
+    assert answer["all"] == ["label", "area", "DAPI_nuc_mean", "p27_nuc_mean",
+                             "p27_mean", "CycD1_mean", "p27_std"]
 
-        upstream_output = {"strict": ["label", "area", "centroid-0"]}
-        downstream_input = {"strict": ["label", "area"]}
 
-        warnings = cross_check_columns(upstream_output, downstream_input)
-        assert warnings == []
+def test_a_name_two_entries_build_is_kept_under_the_first():
+    """The first entry that builds a name keeps it; a later one drops it."""
+    options = {"from_params": [{"params": ["a"], "pattern": "{}"},
+                               {"params": ["b"], "pattern": "{}"}]}
 
-    def test_cross_check_missing_columns_warns(self):
-        """Warning produced when downstream needs columns upstream does not declare."""
-        from wfc.contracts import cross_check_columns
+    answer = resolve_options(options, [{"a": "x", "b": ["x", "y"]}])
 
-        upstream_output = {"strict": ["label", "area"]}
-        downstream_input = {"strict": ["label", "area", "DAPI_nuc_mean"]}
+    assert answer["built"] == [{"params": ["a"], "names": ["x"]},
+                               {"params": ["b"], "names": ["y"]}]
 
-        warnings = cross_check_columns(upstream_output, downstream_input)
-        assert len(warnings) == 1
-        assert "DAPI_nuc_mean" in warnings[0]
 
-    def test_cross_check_with_an_absent_spec_returns_no_messages(self):
-        """Either side's spec being None yields an empty list, not an error."""
-        from wfc.contracts import cross_check_columns
+def test_a_single_param_set_may_be_passed_as_a_mapping():
+    """One mapping reads as one param set."""
+    options = {"from_params": [{"params": ["marker"], "pattern": "{}_mean"}]}
 
-        spec = {"strict": ["label", "area"]}
+    assert resolve_options(options, {"marker": "DAPI"})["all"] == ["DAPI_mean"]
 
-        assert cross_check_columns(None, spec) == []
-        assert cross_check_columns(spec, None) == []
-    def test_cross_check_skips_from_params(self):
-        """from_params columns are not checked statically (deferred to runtime)."""
-        from wfc.contracts import cross_check_columns
 
-        upstream_output = {"strict": ["label"]}
-        downstream_input = {
-            "strict": ["label"],
-            "from_params": [{"params": ["marker"], "pattern": "{}_nuc_mean"}],
-        }
-
-        warnings = cross_check_columns(upstream_output, downstream_input)
-        assert warnings == []
+@pytest.mark.parametrize("options, params", [
+    pytest.param({}, {}, id="empty-block"),
+    pytest.param(None, {}, id="no-block"),
+    pytest.param({"from_params": [{"params": ["marker"], "pattern": "{}_mean"}]},
+                 {}, id="parameter-absent"),
+    pytest.param({"from_params": [{"params": ["marker"], "pattern": "{}_mean"}]},
+                 {"marker": None}, id="parameter-null"),
+])
+def test_nothing_to_resolve_answers_empty_groups(options, params):
+    """No block, or an entry whose parameter is unset, builds nothing."""
+    assert resolve_options(options, [params]) == {
+        "fixed": [], "built": [], "patterns": [], "all": []}

@@ -204,7 +204,10 @@ class TestErrorCapture:
     to the run-step command."""
 
     def test_complete_run_accepts_error_args(self, tmp_project, cli):
-        """complete_run CLI should accept --error and --traceback args."""
+        """complete_run stores a failed run's error and traceback."""
+        from wfc.execution.claim import register_run
+        from wfc.execution.record import complete_run
+
         # Register a module, method, and run first
         cli("register-module", "--name", "test_mod",
             "--contracts", "[]")
@@ -212,16 +215,12 @@ class TestErrorCapture:
                   "--module", "test_mod", "--name", "test_meth",
                   "--script", "transform.py")
         assert reg.returncode == 0, f"register-method failed: {reg.stderr}"
-        result = cli("register_run", "--method", "test_meth",
-                      "--module", "test_mod", "--sample", "s1")
-        run_id = result.stdout.strip()
+        run_id = register_run("test_meth", "test_mod", "s1")
 
         # Complete with error
-        result = cli("complete_run", "--run-id", run_id,
-                      "--status", "failed",
-                      "--error", "something went wrong",
-                      "--traceback", "Traceback line 1\nline 2")
-        assert result.returncode == 0
+        complete_run(run_id=run_id, status="failed",
+                     error_message="something went wrong",
+                     error_traceback="Traceback line 1\nline 2")
 
         # Verify the error fields are stored
         from wfc.persistence import get_session

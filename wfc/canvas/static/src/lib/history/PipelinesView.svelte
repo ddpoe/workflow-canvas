@@ -43,16 +43,16 @@
   .pipelines-view { display: flex; flex-direction: column; gap: 4px; }
   .toolbar-row { display: flex; justify-content: flex-end; padding: 4px 0; }
   .refresh {
-    background: var(--bg-header, #2d2d30);
-    border: 1px solid var(--border, #3e3e42);
-    color: var(--text-primary, #ccc);
+    background: var(--bg-header);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
     border-radius: 3px;
     font-size: 11px;
     padding: 4px 10px;
     cursor: pointer;
     font-family: inherit;
   }
-  .refresh:hover { border-color: var(--accent, #4A90D9); }
+  .refresh:hover { border-color: var(--accent); }
   /* The rows' 1px border plus their 12px padding, so the header's tracks
      start where the rows' do. */
   .col-header {
@@ -60,9 +60,9 @@
     font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.6px;
-    color: var(--text-muted, #666);
-    border-bottom: 1px solid var(--border, #3e3e42);
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
   }
   .right { text-align: right; }
-  .empty { padding: 40px; text-align: center; color: var(--text-muted, #666); font-size: 13px; }
+  .empty { padding: 40px; text-align: center; color: var(--text-muted); font-size: 13px; }
 </style>

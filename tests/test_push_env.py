@@ -6,7 +6,10 @@ pushed, and reports by name (exit 1) an image that is neither. The first run
 with no ``[registry] url`` proposes ``ghcr.io/<owner>/<repo>`` from a GitHub
 remote (or takes ``--registry``), states it, asks, writes the base and
 commits it with the push records; a later change of git remote never moves
-it, and a ``--registry`` naming another base is refused.
+it. A ``--registry`` naming another base asks to switch: the old base is
+written into every push record that names none, the new base is set and
+committed, and the images recorded at another base are pushed again (pulled
+from there by digest and checked first when they are not on this machine).
 
 Projects come from the shared fixtures (``tmp_project``, which runs ``wfc
 init``, and the harness's ``build_project`` for method versions); envs and
@@ -31,8 +34,10 @@ from tests.fixtures.fakes import (
     stub_docker_image_labels,
     stub_docker_pull,
     stub_docker_push,
+    stub_docker_read_manifest,
     stub_docker_repo_digest,
     stub_docker_tag,
+    stub_gh,
     stub_readiness_probes,
     stub_terminal,
 )
@@ -94,27 +99,33 @@ def _config(project: Path) -> Path:
 
 
 class _Docker:
-    """A daemon holding the image IDs in *held*; tag and push recorded.
+    """A daemon holding the image IDs in *held*, and a registry; tag, push and pull recorded.
 
-    A build gives the image it makes (the current one) the labels it was
-    handed; any other image carries none. A tag is another name for its
-    source, and a build of a ``FROM``-only context (the labelled copy a push
-    makes) has its ``FROM`` image's content: the content stub installed
-    before this daemon is asked for the name's source.
+    A build makes the image ``built`` names (the current one unless a test
+    changes it) and gives it the labels it was handed; any other image
+    carries none. A tag is another name for its source, and a build of a
+    ``FROM``-only context (the labelled copy a push makes) has its ``FROM``
+    image's content: the content stub installed before this daemon is
+    asked for the name's source. A push stores its source in ``registry``
+    under ``<repository>@<the pushed digest>``, and a pull of that ref makes
+    it another name for what the registry holds.
     """
 
     def __init__(self, monkeypatch, held: set[str] | None = None) -> None:
         from wfc.environments import docker as docker_runner
 
         self.held = held
+        self.built = CURRENT
         self.tags: list[tuple[str, str]] = []
         self.pushes: list[str] = []
+        self.pulls: list[str] = []
+        self.registry: dict[str, str] = {}
         self.built_labels: dict[str, str] = {}
         self.copies: dict[str, dict[str, str]] = {}
         self.names: dict[str, str] = {}
         content = docker_runner.image_content
         stub_docker_build(monkeypatch, self._build)
-        stub_docker_pull(monkeypatch)
+        stub_docker_pull(monkeypatch, self._pull)
         stub_docker_image_inspect(monkeypatch, self._inspect)
         stub_docker_image_content(monkeypatch,
                                   lambda ref: content(self._source(ref)))
@@ -148,8 +159,10 @@ class _Docker:
         return dict(self.built_labels) if CURRENT in self._source(ref) else {}
 
     def _inspect(self, ref: str) -> str:
-        if self.held is None or ref.endswith(":_wfc-build"):
-            return "sha256:" + CURRENT  # a build makes the current image
+        if ref.endswith(":_wfc-build"):
+            return "sha256:" + self.built
+        if self.held is None:
+            return "sha256:" + CURRENT
         for image_id in self.held:
             if image_id in ref:
                 return image_id
@@ -157,7 +170,15 @@ class _Docker:
 
     def _push(self, ref: str) -> str:
         self.pushes.append(ref)
+        repository = ref.rsplit(":", 1)[0]
+        self.registry[f"{repository}@{FAKE_PUSHED_DIGEST}"] = self._source(ref)
         return FAKE_PUSHED_DIGEST
+
+    def _pull(self, ref: str) -> None:
+        self.pulls.append(ref)
+        if ref not in self.registry:
+            raise RuntimeError(f"Error response from daemon: manifest unknown: {ref}")
+        self.names[ref] = self.registry[ref]
 
 
 def _lock(tmp_path_factory) -> Path:
@@ -309,9 +330,10 @@ def test_push_all_pushes_what_is_local_and_names_what_is_gone(
                   "ghcr.io/<owner>/<repo> from an SSH GitHub remote, refuses "
                   "with no terminal and no --yes before anything is written, "
                   "and with --yes writes the base and commits it with the push "
-                  "record; a later change of remote does not move the base, "
-                  "and a --registry naming another base is refused, saying "
-                  "the base cannot be changed, while the same base is accepted")
+                  "record; a later change of remote does not move the base; a "
+                  "--registry naming another base states the switch and, with "
+                  "no terminal and no --yes, writes nothing, while the same "
+                  "base is accepted")
 def test_the_first_push_sets_the_base_once(tmp_project, monkeypatch, capsys,
                                            tmp_path_factory):
     lock = _lock(tmp_path_factory)
@@ -364,12 +386,17 @@ def test_the_first_push_sets_the_base_once(tmp_project, monkeypatch, capsys,
     assert _config(tmp_project).read_bytes() == config_set
 
     口 = Step(step_num=5, name="--registry against a set base",
-             purpose="Another base is refused, saying the base cannot be "
-                     "changed; the same one is accepted")
+             purpose="Another base is stated as a switch and asked about, so "
+                     "with no terminal and no --yes nothing is written; the "
+                     "same base is accepted")
     head = _git(tmp_project, "rev-parse", "HEAD")
+    captures = _tree_bytes(tmp_project / ".wfc" / "captures")
     capsys.readouterr()
-    assert _push_env("other", "--registry", "ghcr.io/other/thing", "--yes") == 1
-    assert "cannot be changed once set" in capsys.readouterr().err
+    assert _push_env("other", "--registry", "ghcr.io/other/thing") == 1
+    out, err = capsys.readouterr()
+    assert "switch" in out and "ghcr.io/lab/tools" in out
+    assert "ghcr.io/other/thing" in out and "--yes" in err
+    assert _tree_bytes(tmp_project / ".wfc" / "captures") == captures
     assert _push_env("other", "--registry", "ghcr.io/lab/tools", "--yes") == 0
     assert _config(tmp_project).read_bytes() == config_set
     assert _git(tmp_project, "rev-parse", "HEAD") == head
@@ -399,6 +426,219 @@ def test_no_github_remote_needs_registry(tmp_project, monkeypatch, capsys,
     from wfc.persistence import read_config
     assert read_config(tmp_project)["registry"] == {"url": "localhost:5000/lab"}
     assert docker.pushes[0].startswith("localhost:5000/lab/tools:fp-")
+
+
+OLD_BASE = "registry.lab.example/tools"
+NEW_BASE = "ghcr.io/lab/tools"
+
+
+def _envs_pushed_to_the_old_base(project: Path, monkeypatch, lock: Path,
+                                 images: dict[str, str]):
+    """Register each env as its image ID, unpushed, then push them all to OLD_BASE.
+
+    Returns the daemon (holding every image) and each env's fingerprint.
+    """
+    stub_readiness_probes(monkeypatch, docker="ok")
+    stub_docker_image_content(monkeypatch,
+                              lambda ref: {"layers": [f"layer-of-{ref}"]})
+    docker = _Docker(monkeypatch)
+    for env, image_id in images.items():
+        docker.built = image_id
+        assert _register_env_cli(env, "--from", str(lock), "--backend", "pixi") == 0
+    fingerprints = {env: _record(project, env)["env_fingerprint"] for env in images}
+    assert _push_env("--all", "--registry", OLD_BASE, "--yes") == 0
+    return docker, fingerprints
+
+
+def _every_record(project: Path) -> dict[str, Path]:
+    """Every env's current ``pushed.json`` path, the project's own env included."""
+    envs = json.loads((project / ".wfc" / "envs.json").read_text(
+        encoding="utf-8"))["envs"]
+    return {env: _pushed(project, env, record["env_fingerprint"])
+            for env, record in envs.items()}
+
+
+def _held_except(project: Path, gone: str) -> set[str]:
+    """The image IDs of every env's current image but *gone*'s."""
+    envs = json.loads((project / ".wfc" / "envs.json").read_text(
+        encoding="utf-8"))["envs"]
+    return {record["container"].rsplit("@", 1)[1]
+            for env, record in envs.items() if env != gone}
+
+
+@workflow(purpose="A --registry naming another base asks to switch; confirmed, "
+                  "it sets and commits the new base and pushes the named "
+                  "env's image there, recording the new base; every other "
+                  "record still names the old base with its digest, no "
+                  "identity moves, an image not yet pushed again is pulled "
+                  "from the old base and show-env says so, and re-registering "
+                  "it pushes it to the new base")
+def test_a_switch_commits_the_new_base_and_each_record_keeps_its_own(
+        tmp_project, monkeypatch, capsys, tmp_path_factory):
+    from wfc.cli import cli_main
+    from wfc.environments import pullable_ref
+    from wfc.persistence import read_config
+
+    口 = Step(step_num=1, name="Two envs pushed to the old base",
+             purpose="Each push record names the base it was pushed to")
+    lock = _lock(tmp_path_factory)
+    docker, fingerprints = _envs_pushed_to_the_old_base(
+        tmp_project, monkeypatch, lock, {"tools": OLDER, "other": GONE})
+    records = _every_record(tmp_project)
+    assert len(records) == 3  # the project's own env was pushed too
+    assert all(json.loads(p.read_text(encoding="utf-8"))["base"] == OLD_BASE
+               for p in records.values())
+    envs_json = (tmp_project / ".wfc" / "envs.json").read_bytes()
+    images = {env: (records[env].parent / "image.json").read_bytes()
+              for env in fingerprints}
+
+    口 = Step(step_num=2, name="push-env tools --registry <new base> --yes",
+             purpose="The plan states the switch; tools is pushed to the new base")
+    capsys.readouterr()
+    assert _push_env("tools", "--registry", NEW_BASE, "--yes") == 0
+    out = capsys.readouterr().out
+    assert "switch" in out and OLD_BASE in out and NEW_BASE in out
+    assert docker.pushes[-1] == f"{NEW_BASE}/tools:fp-{fingerprints['tools'][:12]}"
+
+    口 = Step(step_num=3, name="Every record says where its image is",
+             purpose="Every other env's record still names the old base; tools' "
+                     "new record names the new one; the digests are kept; the "
+                     "new base is committed with tools' record")
+    for env, path in records.items():
+        record = json.loads(path.read_text(encoding="utf-8"))
+        assert record["digest"] == FAKE_PUSHED_DIGEST
+        assert record["base"] == (NEW_BASE if env == "tools" else OLD_BASE)
+    assert read_config(tmp_project)["registry"] == {"url": NEW_BASE}
+    assert _committed(tmp_project) == {
+        ".wfc/wf-canvas.toml", records["tools"].relative_to(tmp_project).as_posix()}
+
+    口 = Step(step_num=4, name="No identity moved; each image pulls from its base",
+             purpose="envs.json and image.json are byte-identical; other's image "
+                     "is pulled from the old base until it is pushed again")
+    assert (tmp_project / ".wfc" / "envs.json").read_bytes() == envs_json
+    assert {env: (records[env].parent / "image.json").read_bytes()
+            for env in images} == images
+    container = {env: _record(tmp_project, env)["container"] for env in fingerprints}
+    assert pullable_ref("other", fingerprints["other"], container["other"],
+                        tmp_project) == f"{OLD_BASE}/other@{FAKE_PUSHED_DIGEST}"
+    assert pullable_ref("tools", fingerprints["tools"], container["tools"],
+                        tmp_project) == f"{NEW_BASE}/tools@{FAKE_PUSHED_DIGEST}"
+
+    口 = Step(step_num=5, name="show-env says where each image is",
+             purpose="other is not pushed to the new base, and its pushed_ref "
+                     "names the old one; tools is pushed, at the new base")
+    capsys.readouterr()
+    assert cli_main(["show-env", "other"]) == 0
+    other_lines = capsys.readouterr().out
+    assert "not pushed" in other_lines
+    assert f"{OLD_BASE}/other@{FAKE_PUSHED_DIGEST}" in other_lines
+    assert cli_main(["show-env", "tools"]) == 0
+    assert f"{NEW_BASE}/tools@{FAKE_PUSHED_DIGEST}" in capsys.readouterr().out
+
+    口 = Step(step_num=6, name="Re-registering other pushes it to the new base",
+             purpose="register-env --force of the same image finds its record "
+                     "at the old base, pushes it and records the new base")
+    docker.built = GONE
+    assert _register_env_cli("other", "--from", str(lock), "--backend", "pixi",
+                             "--force") == 0
+    assert docker.pushes[-1] == f"{NEW_BASE}/other:fp-{fingerprints['other'][:12]}"
+    assert json.loads(records["other"].read_text(encoding="utf-8"))["base"] == NEW_BASE
+
+
+@workflow(purpose="After a switch, doctor and share name each image recorded "
+                  "at another base with that base, and push-env --all pushes "
+                  "every such image to the new one: a local image from the "
+                  "daemon, and one no longer on this machine pulled from its "
+                  "recorded base by digest, checked against its env "
+                  "fingerprint and pushed from there; the new records are "
+                  "committed and an image already at the new base is not "
+                  "pushed again")
+def test_push_all_after_a_switch_pushes_local_and_pulled_images(
+        tmp_project, monkeypatch, capsys, tmp_path_factory):
+    口 = Step(step_num=1, name="Three envs at the old base, then a switch",
+             purpose="push-env tools --registry moves the base and pushes tools; "
+                     "other's image then leaves this machine")
+    docker, fingerprints = _envs_pushed_to_the_old_base(
+        tmp_project, monkeypatch, _lock(tmp_path_factory),
+        {"tools": OLDER, "other": GONE, "third": CURRENT})
+    assert _push_env("tools", "--registry", NEW_BASE, "--yes") == 0
+    docker.held = _held_except(tmp_project, "other")
+    records = _every_record(tmp_project)
+    moved = sorted(env for env in records if env != "tools")
+    pushes_before = len(docker.pushes)
+
+    口 = Step(step_num=2, name="doctor and share name the images at the old base",
+             purpose="Each is pushed to another registry, not to the new base, "
+                     "and named with the base it is at")
+    from wfc.execution.readiness import check_registry, share_checks
+    stub_docker_read_manifest(monkeypatch, "found")
+    stub_gh(monkeypatch)
+    share = next(row for row in share_checks(tmp_project) if row.name == "images")
+    for row, where in ((check_registry(tmp_project), f"the registry {NEW_BASE}"),
+                       (share, NEW_BASE)):
+        assert row.status == "warn"
+        assert (f"{len(moved)} env image(s) are pushed to another registry, "
+                f"not to {where}:") in row.message
+        assert f"other:fp-{fingerprints['other'][:12]} (at {OLD_BASE})" in row.message
+        assert "on this machine are not in" not in row.message
+
+    口 = Step(step_num=3, name="push-env --all --yes",
+             purpose="The local images (third, the project's own env) are "
+                     "pushed from the daemon; other is pulled by its old-base "
+                     "digest, checked and pushed; tools is skipped")
+    capsys.readouterr()
+    assert _push_env("--all", "--yes") == 0
+    out = capsys.readouterr().out
+    pulled = f"{OLD_BASE}/other@{FAKE_PUSHED_DIGEST}"
+    assert docker.pulls == [pulled]
+    tag = {env: f"{NEW_BASE}/{env}:{json.loads(records[env].read_text(encoding='utf-8'))['tag']}"
+           for env in records}
+    assert sorted(docker.pushes[pushes_before:]) == sorted(tag[env] for env in moved)
+    assert (pulled, tag["other"]) in docker.tags
+    assert (f"sha256:{CURRENT}", tag["third"]) in docker.tags
+    assert f"already pushed: tools:fp-{fingerprints['tools'][:12]}" in out
+
+    口 = Step(step_num=4, name="The new records are at the new base, and committed",
+             purpose="Each names the new base; the commit holds exactly them")
+    for env in moved:
+        assert json.loads(records[env].read_text(encoding="utf-8"))["base"] == NEW_BASE
+    assert _committed(tmp_project) == {
+        records[env].relative_to(tmp_project).as_posix() for env in moved}
+
+
+@workflow(purpose="A pulled image whose content renders another env "
+                  "fingerprint than its record's stops push-env before "
+                  "anything is pushed, written or committed, naming the image")
+def test_a_pulled_image_with_other_content_changes_nothing(
+        tmp_project, monkeypatch, capsys, tmp_path_factory):
+    口 = Step(step_num=1, name="Two envs at the old base, then a switch",
+             purpose="other's image leaves this machine, and the old base now "
+                     "holds other content under its digest")
+    docker, fingerprints = _envs_pushed_to_the_old_base(
+        tmp_project, monkeypatch, _lock(tmp_path_factory),
+        {"tools": OLDER, "other": GONE, "third": CURRENT})
+    assert _push_env("tools", "--registry", NEW_BASE, "--yes") == 0
+    docker.held = _held_except(tmp_project, "other")
+    pulled = f"{OLD_BASE}/other@{FAKE_PUSHED_DIGEST}"
+    docker.registry[pulled] = "sha256:" + "9" * 64
+    head = _git(tmp_project, "rev-parse", "HEAD")
+    captures = _tree_bytes(tmp_project / ".wfc" / "captures")
+    pushes_before, tags_before = len(docker.pushes), len(docker.tags)
+
+    口 = Step(step_num=2, name="push-env --all --yes",
+             purpose="The pull is checked and refused before any push")
+    capsys.readouterr()
+    assert _push_env("--all", "--yes") == 1
+    err = capsys.readouterr().err
+    assert "other" in err and fingerprints["other"] in err
+    assert "its content renders env fingerprint" in err
+
+    口 = Step(step_num=3, name="Nothing changed",
+             purpose="No push, no tag, every capture byte as it was, no commit")
+    assert docker.pulls == [pulled]
+    assert len(docker.pushes) == pushes_before and len(docker.tags) == tags_before
+    assert _tree_bytes(tmp_project / ".wfc" / "captures") == captures
+    assert _git(tmp_project, "rev-parse", "HEAD") == head
 
 
 def test_push_env_needs_a_name_or_all(tmp_project, monkeypatch, capsys):

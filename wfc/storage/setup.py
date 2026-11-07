@@ -69,8 +69,8 @@ def _remote_path(project_dir: Path) -> Path | None:
 
     Returns a Path for file://, plain local paths, and legacy
     ``remote_path`` configs.  Returns None for non-local schemes
-    (ssh://, s3://, ...), which ``check_remote_reachable`` probes through
-    ``wfc.storage.transport`` instead, and for an unconfigured project.
+    (ssh://, s3://, ...), which have no filesystem path, and for an
+    unconfigured project.
     """
     try:
         dvc_config = ensure_dvc_ready(project_dir)
@@ -81,7 +81,7 @@ def _remote_path(project_dir: Path) -> Path | None:
     return layout.remote_path_from_url(url, project_dir)
 
 
-def ensure_dvc_ready(project_dir: Path) -> dict:
+def ensure_dvc_ready(project_dir: Path, *, warn_drift: bool = True) -> dict:
     """Validate that DVC is configured for multi-backend storage.
 
     Checks prerequisites:
@@ -91,11 +91,13 @@ def ensure_dvc_ready(project_dir: Path) -> dict:
     3. ``.dvc/config`` declares at least one remote (any URL scheme).
 
     Any DVC-native backend is accepted (file://, s3://, ssh://, gs://,
-    azure://, ...); ``remote_type`` is not checked.  Warns (does not error)
-    on drift between ``[dvc] url`` and ``.dvc/config``.
+    azure://, ...); ``remote_type`` is not checked.  Warns on stderr (does
+    not error) on drift between ``[dvc] url`` and ``.dvc/config``.
 
     Args:
         project_dir: Root directory of the wfc project.
+        warn_drift: Print the drift warning.  ``False`` for a caller whose
+            next step validates again and warns there.
 
     Returns:
         Dict with the parsed DVC config (url, auto_init, plus any legacy keys).
@@ -141,6 +143,8 @@ def ensure_dvc_ready(project_dir: Path) -> dict:
 
     # 4. Warn (do not error) on drift between [dvc] url and .dvc/config
     # default remote.  This catches the rare case where the two diverge.
+    if not warn_drift:
+        return dvc_config
     try:
         import configparser as _cp
         parser = _cp.ConfigParser()
@@ -261,10 +265,11 @@ def check_remote_reachable(project_dir: Path) -> tuple[bool, str]:
         Tuple of (reachable, reason).  ``reason`` is empty when reachable.
     """
     try:
-        ensure_dvc_ready(project_dir)
+        dvc_config = ensure_dvc_ready(project_dir)
     except DvcNotConfiguredError as exc:
         return False, f"DVC remote not configured: {exc}"
-    remote = _remote_path(project_dir)
+    url = dvc_config.get("url") or dvc_config.get("remote_path") or ""
+    remote = layout.remote_path_from_url(url, Path(project_dir))
     if remote is None:
         from .transport import probe_remote
         return probe_remote(project_dir)

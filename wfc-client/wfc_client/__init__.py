@@ -23,8 +23,11 @@ recorder: it never copies, reads, or serializes your data bytes.
 
 from __future__ import annotations
 
-from .context import RunContext
+from .context import InputPath, RunContext
 from .decorator import method
 from .main import run
 
-__all__ = ["method", "run", "RunContext"]
+# The package version; kept equal to ``version`` in wfc-client/pyproject.toml.
+__version__ = "0.3.1b1"
+
+__all__ = ["method", "run", "RunContext", "InputPath"]

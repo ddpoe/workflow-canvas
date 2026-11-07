@@ -76,7 +76,6 @@ def test_run_pipeline_substitutes_variables_before_the_load(git_project, monkeyp
         run_pipeline(
             pipeline_path=str(project.pipeline_json),
             project_root=str(project.root),
-            wfc_root=str(project.root),
             pipeline_id=pid,
         )
 
@@ -110,7 +109,6 @@ def test_run_pipeline_substitutes_variables_before_the_load(git_project, monkeyp
             run_pipeline(
                 pipeline_path=str(project.pipeline_json),
                 project_root=str(project.root),
-                wfc_root=str(project.root),
                 pipeline_id="pipe-variables-2",
             )
     spawn.assert_not_called()

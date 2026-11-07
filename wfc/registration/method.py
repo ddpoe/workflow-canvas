@@ -23,7 +23,11 @@ from axiom_annotations import AutoStep, Step, task, workflow
 from sqlmodel import Session, select
 
 from .. import layout
-from ..contracts import declared_default_refusals, parse_method_yaml
+from ..contracts import (
+    declared_default_refusals,
+    parse_method_yaml,
+    retired_form_refusals,
+)
 from ..persistence import (
     Method,
     Module,
@@ -114,6 +118,8 @@ def _locate_and_scan(
     method_dir: Path,
     method_name: str,
     script_name: str | None,
+    *,
+    quiet: bool = False,
 ) -> _LocatedScript:
     """Step 2: find the method's script and, for Python, scan it.
 
@@ -128,6 +134,8 @@ def _locate_and_scan(
         method_dir: The method directory, resolved.
         method_name: The method's name.
         script_name: An explicit script filename, or ``None``.
+        quiet: Print no ``Scanned``/``Located`` line (a draft's read-only
+            re-read).
 
     Returns:
         The located script, its contract, its helpers and its scan.
@@ -154,13 +162,15 @@ def _locate_and_scan(
     is_python = script_path.suffix == ".py"
     if is_python:
         script_info = scan_script(script_path)
-        print(f"Scanned {script_path}: {len(script_info.functions)} function(s)")
+        if not quiet:
+            print(f"Scanned {script_path}: {len(script_info.functions)} function(s)")
     else:
         # Non-Python method: extension-only detection, no content sniffing.
         # Tracked-function metadata stays empty; the env record's interpreter
         # runs the script at dispatch time.
         script_info = None
-        print(f"Located {script_path}: non-Python script (AST scan skipped)")
+        if not quiet:
+            print(f"Located {script_path}: non-Python script (AST scan skipped)")
 
     return _LocatedScript(
         script_path=script_path,
@@ -206,7 +216,8 @@ def _resolve_module(session: Session, module_name: str) -> Module:
     inputs="method name, parsed method.yaml",
     outputs="nothing; a refusal raises",
 )
-def _check_method_env(method_name: str, contract_data: dict | None) -> None:
+def _check_method_env(method_name: str, contract_data: dict | None, *,
+                      quiet: bool = False) -> None:
     """Check the method names a built container env.
 
     Execution is container-only, so a method must name a built container
@@ -217,6 +228,8 @@ def _check_method_env(method_name: str, contract_data: dict | None) -> None:
     Args:
         method_name: The method's name.
         contract_data: The parsed ``method.yaml``, or ``None``.
+        quiet: Print no ``Env: ... (validated)`` line (a draft's read-only
+            re-read).
 
     Raises:
         ValueError: If the method has no ``method.yaml``. An env the project
@@ -232,7 +245,8 @@ def _check_method_env(method_name: str, contract_data: dict | None) -> None:
     env_name = contract_data["env"]
     from ..environments import check_method_env
     check_method_env(env_name, get_project_root())
-    print(f"  Env: {env_name} (validated)")
+    if not quiet:
+        print(f"  Env: {env_name} (validated)")
 
 
 @task(
@@ -373,39 +387,55 @@ def _sync_tracked_functions(
 @task(
     purpose="Check the method.yaml contract (parsed when the script was located): refuse "
             "no input slots, a declared param default that fails its own type or "
-            "constraints, and literal saves that don't match the declared outputs",
+            "constraints, a retired options form or an options_from naming no "
+            "declared input, and literal saves that don't match the declared "
+            "outputs",
     inputs="method name, parsed method.yaml, AST scan, script path",
-    outputs="nothing written; warnings printed for dynamic or unreachable saves",
+    outputs="nothing written; warnings returned (and printed unless quiet) for "
+            "dynamic or unreachable saves and declared params the script never reads",
 )
 def _check_contract(
     method_name: str,
     contract_data: dict | None,
     script_info: ScriptInfo | None,
     script_path: Path,
-) -> None:
+    *,
+    quiet: bool = False,
+) -> list[str]:
     """Check the method's contract and its saves against it, writing nothing.
 
     A contract with no input slots is refused, as is one whose declared
     param default fails its own type or constraints
     (``declared_default_refusals``; the message names each parameter): a
-    default runs whenever a node leaves its parameter out. A script that uses the
+    default runs whenever a node leaves its parameter out. So is one that
+    declares a retired options form or a malformed or undeclared
+    ``options_from`` (``retired_form_refusals``; each message names the slot
+    or parameter and its replacement). A script that uses the
     ``@wfc.method`` decorator then has its ``ctx.save_artifact()`` calls
     checked against the declared outputs: a literal save of an undeclared
     name, or a required output with no literal save, is refused. A dynamic
     (non-literal) name, or a save inside an obviously unreachable block
     (``if False:`` / ``if 0:``), prints a warning and does not count as a
-    save of any output. The contract row is written per version, with the
-    version row.
+    save of any output. A declared param the script never reads by a literal
+    ``ctx.params`` name prints a warning too, never a refusal (any dynamic
+    ``ctx.params`` access skips it). The contract row is written per
+    version, with the version row.
 
     Args:
         method_name: The method's name.
         contract_data: The parsed ``method.yaml``, or ``None``.
         script_info: The AST scan, or ``None``.
         script_path: The main script.
+        quiet: Print nothing; the warnings are only returned (a draft's
+            read-only re-read).
+
+    Returns:
+        The warnings, each as its ``WARNING:`` line's text.
 
     Raises:
         ValueError: If the contract declares no input slots, if a declared
-            param default fails its own type or constraints, if the script
+            param default fails its own type or constraints, if it declares
+            a retired options form or a bad ``options_from``, if the script
             saves a literal name the contract doesn't declare, or if a
             required output has no literal save.
     """
@@ -431,11 +461,22 @@ def _check_contract(
                   "fix it to pass its own type and constraints, or remove it."
             )
 
+        # A retired options form (columns, column_of_input, new_column,
+        # strict) or an options_from naming no declared input is refused
+        # here, each message naming its replacement; the parser stays
+        # lenient for the same reason as above.
+        retired = retired_form_refusals(contract_data)
+        if retired:
+            raise ValueError(
+                f"Method '{method_name}': method.yaml " + "; ".join(retired) + "."
+            )
+
         # The contract row is written per version at step 11, with the
         # version row; here it is only checked.
         out_names = list(contract_data["outputs"].keys())
-        print(f"  contract: {len(contract_data['inputs'])} input(s), "
-              f"{len(out_names)} output(s): {out_names}")
+        if not quiet:
+            print(f"  contract: {len(contract_data['inputs'])} input(s), "
+                  f"{len(out_names)} output(s): {out_names}")
 
         # Tier-1 only — when the script uses the @wfc.method
         # decorator, statically validate ctx.save_artifact() literal names
@@ -444,20 +485,26 @@ def _check_contract(
         # Non-Python scripts (script_info is None) get no static save
         # validation at all — method.yaml is their only contract.
         if script_info is not None and script_info.uses_wfc_method:
-            from .method_ast import validate_save_artifacts
+            from .method_ast import unread_param_warnings, validate_save_artifacts
             required = [
                 name for name, spec in contract_data["outputs"].items()
                 if (spec or {}).get("required", True)
             ]
-            save_warnings = validate_save_artifacts(
+            warnings = validate_save_artifacts(
                 script_path,
                 declared_outputs=out_names,
                 required_outputs=required,
+                declared_inputs=list(contract_data["inputs"].keys()),
             )
-            for w in save_warnings:
-                print(f"  WARNING: {w}")
-    else:
+            warnings += unread_param_warnings(
+                script_path, list((contract_data.get("params") or {}).keys()))
+            if not quiet:
+                for w in warnings:
+                    print(f"  WARNING: {w}")
+            return warnings
+    elif not quiet:
         print("  contract: no method.yaml found — skipped")
+    return []
 
 
 @task(
@@ -471,6 +518,8 @@ def _check_module_contract(
     module_name: str,
     method_name: str,
     contract_data: dict | None,
+    *,
+    quiet: bool = False,
 ) -> None:
     """Step 7: check the method's outputs against the module's required ones.
 
@@ -483,6 +532,8 @@ def _check_module_contract(
         module_name: The module's name.
         method_name: The method's name.
         contract_data: The parsed ``method.yaml`` from step 2, or ``None``.
+        quiet: Print no ``module contract:`` line (a draft's read-only
+            re-read).
 
     Raises:
         ValueError: If the method does not declare a required module output.
@@ -509,8 +560,10 @@ def _check_module_contract(
                 f"{[mc.name for mc in required_outputs]}. "
                 f"Method declares: {sorted(method_output_names)}"
             )
-        print(f"  module contract: validated ({len(required_outputs)} required output(s))")
-    elif required_outputs and contract_data is None:
+        if not quiet:
+            print(f"  module contract: validated ({len(required_outputs)} "
+                  f"required output(s))")
+    elif required_outputs and contract_data is None and not quiet:
         print("  module contract: skipped (no method.yaml to validate)")
 
 
@@ -882,6 +935,32 @@ def _refuse_crlf_shell_scripts(staging: Path, ref: str) -> None:
         )
 
 
+def _refuse_renamed_main_script(ref: str, method_dir: Path, holds: dict,
+                                newest, newest_facts) -> None:
+    """Refuse a new version whose main script has another file name than the newest's.
+
+    Args:
+        ref: ``<module>/<method>``, for the message.
+        method_dir: The source directory.
+        holds: :func:`_plan_holds` of the would-be snapshot.
+        newest: The newest version-list entry, or ``None``.
+        newest_facts: :func:`_copy_facts` of the newest version's tree, or
+            ``None`` when git no longer holds it (nothing is compared).
+
+    Raises:
+        ValueError: Naming both file names and the rename that fixes it.
+    """
+    if (newest is not None and newest_facts is not None
+            and newest_facts[3] not in (None, holds["script"])):
+        raise ValueError(
+            f"Cannot register {ref} from {method_dir}: its main script is "
+            f"{holds['script']}, but v{newest.label}'s is {newest_facts[3]}. "
+            f"A new version keeps its main script's file name: rename "
+            f"{holds['script']} to {newest_facts[3]}, or check that this "
+            f"folder holds {ref}."
+        )
+
+
 @workflow(purpose="Work out what registering a method would do before anything is "
                   "written: register it as v1, add a version, or match the newest "
                   "version and add nothing, with the message that says so")
@@ -1016,15 +1095,7 @@ def plan_method_registration(
                  critical="Read from the newest version's tree; a tree git no "
                           "longer holds cannot be compared and is not refused")
         ref = f"{module_name}/{method_name}"
-        if (newest is not None and newest_facts is not None
-                and newest_facts[3] not in (None, holds["script"])):
-            raise ValueError(
-                f"Cannot register {ref} from {method_dir}: its main script is "
-                f"{holds['script']}, but v{newest.label}'s is {newest_facts[3]}. "
-                f"A new version keeps its main script's file name: rename "
-                f"{holds['script']} to {newest_facts[3]}, or check that this "
-                f"folder holds {ref}."
-            )
+        _refuse_renamed_main_script(ref, method_dir, holds, newest, newest_facts)
 
         口 = Step(step_num=9, name="Compare with the newest version and state the outcome",
                  purpose="New, changed (naming the code files, params/contract "

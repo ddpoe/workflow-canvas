@@ -19,6 +19,7 @@ params:
     type: str
     required: false
     default: "label"
+    options_from: data
     description: "Column to group by (defaults to __demo__label's output column)"
 
 executor: local

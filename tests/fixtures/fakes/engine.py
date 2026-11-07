@@ -556,3 +556,93 @@ def short_log_stream_wall(monkeypatch, seconds: float) -> None:
 
     logs_mod = importlib.import_module("wfc.canvas.routes.logs")
     monkeypatch.setattr(logs_mod, "_LOG_LIVE_MAX_WALL_SECONDS", seconds)
+
+
+@fake(
+    boundary="wfc.execution.dispatch._run_method_subprocess -- the container "
+             "launch, interrupted as Ctrl-C (or a killed process) interrupts "
+             "it while the method runs",
+    preserves="everything before the launch for real: the step's record, "
+              "materialize, the run context, the argv and the variables; the "
+              "launch raises KeyboardInterrupt before any process exists",
+    not_proven="a real SIGINT delivered to the wfc process mid-launch",
+    backed_by="undrivable: a test cannot send its own process Ctrl-C while "
+              "one call is in flight without interrupting the test runner",
+)
+def interrupt_method_process(monkeypatch) -> None:
+    """Make every container launch raise ``KeyboardInterrupt``.
+
+    Args:
+        monkeypatch: An active ``pytest.MonkeyPatch``.
+    """
+    from wfc.execution import dispatch as _dispatch
+
+    def _interrupted(cmd, *, cwd, env, stdout_log, stderr_log):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(_dispatch, "_run_method_subprocess", _interrupted)
+
+
+#: What the upstream's run-id sidecar holds while the refused claim reads it.
+NOT_A_RUN_ID = "not-a-run-id"
+
+
+@fake(
+    boundary="wfc.execution.run_step.run_claim -- wrapped to overwrite the "
+             "upstream's run-id sidecar just before one node's claim and put "
+             "it back once the claim returns",
+    preserves="everything: the real claim and its real sidecar check, which "
+              "refuses the claim; the real claim-refusal sidecar, the "
+              "pipeline-end walk and every row after it",
+    not_proven="how a sidecar comes to disagree with its run in a real "
+               "pipeline; only what a refused claim leaves behind",
+    backed_by="undrivable: in the one test that uses it "
+              "(tests/test_run_recorded_values.py::"
+              "test_every_row_of_a_launched_pipeline_names_its_document), the "
+              "driven claim refusal (an upstream's method deletes the refused "
+              "step's version list as it runs) cannot hold the subject: "
+              "run_pipeline loads the document again after the stub rung has "
+              "run the claims, so the load itself would refuse, and the "
+              "second launch's upstream is a cache hit that runs no method",
+)
+def refuse_claim_after_load(monkeypatch, node_id: str, upstream_id: str) -> None:
+    """Make *node_id*'s claim refuse, after the load and after its upstream ran.
+
+    Just before the node's claim runs, the run-id sidecar of *upstream_id*
+    (the method node the link feeds from) is overwritten with text that
+    names no run, and it is put back once the claim returns. Production's
+    own sidecar check refuses the claim, saying the sidecar holds
+    ``NOT_A_RUN_ID``, which is not a run id. Stub rung only: the stub rung's
+    phase recorder wraps this wrapper, since it captures the phase function
+    at each target; the engine rung's claims run in processes of their own.
+
+    Args:
+        monkeypatch: An active ``pytest.MonkeyPatch``.
+        node_id: The node whose claim is refused.
+        upstream_id: The method node feeding it, whose sidecar its claim
+            reads.
+    """
+    import importlib
+
+    from wfc import layout
+    from wfc.persistence import project_root as get_project_root
+
+    orchestrator = importlib.import_module("wfc.execution.run_step")
+    real_claim = orchestrator.run_claim
+
+    def claim_over_a_bad_sidecar(*args, **kwargs):
+        if kwargs.get("node_id") != node_id:
+            return real_claim(*args, **kwargs)
+        sidecar = layout.run_id_sidecar_path(
+            get_project_root(), kwargs["pipeline_id"], upstream_id,
+            kwargs["sample"], kwargs["variant"])
+        kept = sidecar.read_text(encoding="utf-8")
+        sidecar.write_text(NOT_A_RUN_ID, encoding="utf-8")
+        try:
+            return real_claim(*args, **kwargs)
+        finally:
+            # Only the refused claim reads the overwritten record; the
+            # harness's own observation reads the real one afterwards.
+            sidecar.write_text(kept, encoding="utf-8")
+
+    monkeypatch.setattr(orchestrator, "run_claim", claim_over_a_bad_sidecar)

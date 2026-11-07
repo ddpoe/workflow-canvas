@@ -13,7 +13,7 @@ import { within } from '@testing-library/dom';
 import RegistryTab from '../RegistryTab.svelte';
 import { registryFocus } from '../registryFocus.js';
 
-vi.mock('../shikiHighlight.js', () => ({
+vi.mock('../../shared/shikiHighlight.js', () => ({
   highlight: async (content: string) => `<pre class="shiki"><code>${content}</code></pre>`,
 }));
 
@@ -61,7 +61,7 @@ function detail() {
       params_schema: {
         top: { type: 'int', default: 30, required: false, constraints: { min: 1 },
                description: 'How many TFs to plot' },
-        title: { type: 'str', columns: ['a'], new_column: 'x' },
+        title: { type: 'str', options_from: 'tf_acts' },
       },
       executor: 'python',
     },
@@ -77,7 +77,9 @@ beforeEach(() => {
     const url = typeof input === 'string' ? input : input.toString();
     if (url.includes('/detail')) { detailCalls += 1; return jsonResponse(detail()); }
     if (url === '/api/registry/methods') return jsonResponse({ methods: METHODS });
-    if (url === '/api/registry/modules') return jsonResponse({ modules: [] });
+    if (url === '/api/registry/modules') {
+      return jsonResponse({ modules: [{ name: 'tp132', description: '', contracts: [], methods: 2, source: '', color: '#AA4B70' }] });
+    }
     if (url === '/api/registry/samples') return jsonResponse({ samples: [] });
     return jsonResponse({});
   }) as unknown as typeof fetch;
@@ -112,8 +114,9 @@ describe('Registry methods list', () => {
     expect(heading).toHaveTextContent('tp132');
     expect(within(groups[0]).getByTestId('module-count')).toHaveTextContent('2 methods');
     expect(within(groups[1]).getByTestId('module-count')).toHaveTextContent('1 method');
-    // The module tag takes the module's own colour.
-    expect((heading.querySelector('.ltag') as HTMLElement).style.getPropertyValue('--c')).toMatch(/^hsl\(/);
+    // The module tag takes the colour the server sent with the module
+    // (case 21, Registry part: the same `moduleColor` the Builder and History read).
+    expect((heading.querySelector('.ltag') as HTMLElement).style.getPropertyValue('--c')).toBe('#AA4B70');
 
     const plot = row(view, 'plot_tf_activity');
     expect(plot).toHaveTextContent('method');
@@ -122,6 +125,16 @@ describe('Registry methods list', () => {
     expect(plot).toHaveTextContent('env');
     expect(plot).toHaveTextContent('tp132');
     expect(plot).not.toHaveTextContent('runs');
+
+    // The list ends with the Drafts group, after every module group, even
+    // when there are no drafts yet.
+    const list = view.container.querySelector('.methods-list')!;
+    const children = Array.from(list.children).map(c => (c as HTMLElement).dataset.testid);
+    expect(children).toEqual(['module-group', 'module-group', 'drafts-group']);
+    const drafts = view.getByTestId('drafts-group');
+    expect(within(drafts).getByTestId('drafts-heading')).toHaveTextContent('Drafts');
+    expect(within(drafts).getByTestId('drafts-count')).toHaveTextContent('0 · each runs its folder as it is now');
+    expect(within(drafts).getByTestId('draft-from-folder')).toHaveTextContent('+ Draft from folder…');
   });
 
   it('collapses a module on click and Collapse all / Expand all set every module', async () => {
@@ -185,7 +198,7 @@ describe('Registry contract tables', () => {
       ['description', 'How many TFs to plot'], ['required', 'False'], ['constraints', "{'min': 1}"]]);
     await fireEvent.click(within(entry('title')).getByTestId('row-toggle'));
     expect(fields('title')).toEqual([
-      ['description', 'No description in method.yaml'], ['columns', "['a']"], ['new_column', "'x'"]]);
+      ['description', 'No description in method.yaml'], ['options_from', "'tf_acts'"]]);
 
     // A slot lists only the fields it declares: tf_acts declares required, not multiple.
     const slot = within(tables[0]).getByTestId('contract-row');
@@ -237,7 +250,8 @@ describe('Registry menus', () => {
     ]);
     expect(view.queryByTestId('method-panel')).toBeNull();
 
-    await fireEvent.keyDown(window, { key: 'Escape' });
+    // Escape closes it while ⋯ still has the focus.
+    await fireEvent.keyDown(within(plot).getByTestId('method-menu-button'), { key: 'Escape' });
     expect(view.queryByTestId('method-menu')).toBeNull();
 
     await fireEvent.click(within(plot).getByTestId('method-menu-button'));

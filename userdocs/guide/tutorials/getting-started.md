@@ -1,23 +1,22 @@
-<!-- generated from pm_mvp::docs/consumer/tutorials/getting-started @ 4d10ba36ed64; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/tutorials/getting-started @ 1910fcf300af; do not edit -->
 
-# Tutorial: Your First Pipeline
+# Your First Pipeline
 
 ## Introduction
 
 Workflow Canvas (wfc) runs your analysis scripts as pipeline steps, records what produced every result, and reuses a step's earlier result when its code, parameters, inputs and environment have not changed.
 
-This tutorial takes you from installation to a one-step pipeline you built yourself: you create a project, an environment, a module, a method and a sample, run the pipeline, and look at the result. To see a complete pipeline before writing anything, install wfc and then follow [Exploring the Demo](wfc-demo.md). For the bigger picture, read [What is Workflow Canvas?](../index.md).
+This tutorial takes you from installation to a one-step pipeline you built yourself: you create a project, an environment, a module, a method and a sample, run the pipeline, and look at the result. To see a complete pipeline before writing anything, install wfc and then follow [A Tour of the Demo](wfc-demo.md). For the bigger picture, read [What is Workflow Canvas?](../index.md).
 
 ## Prerequisites
 
 You need:
 
 - **Python 3.12** to install and run wfc.
-- **Docker**, installed and running. Each step runs in a container: a packaged copy of the software and dependencies your method needs (see [How the Pieces Fit Together](../explanation/how-the-pieces-fit-together.md)). On Windows and macOS this is Docker Desktop; on Linux, Docker Engine.
-- **Git**. wfc records the commit of your method code with every run and will not run while tracked files have uncommitted changes. Everything stays local: no account or remote is needed.
-- **conda** ([Miniconda](https://www.anaconda.com/docs/getting-started/miniconda/main), [Miniforge](https://conda-forge.org/download/) or Anaconda), used in this tutorial for the environment your method runs in.
+- **Docker**, installed and running. Each step runs in a container: a packaged copy of the software and dependencies your method needs (see [The Tools Behind Workflow Canvas](../explanation/how-the-pieces-fit-together.md)). On Windows and macOS this is Docker Desktop; on Linux, Docker Engine.
+- **Git**. wfc records the commit of your method code with every run and will not run while tracked files have uncommitted changes.
+- **conda** ([Miniconda](https://www.anaconda.com/docs/getting-started/installation), [Miniforge](https://conda-forge.org/download/) or Anaconda), used in this tutorial for the environment your method runs in.
 
-DVC and Snakemake are installed with wfc, and `wfc init` configures them for you.
 
 ## Installation
 
@@ -26,7 +25,7 @@ pip install workflow-canvas
 wfc --help
 ```
 
-`wfc --help` lists the available commands, among them `init`, `doctor`, `demo`, `register-env`, `register-module`, `register-method`, `register-sample`, `run-pipeline`, `canvas` and `export`.
+`wfc --help` lists the available commands.
 
 
 ## Your First Pipeline
@@ -50,8 +49,6 @@ It then sets up three things in the project:
 - **A git repository.** git keeps the history of your code, so wfc can record exactly which version of your code produced each result. It all stays on your computer, with no account needed. ([How wfc uses git](../explanation/how-the-pieces-fit-together.md#git-the-code))
 - **The archive.** wfc manages it with DVC, a tool that saves every version of a data file exactly as it was, so each result can be traced to the exact data it was made from. You never run DVC yourself. ([How wfc uses DVC](../explanation/how-the-pieces-fit-together.md#dvc-the-data))
 
-When you back up the project, keep the archive and the `.wfc/` folder together. The archive holds the files, and `.wfc/` records which run made each one.
-
 ### 2. Check that everything is ready
 
 Before you register anything, check that the project is ready to run:
@@ -60,7 +57,7 @@ Before you register anything, check that the project is ready to run:
 wfc doctor
 ```
 
-`wfc doctor` checks that git, Docker and the archive are ready, and prints one line for each. `wfc init` printed the same checklist when it finished. Every line should say `OK`:
+`wfc doctor` checks that git, Docker and the archive are ready, and prints one line for each. Every line should say `OK`:
 
 ```text
 Run-readiness:
@@ -91,9 +88,9 @@ Then register it:
 wfc register-env first-pipeline conda:first-pipeline
 ```
 
-The first name is what your methods will call the environment. `conda:first-pipeline` tells wfc which conda environment to copy. wfc reads the packages you installed and the versions you have, and builds the container from them. Your conda environment isn't changed. Containers run Linux, so on Windows and macOS wfc picks the Linux builds of the same versions for you and prints a note saying so. The first build takes a few minutes.
+The first name is what your methods will call the environment. `conda:first-pipeline` tells wfc which conda environment to copy. wfc reads the packages you installed and the versions you have, and builds the container from them. The first build takes a few minutes.
 
-If you use pixi or uv, have a lock file, or already have a container image, see [Registering an Environment](registering-an-environment.md).
+If you use pixi or uv, have a lock file, or already have a container image, see [Register an Environment](registering-an-environment.md).
 
 ### 4. Register a module
 
@@ -109,7 +106,7 @@ Then register it, pointing `--module-dir` at that folder:
 wfc register-module --name my_analysis --module-dir src/my_analysis
 ```
 
-`register-module` reads `module.yaml` from the folder you pass. A module can also declare output contracts that every method in it must provide; see [Writing Contracts](writing-contracts.md).
+A module can also declare output contracts that every method in it must provide; see [Register a Module](../how-to/register-a-module.md).
 
 ### 5. Write and register a method
 
@@ -137,7 +134,7 @@ params:
 env: first-pipeline
 ```
 
-This says the method takes one CSV called `data`, produces one CSV called `filtered`, has a setting `min_quality` that is 0.5 unless a pipeline sets it, and runs in the `first-pipeline` environment. The [method.yaml Schema](../reference/method-yaml-schema.md) lists everything else a contract can declare: more inputs and outputs, other file types, settings with allowed values, the columns a table must have, and GPUs.
+This says the method takes one CSV called `data`, produces one CSV called `filtered`, has a setting `min_quality` that is 0.5 unless a pipeline sets it, and runs in the `first-pipeline` environment. The [method.yaml Schema](../reference/method-yaml-schema.md) lists everything else a contract can declare.
 
 Then write the script that does the work, `src/my_analysis/filter_data/filter_data.py`, using the names from the contract:
 
@@ -145,11 +142,10 @@ Then write the script that does the work, `src/my_analysis/filter_data/filter_da
 import pandas as pd
 import wfc_client as wfc
 
-
 @wfc.method
 def filter_data(ctx):
     # 1. Inputs and settings, by their names in method.yaml
-    data_path = ctx.input("data")[0]         # the CSV wired into the "data" input
+    data_path = ctx.input("data")            # the CSV wired into the "data" input
     min_quality = ctx.params["min_quality"]  # 0.5 unless the pipeline sets it
 
     # 2. The analysis: ordinary pandas
@@ -162,13 +158,12 @@ def filter_data(ctx):
     ctx.save_artifact("filtered", out_path)
     ctx.log_metric("rows_kept", len(kept))   # a number shown on the run in the Canvas
 
-
 # Lets wfc start the method when it runs this script
 if __name__ == "__main__":
     wfc.run()
 ```
 
-The script has three parts. The first reads the inputs and settings, the last saves the outputs, and only those two talk to wfc. The middle is your analysis, written the way you would write it anyway. `ctx.input` returns a list because one input can collect files from several upstream steps; with one file wired in, take the first.
+The script has three parts. The first reads the inputs and settings, the last saves the outputs, and only those two talk to wfc. The middle is your analysis, written the way you would write it anyway. `ctx.input` returns the path of the file wired to that input.
 
 Register it into the `my_analysis` module:
 
@@ -176,7 +171,7 @@ Register it into the `my_analysis` module:
 wfc register-method src/my_analysis/filter_data --module my_analysis
 ```
 
-wfc checks the contract and that the `first-pipeline` environment is registered, then saves a copy of the method in the project and commits it to git. Runs use that saved copy, so to change the method later, edit the script and run `wfc register-method` again. [Writing a Method in Python](authoring-a-method-script.md) covers scripts and contracts in full.
+wfc checks the contract and that the `first-pipeline` environment is registered, then saves a copy of the method in the project and commits it to git. Runs use that saved copy, so to change the method later, edit the script and run `wfc register-method` again. [Write a Method in Python](authoring-a-method-script.md) covers scripts and contracts in full.
 
 ### 6. Register a sample
 
@@ -203,11 +198,11 @@ Register it:
 wfc register-sample --name cells --source raw/cells.csv --manifest raw/sample.yaml
 ```
 
-`--name` is what pipelines call the sample. Leave out `--manifest` if you have no description. wfc keeps its own copy of the file, so a pipeline always reads exactly what you registered, and your file stays where it is.
+`--name` is what pipelines call the sample. Leave out `--manifest` if you have no description. wfc keeps its own copy of the file, so a pipeline always reads exactly what you registered.
 
 ### 7. Write and run the pipeline
 
-A pipeline says which samples go into which methods. Pipelines are usually built in the Canvas, which writes this file for you; see [Build, Run and Inspect in the Canvas](../how-to/canvas.md). Here you write a short one by hand. Create `pipeline.json` in the project root:
+A pipeline says which samples go into which methods. Pipelines are usually built in the Canvas, which writes this file for you; see [Wire a Pipeline](../how-to/wire-a-pipeline.md). Here you write a short one by hand. Create `pipeline.json` in the project root:
 
 ```json
 {
@@ -228,7 +223,7 @@ Here is what each part does:
 - **`name`** is the pipeline's name in the Canvas's History tab.
 - **`nodes`** are the boxes you would see in the Canvas. Each `id` is a name for its node, used only inside this file so the links can refer to it.
   - The node `input` is an **input selector** because of its `"type"`: it picks which registered samples go in, here `cells`.
-  - The node `filter` runs the `filter_data` method from the `my_analysis` module, with `min_quality` set to 0.5. A node without a `type` is a method node.
+  - The node `filter` runs the `filter_data` method from the `my_analysis` module, with `min_quality` set to 0.5.
 - **`links`** connect the boxes. This one sends the sample from `input` into `filter`'s `data` input, the input named in the method's contract.
 
 [Pipeline Document](../reference/pipeline-document.md) lists every key a pipeline file takes.
@@ -268,16 +263,37 @@ To copy the output out of wfc, use `wfc export --run <run-id> --slot <slot> --de
 wfc export --run 1 --slot filtered --dest filtered.csv
 ```
 
-`filtered.csv` holds the two rows with `quality` of at least 0.5. If you leave out `--slot` and `--dest`, wfc names the run's outputs. The other export options are in the [CLI Reference](../reference/cli-reference.md#cache-and-export-commands).
+`filtered.csv` holds the two rows with `quality` of at least 0.5. If you leave out `--slot` and `--dest`, wfc names the run's outputs. The other export options are in the [Cache and Export Commands](../reference/cli-cache-export.md).
+
+
+## Try a Change as a Draft
+
+To change a method, or to try a new one, run its folder as a draft first. A draft runs on your data in the method's environment, as a pipeline step would, but nothing it does is recorded: no run, no cache entry, no commit.
+
+Edit `filter_data.py`, for example to keep rows with a `quality` of at least 0.8, then try the folder on the sample:
+
+```bash
+wfc try src/my_analysis/filter_data --module my_analysis --sample cells
+```
+
+wfc runs the folder as the draft of the next version, v2, and prints a `wfc export` command for its output. Look at the output, change the script and run `wfc try` again until it does what you want. Then register it:
+
+```bash
+wfc register-method src/my_analysis/filter_data --module my_analysis
+```
+
+This adds v2, and the next `wfc run-pipeline` runs it. A folder that is not registered yet works the same way: `wfc try` runs it as the draft of v1. [Draft a Method](drafting-a-method.md) covers drafts in full. You can also do this in the canvas: [Draft in the Canvas](../how-to/draft-in-the-canvas.md).
+
 
 ## Next Steps
 
-- [Exploring the Demo](wfc-demo.md): a five-method pipeline over three samples, set up with `wfc demo`.
-- [Share runs as a bundle anyone can rerun](../how-to/run-and-inspect-results.md#share-runs-as-a-bundle-anyone-can-rerun): export your pipeline's result as one zip that reruns on another computer and checks each output.
-- [Writing a Method in Python](authoring-a-method-script.md): the script API.
-- [Write an R Method](../how-to/write-an-r-method.md): a method written in R.
-- [Registering an Environment](registering-an-environment.md): capturing conda and pixi environments, using your own image, and working inside an environment's container.
-- [Writing Contracts](writing-contracts.md): declare the inputs, outputs and parameters that wire methods together.
-- [Build, Run and Inspect in the Canvas](../how-to/canvas.md): build and run pipelines in the browser, and browse past runs in History.
-- [Run and Inspect from the Command Line](../how-to/run-and-inspect-results.md): run, inspect and export from the command line.
+- [Build Your Own Pipeline](../how-to/build-your-own-pipeline.md): the same steps for your own analysis, in order, with the page for each one.
+- [A Tour of the Demo](wfc-demo.md): a five-method pipeline over three samples, set up with `wfc demo`.
+- [Share Runs as a Bundle Anyone Can Rerun](../how-to/share-bundle.md): export your pipeline's result, with its samples, as one zip that reruns on another computer and checks each output.
+- [Write a Method in Python](authoring-a-method-script.md): the script API.
+- [Write a Method in R](../how-to/write-an-r-method.md): a method written in R.
+- [Register an Environment](registering-an-environment.md): capturing conda and pixi environments, using your own image, and working inside an environment's container.
+- [Write a Method](../how-to/write-a-method.md): declare the inputs, outputs and parameters that wire methods together.
+- [Use the Canvas](../how-to/canvas-hub.md): build and run pipelines in the browser, and browse past runs in History.
+- [Use the Command Line](../how-to/cli-hub.md): run, inspect and export from the command line.
 - [Project Anatomy](../explanation/project-anatomy.md): what each directory and file in a project is for.

@@ -68,6 +68,29 @@ class RunNotReady(SubmissionRefused):
         self.payload = payload
 
 
+def _draft_refusal_out(refusal) -> dict[str, Any]:
+    """One of Execution's ``DraftNodeRefusal`` as the API spells it (``DraftRefusal``)."""
+    return {"nodeId": refusal.node_id, "draft": refusal.draft, "kind": refusal.kind,
+            "message": refusal.message, "reasons": list(refusal.reasons),
+            "pipelineId": refusal.pipeline_id, "pipelineName": refusal.pipeline_name}
+
+
+class DraftRunRefused(SubmissionRefused):
+    """A draft node cannot run: Execution's draft preflight refused it.
+
+    Attributes:
+        payload: The ``draft_refused`` payload (``RunRefusal``): one refusal
+            per draft node, each naming why.
+    """
+
+    def __init__(self, refusals: list[dict[str, Any]]) -> None:
+        message = "\n".join(r["message"] for r in refusals)
+        super().__init__(message)
+        self.payload = {"kind": "draft_refused", "message": message,
+                        "hint": "Fix each draft in the Registry, then click Run again.",
+                        "refusals": refusals}
+
+
 @dataclass(frozen=True)
 class SubmittedPipeline:
     """A submitted pipeline: its id and its step map.
@@ -270,12 +293,14 @@ def submitted_document(pipeline: PipelineInput) -> dict[str, Any]:
 
 @workflow(
     purpose="Submit a pipeline document: refuse an empty one, gate on run "
-            "readiness, substitute its variables, enrich it, write the frozen "
-            "document and the editable form, then register the job and start "
-            "the background run",
+            "readiness, substitute its variables, enrich it, run the draft "
+            "preflight (each draft read again, refused naming its nodes), "
+            "write the frozen document and the editable form, then register "
+            "the job and start the background run",
     inputs="The canvas's pipeline document and the served project's root",
     outputs="The pipeline id and the step map. Raises SubmissionRefused (or "
-            "RunNotReady) before anything is written or started",
+            "RunNotReady, or DraftRunRefused from the draft preflight) before "
+            "anything is written or started",
 )
 def submit_pipeline(pipeline: PipelineInput, project_root: Path) -> SubmittedPipeline:
     """Submit a pipeline document for a background run.
@@ -294,8 +319,16 @@ def submit_pipeline(pipeline: PipelineInput, project_root: Path) -> SubmittedPip
 
     Raises:
         RunNotReady: Docker or git is not ready; carries the kind-tagged payload.
-        SubmissionRefused: The document has no nodes, or names a variable it
-            does not declare, or its variables fail to resolve.
+        SubmissionRefused: The preparation refuses the document: it has no
+            nodes, names a variable it does not declare or whose value fails
+            to resolve, names an unregistered method, or the validator
+            refuses it. The validator reads each draft's ``method.yaml`` now,
+            so a draft node that cannot run (no draft, another folder, its
+            folder gone, an unreadable ``method.yaml``) and a param or
+            ``param_sets`` value its contract does not accept are refused
+            here too.
+        DraftRunRefused: The draft preflight refuses a draft node; carries
+            each refused node's reason.
     """
     口 = Step(step_num=1, name="Refuse an empty document",
              purpose="A document with no nodes is refused before any probe, "
@@ -326,15 +359,19 @@ def submit_pipeline(pipeline: PipelineInput, project_root: Path) -> SubmittedPip
 
     口 = AutoStep(step_num=4, name="Prepare the document")
     from ..execution.prepare import prepare_document
-    from ..graph import UnknownVariableError
     try:
         pipeline_json = prepare_document(pre_sub_dict)
-    except UnknownVariableError as exc:
-        raise SubmissionRefused(f"Unknown pipeline variable: '{exc.name}'") from exc
     except ValueError as exc:
         raise SubmissionRefused(str(exc)) from exc
 
-    口 = Step(step_num=5, name="Write the frozen document and the editable form",
+    from ..execution.draft import DraftLaunchRefusedError, preflight_drafts
+    try:
+        口 = AutoStep(step_num=5, name="The draft preflight")
+        preflight_drafts(pipeline_json, Path(project_root).resolve())
+    except DraftLaunchRefusedError as exc:
+        raise DraftRunRefused([_draft_refusal_out(r) for r in exc.refusals]) from exc
+
+    口 = Step(step_num=6, name="Write the frozen document and the editable form",
              purpose="Mint the pipeline id, create its run directory through "
                      "Layout, write the enriched pipeline.json the run reads, and "
                      "write the submitted form as pipeline.editable.json for "
@@ -360,7 +397,7 @@ def submit_pipeline(pipeline: PipelineInput, project_root: Path) -> SubmittedPip
     except OSError:
         pass  # Sidecar is best-effort; submission still proceeds.
 
-    口 = Step(step_num=6, name="Register the job and start the run",
+    口 = Step(step_num=7, name="Register the job and start the run",
              purpose="Build the step map, install the job entry (thread, step "
                      "map, log directory, no error, no process, no cancel), then "
                      "start the background run",

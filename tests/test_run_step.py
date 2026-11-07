@@ -781,26 +781,36 @@ class TestPipelineSummary:
 
     @workflow(purpose="pipeline-summary counts a pipeline's run rows after "
                       "the pipeline-end walk: the step that ran, its re-run "
-                      "that reused it from the cache, the step refused at "
-                      "the claim and the descendant cancelled because of it, "
+                      "that reused it from the cache, the step that ran and "
+                      "broke the next one's record, the step refused at the "
+                      "claim and the descendant cancelled because of it, "
                       "with the refusal's message listed under the failed "
                       "runs")
     def test_pipeline_summary_aggregation(self, git_project, monkeypatch):
         from tests.fixtures.routes.clients import run_cli
+        from tests.harness.scenario import DEFAULT_MODULE
+        from wfc.layout import method_versions_path
 
         口 = Step(step_num=1, name="Run a pipeline whose middle step is refused",
                  purpose="head ran once before and its run here is a cache "
-                         "hit on that run; mid's link names an output head "
-                         "does not declare; tail depends on mid")
+                         "hit on that run; breaker, fed by head, runs and "
+                         "deletes mid's version list, so mid's claim, which "
+                         "reads it after the load, is refused; tail depends "
+                         "on mid. Only head is seeded, so the deletion "
+                         "happens in this pipeline and head's cache hit holds")
+        mid_versions = method_versions_path(Path("."), DEFAULT_MODULE, "mid").as_posix()
         obs = run_scenario(Scenario(nodes=[
             selector(),
             node("head", inputs=[wire("sel")], output_files={"data": "data.csv"}),
-            node("mid", inputs=[wire("head", source_slot="nope")]),
+            node("breaker", inputs=[wire("head")],
+                 behavior=Behavior(delete_paths=(mid_versions,))),
+            node("mid", inputs=[wire("breaker")]),
             node("tail", inputs=[wire("mid")]),
         ], prior_runs=[completed("head")]), root=git_project,
             monkeypatch=monkeypatch)
         head_rows = obs.rows_for_node("head")
         assert head_rows[-1]["cache_source_run_id"] == head_rows[0]["id"]
+        assert not (obs.project.root / mid_versions).exists()
 
         口 = Step(step_num=2, name="Print the summary through the CLI verb",
                  purpose="The verb reads the rows the walk left")
@@ -809,16 +819,19 @@ class TestPipelineSummary:
         assert result.returncode == 0, f"pipeline-summary failed: {result.stderr}"
 
         口 = Step(step_num=3, name="The counts are the rows",
-                 purpose="One of each outcome: the seeded run passed, the "
-                         "re-run is counted as cached rather than passed, and "
-                         "the refused step is a failure with its message; "
-                         "some runs succeeded and some failed, so the "
-                         "pipeline is mixed")
+                 purpose="The seeded run and breaker passed, the re-run is "
+                         "counted as cached rather than passed, and the "
+                         "refused step is a failure with its message; some "
+                         "runs succeeded and some failed, so the pipeline is "
+                         "mixed")
         assert "Status: mixed" in result.stdout
-        assert ("Total runs: 4  |  Passed: 1  |  Failed: 1  |  Cached: 1  |  "
+        assert ("Total runs: 5  |  Passed: 2  |  Failed: 1  |  Cached: 1  |  "
                 "Cancelled: 1") in result.stdout
         assert "FAILED RUNS:" in result.stdout
-        assert "'nope'" in result.stdout
+        words = result.stdout.replace(str(obs.project.root), "<root>")
+        assert (f"Error: Method '{DEFAULT_MODULE}/mid' has no version list "
+                f"(<root>") in words
+        assert "mid.versions.json), so its record is incomplete" in words
 
     def test_pipeline_summary_no_rows(self, cli, tmp_project):
         """pipeline-summary for a pipeline with no run rows reports zero runs."""

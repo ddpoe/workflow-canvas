@@ -218,7 +218,7 @@ def write_transaction():
 
 
 def reset_engine():
-    """Reset engine and project-root cache (for tests)."""
+    """Drop the engine and the cached project root so the next use binds to the current project."""
     global _engine
     if _engine is not None:
         _engine.dispose()

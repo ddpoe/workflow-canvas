@@ -12,6 +12,7 @@ from sqlmodel import select
 
 from ... import layout
 from ...persistence import Run, get_session
+from ..models import DraftStep, DraftStepDetail, DraftStepsResponse, PipelineCleared
 from ..state import _require_provider
 
 router = APIRouter()
@@ -37,12 +38,94 @@ class PipelineSummary(BaseModel):
     expected: int | None = None
     #: The pipeline's method nodes by document id, in document order.
     nodeOrder: list[str] | None = None
+    #: The pipeline's name, else None (shown as its id).
+    name: str | None = None
+    #: When it started, ISO 8601 UTC; None when not known.
+    startedAt: str | None = None
+    #: Whether it ran in draft mode (it holds a draft node).
+    draftMode: bool = False
+    #: Its drafts as ``<module>.<method>``, in document order.
+    drafts: list[str] = []
+    #: The draft-mode steps it ran, existing or cleared.
+    draftStepCount: int = 0
+    #: Its draft steps that still exist (History's DRAFT rows).
+    draftSteps: list[DraftStep] = []
+    #: The greyed line once its draft steps are cleared; None while they exist.
+    cleared: PipelineCleared | None = None
 
 
 @router.get("/api/wfc/pipelines", response_model=list[PipelineSummary])
 def get_wfc_pipelines():
-    """Return each pipeline's status and the number of runs it expects."""
+    """Return each pipeline's status and the number of runs it expects.
+
+    Each pipeline also names whether it ran in draft mode, its drafts, its
+    draft-step count, the draft steps that still exist and, once they are
+    cleared, the one line that says why.
+    """
     return _require_provider().get_pipeline_summaries()
+
+
+@router.get("/api/wfc/draft-steps", response_model=DraftStepsResponse)
+def get_wfc_draft_steps(pipeline_id: str | None = None):
+    """Every draft step that still exists, for Lineages and Descendants.
+
+    Args:
+        pipeline_id: Only the draft steps of this pipeline run.
+    """
+    from .. import draft_views
+
+    root = Path(_require_provider().project_root).resolve()
+    return {"steps": draft_views.draft_steps(root, pipeline_id)}
+
+
+def _draft_step_refused(exc: Exception) -> HTTPException:
+    """A malformed draft string is a 400 showing the full form; a gone step a 404."""
+    from ...execution.draft import DRAFT_REF_FORM
+
+    text = str(exc)
+    return HTTPException(status_code=400 if DRAFT_REF_FORM in text else 404, detail=text)
+
+
+@router.get("/api/wfc/draft-step", response_model=DraftStepDetail)
+def get_wfc_draft_step(ref: str):
+    """History's run panel for one draft step.
+
+    Args:
+        ref: The draft string, ``draft:<module>.<method>/<node>@<sample>``.
+            A malformed string is a 400 showing the full form; a draft step
+            that is gone is a 404 saying why.
+    """
+    from ...execution.draft import DraftRefError
+    from .. import draft_views
+
+    root = Path(_require_provider().project_root).resolve()
+    try:
+        return draft_views.draft_step_detail(ref, root)
+    except DraftRefError as exc:
+        raise _draft_step_refused(exc) from exc
+
+
+@router.get("/api/wfc/draft-step/artifact")
+def get_wfc_draft_step_artifact(ref: str, name: str):
+    """Serve one file of a draft step's folder.
+
+    Args:
+        ref: The draft string.
+        name: The file's name inside the step's folder.
+    """
+    from fastapi.responses import FileResponse
+
+    from ...execution.draft import DraftRefError
+    from .. import draft_views
+
+    root = Path(_require_provider().project_root).resolve()
+    try:
+        path = draft_views.draft_step_file(ref, name, root)
+    except DraftRefError as exc:
+        raise _draft_step_refused(exc) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return FileResponse(path, filename=path.name)
 
 
 @router.get("/api/wfc/run/{run_id}")

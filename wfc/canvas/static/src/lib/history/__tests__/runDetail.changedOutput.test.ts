@@ -37,6 +37,9 @@ function mkRun(partial: Partial<WfcRun>): WfcRun {
     wfcVersion: null,
     pipelineDocHash: null,
     keyedUnderEarlierRule: false,
+    paramsHash: null,
+    inputsHash: null,
+    paramTypes: {},
     experimentId: 'p',
     runName: 'head/S1',
     nid: 'v1',
@@ -76,7 +79,7 @@ afterEach(() => {
 
 describe('run detail, Artifacts tab', () => {
   it('shows a changed output unavailable with the run-again text', async () => {
-    const report: Artifact = { name: 'report.csv', size: 12, is_image: false, extension: 'csv' };
+    const report: Artifact = { name: 'report.csv', size: 12, type: 'file', viewer: 'table', extension: 'csv' };
     serve(
       mkRun({
         id: 'r7',
@@ -94,9 +97,10 @@ describe('run detail, Artifacts tab', () => {
     expect(rows[0]).toHaveTextContent('changed after the run wrote it; run the step again');
     expect(rows[0].querySelector('a')).toBeNull();
     expect(rows[0].closest('a')).toBeNull();
-    // The available output is still listed as a download.
-    const link = view.getByText('report.csv').closest('a');
-    expect(link?.getAttribute('href')).toContain('report.csv');
+    // The available output is still listed, with its download.
+    expect(view.getByText('report.csv')).toBeInTheDocument();
+    const link = view.getByRole('link', { name: 'Download report.csv' });
+    expect(link.getAttribute('href')).toContain('report.csv');
   });
 
   it('shows the changed output when it is the run\'s only output', async () => {
@@ -122,7 +126,7 @@ describe('run detail, Artifacts tab', () => {
         outputs: { data: '/p/.wfc/runs/00000009/data.csv' },
         outputAvailability: { data: 'available' },
       }),
-      [{ name: 'data.csv', size: 3, is_image: false, extension: 'csv' }],
+      [{ name: 'data.csv', size: 3, type: 'file', viewer: 'table', extension: 'csv' }],
     );
 
     const view = await openArtifacts('r9');

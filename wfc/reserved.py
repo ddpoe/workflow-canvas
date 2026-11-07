@@ -1,7 +1,7 @@
 """Reserved-name guard for the names ``wfc demo`` owns.
 
 ``wfc demo`` populates a project with entities whose names carry the
-``__demo__`` prefix (module ``__demo__``, samples ``__demo__ctrl_01`` ...,
+``__demo__`` prefix (modules ``__demo__cleanup`` ..., samples ``__demo__ctrl_01`` ...,
 methods ``__demo__preprocess`` ...) and one env, :data:`DEMO_ENV_NAME`, whose
 name has no prefix because Docker must accept it as an image name.
 ``wfc demo --remove`` later deletes by that tag and by the module cascade, so

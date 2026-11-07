@@ -410,6 +410,68 @@ def test_an_interrupted_checkout_rebuild_leaves_each_member_whole(tmp_project, m
 
 
 @workflow(
+    purpose="readers that ask for a directory entry's checkout at the same "
+            "moment, before it exists, get it built once: one builds it and the "
+            "rest wait and find it whole, so none renames a member into a "
+            "folder another has just made read-only",
+    inputs="a cached directory with no checkout yet; every view a copy of its "
+           "own, as a reflink is; six threads reading it at once",
+    outputs="every reader returns the checkout with no error; one build, never "
+            "two in flight; the registered tree, stamped",
+)
+def test_concurrent_first_reads_of_a_directory_build_its_checkout_once(
+        tmp_project, monkeypatch):
+    import threading
+
+    from tests.fixtures import fakes
+    from wfc.identity import hash_path
+    from wfc.storage.cache import local_path
+
+    _ = Step(step_num=1, name="Cache a directory, views as copies",
+             purpose="No checkout yet; a view never shares its object's inode, "
+                     "as on APFS, so no build can skip a member another placed")
+    fakes.refuse_view_links(monkeypatch)
+    files = {"a.png": b"a" * 64, "b.png": b"b" * 64, "nested/c.png": b"c" * 64}
+    src = tmp_project.parent / "gallery"
+    for rel, data in files.items():
+        (src / rel).parent.mkdir(parents=True, exist_ok=True)
+        (src / rel).write_bytes(data)
+    h = hash_path(src)
+    cache_file(src, h, tmp_project, move=False)
+    builds = fakes.spy_checkout_builds(monkeypatch)
+
+    _ = Step(step_num=2, name="Six readers at once",
+             purpose="Each asks for the checkout the moment the others do")
+    readers = 6
+    start = threading.Barrier(readers)
+    got: list[Path | None] = []
+    errors: list[BaseException] = []
+
+    def read() -> None:
+        start.wait()
+        try:
+            got.append(local_path(tmp_project, h))
+        except BaseException as exc:  # recorded; asserted below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=read) for _ in range(readers)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+
+    _ = Step(step_num=3, name="One build, every reader served",
+             purpose="No error, one checkout, built once and stamped")
+    assert errors == []
+    checkout_dir = layout.checkout_dir(tmp_project, h)
+    assert got == [checkout_dir] * readers
+    assert builds.peak_running == 1, "two builds of one checkout overlapped"
+    assert builds.builds == 1, "a reader rebuilt a checkout another had just built"
+    assert _tree(checkout_dir) == files
+    assert layout.checkout_stamp(tmp_project, h).is_file()
+
+
+@workflow(
     purpose="where no link can be made from the cache (another filesystem), a "
             "restored sample is a read-only copy of its cache entry, and wfc "
             "doctor's views row warns naming the reason and that each item "

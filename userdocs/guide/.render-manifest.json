@@ -1,94 +1,198 @@
 {
   "explanation/caching-and-reproducibility.md": {
     "doc_id": "pm_mvp::docs/consumer/explanation/caching-and-reproducibility",
-    "hash": "ded7ab0e511a"
+    "hash": "97ecf9b12526"
   },
   "explanation/how-a-run-executes.md": {
     "doc_id": "pm_mvp::docs/consumer/explanation/how-a-run-executes",
-    "hash": "39cd7037eb66"
+    "hash": "7d8c019235e5"
   },
   "explanation/how-the-pieces-fit-together.md": {
     "doc_id": "pm_mvp::docs/consumer/explanation/how-the-pieces-fit-together",
-    "hash": "a8feeb1c4eb4"
+    "hash": "288fbbfc78ab"
   },
   "explanation/project-anatomy.md": {
     "doc_id": "pm_mvp::docs/consumer/explanation/project-anatomy",
-    "hash": "bf331c8cdfaa"
+    "hash": "56f7b79ec90c"
   },
   "explanation/storage-and-provenance.md": {
     "doc_id": "pm_mvp::docs/consumer/explanation/storage-and-provenance",
-    "hash": "5ed04a33a910"
+    "hash": "4d06d4a5300d"
   },
-  "how-to/canvas.md": {
-    "doc_id": "pm_mvp::docs/consumer/how-to/canvas",
-    "hash": "e8e6609da6b9"
+  "how-to/browse-history.md": {
+    "doc_id": "pm_mvp::docs/consumer/how-to/browse-history",
+    "hash": "b4b0f6caa2f1"
   },
-  "how-to/registration.md": {
-    "doc_id": "pm_mvp::docs/consumer/how-to/registration",
-    "hash": "77f88bbfc730"
+  "how-to/browse-the-registry.md": {
+    "doc_id": "pm_mvp::docs/consumer/how-to/browse-the-registry",
+    "hash": "655be22f1151"
   },
-  "how-to/run-and-inspect-results.md": {
-    "doc_id": "pm_mvp::docs/consumer/how-to/run-and-inspect-results",
-    "hash": "820d028c1a1c"
+  "how-to/build-your-own-pipeline.md": {
+    "doc_id": "pm_mvp::docs/consumer/how-to/build-your-own-pipeline",
+    "hash": "2f5e68631526"
+  },
+  "how-to/canvas-hub.md": {
+    "doc_id": "pm_mvp::docs/consumer/how-to/canvas-hub",
+    "hash": "df7c8766a4a3"
+  },
+  "how-to/check-and-run.md": {
+    "doc_id": "pm_mvp::docs/consumer/how-to/check-and-run",
+    "hash": "d2c435c8a61c"
+  },
+  "how-to/cli-export.md": {
+    "doc_id": "pm_mvp::docs/consumer/how-to/cli-export",
+    "hash": "216ea76565d8"
+  },
+  "how-to/cli-hub.md": {
+    "doc_id": "pm_mvp::docs/consumer/how-to/cli-hub",
+    "hash": "19c47b025071"
+  },
+  "how-to/cli-run.md": {
+    "doc_id": "pm_mvp::docs/consumer/how-to/cli-run",
+    "hash": "1b8304c54cd4"
+  },
+  "how-to/cli-runs.md": {
+    "doc_id": "pm_mvp::docs/consumer/how-to/cli-runs",
+    "hash": "d2893a75520d"
+  },
+  "how-to/draft-from-the-command-line.md": {
+    "doc_id": "pm_mvp::docs/consumer/how-to/draft-from-the-command-line",
+    "hash": "abd3360ea3c6"
+  },
+  "how-to/draft-in-the-canvas.md": {
+    "doc_id": "pm_mvp::docs/consumer/how-to/draft-in-the-canvas",
+    "hash": "0487280d0770"
+  },
+  "how-to/fan-out-and-fan-in.md": {
+    "doc_id": "pm_mvp::docs/consumer/how-to/fan-out-and-fan-in",
+    "hash": "8f024cd4f4ff"
+  },
+  "how-to/pick-columns-in-the-canvas.md": {
+    "doc_id": "pm_mvp::docs/consumer/how-to/pick-columns-in-the-canvas",
+    "hash": "234ddf202cd6"
+  },
+  "how-to/pipeline-variables.md": {
+    "doc_id": "pm_mvp::docs/consumer/how-to/pipeline-variables",
+    "hash": "7e3a028346f0"
+  },
+  "how-to/register-a-module.md": {
+    "doc_id": "pm_mvp::docs/consumer/how-to/register-a-module",
+    "hash": "51bdc1106084"
+  },
+  "how-to/register-samples.md": {
+    "doc_id": "pm_mvp::docs/consumer/how-to/register-samples",
+    "hash": "b93daf3d5574"
+  },
+  "how-to/run-and-inspect.md": {
+    "doc_id": "pm_mvp::docs/consumer/how-to/run-and-inspect",
+    "hash": "83b1ef29bf42"
+  },
+  "how-to/run-details.md": {
+    "doc_id": "pm_mvp::docs/consumer/how-to/run-details",
+    "hash": "7f1f4bc3ca27"
   },
   "how-to/see-your-images-on-github.md": {
     "doc_id": "pm_mvp::docs/consumer/how-to/see-your-images-on-github",
-    "hash": "72c6a07cad8d"
+    "hash": "eea8c5ce7efc"
+  },
+  "how-to/set-parameters.md": {
+    "doc_id": "pm_mvp::docs/consumer/how-to/set-parameters",
+    "hash": "217b2ab75eab"
+  },
+  "how-to/share-bundle.md": {
+    "doc_id": "pm_mvp::docs/consumer/how-to/share-bundle",
+    "hash": "31a3f5872eea"
   },
   "how-to/sharing-a-project.md": {
     "doc_id": "pm_mvp::docs/consumer/how-to/sharing-a-project",
-    "hash": "f6554f864119"
+    "hash": "306897516daa"
+  },
+  "how-to/sweep-values.md": {
+    "doc_id": "pm_mvp::docs/consumer/how-to/sweep-values",
+    "hash": "b1ea6ee0f1a9"
+  },
+  "how-to/wire-a-pipeline.md": {
+    "doc_id": "pm_mvp::docs/consumer/how-to/wire-a-pipeline",
+    "hash": "2cb521ce4b33"
+  },
+  "how-to/write-a-method.md": {
+    "doc_id": "pm_mvp::docs/consumer/how-to/write-a-method",
+    "hash": "a74f34a33db6"
   },
   "how-to/write-an-r-method.md": {
     "doc_id": "pm_mvp::docs/consumer/how-to/write-an-r-method",
-    "hash": "a544701b5fa8"
+    "hash": "7ba7f314b679"
   },
   "overview/what-is-workflow-canvas.md": {
     "doc_id": "pm_mvp::docs/consumer/overview/what-is-workflow-canvas",
-    "hash": "0c0c39cd9bce"
+    "hash": "97227f58aac0"
   },
-  "reference/cli-reference.md": {
-    "doc_id": "pm_mvp::docs/consumer/reference/cli-reference",
-    "hash": "421b1be2ff11"
+  "reference/cli-cache-export.md": {
+    "doc_id": "pm_mvp::docs/consumer/reference/cli-cache-export",
+    "hash": "a656f5007f95"
+  },
+  "reference/cli-environments.md": {
+    "doc_id": "pm_mvp::docs/consumer/reference/cli-environments",
+    "hash": "65d5942d213d"
+  },
+  "reference/cli-pipelines.md": {
+    "doc_id": "pm_mvp::docs/consumer/reference/cli-pipelines",
+    "hash": "de1123cdbcde"
+  },
+  "reference/cli-project.md": {
+    "doc_id": "pm_mvp::docs/consumer/reference/cli-project",
+    "hash": "12246694595f"
+  },
+  "reference/cli-registration.md": {
+    "doc_id": "pm_mvp::docs/consumer/reference/cli-registration",
+    "hash": "b7efd089a0aa"
+  },
+  "reference/command-line.md": {
+    "doc_id": "pm_mvp::docs/consumer/reference/command-line",
+    "hash": "a957dcedc663"
   },
   "reference/method-script-contract.md": {
     "doc_id": "pm_mvp::docs/consumer/reference/method-script-contract",
-    "hash": "57a6dd49f8f9"
+    "hash": "fc449c88370a"
   },
   "reference/method-yaml-schema.md": {
     "doc_id": "pm_mvp::docs/consumer/reference/method-yaml-schema",
-    "hash": "e540d18d78ce"
+    "hash": "f27e32445270"
   },
   "reference/pipeline-document.md": {
     "doc_id": "pm_mvp::docs/consumer/reference/pipeline-document",
-    "hash": "057b5ff5f724"
+    "hash": "cba0669fdcb2"
   },
   "reference/wf-canvas-toml.md": {
     "doc_id": "pm_mvp::docs/consumer/reference/wf-canvas-toml",
-    "hash": "2c5972cde74d"
+    "hash": "f07212c9886a"
   },
   "reference/wfc-client-api.md": {
     "doc_id": "pm_mvp::docs/consumer/reference/wfc-client-api",
-    "hash": "b4744057ea1c"
+    "hash": "64b8324da71a"
   },
   "tutorials/authoring-a-method-script.md": {
     "doc_id": "pm_mvp::docs/consumer/tutorials/authoring-a-method-script",
-    "hash": "13d90e300f92"
+    "hash": "238ce1946465"
+  },
+  "tutorials/drafting-a-method.md": {
+    "doc_id": "pm_mvp::docs/consumer/tutorials/drafting-a-method",
+    "hash": "29ff67e53e6e"
   },
   "tutorials/getting-started.md": {
     "doc_id": "pm_mvp::docs/consumer/tutorials/getting-started",
-    "hash": "4d10ba36ed64"
+    "hash": "1910fcf300af"
   },
   "tutorials/registering-an-environment.md": {
     "doc_id": "pm_mvp::docs/consumer/tutorials/registering-an-environment",
-    "hash": "4fed79ac9c86"
+    "hash": "89c809f43234"
   },
   "tutorials/wfc-demo.md": {
     "doc_id": "pm_mvp::docs/consumer/tutorials/wfc-demo",
-    "hash": "7a5af6c37bbc"
+    "hash": "2400b99377b2"
   },
-  "tutorials/writing-contracts.md": {
-    "doc_id": "pm_mvp::docs/consumer/tutorials/writing-contracts",
-    "hash": "e61071483827"
+  "tutorials/work-with-an-ai-agent.md": {
+    "doc_id": "pm_mvp::docs/consumer/tutorials/work-with-an-ai-agent",
+    "hash": "df08fc47bf87"
   }
 }

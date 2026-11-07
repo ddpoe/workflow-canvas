@@ -20,7 +20,7 @@ import sys
 import threading
 import uuid
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -83,6 +83,71 @@ class PipelineLaunch:
     pipeline_doc_hash: str | None = None
 
 
+@dataclass(frozen=True)
+class FrozenLaunch:
+    """Where a launch's documents were frozen."""
+
+    pipeline_id: str
+    log_dir: Path
+    frozen_doc: Path
+
+
+@task(purpose="Fix a launch's pipeline id, create its log directories and "
+              "freeze its documents into the pipeline dir: the substituted "
+              "one as pipeline.json, the pre-substitution one as "
+              "pipeline.editable.json",
+      inputs="project root, the pre-substitution and substituted documents, an "
+             "optional pipeline id, the caller's document path",
+      outputs="FrozenLaunch: pipeline id, log dir, frozen document path",
+      critical="writes files only: no row, no cache entry; nothing is "
+               "rewritten when the caller's path already is the frozen file")
+def freeze_launch_documents(
+    project_root: Path,
+    document: dict,
+    substituted: dict,
+    pipeline_id: str | None = None,
+    *,
+    pipeline_path: Path | None = None,
+) -> FrozenLaunch:
+    """Freeze a launch's two documents into its pipeline dir.
+
+    The pipeline-end cancelled-rows walk, the canvas history readers and
+    ``wfc run-step`` (through ``WFC_PIPELINE_JSON``) resolve
+    ``.wfc/runs/pipelines/<pid>/pipeline.json`` and expect literals, so the
+    substituted form freezes there; the pre-substitution form goes beside
+    it as ``pipeline.editable.json``, as the canvas submission path writes
+    it. The canvas server pre-writes both and passes the frozen file as
+    *pipeline_path*, so nothing is written when it already is that file.
+
+    Args:
+        project_root: The wfc project root.
+        document: The pre-substitution document.
+        substituted: The literal document the steps run.
+        pipeline_id: Caller-provided id; a fresh UUID when omitted.
+        pipeline_path: The caller's document path, when it has one.
+
+    Returns:
+        The pipeline id, its log dir and the frozen document's path.
+    """
+    project_root = Path(project_root)
+    pipeline_id = pipeline_id if pipeline_id is not None else str(uuid.uuid4())
+    log_dir = layout.pipeline_run_dir(project_root, pipeline_id)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    layout.pipeline_run_logs_dir(project_root, pipeline_id).mkdir(exist_ok=True)
+    frozen_doc = layout.pipeline_doc_path(project_root, pipeline_id)
+    try:
+        already_frozen = (pipeline_path is not None and frozen_doc.exists()
+                          and frozen_doc.samefile(Path(pipeline_path)))
+    except OSError:
+        already_frozen = False
+    if not already_frozen:
+        frozen_doc.write_text(json.dumps(substituted, indent=2), encoding="utf-8")
+        layout.pipeline_editable_doc_path(project_root, pipeline_id).write_text(
+            json.dumps(document, indent=2), encoding="utf-8"
+        )
+    return FrozenLaunch(pipeline_id=pipeline_id, log_dir=log_dir, frozen_doc=frozen_doc)
+
+
 @task(purpose="Launch bookkeeping: sweep the legacy workspace, fix the pipeline "
               "id, create the log directories, freeze the substituted and "
               "editable documents into the pipeline dir, and keep the frozen "
@@ -91,7 +156,8 @@ class PipelineLaunch:
       inputs="project root, the caller's document path, the pre-substitution "
              "and substituted documents, an optional caller-provided pipeline id",
       outputs="PipelineLaunch: pipeline id, log dir, frozen document path, the "
-              "frozen document's hash",
+              "frozen document's hash; the pipeline's pipeline_runs row, "
+              "running",
       critical="the hash is of the frozen file the claims read (the canvas's "
                "own when it froze it), never of a re-prepared dict")
 def prepare_launch(
@@ -137,31 +203,11 @@ def prepare_launch(
             _legacy_workspace, _ws_exc,
         )
 
-    # Generate pipeline ID and create log directories before Snakemake
-    pipeline_id = pipeline_id if pipeline_id is not None else str(uuid.uuid4())
-    log_dir = layout.pipeline_run_dir(project_root, pipeline_id)
-    log_dir.mkdir(parents=True, exist_ok=True)
-    layout.pipeline_run_logs_dir(project_root, pipeline_id).mkdir(exist_ok=True)
-
-    # Freeze the executed pipeline doc into the pipeline dir. The
-    # pipeline-end cancelled-rows walk, the canvas history readers and
-    # `wfc run-step` (through WFC_PIPELINE_JSON) resolve
-    # .wfc/runs/pipelines/<pid>/pipeline.json and expect literals, so the
-    # SUBSTITUTED form is what freezes there; the pre-substitution form
-    # goes beside it as pipeline.editable.json, as the canvas submission
-    # path writes it. The canvas server pre-writes both and passes the
-    # frozen file as pipeline_path, so only write when the caller's doc is
-    # not already the frozen file.
-    frozen_doc = layout.pipeline_doc_path(project_root, pipeline_id)
-    try:
-        already_frozen = frozen_doc.exists() and frozen_doc.samefile(Path(pipeline_path))
-    except OSError:
-        already_frozen = False
-    if not already_frozen:
-        frozen_doc.write_text(json.dumps(substituted, indent=2), encoding="utf-8")
-        layout.pipeline_editable_doc_path(project_root, pipeline_id).write_text(
-            json.dumps(document, indent=2), encoding="utf-8"
-        )
+    frozen_launch = freeze_launch_documents(project_root, document, substituted,
+                                            pipeline_id, pipeline_path=pipeline_path)
+    pipeline_id = frozen_launch.pipeline_id
+    log_dir = frozen_launch.log_dir
+    frozen_doc = frozen_launch.frozen_doc
     # Keep the document every claim of this launch reads: the frozen file as
     # it is on disk (in the canvas path the canvas wrote it, and the dict
     # re-prepared here need not equal it), before any row can name it.
@@ -169,6 +215,10 @@ def prepare_launch(
 
     frozen = json.loads(frozen_doc.read_text(encoding="utf-8"))
     pipeline_doc_hash = store_pipeline_document(frozen, project_root)
+    # The pipeline's pipeline_runs row, as running, before any run row.
+    from .pipeline_outcome import record_pipeline_launch
+
+    record_pipeline_launch(pipeline_id, document)
     return PipelineLaunch(pipeline_id=pipeline_id, log_dir=log_dir,
                           frozen_doc=frozen_doc, pipeline_doc_hash=pipeline_doc_hash)
 
@@ -282,12 +332,57 @@ def stop_push_worker(worker: PushWorker, *, cancel: bool = False) -> None:
     worker.thread.join(timeout=PUSH_WORKER_STOP_SECONDS)
 
 
+def _end_draft_steps(project_root: str | Path | None, pipeline_id: str, *,
+                     status: str, message: str,
+                     cancel_reason: str | None = None) -> None:
+    """End the pipeline's running draft steps, as its running rows were ended.
+
+    Best-effort, as every ending step: a failure is printed.
+
+    Args:
+        project_root: The wfc project root (the active project when None).
+        pipeline_id: The pipeline.
+        status: ``failed`` or ``cancelled``.
+        message: The error message a step without one gets.
+        cancel_reason: The reason a cancelled step records.
+    """
+    from .draft import end_running_draft_steps
+
+    try:
+        end_running_draft_steps(pipeline_id, status=status, message=message,
+                                cancel_reason=cancel_reason,
+                                root=project_root or project_root_of_run())
+    except Exception as exc:  # noqa: BLE001 - an ending must not fail on it
+        print(f"[pipeline-outcome] ending pipeline {pipeline_id}'s draft steps "
+              f"raised: {exc}", file=sys.stderr)
+
+
+def _store_outcome(project_root: str | Path | None, pipeline_id: str) -> None:
+    """Store the pipeline's status and end through the one status helper.
+
+    Best-effort, as every ending step: a failure is printed, and the
+    ending's own outcome stands.
+
+    Args:
+        project_root: The wfc project root (the active project when None).
+        pipeline_id: The pipeline whose outcome changed.
+    """
+    from .pipeline_outcome import store_pipeline_outcome
+
+    try:
+        store_pipeline_outcome(project_root or project_root_of_run(), pipeline_id)
+    except Exception as exc:  # noqa: BLE001 - an ending must not fail on it
+        print(f"[pipeline-outcome] storing pipeline {pipeline_id}'s status "
+              f"raised: {exc}", file=sys.stderr)
+
+
 @task(purpose="Engine-failure sequence: flip in-flight rows to failed unless the "
               "caller cancelled, write the cancelled rows -- a target with no "
               "failed ancestor reads engine_failed, carrying the engine's "
               "message, when the user did not cancel and no step failed, and "
               "not_run otherwise -- remove the samples the pipeline restored, "
-              "drain the push worker, and raise the engine's failure message",
+              "store the pipeline's status and end, drain the push worker, "
+              "and raise the engine's failure message",
       inputs="pipeline id, project root, the engine's outcome, the push-worker "
              "handle, the cancellation probe",
       outputs="raises RuntimeError -- never returns")
@@ -330,7 +425,7 @@ def finish_failed(
     # still useful even if fail_pipeline hit an issue.
     if not was_cancelled:
         try:
-            fail_pipeline(pipeline_id)
+            fail_pipeline(pipeline_id, project_root=project_root)
         except Exception as _fp_exc:
             print(
                 f"[run_pipeline] fail_pipeline raised: {_fp_exc}",
@@ -362,6 +457,9 @@ def finish_failed(
             f"{_end_exc}",
             file=sys.stderr,
         )
+    # -- Store the pipeline's status and end, after its last row write --
+    口 = AutoStep(step_num=2, name="Store the pipeline's status and end")
+    _store_outcome(project_root, pipeline_id)
     cancelled = bool(is_cancelled and is_cancelled())
     drain_push_worker(worker, cancel=cancelled)
     raise RuntimeError(outcome.message)
@@ -369,7 +467,7 @@ def finish_failed(
 
 @task(purpose="Success sequence: the pipeline-end cancelled-row walk, the deferred "
               "archive pass, the removal of the samples the pipeline restored, "
-              "and the push-worker drain",
+              "storing the pipeline's status and end, and the push-worker drain",
       inputs="pipeline id, project root, the push-worker handle, the cancellation "
              "probe, the archive switch and progress callback",
       outputs="quiescent state: cancelled rows written, outputs archived, worker drained")
@@ -439,6 +537,10 @@ def finish_succeeded(
             file=sys.stderr,
         )
 
+    # -- Store the pipeline's status and end, after its last row write --
+    口 = AutoStep(step_num=2, name="Store the pipeline's status and end")
+    _store_outcome(project_root, pipeline_id)
+
     # Drain push worker before returning so the caller sees a
     # quiescent state (all rows reached pushed/failed terminals).
     drain_push_worker(worker, cancel=bool(is_cancelled and is_cancelled()))
@@ -455,7 +557,7 @@ def finalize_pipeline(pipeline_id: str) -> None:
 
 
 def cancel_pipeline(pipeline_id: str, project_root: str | None = None) -> int:
-    """Mark any in-flight runs for this pipeline as 'cancelled', and remove its restored samples.
+    """Mark a pipeline's in-flight runs 'cancelled', store its status, remove its restored samples.
 
     Sibling of :func:`fail_pipeline`.  User-initiated cancel: each flipped
     row records the ``user`` reason; the targets that never started get
@@ -488,6 +590,11 @@ def cancel_pipeline(pipeline_id: str, project_root: str | None = None) -> int:
         n = len(in_flight)
         if n > 0:
             print(f"Marked {n} in-flight run(s) as cancelled for pipeline {pipeline_id}")
+    # Its running draft steps end the same way, in their draft-run.json.
+    _end_draft_steps(project_root, pipeline_id, status="cancelled",
+                     cancel_reason=CANCEL_REASON_USER, message="Cancelled by user")
+    # The rows changed the pipeline's outcome: store its status and end.
+    _store_outcome(project_root, pipeline_id)
     # The samples the pipeline restored go with it, as on success and
     # failure; best-effort, a failure is printed.
     try:
@@ -508,11 +615,12 @@ _IN_FLIGHT_TRACEBACK = ("No traceback available (run was still in-flight when "
               "else the caller's message and traceback text",
       inputs="pipeline id; the message and the traceback text a row without "
              "one gets",
-      outputs="the ids of the rows failed",
+      outputs="the ids of the rows failed; the pipeline's stored status and end",
       critical="a compare-and-set on status running, so a row that ended "
                "meanwhile is left as it ended")
 def fail_pipeline(pipeline_id: str, *, message: str | None = None,
-                  traceback_text: str | None = _IN_FLIGHT_TRACEBACK) -> list[int]:
+                  traceback_text: str | None = _IN_FLIGHT_TRACEBACK,
+                  project_root: str | Path | None = None) -> list[int]:
     """Mark any in-flight runs for this pipeline as 'failed'.
 
     Already-completed runs are left untouched (their data is safe in
@@ -527,6 +635,8 @@ def fail_pipeline(pipeline_id: str, *, message: str | None = None,
         traceback_text: The traceback text a failed run without one gets, or
             None to leave it without one. Defaults to the in-flight note; a
             close-out passes None, since an interrupted step raised nothing.
+        project_root: The wfc project root, whose pipeline status is stored
+            afterwards (the active project when None).
 
     Returns:
         The ids of the rows this call failed.
@@ -552,6 +662,10 @@ def fail_pipeline(pipeline_id: str, *, message: str | None = None,
                 .where(col(Run.status) == "running")
                 .values(**values)
             )
+    # Its running draft steps end the same way, in their draft-run.json.
+    _end_draft_steps(project_root, pipeline_id, status="failed", message=text)
+    # The rows changed the pipeline's outcome: store its status and end.
+    _store_outcome(project_root, pipeline_id)
     if ids:
         print(f"Marked {len(ids)} in-flight run(s) as failed for pipeline {pipeline_id}")
     else:
@@ -606,14 +720,19 @@ class ExpectedTargets:
         resolved_params: The variant tables by step node id.
         raw_id_by_step: Each ``StepDef.node_id`` mapped to the node's raw
             document id.
-        targets: Every expected target, once per key, step by step in
-            document order.
+        targets: Every expected target the pipeline records, once per key,
+            step by step in document order. A draft-mode target (a draft or
+            a step below one, Graph's ``draft_owners``) is never recorded, so
+            it is not here.
+        draft_targets: The draft-mode targets, the same way: they end in
+            their draft's ``draft-run.json``, never in a run row.
     """
 
     steps: list
     resolved_params: dict[str, dict[str, dict]]
     raw_id_by_step: dict[str, str]
     targets: list[ExpectedTarget]
+    draft_targets: list[ExpectedTarget] = field(default_factory=list)
 
     @property
     def node_order(self) -> list[str]:
@@ -634,6 +753,9 @@ def expected_targets(pipeline_id: str, project_root: str) -> ExpectedTargets | N
     node's raw document id (``Run.node_id``): ``StepDef.node_id`` is resolved
     to it through Graph's ``document_node`` (for a legacy numeric-id document
     the step's id is its method name while the raw id is the number).
+    Draft-mode targets (Graph's ``draft_owners``) are kept apart in
+    ``draft_targets``: the walk, the expected count and pending never count
+    them, since a draft step never has a run row.
 
     Args:
         pipeline_id: The pipeline.
@@ -643,7 +765,12 @@ def expected_targets(pipeline_id: str, project_root: str) -> ExpectedTargets | N
         The expected targets, or None when the pipeline has no frozen
         document or it cannot be loaded.
     """
-    from ..graph import document_node, expand_step_combos, resolve_variant_model
+    from ..graph import (
+        document_node,
+        draft_owners,
+        expand_step_combos,
+        resolve_variant_model,
+    )
     from .composer import load_pipeline_from_path
 
     pipeline_json = layout.pipeline_doc_path(Path(project_root), pipeline_id)
@@ -689,9 +816,12 @@ def expected_targets(pipeline_id: str, project_root: str) -> ExpectedTargets | N
             by_key[target.key] = target
         else:
             by_key[target.key] = replace(prior, variants=(*prior.variants, variant))
-    return ExpectedTargets(steps=steps, resolved_params=resolved_params,
-                           raw_id_by_step=raw_id_by_step,
-                           targets=list(by_key.values()))
+    # Draft-mode targets are never recorded: Graph's one rule names them.
+    draft_mode = draft_owners(raw_document)
+    return ExpectedTargets(
+        steps=steps, resolved_params=resolved_params, raw_id_by_step=raw_id_by_step,
+        targets=[t for t in by_key.values() if t.node_id not in draft_mode],
+        draft_targets=[t for t in by_key.values() if t.node_id in draft_mode])
 
 
 #: The pipeline statuses ``pipeline_status`` gives.
@@ -755,10 +885,11 @@ def pipeline_status(runs: Iterable[tuple[str, str | None]],
 
 
 def _pipeline_has_failure(pipeline_id: str, project_root: str) -> bool:
-    """Whether a step of the pipeline failed: a failed row, or a claim refusal.
+    """Whether a step of the pipeline failed: a failed row, a draft step, or a claim refusal.
 
     A claim refusal leaves only its outcome sidecar until the pipeline-end
-    walk records it as a failed row, so it counts as a failure here too.
+    walk records it as a failed row, so it counts as a failure here too; a
+    failed draft step is in its draft's ``draft-run.json``.
 
     Args:
         pipeline_id: The pipeline to look at.
@@ -775,6 +906,11 @@ def _pipeline_has_failure(pipeline_id: str, project_root: str) -> bool:
                                  Run.status == "failed")
         ).first()
     if failed is not None:
+        return True
+    from .draft import pipeline_draft_steps
+
+    if any(step.get("status") == "failed"
+           for _draft, step in pipeline_draft_steps(pipeline_id, project_root)):
         return True
     expected = expected_targets(pipeline_id, project_root)
     if expected is None:

@@ -30,10 +30,11 @@
    * Envs kind is not supported — there is no env register endpoint.
    */
 
+  import { onMount, untrack } from 'svelte';
   import { browseFilesystem, registerRecord } from './api.js';
   import type { FsEntry, MethodRow, RegisterKind, RegistrationPlan } from './api.js';
   import LabelTag from '../shared/LabelTag.svelte';
-  import { getModuleColor } from '../history/historyUtils.js';
+  import { moduleColor } from '../shared/moduleColor.svelte.js';
   import RegisterConfirmCard from './RegisterConfirmCard.svelte';
 
   type Kind = RegisterKind;
@@ -46,6 +47,8 @@
     moduleNames = [],
     methods = [],
     initialTarget = null,
+    initialDirectory = '',
+    initialNewMethod = false,
     registeredMethodDirs = [],
     onClose,
     onRegistered,
@@ -56,23 +59,33 @@
     methods?: MethodRow[];
     /** Opens on New method version with this method chosen. */
     initialTarget?: { module: string; method: string } | null;
+    /** A folder already chosen (a draft's): the check runs at once. */
+    initialDirectory?: string;
+    /** With `initialTarget`, opens on New method with its module and name. */
+    initialNewMethod?: boolean;
     registeredMethodDirs?: string[];
     onClose: () => void;
     onRegistered: (kind: Kind, record: any) => void;
   } = $props();
 
-  let kind = $state<Kind>(initialKind);
+  // The props only seed the form; later prop changes do not reset it.
+  const seed = untrack(() => ({ initialKind, initialTarget, initialDirectory, initialNewMethod }));
+  let kind = $state<Kind>(seed.initialKind);
 
   // Per-kind form state (kept alive across kind-switches within the modal).
   let moduleForm = $state({ name: '', description: '' });
-  let methodForm = $state({ directory: '', module: '', method_name: '' });
+  let methodForm = $state(seed.initialNewMethod && seed.initialTarget
+    ? { directory: seed.initialDirectory, module: seed.initialTarget.module, method_name: seed.initialTarget.method }
+    : { directory: '', module: '', method_name: '' });
   let versionForm = $state({
-    module: initialTarget?.module ?? '',
-    method: initialTarget?.method ?? '',
-    directory: '',
+    module: seed.initialTarget?.module ?? '',
+    method: seed.initialTarget?.method ?? '',
+    directory: seed.initialNewMethod ? '' : seed.initialDirectory,
   });
   let sampleForm = $state({ name: '', source: '' });
-  let mode = $state<Mode>(initialTarget ? 'version' : 'new');
+  let mode = $state<Mode>(seed.initialTarget && !seed.initialNewMethod ? 'version' : 'new');
+  // A draft's Register as vN: the folder is known, so the check runs at once.
+  onMount(() => { if (seed.initialDirectory && seed.initialKind === 'method') void check(); });
 
   // Module and sample kinds: their pre-checks and error.
   let preChecks = $state<PreCheck[]>([]);
@@ -434,7 +447,7 @@
           {/if}
         {:else}
           <div class="target" data-testid="register-target">
-            {#if target.module}<LabelTag kind="module" label="MODULE" value={target.module} color={getModuleColor(target.module)} />{/if}
+            {#if target.module}<LabelTag kind="module" label="MODULE" value={target.module} color={moduleColor(target.module)} />{/if}
             {#if target.method}<LabelTag kind="method" label="method" value={target.method} />{/if}
             <span class="mono dim folder">{target.directory}</span>
           </div>
@@ -658,7 +671,7 @@
 
   .field { display: flex; flex-direction: column; gap: 4px; }
   .label-text { font-size: 11px; color: #e6e6e6; font-weight: 500; }
-  .req { color: var(--color-failed); margin-left: 2px; }
+  .req { color: var(--status-failed-ink); margin-left: 2px; }
 
   .input {
     background: var(--bg-input);
@@ -685,32 +698,32 @@
   .taken b { color: #e6e6e6; font-weight: 600; }
   .target { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
   .folder { overflow-wrap: anywhere; min-width: 0; font-size: 11.5px; }
-  .notice { color: var(--color-running); font-size: 11.5px; }
+  .notice { color: var(--marker-light); font-size: 11.5px; }
 
   .issues { display: flex; flex-direction: column; gap: 8px; }
   .issue {
-    border-radius: 5px; padding: 8px 10px; border: 1px solid rgba(231, 76, 60, 0.45);
-    background: rgba(231, 76, 60, 0.07); min-width: 0;
+    border-radius: 5px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--status-failed) 45%, transparent);
+    background: color-mix(in srgb, var(--status-failed) 7%, transparent); min-width: 0;
   }
   .ihd { display: flex; gap: 8px; align-items: baseline; }
-  .ic { color: var(--color-failed); font-weight: 700; font-size: 12px; }
+  .ic { color: var(--status-failed-ink); font-weight: 700; font-size: 12px; }
   .ihd b { color: #e6e6e6; font-weight: 600; }
   .idetail { margin: 4px 0 0 18px; font-size: 11.5px; line-height: 1.45; overflow-wrap: anywhere; }
   .idetail code { background: var(--bg-canvas); border: 1px solid var(--border); color: #7ec699; }
   .same {
     display: flex; gap: 8px; align-items: baseline; padding: 7px 10px; border: 1px solid var(--border);
-    border-radius: 5px; background: color-mix(in srgb, var(--color-running) 8%, var(--bg-input));
+    border-radius: 5px; background: color-mix(in srgb, var(--marker-light) 6%, var(--bg-input));
   }
-  .same b { color: var(--color-running); font-weight: 600; }
+  .same b { color: var(--marker-light); font-weight: 600; }
 
   .hint { font-size: 10.5px; color: var(--text-secondary); margin: 0; }
   .hint-inline { font-size: 10.5px; color: var(--text-secondary); }
   code { background: var(--bg-input); padding: 1px 4px; border-radius: 2px; font-size: 10.5px; }
 
   .error {
-    background: rgba(231, 76, 60, 0.14);
-    border: 1px solid rgba(231, 76, 60, 0.35);
-    color: var(--color-failed);
+    background: color-mix(in srgb, var(--status-failed) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--status-failed) 35%, transparent);
+    color: var(--status-failed-ink);
     padding: 6px 10px;
     border-radius: 3px;
     font-size: 11.5px;
@@ -740,9 +753,9 @@
   .check .dot {
     width: 6px; height: 6px; border-radius: 3px; flex-shrink: 0;
   }
-  .check-ok .dot   { background: var(--color-completed); }
-  .check-warn .dot { background: var(--color-running); }
-  .check-fail .dot { background: var(--color-failed); }
+  .check-ok .dot   { background: var(--status-ok); }
+  .check-warn .dot { background: var(--marker-light); }
+  .check-fail .dot { background: var(--status-failed); }
   .check-label { color: var(--text-primary); }
   .check-detail { font-size: 10.5px; }
 
@@ -822,7 +835,7 @@
     border-radius: 3px;
     cursor: pointer;
   }
-  .crumb:hover { background: rgba(74, 144, 217, 0.14); }
+  .crumb:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
   .crumb-sep { color: var(--text-secondary); }
 
   .browse-list {

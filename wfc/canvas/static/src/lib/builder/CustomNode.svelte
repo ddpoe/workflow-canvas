@@ -1,9 +1,13 @@
 <script lang="ts">
   import { Handle, Position } from '@xyflow/svelte';
   import type { CanvasNodeData, RunStatus } from '../shared/types.js';
-  import { deleteNodes, samples as samplesStore, updateNodeData } from './stores.js';
+  import { deleteNodes, edges as edgesStore, nodes as nodesStore, samples as samplesStore, updateNodeData } from './stores.js';
   import { displaySlotType, slotColor, truncateSlotType } from '../shared/slotColor.js';
-  import { nodeVersion, versionTitle } from './nodeData.js';
+  import { draftInvalidReason, isDraftNode, nodeVersion, versionTitle } from './nodeData.js';
+  import { DRAFT_NODE_HELP, LATEST_KEPT, REVIEW_IN_REGISTRY, downstreamHelp, draftModeOf } from './drafts.js';
+  import { openDraftInRegistry } from '../shared/draftLinks.js';
+  import HelpMark from '../shared/HelpMark.svelte';
+  import { moduleColor } from '../shared/moduleColor.svelte.js';
 
   let { data, id, selected }: { data: CanvasNodeData; id: string; selected?: boolean } = $props();
 
@@ -12,24 +16,26 @@
     deleteNodes([id]);
   }
 
+  // The border shows the live run state (SOP canvas-colours, Protected
+  // Colours). Pending (dispatched, waiting for a run id) is queued: the
+  // active colour, like running. A cache hit keeps the completed border;
+  // the footer's CACHED pill tells it apart. Partial (some samples failed)
+  // takes the failed colour; its glyph and tally tell it apart.
   const borderColors: Record<RunStatus, string> = {
-    idle: '#4a4a4a',
-    // Pending = run dispatched, waiting on Snakemake to allocate runId.
-    // Lit blue (vs idle's flat gray) so the user gets immediate visual
-    // confirmation the click registered, even before the orchestrator
-    // reports anything back.
-    pending: '#5DA9D9',
-    running: '#E9A847',
-    completed: '#50C878',
-    // Cached = the run was a cache hit and reused an earlier run's outputs.
-    // Green like completed, since it is a success; the footer's amber pill,
-    // the History tab's, tells the two apart.
-    cached: '#50C878',
-    failed: '#E74C3C',
-    cancelled: '#7f8ea3',
-    // Mixed = some fan-out samples completed, others failed. Gold tone
-    // is close to "running" amber but distinct enough for accessibility.
-    mixed: '#D89E2E',
+    idle: 'var(--border-node)',
+    pending: 'var(--status-active)',
+    running: 'var(--status-active)',
+    completed: 'var(--status-ok)',
+    cached: 'var(--status-ok)',
+    failed: 'var(--status-failed)',
+    cancelled: 'var(--status-cancelled)',
+    mixed: 'var(--status-failed)',
+  };
+  // Small text in failed and cancelled uses the ink shade.
+  const labelColors: Partial<Record<RunStatus, string>> = {
+    failed: 'var(--status-failed-ink)',
+    cancelled: 'var(--status-cancelled-ink)',
+    mixed: 'var(--status-failed-ink)',
   };
 
   // The version a method node runs: a green dot beside its number when that
@@ -42,17 +48,42 @@
     return env.replace(/^[a-z]+:/, '');
   }
 
-  let borderColor = $derived(selected ? '#4A90D9' : borderColors[data.runStatus] || '#4a4a4a');
-  let borderWidth = $derived(
-    selected
-      || data.runStatus === 'pending'
-      || data.runStatus === 'running'
-      || data.runStatus === 'completed'
-      || data.runStatus === 'cached'
-      || data.runStatus === 'failed'
-      || data.runStatus === 'mixed'
-      ? '2px' : '1px'
-  );
+  let isSystemNode = $derived(data.nodeType === 'input_selector' || data.nodeType === 'run_reference');
+
+  // System nodes never show a status: their border is always the idle one.
+  // Selection never changes the border; it adds a glow in the border's own
+  // colour (near-white on the neutral idle border).
+  // A node carrying a refusal from the last Validate or Run (SOP
+  // canvas-colours: blocked or invalid) takes the failed border over any
+  // earlier run's colour, until the next Validate or Run clears it. Its
+  // footer says it is refused in place of how that run ended; once the
+  // refusals clear, the footer shows the run outcome again.
+  let liveStatus = $derived<RunStatus>(isSystemNode ? 'idle' : (data.runStatus ?? 'idle'));
+  let refused = $derived(!isSystemNode && !!data.refusals?.length);
+  let refusalCount = $derived.by(() => {
+    const n = data.refusals?.length ?? 0;
+    return `${n} issue${n === 1 ? '' : 's'}`;
+  });
+  let statusColor = $derived(borderColors[liveStatus] ?? 'var(--border-node)');
+  let borderColor = $derived(refused ? 'var(--status-failed)' : statusColor);
+  let labelColor = $derived(labelColors[liveStatus] ?? statusColor);
+  let plainBorder = $derived(liveStatus === 'idle' && !refused);
+  let borderWidth = $derived(plainBorder ? '1px' : '2px');
+  let glowStyle = $derived(plainBorder ? '' : `--glow-c: ${borderColor};`);
+
+  // Draft mode (SOP canvas-colours, Drafts): the draft node and every node
+  // downstream of it draw a dashed border in the status colour (neutral
+  // when not run, failed while refused), with a DRAFT MODE flag: solid on
+  // the draft, an outline on the steps after it.
+  let isDraft = $derived(isDraftNode(data));
+  let draftMode = $derived(isSystemNode ? undefined : draftModeOf($nodesStore, $edgesStore).get(id));
+  let draftOwner = $derived(draftMode ? ($nodesStore.find(n => n.id === draftMode!.ownerId)?.data ?? null) : null);
+  let invalidReason = $derived(draftInvalidReason(data));
+  let dashColor = $derived(plainBorder ? 'var(--dash-neutral)' : borderColor);
+  let methodBorderStyle = $derived(draftMode
+    ? `border: 2px solid transparent; --dash-color: ${dashColor}; --dash-bw: 2px; --dash-body: var(--node-bg); --glow-c: ${dashColor};`
+    : `border: ${borderWidth} solid ${borderColor}; ${glowStyle}`);
+  let draftEnv = $derived(isDraft ? data.draft?.env : undefined);
 
   // Short "3/4 ✓" badge for mixed fan-out — the tally fields count
   // per-sample runs, so (completed)/(completed+failed) reads naturally.
@@ -65,17 +96,15 @@
   })());
 
   let statusLabel = $derived(
-    data.runStatus === 'pending' ? 'pending...' :
-    data.runStatus === 'running' ? 'running...' :
-    data.runStatus === 'completed' ? 'completed' :
-    data.runStatus === 'cached' ? 'cached' :
-    data.runStatus === 'failed' ? 'failed' :
-    data.runStatus === 'cancelled' ? 'cancelled' :
-    data.runStatus === 'mixed' ? (mixedBadge ? `mixed ${mixedBadge}` : 'mixed') :
-    selected ? 'selected' : ''
+    liveStatus === 'pending' ? 'queued...' :
+    liveStatus === 'running' ? 'running...' :
+    liveStatus === 'completed' ? 'completed' :
+    liveStatus === 'cached' ? 'completed' :
+    liveStatus === 'failed' ? 'failed' :
+    liveStatus === 'cancelled' ? 'cancelled' :
+    liveStatus === 'mixed' ? (mixedBadge ? `partial ${mixedBadge}` : 'partial') :
+    ''
   );
-
-  let isSystemNode = $derived(data.nodeType === 'input_selector' || data.nodeType === 'run_reference');
 
   // Match ValueList.displayValue: render dict/list params as JSON, not "[object Object]".
   function formatParamForCard(v: unknown): string {
@@ -136,7 +165,7 @@
 
 {#if isSystemNode}
   <!-- ═══ System Node (Input Selector / Run Reference) ═══ -->
-  <div class="custom-node system-node" style="border: {borderWidth} solid {borderColor};">
+  <div class="custom-node system-node" class:sel-glow={selected} class:glow-neutral={selected} style="border: {borderWidth} solid {borderColor};">
     <button class="delete-btn" onclick={handleDelete} title="Delete node">&#10005;</button>
     <div class="node-header system-header">
       <div class="system-icon">
@@ -181,7 +210,7 @@
                 <span class="slot-name placeholder">no sample selected</span>
               </div>
               <Handle type="source" position={Position.Right} id="output"
-                style="background: var(--color-system); width: 8px; height: 8px; border: none;" />
+                style="background: var(--port); width: 10px; height: 10px; border: 2px solid var(--bg-canvas); z-index: 3;" />
             </div>
           </div>
         {:else if inputRows.length === 1}
@@ -191,10 +220,10 @@
             <div class="slot-right">
               <div class="sample-cell">
                 <span class="slot-name sample-name">{inputRows[0].name}</span>
-                <span class="type-chip">{inputRows[0].type}</span>
+                <span class="type-chip" style="--chip: {slotColor(inputRows[0].type)};">{inputRows[0].type}</span>
               </div>
               <Handle type="source" position={Position.Right} id="output"
-                style="background: var(--color-system); width: 8px; height: 8px; border: none;" />
+                style="background: var(--port); width: 10px; height: 10px; border: 2px solid var(--bg-canvas); z-index: 3;" />
             </div>
           </div>
         {:else}
@@ -204,10 +233,10 @@
             <div class="slot-right">
               <div class="sample-cell">
                 <span class="slot-name sample-name">{inputRows.length} samples</span>
-                <span class="type-chip">{aggregateType}</span>
+                <span class="type-chip" style="--chip: {slotColor(aggregateType)};">{aggregateType}</span>
               </div>
               <Handle type="source" position={Position.Right} id="output"
-                style="background: var(--color-system); width: 8px; height: 8px; border: none;" />
+                style="background: var(--port); width: 10px; height: 10px; border: 2px solid var(--bg-canvas); z-index: 3;" />
             </div>
           </div>
           {#if !inputCollapsed}
@@ -215,7 +244,7 @@
               {#each inputRows as row}
                 <div class="sample-table-row">
                   <span class="sample-table-name">{row.name}</span>
-                  <span class="type-chip type-chip-sm">{row.type}</span>
+                  <span class="type-chip type-chip-sm" style="--chip: {slotColor(row.type)};">{row.type}</span>
                 </div>
               {/each}
             </div>
@@ -238,10 +267,10 @@
               <div class="slot-right">
                 <div class="sample-cell">
                   <span class="slot-name sample-name">{output.name}</span>
-                  <span class="type-chip">{displaySlotType(output.type)}</span>
+                  <span class="type-chip" style="--chip: {slotColor(output.type)};">{displaySlotType(output.type)}</span>
                 </div>
                 <Handle type="source" position={Position.Right} id={output.name}
-                  style="background: var(--color-system); width: 8px; height: 8px; border: none;" />
+                  style="background: var(--port); width: 10px; height: 10px; border: 2px solid var(--bg-canvas); z-index: 3;" />
               </div>
             </div>
           {/each}
@@ -250,7 +279,7 @@
     </div>
     <div class="node-footer">
       {#if statusLabel}
-        <span class="status-label" style="color: {borderColor};">{statusLabel}</span>
+        <span class="status-label" style="color: {labelColor};">{statusLabel}</span>
       {:else if data.nodeType === 'input_selector'}
         <span class="param-count">{inputRows.length} sample{inputRows.length === 1 ? '' : 's'}</span>
       {:else}
@@ -265,16 +294,41 @@
   </div>
 {:else}
   <!-- ═══ Method Node (existing) ═══ -->
-  <div class="custom-node" style="border: {borderWidth} solid {borderColor};">
+  <div class="custom-node" class:dash-2={!!draftMode} class:draft-node={isDraft} class:draft-mode-node={!!draftMode}
+       class:sel-glow={selected} class:glow-neutral={selected && plainBorder} style={methodBorderStyle}>
     <button class="delete-btn" onclick={handleDelete} title="Delete node">&#10005;</button>
+    {#if draftMode}
+      <span class="draft-flag-wrap">
+        <span class="draft-flag" class:strong={draftMode.isDraft} data-testid="draft-flag">DRAFT MODE<HelpMark size={10} light={!draftMode.isDraft} /></span>
+        <span class="draft-tip nodrag">
+          {draftMode.isDraft ? DRAFT_NODE_HELP : downstreamHelp(draftMode.owner)}
+          {#if draftOwner}
+            <button type="button" class="lnk nodrag" title="Opens {draftOwner.method}’s Draft run tab in the Registry"
+                    onclick={(e: MouseEvent) => { e.stopPropagation(); openDraftInRegistry(draftOwner!.module, draftOwner!.method); }}>{REVIEW_IN_REGISTRY}</button>
+          {/if}
+        </span>
+      </span>
+    {/if}
     <!-- Header -->
-    <div class="node-header" style="background: {data.color};">
+    <div class="node-header" style="background: {moduleColor(data.module)}; --module: {moduleColor(data.module)};">
       <span class="node-title">{data.label}</span>
       <span class="node-meta">
         <span class="meta-chip">
           <span class="meta-key"><span class="cap-trim">Module</span></span>
           <span class="meta-val"><span class="cap-trim">{data.module}</span></span>
         </span>
+        {#if draftEnv}
+          <span class="meta-chip node-env" title={draftEnv}>
+            <span class="meta-key"><span class="cap-trim">Env</span></span>
+            <span class="meta-val"><span class="cap-trim">{envName(draftEnv)}</span></span>
+          </span>
+        {/if}
+        {#if isDraft}
+          <span class="meta-chip node-version node-version-draft" title={versionTitle(data)}>
+            <span class="meta-key"><span class="cap-trim">Version</span></span>
+            <span class="meta-val"><span class="cap-trim">&#9679; DRAFT</span></span>
+          </span>
+        {/if}
         {#if running?.env}
           <span class="meta-chip node-env" title={running.env}>
             <span class="meta-key"><span class="cap-trim">Env</span></span>
@@ -314,11 +368,11 @@
           {#each data.inputs as input}
             <div class="slot-row-side">
               <Handle type="target" position={Position.Left} id={input.name}
-                style="background: {slotColor(input.type)}; width: 8px; height: 8px; border: none;" />
+                style="background: var(--port); width: 10px; height: 10px; border: 2px solid var(--bg-canvas); z-index: 3;" />
               <div class="slot-stack slot-stack-left">
                 <span class="slot-name">{input.name}</span>
                 <span class="chip-row">
-                  <span class="type-chip type-chip-sm" title={displaySlotType(input.type)}>{truncateSlotType(input.type)}</span>
+                  <span class="type-chip type-chip-sm" style="--chip: {slotColor(input.type)};" title={displaySlotType(input.type)}>{truncateSlotType(input.type)}</span>
                   {#if input.description}
                     <span class="info-icon" title={input.description}>
                       <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">
@@ -346,11 +400,11 @@
                       </svg>
                     </span>
                   {/if}
-                  <span class="type-chip type-chip-sm" title={displaySlotType(output.type)}>{truncateSlotType(output.type)}</span>
+                  <span class="type-chip type-chip-sm" style="--chip: {slotColor(output.type)};" title={displaySlotType(output.type)}>{truncateSlotType(output.type)}</span>
                 </span>
               </div>
               <Handle type="source" position={Position.Right} id={output.name}
-                style="background: {slotColor(output.type)}; width: 8px; height: 8px; border: none;" />
+                style="background: var(--port); width: 10px; height: 10px; border: 2px solid var(--bg-canvas); z-index: 3;" />
             </div>
           {/each}
         </div>
@@ -371,11 +425,22 @@
 
     <!-- Footer -->
     <div class="node-footer">
-      {#if statusLabel}
-        <span class="status-label" class:is-pending={data.runStatus === 'pending'} class:is-cached={data.runStatus === 'cached'} style={data.runStatus === 'cached' ? '' : `color: ${borderColor};`}>
-          {#if data.runStatus === 'cached'}&#10227;{:else if data.runStatus === 'completed'}&#10003;{:else if data.runStatus === 'failed'}&#10007;{:else if data.runStatus === 'running'}&#8635;{:else if data.runStatus === 'mixed'}&#9888;{:else if data.runStatus === 'pending'}&#9679;{:else if selected}&#9679;{/if}
+      <!-- One status, in this slot: refused, then invalid, then the run outcome. -->
+      {#if refused}
+        <span class="status-label node-problem" style="color: var(--status-failed-ink);"
+              title={data.refusals!.join('\n')} data-testid="node-refused">&#9888; refused · {refusalCount}</span>
+      {:else if invalidReason}
+        <span class="status-label node-problem" style="color: var(--status-failed-ink);"
+              title={invalidReason} data-testid="draft-invalid">&#9888; invalid</span>
+      {:else if statusLabel}
+        <span class="status-label" class:is-pending={liveStatus === 'pending'} style="color: {labelColor};">
+          {#if liveStatus === 'completed' || liveStatus === 'cached'}&#10003;{:else if liveStatus === 'failed'}&#10007;{:else if liveStatus === 'running'}&#8635;{:else if liveStatus === 'mixed'}&#9680;{:else if liveStatus === 'pending'}&#9679;{:else if liveStatus === 'cancelled'}&#9632;{/if}
           {statusLabel}
+          {#if liveStatus === 'cached' && !draftMode}<span class="cached-pill">&#10227; cached</span>{/if}
+          {#if draftMode}<span class="latest-kept">{LATEST_KEPT}</span>{/if}
         </span>
+      {:else if draftMode && !draftMode.isDraft}
+        <span class="param-count">draft input · not run</span>
       {:else}
         <span class="param-count">{data.params.length} params</span>
       {/if}
@@ -388,7 +453,7 @@
 
 <style>
   .custom-node {
-    background: #353535;
+    background: var(--node-bg);
     border-radius: 6px;
     overflow: visible;
     min-width: 170px;
@@ -403,9 +468,9 @@
     width: 18px;
     height: 18px;
     border-radius: 50%;
-    background: #E74C3C;
+    background: var(--status-failed);
     color: white;
-    border: 2px solid #353535;
+    border: 2px solid var(--node-bg);
     font-size: 10px;
     line-height: 1;
     cursor: pointer;
@@ -421,7 +486,7 @@
     opacity: 1;
   }
   .delete-btn:hover {
-    background: #c0392b;
+    filter: brightness(1.1);
     transform: scale(1.1);
   }
   .node-header {
@@ -501,14 +566,100 @@
     height: 5px;
     border-radius: 50%;
     flex-shrink: 0;
-    background: #F5D547;
+    /* An older pinned version: a hollow ring; the newest: a filled dot. */
+    border: 1px solid var(--version-older);
   }
   .node-version-newest .version-dot {
-    background: #7CFC9A;
+    background: var(--status-ok);
+    border: none;
   }
   .node-slots {
     padding: 6px 0;
   }
+  /* A draft node's version chip: ● DRAFT with a light outline. */
+  .node-version-draft {
+    border: 1px solid var(--marker-light);
+    background: rgba(0, 0, 0, 0.55);
+  }
+  .node-version-draft .meta-val {
+    font-weight: 700;
+    letter-spacing: 0.06em;
+  }
+  /* Refused or invalid, in the footer's status slot: glyph and words in the
+     failed ink, the reasons on hover. */
+  .node-problem {
+    font-weight: 600;
+    cursor: help;
+    white-space: nowrap;
+  }
+  .latest-kept {
+    margin-left: 3px;
+    color: var(--text-secondary);
+    font-weight: 400;
+  }
+  /* The DRAFT MODE flag (style guide `.flag`): solid light grey on the
+     draft, an outline on the steps after it. */
+  .draft-flag-wrap {
+    position: absolute;
+    top: -10px;
+    left: 6px;
+    z-index: 4;
+  }
+  /* The flag straddles the top border and reaches into the node; a
+     draft-mode node's header starts below it, with a little air, so the
+     flag never covers the title row. */
+  .draft-mode-node > .node-header {
+    padding-top: 13px;
+  }
+  .draft-flag {
+    display: inline-flex;
+    align-items: center;
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    padding: 0 4px 0 5px;
+    line-height: 13px;
+    border-radius: 3px;
+    white-space: nowrap;
+    background: var(--bg-header);
+    color: var(--text-primary);
+    border: 1px solid var(--dash-neutral);
+    box-shadow: 0 0 0 2px var(--bg-canvas);
+    cursor: help;
+  }
+  .draft-flag.strong {
+    background: var(--marker-light);
+    color: var(--bg-canvas);
+    border-color: var(--marker-light);
+  }
+  .draft-tip {
+    display: none;
+    position: absolute;
+    top: 16px;
+    left: 0;
+    width: 250px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    border-radius: 6px;
+    padding: 9px 10px;
+    font-size: 11px;
+    line-height: 1.45;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.6);
+    cursor: default;
+    white-space: normal;
+  }
+  .draft-flag-wrap:hover .draft-tip { display: block; }
+  .lnk {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--accent);
+    font: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .lnk:hover { text-decoration: underline; }
   .slot-row {
     display: flex;
     justify-content: space-between;
@@ -526,25 +677,25 @@
   }
   .node-params {
     padding: 6px 10px 8px;
-    border-top: 1px solid #4a4a4a;
+    border-top: 1px solid var(--border-node);
   }
   .param-row {
     margin-bottom: 4px;
   }
   .param-label {
     font-size: 8px;
-    color: #888;
+    color: var(--text-secondary);
   }
   .required {
-    color: #E74C3C;
+    color: var(--status-failed-ink);
   }
   .param-value {
-    background: #2d2d30;
+    background: var(--bg-header);
     padding: 2px 6px;
     border-radius: 3px;
     border: 1px solid var(--border);
     font-size: 9px;
-    color: #ccc;
+    color: var(--text-primary);
     margin-top: 1px;
     min-height: 16px;
     line-height: 12px;
@@ -555,7 +706,7 @@
   }
   .node-footer {
     padding: 3px 10px 5px;
-    border-top: 1px solid #4a4a4a;
+    border-top: 1px solid var(--border-node);
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -567,14 +718,16 @@
   .status-label {
     font-size: 9px;
   }
-  /* Matches the History tab's cached pill. */
-  .status-label.is-cached {
+  /* The CACHED pill beside "completed": status text on a 15% tint with a
+     45% outline, like every status pill. */
+  .cached-pill {
     display: inline-flex;
     align-items: center;
-    background: rgba(233, 168, 71, 0.15);
-    color: #E9A847;
-    border: 1px solid rgba(233, 168, 71, 0.45);
-    border-radius: 9px;
+    margin-left: 4px;
+    background: color-mix(in oklab, var(--status-cached) 15%, transparent);
+    color: var(--status-cached);
+    border: 1px solid color-mix(in oklab, var(--status-cached) 45%, transparent);
+    border-radius: 3px;
     font-size: 8px;
     font-weight: 600;
     padding: 0 5px;
@@ -597,11 +750,8 @@
     padding: 0;
   }
   /* System node styles */
-  .system-node {
-    border-color: var(--color-system);
-  }
   .system-header {
-    background: linear-gradient(135deg, var(--color-system), #16A085) !important;
+    background: var(--fill-system) !important;
     flex-direction: row !important;
     align-items: center;
     gap: 6px;
@@ -622,26 +772,26 @@
     display: flex;
     flex-wrap: wrap;
     gap: 3px;
-    border-bottom: 1px solid #4a4a4a;
-    background: #2d2d30;
+    border-bottom: 1px solid var(--border-node);
+    background: var(--bg-header);
   }
-  .chip-strip-override { background: rgba(233, 168, 71, 0.08); }
+  .chip-strip-override { background: rgba(255, 255, 255, 0.04); }
   .node-chip {
     font-size: 8px;
     padding: 1px 4px;
-    background: #1e1e1e;
+    background: var(--bg-input);
     border: 1px solid var(--border);
     border-radius: 6px;
     color: #aaa;
     font-family: Consolas, monospace;
   }
   .node-chip-override {
-    color: #E9A847;
-    border-color: rgba(233, 168, 71, 0.4);
+    color: #f2f2f2;
+    border-color: var(--dash-neutral);
   }
   .node-chip-more {
     font-size: 8px;
-    color: #666;
+    color: var(--text-muted);
     padding: 1px 2px;
   }
   .system-type {
@@ -677,9 +827,10 @@
     font-size: 7px;
     text-transform: lowercase;
     letter-spacing: 0.2px;
-    color: rgba(26, 188, 156, 0.85);
-    background: rgba(26, 188, 156, 0.1);
-    border: 1px solid rgba(26, 188, 156, 0.3);
+    /* A slot type's palette colour, on its chip only (never the port). */
+    color: color-mix(in srgb, var(--chip, #808080), #fff 45%);
+    background: color-mix(in srgb, var(--chip, #808080) 18%, transparent);
+    border: 1px solid color-mix(in srgb, var(--chip, #808080) 55%, transparent);
     border-radius: 3px;
     padding: 0 3px;
     line-height: 11px;
@@ -705,12 +856,12 @@
   }
   .collapse-btn:hover .sample-name { color: #fff; }
   .caret {
-    color: #888;
+    color: var(--text-secondary);
     font-size: 9px;
     margin-left: 2px;
   }
   .sample-table {
-    border-top: 1px dashed #4a4a4a;
+    border-top: 1px dashed var(--border-node);
     padding: 4px 10px 2px;
     display: flex;
     flex-direction: column;

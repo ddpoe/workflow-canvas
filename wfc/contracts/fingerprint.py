@@ -2,7 +2,7 @@
 
 A method version is its fingerprinted content, and its contract is everything
 the canvas, the validator and the runner read from it: the slots a run reads
-and writes (with their types, required-ness and declared columns), the
+and writes (with their types, required-ness and declared options), the
 parameters a node may set (with their types, defaults and constraints), and
 how the script is invoked. So the projection is the whole parsed contract,
 minus what only describes it or is keyed elsewhere. Stating the exclusions
@@ -21,7 +21,7 @@ mapping key order, YAML layout,  Formatting. Mapping keys are sorted; a slot's
 comments                         shorthand ``name: .csv`` reads as
                                  ``name: {type: .csv}`` and an empty slot or
                                  section as ``{}``. List order is kept: a
-                                 ``columns.strict``
+                                 ``options.fixed``
                                  list or an ``enum`` is content.
 ``env``                          The version's env axis: already in the content
                                  identity through the env name and fingerprint.
@@ -30,10 +30,10 @@ comments                         shorthand ``name: .csv`` reads as
 ===============================  ==============================================
 
 Everything else is in: each input slot's and output slot's declaration
-(name, ``type``, ``required``, ``columns``, ``multiple``, ``contents`` and any
-other key), each parameter's declaration (name, ``type``, ``required``,
-``default``, ``constraints``, ``column_of_input``, ``new_column`` and any
-other key), ``executor``, ``script`` and ``gpus``. No default is filled in:
+(name, ``type``, ``required``, an output's ``options``, ``multiple``,
+``contents`` and any other key), each parameter's declaration (name,
+``type``, ``required``, ``default``, ``constraints``, ``options_from`` and
+any other key), ``executor``, ``script`` and ``gpus``. No default is filled in:
 an absent ``required`` and ``required: true`` stay distinct, because the
 claim and the validator read them differently.
 

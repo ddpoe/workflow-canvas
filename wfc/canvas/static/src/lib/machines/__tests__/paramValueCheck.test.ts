@@ -18,14 +18,19 @@
  * exactly.
  */
 import { describe, it, expect } from 'vitest';
-import { checkParamValue, coerceParamValue } from '../paramEditor.machine';
+import {
+  checkParamValue,
+  coerceParamValue,
+  type CoerceInput,
+  type ParamEditorType,
+} from '../paramEditor.machine';
 import { PARAM_TYPES } from '../../shared/types';
 import ORACLE from '../../shared/paramValueOracle.json';
 
 type Row = {
   what: string;
-  raw: unknown;
-  paramType: string;
+  raw: string | boolean;
+  paramType: ParamEditorType;
   required?: boolean;
   enumOptions?: string[];
   /** Expected coerced value when the check accepts. */
@@ -70,7 +75,8 @@ const TABLE: Row[] = [
 
 describe('coerceParamValue — the editor\'s one param check', () => {
   it.each(TABLE)('$what', ({ raw, paramType, required, enumOptions, value, error }) => {
-    const result = coerceParamValue({ raw, paramType, required, enumOptions });
+    // An undeclared `required` reads as optional, as the editor's actor does.
+    const result = coerceParamValue({ raw, paramType, required: required ?? false, enumOptions });
     if (error !== undefined) {
       expect(result.ok).toBe(false);
       expect(result.ok === false && result.error).toBe(error);
@@ -80,7 +86,7 @@ describe('coerceParamValue — the editor\'s one param check', () => {
   });
 
   it('refuses a number outside a declared min or max, and accepts the bounds themselves', () => {
-    const bounded = { paramType: 'int', min: 1, max: 10 };
+    const bounded: Omit<CoerceInput, 'raw'> = { paramType: 'int', required: false, min: 1, max: 10 };
     expect(coerceParamValue({ ...bounded, raw: '0' })).toEqual({ ok: false, error: 'Must be >= 1.' });
     expect(coerceParamValue({ ...bounded, raw: '11' })).toEqual({ ok: false, error: 'Must be <= 10.' });
     expect(coerceParamValue({ ...bounded, raw: '1' })).toEqual({ ok: true, value: 1 });

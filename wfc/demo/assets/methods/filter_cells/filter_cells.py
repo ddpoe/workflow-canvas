@@ -13,7 +13,7 @@ import wfc_client as wfc
 
 @wfc.method
 def filter_cells(ctx):
-    with open(ctx.input("data")[0], newline="") as f:
+    with open(ctx.input("data"), newline="") as f:
         rows = list(csv.DictReader(f))
     fieldnames = list(rows[0].keys()) if rows else ["id", "intensity", "area", "quality"]
 
