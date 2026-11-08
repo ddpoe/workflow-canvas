@@ -224,11 +224,15 @@ def resolve_conda_env_dir(name: str, conda_root: str | Path | None = None) -> Pa
 
 def _detect_conda_root() -> str:
     """Auto-detect conda base directory via ``conda info --base``."""
+    from . import progress
+
+    argv = ["conda", "info", "--base"]
     try:
-        result = subprocess.run(
-            ["conda", "info", "--base"],
-            capture_output=True, text=True, timeout=10,
-        )
+        with progress.host_call("conda info --base", argv):
+            result = subprocess.run(
+                argv,
+                capture_output=True, text=True, timeout=10,
+            )
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip()
     except (FileNotFoundError, subprocess.TimeoutExpired):

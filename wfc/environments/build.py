@@ -14,6 +14,8 @@ they were when git refuses the commit.
 
 from __future__ import annotations
 
+import contextlib
+import re
 import sys
 from collections.abc import Sequence
 from datetime import UTC
@@ -24,6 +26,7 @@ from axiom_annotations import AutoStep, Step, task, workflow
 
 from .. import layout
 from ..contracts import parse_byo_ref, validate_container_ref
+from . import progress
 from .argv import _LOCAL_REPOSITORY_PREFIX, strip_docker_scheme
 from .backends import BACKENDS, STAGED_PIP_FREEZE, backend_row
 from .captures import check_capture_committable
@@ -295,35 +298,44 @@ def register(
             # solved conda env: its row always stages the list).
             source = {**source, row.staged_lock.source_key: image.explicit_list}
     else:
-        口 = AutoStep(step_num=4, name="Resolve the byo image by probe, then pull")
-        image = _resolve_byo_image(source)
+        with progress.phase("resolve"):
+            口 = AutoStep(step_num=4, name="Resolve the byo image by probe, "
+                                           "then pull")
+            image = _resolve_byo_image(source)
 
     # The manifest's bytes as they were, restored if the commit is refused.
     prior_manifest = _read_bytes(layout.env_manifest_path(project_dir))
-    口 = AutoStep(step_num=5, name="Reconcile the interpreter, write the captures "
-                                   "folder and the manifest record")
-    record, capture_created, prior_image_json = _write_record(
-        name, backend, source, image, manifest, project_dir, python_override,
-        base_image,
-        recording_versions=recording_versions,
-        recording_read_error=recording_read_error,
-    )
+    with progress.phase("record"):
+        口 = AutoStep(step_num=5, name="Reconcile the interpreter, write the "
+                                       "captures folder and the manifest record")
+        record, capture_created, prior_image_json = _write_record(
+            name, backend, source, image, manifest, project_dir,
+            python_override, base_image,
+            recording_versions=recording_versions,
+            recording_read_error=recording_read_error,
+        )
 
-    口 = AutoStep(step_num=6, name="Push the image to the project's registry "
-                                   "and record pushed.json, before the commit")
-    pushed_created = _push_image(name, image, record.env_fingerprint,
-                                 project_dir, base=base, push=push,
-                                 prior_manifest=prior_manifest,
-                                 capture_created=capture_created,
-                                 prior_image_json=prior_image_json)
+    # Only a push that can happen is a phase; with no base or --no-push the
+    # step prints where the image stays.
+    pushing = base is not None and push
+    with progress.phase("push") if pushing else contextlib.nullcontext():
+        口 = AutoStep(step_num=6, name="Push the image to the project's "
+                                       "registry and record pushed.json, "
+                                       "before the commit")
+        pushed_created = _push_image(name, image, record.env_fingerprint,
+                                     project_dir, base=base, push=push,
+                                     prior_manifest=prior_manifest,
+                                     capture_created=capture_created,
+                                     prior_image_json=prior_image_json)
 
-    口 = AutoStep(step_num=7, name="Commit the manifest, captures folder and "
-                                   ".gitattributes by pathspec")
-    _commit_manifest(name, project_dir, record.env_fingerprint,
-                     prior_manifest=prior_manifest,
-                     capture_created=capture_created,
-                     prior_image_json=prior_image_json,
-                     pushed_created=pushed_created)
+    with progress.phase("commit"):
+        口 = AutoStep(step_num=7, name="Commit the manifest, captures folder "
+                                       "and .gitattributes by pathspec")
+        _commit_manifest(name, project_dir, record.env_fingerprint,
+                         prior_manifest=prior_manifest,
+                         capture_created=capture_created,
+                         prior_image_json=prior_image_json,
+                         pushed_created=pushed_created)
     if image.solved_for is not None:
         print(solved_env_warning(
             name, source[SOLVE_SOURCE_KEY],
@@ -999,7 +1011,9 @@ def _build_image(
     口 = Step(step_num=4, name="Write Dockerfile and stage build context",
              purpose="Write the Dockerfile to .wfc/build/<name>/ and stage the "
                      "pip-freeze, pixi, and conda source blobs into the build context")
-    build_dir = _stage_build_context(project_dir, name, dockerfile, row, source)
+    with progress.phase("stage"):
+        build_dir = _stage_build_context(project_dir, name, dockerfile, row,
+                                         source)
 
     口 = AutoStep(step_num=5, name="Build the image and resolve its digest")
     image = _build_and_resolve(name, build_dir, source_field, built_from_lock,
@@ -1082,6 +1096,7 @@ def _solve_build(name: str, spec, gen_kwargs: dict,
 
     from . import docker as docker_runner
     from .argv import daemon_ref
+    from .containers import copy_out_labels
     from .dockerfiles import conda as conda_df
 
     row = backend_row("conda")
@@ -1106,7 +1121,8 @@ def _solve_build(name: str, spec, gen_kwargs: dict,
                          "them and suggesting pixi")
         try:
             image = _build_and_resolve(name, solve_dir, row.recorded_source,
-                                       row.recorded_lock, labels)
+                                       row.recorded_lock, labels,
+                                       what="solve build")
         except RuntimeError as exc:
             missing = conda_df.unsolvable_requests(str(exc))
             if missing:
@@ -1118,9 +1134,11 @@ def _solve_build(name: str, spec, gen_kwargs: dict,
                          "hardened container, by the image ID")
         readback = solve_dir / "readback"
         readback.mkdir()
-        copied = docker_runner.copy_out(daemon_ref(image.container_ref),
-                                        conda_df.IMAGE_EXPLICIT_LIST_PATH,
-                                        dest_dir=readback)
+        with progress.phase("copy-out"):
+            copied = docker_runner.copy_out(daemon_ref(image.container_ref),
+                                            conda_df.IMAGE_EXPLICIT_LIST_PATH,
+                                            dest_dir=readback,
+                                            labels=copy_out_labels(project_dir))
         explicit_list = _lf_newlines(copied.read_bytes().decode("utf-8"))
     if "@EXPLICIT" not in explicit_list:
         raise RuntimeError(
@@ -1139,7 +1157,8 @@ def _solve_build(name: str, spec, gen_kwargs: dict,
                            "renders no Dockerfile")
     staged = {STAGED_PIP_FREEZE.source_key: gen_kwargs["pip_freeze_content"],
               lock.source_key: explicit_list}
-    _stage_build_context(project_dir, name, dockerfile, row, staged)
+    with progress.phase("stage"):
+        _stage_build_context(project_dir, name, dockerfile, row, staged)
     return image._replace(explicit_list=explicit_list, solved_for=spec.platform)
 
 
@@ -1169,6 +1188,30 @@ def _no_linux_build_message(name: str, spec, missing: list[str]) -> str:
     )
 
 
+#: The head of the build client's failure message: its exit status.
+_BUILD_FAILED_HEAD = re.compile(r"^docker build failed \(exit (?P<code>-?\d+)\):\n?")
+
+
+def _build_failure(name: str, message: str) -> str:
+    """Say that env *name*'s image build failed, without naming a command.
+
+    Args:
+        name: The env name.
+        message: The build's error: its exit status and the output's last
+            lines.
+
+    Returns:
+        ``The image build for env <name> failed (exit N); its last lines:``
+        and the lines, or the message as it is when it has another shape.
+    """
+    head = _BUILD_FAILED_HEAD.match(message)
+    if head is None:
+        return f"The image build for env {name!r} failed: {message}"
+    tail = message[head.end():]
+    return (f"The image build for env {name!r} failed (exit {head['code']}); "
+            f"its last lines:\n{tail}")
+
+
 @task(purpose="Build the image from a staged build context, tagged under "
               "local/<name>, and resolve its image ID into the digest-pinned "
               "docker://local/<name>@sha256:<hex> ref")
@@ -1178,11 +1221,15 @@ def _build_and_resolve(
     source_field: str | None,
     built_from_lock: str | None,
     labels: dict[str, str] | None = None,
+    *,
+    what: str = "build",
 ) -> _ResolvedImage:
     """Build a staged build context and resolve the image's digest.
 
     Registration's builds (:func:`_build_image`, :func:`_solve_build`)
-    end here. Nothing is pulled.
+    end here. Nothing is pulled. During ``wfc register-env`` the build and
+    the resolve are phases (:mod:`wfc.environments.progress`) and every line
+    of the build's output goes to the registration's log.
 
     Args:
         name: The env name; the image is tagged ``local/<name>``.
@@ -1192,13 +1239,17 @@ def _build_and_resolve(
         labels: Image labels to build with (the source label,
             :func:`wfc.environments.registry.source_labels`); ``None`` or
             empty builds with none.
+        what: The build's phase name (``"build"``, or ``"solve build"``).
 
     Returns:
         The ``docker://local/<name>@sha256:<hex>`` image.
 
     Raises:
         RuntimeError: If the build or the inspect fails, or the inspect
-            returns no digest.
+            returns no digest. A failed build's message names the env and
+            the exit status and keeps the output's last lines.
+        BuildInterruptedError: On Ctrl-C during the build, once the build
+            has ended (from :func:`wfc.environments.docker.build`).
     """
     from . import docker as docker_runner
 
@@ -1209,13 +1260,21 @@ def _build_and_resolve(
     # handed the record's daemon ref (the image ID), never this tag.
     image_name = f"{_LOCAL_REPOSITORY_PREFIX}{name}"
     build_tag = f"{image_name}:_wfc-build"
-    build_labels = {"labels": labels} if labels else {}
-    口 = AutoStep(step_num=1, name="Build the image")
-    docker_runner.build(build_dir, build_tag, **build_labels)
+    build_kwargs: dict = {"labels": labels} if labels else {}
+    sink = progress.build_sink()
+    if sink is not None:
+        build_kwargs["sink"] = sink
+    with progress.phase(what):
+        try:
+            口 = AutoStep(step_num=1, name="Build the image")
+            docker_runner.build(build_dir, build_tag, **build_kwargs)
+        except RuntimeError as exc:
+            raise RuntimeError(_build_failure(name, str(exc))) from exc
     口 = Step(step_num=2, name="Resolve the image digest",
              purpose="Inspect the built image, strip the sha256: prefix, and form "
                      "the digest-pinned docker:// ref")
-    raw_digest = docker_runner.image_inspect(build_tag)
+    with progress.phase("resolve"):
+        raw_digest = docker_runner.image_inspect(build_tag)
     digest_hex = raw_digest.removeprefix("sha256:").strip()
     if not digest_hex:
         raise RuntimeError(

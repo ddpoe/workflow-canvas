@@ -121,6 +121,51 @@ def test_copy_out_returns_the_copied_path_and_removes_the_container(
     assert [argv[1] for argv in calls] == ["create", "cp", "rm"]
 
 
+def test_copy_out_create_carries_the_project_and_creator_labels(monkeypatch, tmp_path):
+    """The create argv carries the project label and this process's creator label.
+
+    The labels are ``copy_out_labels``'; the cp and rm are those of a copy
+    without labels, and the create is that copy's plus the label flags.
+    """
+    import os
+
+    import psutil
+
+    from wfc.environments.containers import copy_out_labels, project_label
+
+    def run(labels, dest):
+        calls: list[list[str]] = []
+
+        def handler(cmd, *args, **kwargs):
+            calls.append(list(cmd))
+            if cmd[1] == "cp":
+                (dest / "list.txt").write_text("x\n", encoding="utf-8")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        fake_subprocess_run(monkeypatch, handler, only="docker")
+        docker_runner.copy_out(_IMAGE, "/opt/list.txt", dest_dir=dest, labels=labels)
+        assert [argv[1] for argv in calls] == ["create", "cp", "rm"]
+        name = calls[0][calls[0].index("--name") + 1]
+        return [[a.replace(name, "<name>") for a in argv] for argv in calls]
+
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    create, cp, rm = run(copy_out_labels(tmp_path), tmp_path / "a")
+    plain_create, plain_cp, plain_rm = run(None, tmp_path / "b")
+
+    flags = _flags_of(create, _IMAGE)
+    labels = [flags[i + 1] for i, flag in enumerate(flags) if flag == "--label"]
+    me = psutil.Process(os.getpid())
+    assert sorted(labels) == [
+        f"wfc.creator={os.getpid()}:{me.create_time():.3f}",
+        f"wfc.project={project_label(tmp_path)}"]
+    unlabelled = [a for a in create if a != "--label" and a not in labels]
+    assert unlabelled == plain_create and "--label" not in plain_create
+    assert cp == ["docker", "cp", "<name>:/opt/list.txt", str(tmp_path / "a")]
+    assert plain_cp == ["docker", "cp", "<name>:/opt/list.txt", str(tmp_path / "b")]
+    assert rm == plain_rm == ["docker", "rm", "--force", "<name>"]
+
+
 def test_a_bare_image_id_is_a_pinned_ref(monkeypatch, tmp_path):
     """A locally built image's ID, ``sha256:<64 hex>``, is content-addressed
     and is what both image stores resolve; copy_out hands it to Docker as is."""

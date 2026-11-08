@@ -100,10 +100,11 @@ def test_pixi_dockerfile_no_deps_pip_layer_after_pixi_install():
         f"freeze is layered on with --no-deps."
     )
 
-    # The recipe also ends with a chmod that opens read-permissions for the
-    # --user-mismatched runtime.
-    assert any("chmod -R a+rX" in ln for ln in lines), (
-        "missing chmod -R a+rX line that lets a --user runtime read the env"
+    # The install line ends with the chmod that opens read-permissions for
+    # the --user-mismatched runtime.
+    assert "&& chmod -R a+rX /opt/.pixi/envs/image-io" in lines[pixi_install_idx], (
+        "the pixi install RUN must end with the chmod that lets a --user "
+        "runtime read the env"
     )
 
     # BuildKit directive + at least one cache mount (layer-caching).
@@ -126,8 +127,10 @@ def test_pixi_dockerfile_without_a_freeze_has_no_pip_stage():
         assert "pip install" not in dockerfile, f"freeze={freeze!r}"
         assert "pip-freeze.txt" not in dockerfile, f"freeze={freeze!r}"
         assert env_python_path("default") not in dockerfile, f"freeze={freeze!r}"
-        assert "pixi install --locked --environment default" in dockerfile
-        assert "RUN chmod -R a+rX /opt/.pixi/envs/default" in dockerfile
+        assert (
+            "pixi install --locked --environment default && "
+            "chmod -R a+rX /opt/.pixi/envs/default"
+        ) in dockerfile
 
 
 # ---------------------------------------------------------------------------

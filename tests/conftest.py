@@ -34,6 +34,7 @@ from tests.fixtures.fakes import (  # noqa: F401
     fixture_env_record as _write_fixture_env_record,
     make_marker_project,
     seed_sample_row,
+    stub_bind_probe,
     write_wfc_marker as _make_wfc_marker,
 )
 from tests.fixtures import routes
@@ -248,6 +249,60 @@ def _push_worker_leak_guard():
         "state into the next test's database. Whatever starts one stops it "
         "before it returns (run_pipeline does, on every ending)."
     )
+
+
+# =============================================================================
+# The launch's bind check sees the project, unless a test says otherwise
+# =============================================================================
+
+@pytest.fixture(autouse=True)
+def _bind_probe_sees_the_project(request, monkeypatch):
+    """Answer the launch's bind-check container with "visible" in every unit test.
+
+    Every ``run_pipeline`` and ``wfc try`` launch starts one short container
+    to check that a step's binds show the project and the cache. Left real,
+    that is a ``docker run`` per launch in tests that never meant to reach
+    Docker: it depends on the machine, and on a host without the image it
+    leaves a could-not-run note on stderr. The registered fake
+    ``stub_bind_probe`` stands at that docker edge (the check's own verdict
+    and Execution's gate stay real), armed "visible" here so a passing launch
+    makes no extra call and prints nothing.
+
+    A test that wants another answer calls ``stub_bind_probe(monkeypatch,
+    "empty" | ...)`` itself; the later patch wins. A test marked
+    ``integration`` runs the real probe.
+    """
+    if request.node.get_closest_marker("integration") is None:
+        stub_bind_probe(monkeypatch, "visible")
+
+
+@pytest.fixture(autouse=True)
+def _no_labelled_containers_running(request, monkeypatch):
+    """Answer every listing of wfc's containers with none in every unit test.
+
+    A cancel and an interrupted launch ask Environments to stop the
+    containers carrying a pipeline's or a run's labels. Left real, that is a
+    Docker call per cancel in tests that never meant to reach Docker. The
+    registered fake ``fake_container_daemon`` stands at that docker edge (the
+    stop's own logic and every caller's handling stay real), armed here with
+    no containers running.
+
+    A test that wants to see the calls, or start containers, calls
+    ``fake_container_daemon(monkeypatch)`` itself; the later patch wins. A
+    test marked ``integration`` reaches the real daemon.
+
+    The daemon armed is ``fake_leftover_daemon``'s, a ``ContainerDaemon``
+    that also answers the leftovers search (no images, an empty build
+    cache), so a ``list-envs`` footer or a doctor row asking for the
+    leftover counts never reaches Docker either. The process side of that
+    search is armed empty beside it (``fake_build_processes``): no unit test
+    reads the real process table or signals a real build client.
+    """
+    if request.node.get_closest_marker("integration") is None:
+        from tests.fixtures.fakes import fake_build_processes, fake_leftover_daemon
+
+        fake_leftover_daemon(monkeypatch)
+        fake_build_processes(monkeypatch)
 
 
 # =============================================================================

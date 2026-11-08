@@ -13,23 +13,42 @@ Index by boundary:
 
 **readiness** -- the ``wfc doctor`` probes and the run gate.
   stub_readiness_probes, restore_readiness_probe, stub_demo_docker_probe,
-  stub_dvc_available.
+  stub_dvc_available, stub_drive_type (the host and GetDriveTypeW's answer for the disk row).
 
 **process** -- subprocesses, binaries, sockets, files, the prompt, the clock.
   fake_subprocess_run (+ canned_process, refusing_process,
   real_subprocess_run), fake_docker_build_process, stub_binary_lookup,
   always_busy_socket, fake_os_rename, fake_path_replace, refuse_path_unlink,
   refuse_path_unlink_once, refuse_path_write, fake_os_replace,
-  fake_os_chmod, recording_file_copy, redirect_home, stub_interactive_prompt, stub_terminal,
+  fake_os_chmod, recording_file_copy, redirect_home, stub_interactive_prompt,
+  stub_prompt_interrupt (Ctrl-C at the prompt), stub_terminal,
   stub_server_bind, stub_wall_clock, fake_conda_list_explicit,
-  fake_conda_solve_capture, stub_host_conda_platform, fake_pip_freeze.
+  fake_conda_solve_capture, stub_host_conda_platform, fake_pip_freeze,
+  short_register_env_heartbeat (the wait before register-env's heartbeat).
 
 **docker** -- register-env's registry calls, pushes and the dev loop's launch.
   stub_docker_image_inspect, stub_docker_image_content (FAKE_IMAGE_CONTENT),
   stub_docker_image_labels, stub_docker_repo_digest, stub_docker_pull, stub_docker_tag,
   stub_docker_push (FAKE_PUSHED_DIGEST), stub_docker_read_manifest,
   stub_docker_build, refuse_docker, stub_docker_command_builder,
-  stub_dev_loop_launch.
+  stub_dev_loop_launch, stub_bind_probe (the launch's bind-check container),
+  fake_interruptible_build (docker_build: the docker build client's process
+  tree -- its Popen, the group interrupt, psutil's docker.exe and
+  docker-buildx.exe; one ordered event list of interrupts, waits,
+  terminates and kills).
+
+**containers** -- the Docker calls that list and stop wfc's containers by label.
+  fake_container_daemon (a model of the daemon's running containers, and
+  its ContainerDaemon; armed empty suite-wide), interrupt_labelled_launch
+  (the launch's labelled container started, then the wait interrupted).
+
+**leftovers** -- what wfc prune-envs reads: the Docker listings and the process table.
+  fake_leftover_daemon (a LeftoverDaemon: running containers with labels,
+  variables and names, the env images, the build cache's size; armed empty
+  suite-wide), fake_build_processes (a BuildProcesses table of wfc
+  commands, docker.exe clients and docker-buildx.exe plugins, and the
+  interrupt, wait and terminate the apply sends; armed empty suite-wide),
+  stub_posix_process_groups (the process groups os.getpgid / os.killpg see).
 
 **gh** -- the GitHub CLI reads of ``wfc share``.
   stub_gh.
@@ -73,10 +92,20 @@ Index by boundary:
 from __future__ import annotations
 
 from ._entry import FIELDS, KINDS, fake, is_entry, shortcut, spy
+from .containers import ContainerDaemon, fake_container_daemon, interrupt_labelled_launch
+from .leftovers import (
+    BuildProcesses,
+    LeftoverDaemon,
+    fake_build_processes,
+    fake_leftover_daemon,
+    stub_posix_process_groups,
+)
+from .docker_build import fake_interruptible_build
 from .docker import (
     FAKE_IMAGE_CONTENT,
     FAKE_PUSHED_DIGEST,
     refuse_docker,
+    stub_bind_probe,
     stub_dev_loop_launch,
     stub_docker_build,
     stub_docker_command_builder,
@@ -131,6 +160,9 @@ from .process import (
     stub_interactive_prompt,
     stub_server_bind,
     stub_terminal,
+)
+from .prompt_interrupt import stub_prompt_interrupt  # noqa: E402
+from .process import (  # noqa: E402
     stub_wall_clock,
 )
 from .readiness import (
@@ -139,6 +171,9 @@ from .readiness import (
     stub_dvc_available,
     stub_readiness_probes,
 )
+from .drive_type import DRIVE_ANSWERS, stub_drive_type
+from .register_progress import short_register_env_heartbeat
+from .spawns import Spawns, record_spawns
 from .seams import (
     REGISTRY_SEAMS,
     fault_at_hashing_copy,
@@ -201,20 +236,29 @@ __all__ = [
     # readiness
     "stub_readiness_probes", "restore_readiness_probe",
     "stub_demo_docker_probe", "stub_dvc_available",
+    "stub_drive_type", "DRIVE_ANSWERS",
     # process
     "fake_subprocess_run", "canned_process", "refusing_process",
     "real_subprocess_run", "fake_docker_build_process", "stub_binary_lookup",
     "always_busy_socket", "fake_os_rename", "fake_path_replace",
     "refuse_path_unlink", "refuse_path_unlink_once", "refuse_path_write", "fake_os_replace", "fake_os_chmod", "recording_file_copy", "redirect_home",
-    "stub_interactive_prompt", "stub_terminal", "stub_server_bind", "stub_wall_clock",
+    "stub_interactive_prompt", "stub_prompt_interrupt", "stub_terminal",
+    "stub_server_bind", "stub_wall_clock",
     "fake_conda_list_explicit", "fake_conda_solve_capture",
-    "stub_host_conda_platform", "fake_pip_freeze",
+    "stub_host_conda_platform", "fake_pip_freeze", "short_register_env_heartbeat",
+    "Spawns", "record_spawns",
     # docker
     "stub_docker_image_inspect", "stub_docker_image_content",
     "FAKE_IMAGE_CONTENT", "stub_docker_image_labels", "stub_docker_repo_digest",
     "stub_docker_pull", "stub_docker_build", "stub_docker_tag",
     "stub_docker_push", "FAKE_PUSHED_DIGEST", "stub_docker_read_manifest",
     "refuse_docker", "stub_docker_command_builder", "stub_dev_loop_launch",
+    "stub_bind_probe", "fake_interruptible_build",
+    # containers
+    "fake_container_daemon", "ContainerDaemon", "interrupt_labelled_launch",
+    # leftovers
+    "fake_leftover_daemon", "LeftoverDaemon", "fake_build_processes",
+    "BuildProcesses", "stub_posix_process_groups",
     # gh
     "stub_gh",
     # engine

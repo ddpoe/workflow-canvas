@@ -139,10 +139,19 @@ def _classify_pipeline_error(exc: Exception) -> dict[str, Any]:
     "Commit changes" button for dirty_repo).  ``hint`` is an optional
     follow-up sentence separated from the main message.
     """
+    from ..execution.pipeline import BindsNotVisibleError
     from ..version import DirtyRepositoryError
 
     message = str(exc) or exc.__class__.__name__
 
+    if isinstance(exc, BindsNotVisibleError):
+        # The launch's bind check: a step's container would see the project
+        # (or the cache) empty, most often a project on a network drive.
+        return {
+            "kind": "binds_not_visible",
+            "message": message,
+            "hint": "Run `wfc doctor` in the project to see why and what to do.",
+        }
     if isinstance(exc, DirtyRepositoryError):
         return {
             "kind": "dirty_repo",

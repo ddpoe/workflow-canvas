@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/reference/cli-environments @ 65d5942d213d; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/reference/cli-environments @ 23c0d5f6e1ba; do not edit -->
 
 # Environment and Dev-Loop Commands
 
@@ -112,6 +112,11 @@ Print a table of the registered envs with columns NAME, BACKEND, CONTAINER (the 
 
 See [Register an Environment](../tutorials/registering-an-environment.md) for a walkthrough.
 
+`wfc register-env` prints a line when each phase starts and ends, with the time it took (the capture and each call it makes, the build, the copy-out, the record, the push and the commit), and a line every half minute or so while a long phase runs without a terminal. It keeps a log of the registration at `.wfc/logs/register-env/<env>-<UTC time>.log`: those lines, every command wfc ran and Docker's full build output. The log's path is printed at the end and named in any error; send it with an issue. The folder is ignored by git. Ctrl-C during the capture, the build or the copy-out stops the build, prints one line and exits 130, and records nothing.
+
+`wfc list-envs` ends with a line when an earlier run or crash left something running for this project (run containers of ended runs, env builds nothing is waiting for), giving the counts and naming `wfc prune-envs`; it prints none when it cannot reach Docker.
+
+`wfc prune-envs [--dry-run] [--yes]` stops what an earlier run or crash left running for this project: run containers whose run has ended (or whose pipeline crashed, or whose `wfc try` is gone), containers that were created and never started, and env builds no wfc command is waiting for. It prints the list first and asks `Proceed?`; `--dry-run` prints it and stops nothing; with no terminal and no `--yes` it stops nothing. It never touches a run that is still running or another project's containers. It also counts the env images no method version uses and the build cache, and removes neither. Ctrl-C part way through stops with one line saying what is still there and exits 130.
 
 ## Dev-Loop Commands
 

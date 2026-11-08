@@ -251,8 +251,11 @@ def _build_docker_argv(
     per container variable into the per-subcommand position. UID/GID use
     the same ``getattr(os, 'getuid', lambda: 0)()`` pattern as
     :mod:`wfc.execution.dispatch` so Windows/macOS callers don't crash.
+    The container carries the project label and no pipeline or run label:
+    no stop by a run or a pipeline reaches it.
     """
     from .argv import build_docker_command
+    from .containers import container_labels
 
     uid = getattr(os, "getuid", lambda: 0)()
     gid = getattr(os, "getgid", lambda: 0)()
@@ -263,6 +266,7 @@ def _build_docker_argv(
         list(inner_argv),
         uid=uid,
         gid=gid,
+        labels=container_labels(project_root),
     )
     flags = list(extra_flags)
     for name, value in (variables or {}).items():

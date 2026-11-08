@@ -7,6 +7,7 @@ Public functions:
   commit_holds_path(repo_root, c, path) Is commit c in the repo, holding path.
   git_remote_url(directory)             The project's remote URL (origin, else the only one).
   installed_wfc_version()               The installed wfc version, or None.
+  observing_commands(observer)          Hand each git argv run in a block to an observer.
 
 The identities themselves — the content hash, the code fingerprint, the
 input fingerprint and the cache key — live in ``wfc.identity``; this module
@@ -30,6 +31,8 @@ Design notes:
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import importlib.metadata
 import logging
 import os
@@ -37,7 +40,7 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -57,6 +60,32 @@ GIT_COMMIT_TIMEOUT = 300
 
 #: Environment variable that overrides :data:`GIT_COMMIT_TIMEOUT` (seconds).
 GIT_COMMIT_TIMEOUT_ENV = "WFC_GIT_COMMIT_TIMEOUT"
+
+_COMMAND_OBSERVER: contextvars.ContextVar[Callable[[Sequence[str]], None] | None] = (
+    contextvars.ContextVar("wfc_git_command_observer", default=None))
+
+
+@contextlib.contextmanager
+def observing_commands(observer: Callable[[Sequence[str]], None]) -> Iterator[None]:
+    """Hand every git command run in the block to *observer*, before it runs.
+
+    The observer gets the argv exactly as it is handed to the process (with
+    the ``-c core.longpaths=true`` every call carries), never the
+    environment or the stdin. It is held in a context variable, so a git
+    call on another thread is not observed. An observer that raises never
+    stops the git call.
+
+    Args:
+        observer: Called with each argv; ``wfc register-env`` logs it.
+
+    Yields:
+        Nothing; the git calls run in the ``with`` block.
+    """
+    token = _COMMAND_OBSERVER.set(observer)
+    try:
+        yield
+    finally:
+        _COMMAND_OBSERVER.reset(token)
 
 
 def commit_timeout() -> float:
@@ -177,7 +206,9 @@ def _git(args: list[str], cwd: Path | str,
 
     ``-c core.longpaths=true`` goes in right after ``git``, so git on
     Windows reads and writes paths past 260 characters (a deep project's
-    registry staging); git elsewhere ignores the option.
+    registry staging); git elsewhere ignores the option. The argv that
+    runs is handed first to the observer :func:`observing_commands` set on
+    this thread, if any.
 
     Args:
         args: The command line, starting with ``git``.
@@ -200,6 +231,12 @@ def _git(args: list[str], cwd: Path | str,
     """
     limit = GIT_TIMEOUT if timeout is None else timeout
     args = [args[0], "-c", "core.longpaths=true", *args[1:]]
+    observer = _COMMAND_OBSERVER.get()
+    if observer is not None:
+        try:
+            observer(args)
+        except Exception:  # noqa: BLE001 - a log never stops a git call
+            logger.debug("the command observer failed on %s", args, exc_info=True)
     started = time.time()
     proc = subprocess.Popen(
         args, cwd=str(cwd),

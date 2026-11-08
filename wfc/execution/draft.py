@@ -24,10 +24,19 @@ draft".
          "version": "draft" | "<content identity>", "params", "inputs",
          "status": "running" | "completed" | "failed", "error_message",
          "started_at", "finished_at", "outputs": {"<slot>": "<relpath>"},
-         "metrics", "size"}}}}
+         "metrics", "size",
+         "process": {"pid": <int>, "created": <epoch seconds> | null}}}}}
 
 A draft run from another pipeline replaces the stored one: the record and
 every result folder go before the new run's first step is written.
+
+A step's ``process`` names the process that ran it (``wfc try`` itself, or a
+pipeline's run-step process) by Execution's :class:`ProcessIdentity`, written
+with the entry's first write, so a ``running`` entry whose process is gone can
+be told from a live one. ``created`` is null when it could not be read; an
+entry written before the field has none. Both read as "not recorded"
+(:func:`draft_step_process`). It is draft-only state: no cache key,
+fingerprint, invocation record or ``command.sh`` reads it.
 """
 from __future__ import annotations
 
@@ -48,6 +57,7 @@ from axiom_annotations import AutoStep, Step, task, workflow
 from .. import layout
 from ..persistence import project_root as get_project_root
 from .composer import PipelineDocumentError
+from .pipeline_record import ProcessIdentity, process_identity
 
 #: Where every draft string starts.
 DRAFT_REF_PREFIX = "draft:"
@@ -297,6 +307,32 @@ def pipeline_draft_steps(pipeline_id: str,
     return draft_steps_by_pipeline(root).get(pipeline_id, [])
 
 
+#: The key of a draft step's entry that names the process running the step.
+DRAFT_STEP_PROCESS_KEY = "process"
+
+
+def draft_step_process(step: Mapping[str, Any]) -> ProcessIdentity | None:
+    """The process a draft step's entry records as running it, when it can be probed.
+
+    Args:
+        step: A draft step's entry from ``draft-run.json``.
+
+    Returns:
+        The recorded pid and creation time; ``None`` when the entry records
+        none (it was written before the field), when its creation time is
+        unknown, or when what is stored is not an identity. ``None`` means
+        "not recorded": the step's liveness cannot be told from it.
+    """
+    raw = step.get(DRAFT_STEP_PROCESS_KEY)
+    if not isinstance(raw, Mapping):
+        return None
+    try:
+        identity = ProcessIdentity.from_json(dict(raw))
+    except (KeyError, TypeError, ValueError):
+        return None
+    return identity if identity.created is not None else None
+
+
 @dataclass(frozen=True)
 class DraftStepListing:
     """One stored draft step as a run listing shows it.
@@ -310,6 +346,9 @@ class DraftStepListing:
         method: The step's own ``module.method``.
         sample: The step's sample.
         status: The step's status.
+        process: The process that ran (or runs) the step, as
+            :func:`draft_step_process` reads it; ``None`` when not recorded.
+            Execution's ``probe_process`` takes it as it is.
     """
 
     run: str
@@ -319,6 +358,7 @@ class DraftStepListing:
     method: str
     sample: str
     status: str | None
+    process: ProcessIdentity | None = None
 
 
 @task(purpose="List every stored draft step from each draft's latest draft run, "
@@ -361,7 +401,7 @@ def list_draft_steps(pipeline: str | None = None, method: str | None = None,
                     pipeline_id=record.get("pipeline_id"),
                     pipeline_name=record.get("pipeline_name"),
                     node_id=node_id, method=qualified, sample=sample,
-                    status=step.get("status")))
+                    status=step.get("status"), process=draft_step_process(step)))
     return listings
 
 
@@ -942,6 +982,9 @@ def run_draft_step(node_id: str, sample: str, variant: str = "default", *,
         "version": node.get("version"), "params": {}, "inputs": [],
         "status": "running", "error_message": None, "started_at": _now(),
         "finished_at": None, "outputs": {}, "metrics": {}, "size": 0,
+        # The process running the step (this one), written with the entry's
+        # first write; a creation time psutil cannot read is stored as null.
+        DRAFT_STEP_PROCESS_KEY: process_identity(os.getpid()).to_json(),
     }
 
     def _end(status: str, error: str | None = None) -> int:

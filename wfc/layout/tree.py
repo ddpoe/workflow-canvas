@@ -8,6 +8,7 @@ where the root is the engine's working directory rather than a value.
 """
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
 # --- names -----------------------------------------------------------------
@@ -873,6 +874,46 @@ def env_manifest_path(root: Path) -> Path:
 def env_build_dir(root: Path, env: str) -> Path:
     """Return an env's build context ``<root>/.wfc/build/<env>/``."""
     return state_dir(root) / BUILD_DIR_NAME / env
+
+
+#: The state dir's logs folder, ignored by git, and register-env's logs
+#: beneath it.
+LOGS_DIR_NAME = "logs"
+REGISTER_ENV_LOGS_DIR_NAME = "register-env"
+#: The ignore file a log folder is created with, and what it holds: every
+#: file in the folder, the ignore file too, so a project whose
+#: ``.gitignore`` predates the logs folder keeps a clean ``git status``.
+LOG_DIR_IGNORE_FILENAME = ".gitignore"
+LOG_DIR_IGNORE_CONTENT = "*\n"
+
+
+def logs_relpath() -> str:
+    """Return the logs folder as a root-relative POSIX string, ``.wfc/logs``."""
+    return str(PurePosixPath(STATE_DIR_NAME) / LOGS_DIR_NAME)
+
+
+def register_env_log_dir(root: Path) -> Path:
+    """Return register-env's log folder ``<root>/.wfc/logs/register-env/``."""
+    return state_dir(root) / LOGS_DIR_NAME / REGISTER_ENV_LOGS_DIR_NAME
+
+
+def register_env_log_path(root: Path, env: str, started: datetime) -> Path:
+    """Return one registration's log, ``<env>-<UTC time>.log``.
+
+    Args:
+        root: The project root.
+        env: The env name being registered.
+        started: When the registration started; an aware time is turned to
+            UTC, a naive one is taken as UTC.
+
+    Returns:
+        ``<root>/.wfc/logs/register-env/<env>-<YYYYmmddTHHMMSSZ>.log``
+        (which may not exist yet).
+    """
+    if started.tzinfo is not None:
+        started = started.astimezone(UTC)
+    stamp = started.strftime("%Y%m%dT%H%M%SZ")
+    return register_env_log_dir(root) / f"{env}-{stamp}.log"
 
 
 #: The demo schema stamp's file name, under the state dir.

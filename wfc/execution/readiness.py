@@ -1,7 +1,8 @@
 """Run-readiness probes shared by ``wfc init``, ``wfc doctor``, and the canvas.
 
-Five probe functions — :func:`check_git`, :func:`check_dvc`,
-:func:`check_docker`, :func:`check_samples` and :func:`check_views` — each
+Six probe functions — :func:`check_git`, :func:`check_dvc`,
+:func:`check_docker`, :func:`check_disk`, :func:`check_samples` and
+:func:`check_views` — each
 return a uniform :class:`CheckResult` with a ``status`` of ``"ok"``,
 ``"warn"``, or ``"fail"`` plus a plain-language ``message`` and an optional
 ``fix_hint``.  The probes never raise on a not-ready environment (a missing
@@ -18,19 +19,25 @@ DVC differs: it ships as a Poetry dependency, so :func:`check_dvc` only
 *warns* on a missing install, never fails.  :func:`check_samples` is about
 the project's data rather than its tooling: it runs Registration's
 reachability table over every ``Sample`` row and is the one surface that
-shows a sample's health at all.
+shows a sample's health at all.  :func:`check_disk` is about where the
+project lives: on Windows a project on a network drive is a ``warn`` (its
+step containers would see an empty folder), never a ``fail``; the drive-type
+query it makes is Windows-only and never made elsewhere.
 
-:func:`run_all_checks` runs the five in display order; every caller renders
+:func:`run_all_checks` runs the six in display order; every caller renders
 the results through :func:`wfc.preflight.render_health_table`, so the
 readiness definition lives in exactly one place.
 """
 
 from __future__ import annotations
 
+import os
 import platform
 import shutil
 import subprocess
-from dataclasses import dataclass
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -510,14 +517,18 @@ def _docker_start_hint() -> str:
 
 
 # =============================================================================
-# Env images: the registry, and the versions that cannot run
+# Env images: the registry, the versions that cannot run, the container's
+# binds, the leftovers
 # =============================================================================
 #
-# Two rows ``wfc doctor`` prints after :func:`run_all_checks`; ``wfc share``
+# Four rows ``wfc doctor`` prints after :func:`run_all_checks`; ``wfc share``
 # prints the second and splits the first into its own rows (see
 # :func:`share_checks`). They are not in :func:`run_all_checks`:
-# the registry row asks the network, and ``wfc init``'s summary and the
-# canvas's run gate share that function. Both rows only warn.
+# the registry row asks the network, the bind row starts a container, the
+# leftovers row lists containers and processes, and ``wfc init``'s summary
+# and the canvas's run gate share that function. The registry, versions and
+# leftovers rows only warn; the bind row fails when a step's container would
+# see an empty folder.
 
 def _no_project(name: str) -> CheckResult:
     """The warn both env-image rows give outside a wfc project."""
@@ -763,19 +774,452 @@ def check_runnable_versions(project_dir: Path | str | None = None) -> CheckResul
                        fix_hint=hint[:1].upper() + hint[1:] + ".")
 
 
-def env_image_checks(project_dir: Path | str | None = None) -> list[CheckResult]:
-    """Run the registry and runnable-versions rows, in display order.
+def _bind_check_image(proj: Path) -> tuple[str | None, str, CheckResult | None]:
+    """Pick the image the doctor's bind row runs its check in.
 
-    Not part of :func:`run_all_checks`: ``wfc doctor`` prints these after it.
+    The first env in the manifest whose current image is on this machine:
+    a ``local/`` image the daemon holds, or a pushed or registry image whose
+    run ref is its daemon ref (the daemon holds it). Environments answers
+    every question; nothing here calls Docker.
+
+    Args:
+        proj: The project root.
+
+    Returns:
+        ``(ref, env, None)`` with the image to hand Docker and its env's
+        name, or ``(None, "", row)`` with the not-checked row to show
+        instead.
+    """
+    from ..environments import (
+        IMAGE_LOCAL,
+        IMAGE_MISSING,
+        IMAGE_UNKNOWN,
+        CaptureError,
+        daemon_ref,
+        image_state,
+        list_envs,
+        version_run_ref,
+    )
+
+    try:
+        records = list_envs(proj)
+    except ValueError as exc:
+        return None, "", CheckResult(
+            name="binds", status="warn",
+            message=f"Not checked: the env manifest cannot be read ({exc}).",
+            fix_hint="Fix the file the message names, then run `wfc doctor` again.")
+    if not records:
+        return None, "", CheckResult(
+            name="binds", status="ok",
+            message="Not checked: no env is registered, so there is no step "
+                    "image to look from.")
+    for name, record in records:
+        try:
+            state = image_state(name, record.env_fingerprint, proj,
+                                container=record.container)
+        except CaptureError:
+            continue
+        if state.state == IMAGE_UNKNOWN:
+            return None, "", CheckResult(
+                name="binds", status="warn",
+                message="Not checked: Docker did not answer, so wfc cannot start "
+                        "a step's container to see whether it sees the project.",
+                fix_hint="Start Docker, then run `wfc doctor` again.")
+        if state.state == IMAGE_MISSING or not state.image:
+            continue
+        local = daemon_ref(state.image)
+        if state.state == IMAGE_LOCAL:
+            return local, name, None
+        try:
+            ref = version_run_ref(name, record.env_fingerprint, proj, image=state.image)
+        except (ValueError, CaptureError, RuntimeError, OSError):
+            continue
+        if ref == local:
+            return local, name, None
+    return None, "", CheckResult(
+        name="binds", status="warn",
+        message="Not checked: none of the project's env images is on this "
+                "machine, so no step's container can be started.",
+        fix_hint="Once an env's image is back on this machine (the versions row "
+                 "says how), run `wfc doctor` again.")
+
+
+def check_container_binds(project_dir: Path | str | None = None) -> CheckResult:
+    """Report whether a step's container sees the project and the DVC cache.
+
+    ``wfc doctor``'s row for the launch's bind check (a launch runs the same
+    check before it records anything). It asks Environments to start one
+    short container from the image of the first env in the manifest whose
+    image is on this machine, with the binds a step gets, and compare what
+    it sees with the host. Visible is ``ok``. A bind that comes up empty is
+    ``fail``, naming the bind and the fix: keep the project on a local disk;
+    on macOS, the project's folder must be in Docker Desktop's file sharing.
+    With no env image on this machine, Docker not answering, or a check that
+    could not run, the row says it was not checked and never fails. Not in
+    :func:`run_all_checks`: ``wfc init``'s summary and the canvas's run gate
+    start no container.
 
     Args:
         project_dir: Root directory of the wfc project.  Defaults to the
             resolved project root (see :func:`default_project_dir`).
 
     Returns:
-        ``[check_registry(...), check_runnable_versions(...)]``.
+        A :class:`CheckResult` named ``"binds"``.
     """
-    return [check_registry(project_dir), check_runnable_versions(project_dir)]
+    proj = Path(project_dir).resolve() if project_dir is not None else default_project_dir()
+    from ..persistence import read_config
+
+    try:
+        read_config(proj)
+    except FileNotFoundError:
+        return _no_project("binds")
+    except ValueError:
+        pass  # the config file is still there to be looked for
+
+    image, env, row = _bind_check_image(proj)
+    if row is not None:
+        return row
+    from .. import layout
+    from ..environments import BIND_EMPTY, BIND_VISIBLE, check_binds, host_bind_expectations
+
+    cache = layout.dvc_cache_dir(proj)
+    verdict = check_binds(image, proj, cache, host_bind_expectations(proj, cache))
+    if verdict.outcome == BIND_VISIBLE:
+        return CheckResult(
+            name="binds", status="ok",
+            message=f"A step's container sees the project (checked in the "
+                    f"{env} env's image).")
+    if verdict.outcome == BIND_EMPTY:
+        return CheckResult(
+            name="binds", status="fail",
+            message=f"A step's container sees an empty folder: the bind of "
+                    f"{verdict.host} at {verdict.container} came up empty "
+                    f"({verdict.detail}). Every launch is refused until it is "
+                    f"seen.",
+            fix_hint="Keep the project on a local disk (to keep run outputs on "
+                     "a share, make it the archive: wfc init --archive <share "
+                     "path>). On macOS, the project's folder must be in Docker "
+                     "Desktop's file sharing (Settings > Resources > File "
+                     "sharing).")
+    return CheckResult(
+        name="binds", status="warn",
+        message=f"Not checked: the container check in the {env} env's image "
+                f"could not run ({verdict.detail}).",
+        fix_hint="The check needs Docker running and a shell (/bin/sh) in the "
+                 "image; a launch runs the same check and goes on when it "
+                 "cannot run.")
+
+
+def _record_verdict(proj: Path, pipeline_id: str, reading=None):
+    """:func:`wfc.execution.recovery.judge_liveness` over a pipeline's record, or ``None``.
+
+    The record's owner and engine are probed now (a reused pid or an
+    unknown process counts as gone); *reading*, a
+    :class:`wfc.execution.recovery.HeartbeatReading` from a second look,
+    adds the heartbeat half. The stall window counts as passed: a record
+    whose owner and engine are both gone stands in for it (decisions::d-27).
+    So the verdict is ``ALIVE`` or ``DEAD`` (crashed), never undecided.
+
+    Returns:
+        The verdict, or ``None`` when the pipeline has no record.
+
+    Raises:
+        PipelineRecordError: The record exists but cannot be read.
+    """
+    from .pipeline_record import read_pipeline_record
+    from .recovery import judge_liveness, probe_process
+
+    record = read_pipeline_record(proj, pipeline_id)
+    if record is None:
+        return None
+    return judge_liveness(probe_process(record.owner), probe_process(record.engine),
+                          heartbeat_moved=bool(reading and reading.moved),
+                          has_running_rows=bool(reading and reading.has_running_rows),
+                          window_passed=True)
+
+
+def _pipeline_alive(proj: Path, pipeline_id: str) -> bool:
+    """Whether a pipeline's record names an owner or an engine that is still running.
+
+    Raises:
+        PipelineRecordError: The record exists but cannot be read.
+    """
+    from .recovery import Verdict
+
+    return _record_verdict(proj, pipeline_id) is Verdict.ALIVE
+
+
+def _project_database(proj: Path):
+    """The context the project's rows are read in (the suite's override, else the project)."""
+    from contextlib import nullcontext
+
+    from ..persistence import use_project
+    from ..persistence.engine import OVERRIDE_ENV_VAR
+
+    return nullcontext() if os.environ.get(OVERRIDE_ENV_VAR) else use_project(proj)
+
+
+@dataclass(frozen=True)
+class RunLiveness:
+    """Execution's answer to "is this run still running?", for the leftovers search.
+
+    Called as ``liveness(pipeline_id, run_id)``, it is the predicate
+    :func:`wfc.environments.plan_prune` takes. A run is still running while
+    Execution would not treat it as finished: its pipeline's record names an
+    owner or an engine that is alive, or its row is still ``running`` (a
+    recorded run's row, a draft step's entry). Two kinds of ``running`` row
+    no longer count (decisions::d-27, d-28):
+
+    - **A crashed pipeline's.** Its record names an owner and an engine of
+      which neither is alive (gone, reused, or no engine recorded):
+      :func:`wfc.execution.recovery.judge_liveness` gives no alive. Its
+      rows are stale, unless a running row's heartbeat moved at the second
+      look (:meth:`second_look`), which makes it alive again. A pipeline
+      with no record keeps its running rows running.
+    - **A dead try's.** A running draft step whose recorded process is gone
+      or reused. One that records no process, or no creation time, is still
+      running.
+
+    Neither id given, or this project's records not readable, counts as
+    running. The rows, the crashed pipelines and the dead draft steps are
+    read once, when :func:`run_liveness` builds it (the first look); the
+    record's processes are probed again at each call.
+
+    Attributes:
+        project_dir: The project root.
+        pipeline_ids: Every pipeline id this project's records hold.
+        running_runs: The recorded runs whose row is ``running``, as strings.
+        running_draft_steps: ``(pipeline id, draft ref)`` of each draft step
+            whose entry is ``running`` and whose try is not known dead.
+        running_pipelines: The pipelines with a ``running`` row of either
+            kind, or whose pipeline row is ``running``.
+        error: Why the records could not be read, or ``None``.
+        crashed_pipelines: The pipelines that had crashed at the first look.
+        dead_draft_steps: ``(pipeline id, draft ref)`` of each running draft
+            step whose recorded process is gone or reused.
+        revived: The crashed pipelines a second look found alive (a running
+            row's heartbeat moved).
+        looked_at: When the first look was taken (``time.monotonic()``).
+        sampler: Execution's heartbeat sampler holding the first look's
+            heartbeats of the crashed pipelines' running rows; ``None`` when
+            there are no rows to watch.
+    """
+
+    project_dir: Path
+    pipeline_ids: frozenset[str] = frozenset()
+    running_runs: frozenset[str] = frozenset()
+    running_draft_steps: frozenset[tuple[str, str]] = frozenset()
+    running_pipelines: frozenset[str] = frozenset()
+    error: str | None = None
+    crashed_pipelines: frozenset[str] = frozenset()
+    dead_draft_steps: frozenset[tuple[str, str]] = frozenset()
+    revived: frozenset[str] = frozenset()
+    looked_at: float = 0.0
+    sampler: object | None = field(default=None, repr=False, compare=False)
+
+    def __call__(self, pipeline_id: str | None, run_id: str | None) -> bool:
+        """Say whether the run *run_id* of pipeline *pipeline_id* is still running."""
+        if self.error is not None or (pipeline_id is None and run_id is None):
+            return True
+        if pipeline_id is not None and _pipeline_alive(self.project_dir, pipeline_id):
+            return True
+        if pipeline_id in self.crashed_pipelines:
+            return pipeline_id in self.revived
+        if run_id is not None:
+            if (pipeline_id or "", run_id) in self.dead_draft_steps:
+                return False
+            return (run_id in self.running_runs
+                    or (pipeline_id or "", run_id) in self.running_draft_steps)
+        return pipeline_id in self.running_pipelines
+
+    def second_look(self, *, sleep: Callable[[float], object] = time.sleep) -> RunLiveness:
+        """Look again at the crashed pipelines' heartbeats, for the apply's re-check.
+
+        Waits until two claim heartbeat intervals have passed since the
+        first look (a live claim advances its heartbeat once an interval,
+        so a still one in that time is not being run), then observes each
+        crashed pipeline's running rows again through the same sampler.
+        A crashed pipeline whose running row's heartbeat moved is alive
+        (judge_liveness's heartbeat half) and its containers are left
+        alone. With no crashed pipeline, or no rows to watch, nothing is
+        waited for.
+
+        Args:
+            sleep: Waits the seconds still left of the two intervals.
+
+        Returns:
+            This liveness with :attr:`revived` set; one that counts every
+            run as running when the rows cannot be read again.
+        """
+        from dataclasses import replace
+
+        from . import claim as _claim
+        from .recovery import Verdict
+
+        if self.error is not None or not self.crashed_pipelines or self.sampler is None:
+            return self
+        wait = self.looked_at + 2 * _claim.HEARTBEAT_INTERVAL_SECONDS - time.monotonic()
+        if wait > 0:
+            sleep(wait)
+        revived: set[str] = set()
+        try:
+            with _project_database(self.project_dir):
+                for pipeline_id in sorted(self.crashed_pipelines):
+                    reading = self.sampler.observe(pipeline_id)  # type: ignore[attr-defined]
+                    # No record now: it was closed out since, its rows ended.
+                    if _record_verdict(self.project_dir, pipeline_id,
+                                       reading) is Verdict.ALIVE:
+                        revived.add(pipeline_id)
+        except Exception as exc:  # noqa: BLE001 - unreadable rows: every run is running
+            return replace(self, error=str(exc))
+        return replace(self, revived=frozenset(revived))
+
+
+def run_liveness(project_dir: Path | str) -> RunLiveness:
+    """Read which of this project's runs are still running, for the leftovers search.
+
+    The pipeline records, the ``pipelines`` and ``runs`` rows and the draft
+    steps' entries, read once (the first look): a record whose owner and
+    engine are both not alive is a crashed pipeline, and its running rows'
+    heartbeats are noted for :meth:`RunLiveness.second_look`; a running
+    draft step whose recorded process is gone or reused is a dead try's. A
+    database that does not exist yet is not created (no rows to read); a
+    read that fails makes every run count as running.
+
+    Args:
+        project_dir: The project root.
+
+    Returns:
+        The :class:`RunLiveness` (also the project's pipeline ids).
+    """
+    from sqlmodel import select
+
+    from .. import layout
+    from ..persistence import PipelineRun, Run, get_session
+    from ..persistence.engine import OVERRIDE_ENV_VAR
+    from .draft import list_draft_steps
+    from .pipeline_record import list_pipeline_records
+    from .recovery import HeartbeatSampler, ProcessState, Verdict, probe_process
+
+    proj = Path(project_dir)
+    looked_at = time.monotonic()
+    records = list_pipeline_records(proj)
+    ids = {record.pipeline_id for record in records}
+    crashed: set[str] = set()
+    for record in records:
+        try:
+            if _record_verdict(proj, record.pipeline_id) is Verdict.DEAD:
+                crashed.add(record.pipeline_id)
+        except Exception:  # noqa: BLE001 - a record unreadable now is not called crashed
+            continue
+    runs: set[str] = set()
+    drafts: set[tuple[str, str]] = set()
+    dead: set[tuple[str, str]] = set()
+    pipelines: set[str] = set()
+    sampler: HeartbeatSampler | None = None
+    if os.environ.get(OVERRIDE_ENV_VAR) or layout.db_path(proj).exists():
+        try:
+            with _project_database(proj):
+                with get_session() as session:
+                    for pid, status in session.exec(
+                            select(PipelineRun.pipeline_id, PipelineRun.status)).all():
+                        ids.add(pid)
+                        if status == "running":
+                            pipelines.add(pid)
+                    ids.update(pid for pid in session.exec(
+                        select(Run.pipeline_id).distinct()).all() if pid)
+                    for rid, pid in session.exec(
+                            select(Run.id, Run.pipeline_id).where(Run.status == "running")).all():
+                        runs.add(str(rid))
+                        if pid:
+                            pipelines.add(pid)
+                if crashed:
+                    sampler = HeartbeatSampler()
+                    for pipeline_id in sorted(crashed):
+                        sampler.observe(pipeline_id)
+                for step in list_draft_steps(root=proj):
+                    if step.pipeline_id:
+                        ids.add(step.pipeline_id)
+                        if step.status == "running":
+                            key = (step.pipeline_id, step.run)
+                            if probe_process(step.process) in (ProcessState.GONE,
+                                                               ProcessState.REUSED):
+                                dead.add(key)
+                            else:
+                                drafts.add(key)
+                            pipelines.add(step.pipeline_id)
+        except Exception as exc:  # noqa: BLE001 - unreadable records: every run is running
+            return RunLiveness(proj, frozenset(ids), error=str(exc))
+    return RunLiveness(proj, frozenset(ids), frozenset(runs), frozenset(drafts),
+                       frozenset(pipelines), crashed_pipelines=frozenset(crashed),
+                       dead_draft_steps=frozenset(dead), looked_at=looked_at,
+                       sampler=sampler)
+
+
+def check_leftovers(project_dir: Path | str | None = None) -> CheckResult:
+    """Report what an earlier run or crash left running for this project.
+
+    ``wfc doctor``'s leftovers row. It asks Environments for the stop-only
+    counts (:func:`wfc.environments.leftover_counts` with ``stop_only``:
+    no image listing, no disk-usage query), passing Execution's own
+    liveness (:func:`run_liveness`) and the project's pipeline ids. A run
+    container whose run has ended or an env build no wfc command waits for
+    is a ``warn`` naming the counts and ``wfc prune-envs``; with none the
+    row is ``ok``, says nothing is left and that ``wfc prune-envs`` also
+    counts the env images nothing uses and the build cache (no numbers).
+    Never ``fail``. With Docker not answering the run containers are not
+    checked and the row says so.
+
+    Args:
+        project_dir: Root directory of the wfc project.  Defaults to the
+            resolved project root (see :func:`default_project_dir`).
+
+    Returns:
+        A :class:`CheckResult` named ``"leftovers"``.
+    """
+    proj = Path(project_dir).resolve() if project_dir is not None else default_project_dir()
+    from ..environments import leftover_counts
+    from ..persistence import read_config
+
+    try:
+        read_config(proj)
+    except FileNotFoundError:
+        return _no_project("leftovers")
+    except ValueError:
+        pass
+    liveness = run_liveness(proj)
+    counts = leftover_counts(proj, run_running=liveness,
+                             pipeline_ids=liveness.pipeline_ids, stop_only=True)
+    if counts.to_clear:
+        return CheckResult(
+            name="leftovers", status="warn", message=counts.headline(),
+            fix_hint=f"Run `wfc prune-envs` to see them and {counts.action()} (it "
+                     f"removes no image and no build cache).")
+    message = "Nothing an earlier run or crash left is running"
+    if counts.containers is None:
+        message += f" (run containers not checked: {counts.docker_error})"
+    message += ("; `wfc prune-envs` also counts the env images nothing uses and "
+                "the build cache, and keeps both")
+    return CheckResult(name="leftovers", status="ok", message=message + ".")
+
+
+def env_image_checks(project_dir: Path | str | None = None) -> list[CheckResult]:
+    """Run the registry, runnable-versions, container-bind and leftovers rows, in order.
+
+    Not part of :func:`run_all_checks`: ``wfc doctor`` prints these after it.
+    The registry, versions and leftovers rows only warn; the bind row fails
+    when a step's container would see the project or the cache empty.
+
+    Args:
+        project_dir: Root directory of the wfc project.  Defaults to the
+            resolved project root (see :func:`default_project_dir`).
+
+    Returns:
+        ``[check_registry(...), check_runnable_versions(...),
+        check_container_binds(...), check_leftovers(...)]``.
+    """
+    return [check_registry(project_dir), check_runnable_versions(project_dir),
+            check_container_binds(project_dir), check_leftovers(project_dir)]
 
 
 # =============================================================================
@@ -1205,21 +1649,164 @@ def check_views(project_dir: Path | str | None = None) -> CheckResult:
     )
 
 
-def run_all_checks(project_dir: Path | str | None = None) -> list[CheckResult]:
-    """Run the git, DVC, Docker, sample and view checks and return them in order.
+# =============================================================================
+# project location
+# =============================================================================
+
+#: ``GetDriveTypeW``'s answer for a network drive.
+DRIVE_REMOTE = 4
+
+
+def _on_windows() -> bool:
+    """Say whether this host is Windows, where the drive-type query exists."""
+    return os.name == "nt"
+
+
+def _windows_form(path: str) -> str:
+    r"""Spell *path* the way Windows reads it, without an extended-length prefix.
+
+    Forward slashes become backslashes; ``\\?\UNC\server\share`` (or
+    ``\\.\UNC\server\share``) becomes ``\\server\share`` and ``\\?\C:\...``
+    (or ``\\.\C:\...``) becomes ``C:\...``.
+
+    Args:
+        path: A path as text.
+
+    Returns:
+        The plain Windows spelling.
+    """
+    text = path.replace("/", "\\")
+    if text.upper().startswith(("\\\\?\\UNC\\", "\\\\.\\UNC\\")):
+        return "\\\\" + text[8:]
+    if text.startswith(("\\\\?\\", "\\\\.\\")):
+        return text[4:]
+    return text
+
+
+def _is_unc(path: str) -> bool:
+    r"""Say whether *path* names a share (``\\server\share\...``), not a drive."""
+    return _windows_form(path).startswith("\\\\")
+
+
+def _drive_type(path: str) -> int:
+    """Ask Windows what kind of drive *path* is on (``GetDriveTypeW``).
+
+    Windows only: callers check :func:`_on_windows` first.  A path with no
+    drive letter, or a query that cannot be made, answers ``0`` (unknown).
+
+    Args:
+        path: A path as text.
+
+    Returns:
+        The ``GetDriveTypeW`` answer (:data:`DRIVE_REMOTE` for a network
+        drive).
+    """
+    form = _windows_form(path)
+    if len(form) < 2 or form[1] != ":" or not form[0].isalpha():
+        return 0
+    try:
+        import ctypes
+
+        return int(ctypes.windll.kernel32.GetDriveTypeW(form[:2] + "\\"))  # type: ignore[attr-defined, unused-ignore]
+    except (AttributeError, OSError, ValueError):
+        return 0
+
+
+def _network_place(path: str) -> bool:
+    """Say whether *path* is on a network drive: a UNC path, or a remote drive."""
+    return _is_unc(path) or _drive_type(path) == DRIVE_REMOTE
+
+
+def _resolved(path: str) -> str:
+    """Return *path* resolved (a mapped drive resolves to its share), or as given."""
+    try:
+        return str(Path(path).resolve())
+    except OSError:
+        return path
+
+
+def _network_root(given: str, resolve: Callable[[], str]) -> str | None:
+    r"""Name the spelling of a project root that shows it is on a network drive.
+
+    The root as given is read first, so a known network path is never
+    resolved. A root that looks local as given (a link or a relative path)
+    is resolved and read again: a share it resolves to is named in its
+    resolved form.
+
+    Args:
+        given: The project root as given.
+        resolve: Returns the root resolved; called only when *given* looks
+            local.
+
+    Returns:
+        *given* when it is a network path, the resolved root when only that
+        is one, and ``None`` for a root on a local disk.
+    """
+    if _network_place(given):
+        return given
+    resolved = resolve()
+    if resolved != given and _network_place(resolved):
+        return resolved
+    return None
+
+
+def check_disk(project_dir: Path | str | None = None) -> CheckResult:
+    r"""Report whether the project lives on a disk its step containers can see.
+
+    Steps run in containers, and Docker Desktop's containers see a folder on
+    a Windows network drive as an empty folder. On Windows the row warns when
+    the project root, as given or resolved, is a UNC path (``\\server\share``,
+    ``\\wsl.localhost\...``; an extended-length local path such as
+    ``\\?\C:\...`` is not one) or its drive answers ``DRIVE_REMOTE``. The
+    root as given is read first, so a known network path is never resolved
+    (resolving a mapped drive yields its UNC form). Every other root, and any
+    root on a host that is not Windows, is ``ok``. The row never fails: it
+    does not stop ``wfc init`` or a run gate.
 
     Args:
         project_dir: Root directory of the wfc project.  Defaults to the
             resolved project root (see :func:`default_project_dir`).
 
     Returns:
-        ``[check_git(...), check_dvc(...), check_docker(), check_samples(...),
-        check_views(...)]``.
+        A :class:`CheckResult` named ``"disk"``.
+    """
+    given = os.fspath(project_dir) if project_dir is not None else str(default_project_dir())
+    if not _on_windows():
+        return CheckResult(name="disk", status="ok",
+                           message=f"The project is at {given}.")
+
+    where = _network_root(given, lambda: _resolved(given))
+    if where is not None:
+        return CheckResult(
+            name="disk",
+            status="warn",
+            message=(f"The project is on a network drive ({where}). Steps run "
+                     f"in containers, which see a project on a network drive "
+                     f"as an empty folder."),
+            fix_hint="Move the project to a local disk. To keep run outputs "
+                     "on the share, make it the archive: "
+                     "wfc init --archive <share path>.",
+        )
+    return CheckResult(name="disk", status="ok",
+                       message=f"The project is on a local disk ({given}).")
+
+
+def run_all_checks(project_dir: Path | str | None = None) -> list[CheckResult]:
+    """Run the git, DVC, Docker, disk, sample and view checks in order.
+
+    Args:
+        project_dir: Root directory of the wfc project.  Defaults to the
+            resolved project root (see :func:`default_project_dir`).
+
+    Returns:
+        ``[check_git(...), check_dvc(...), check_docker(),
+        check_disk(...), check_samples(...), check_views(...)]``.
     """
     return [
         check_git(project_dir),
         check_dvc(project_dir),
         check_docker(),
+        check_disk(project_dir),
         check_samples(project_dir),
         check_views(project_dir),
     ]

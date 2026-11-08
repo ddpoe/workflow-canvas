@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/reference/cli-project @ 12246694595f; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/reference/cli-project @ 2f47efa3d45e; do not edit -->
 
 # Project Commands
 
@@ -95,3 +95,7 @@ Start the Canvas web UI for the current project and print its address.
 ```
 
 For a first-project walkthrough, see [Your First Pipeline](../tutorials/getting-started.md).
+
+On Windows `wfc init` and `wfc doctor` also report where the project lives, in a `disk` row. A project on a network drive (a mapped drive or a `\\server\share` path) is a warning, not a failure: steps run in containers, and a container sees a project on a network drive as an empty folder. The fix hint says to move the project to a local disk and, to keep run outputs on the share, to make the share the archive with `wfc init --archive <share path>`. `wfc init` still creates the project and exits 0.
+
+After the run-readiness table, `wfc doctor` prints an `Env images:` table. Its `binds` row starts one short container from an env's image and checks that the project and the cache show up inside it; an empty bind fails the row and `wfc doctor` exits 1, naming the bind. Its `leftovers` row warns when an earlier run or crash left containers or env builds running and names `wfc prune-envs`. `wfc init` adds `.wfc/logs/` to `.gitignore`, where `wfc register-env` keeps its logs.

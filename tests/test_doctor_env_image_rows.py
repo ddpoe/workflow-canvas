@@ -1,13 +1,14 @@
 """wfc doctor's env-image rows: the registry, and the versions that cannot run.
 
-After the four run-readiness rows, ``wfc doctor`` prints two more under their
-own heading: ``registry`` (no base is fine; with a base, the registry must
-answer Docker's credentials and every image on this machine must be pushed)
-and ``versions`` (every method version whose image is neither on this
-machine nor recorded as pushed, each with the commands that recreate it).
-Both only warn, so doctor's exit rule is unchanged, and neither joins
-``run_all_checks``, which ``wfc init``'s summary and the canvas's run gate
-share.
+After the six run-readiness rows, ``wfc doctor`` prints its env-image rows
+under their own heading, two of them here: ``registry`` (no base is fine;
+with a base, the registry must answer Docker's credentials and every image
+on this machine must be pushed) and ``versions`` (every method version whose
+image is neither on this machine nor recorded as pushed, each with the
+commands that recreate it). Both only warn, so neither changes doctor's exit
+code, and neither joins ``run_all_checks``, which ``wfc init``'s summary and
+the canvas's run gate share. The third, the container-bind row, is in
+``tests/test_doctor_bind_row.py``.
 
 Projects come from the scenario harness (``build_project``: one env, method
 versions registered through production); the base is set through production
@@ -20,6 +21,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
 from axiom_annotations import Step, workflow
 
 from tests.fixtures.fakes import (
@@ -205,12 +207,23 @@ def test_doctor_rows_outside_a_project_ask_nothing(tmp_path, monkeypatch):
         assert "No wfc project here" in row.message
 
 
-def test_run_all_checks_keeps_its_five_rows(monkeypatch, tmp_path):
-    """`wfc init`'s summary and the canvas's run gate keep their five probe
-    rows; the env-image rows are not among them."""
+@pytest.mark.parametrize(("windows", "answer"), [(True, "fixed"), (False, None)],
+                         ids=["windows-local-disk", "not-windows"])
+def test_run_all_checks_has_six_rows_with_the_project_location(
+        monkeypatch, tmp_path, windows, answer):
+    """`wfc init`'s summary and `wfc doctor` show six run-readiness rows.
+
+    The project's disk row is among them, ok on a local disk or a host that
+    is not Windows; the env-image rows are not among them.
+    """
+    from tests.fixtures.fakes.drive_type import stub_drive_type
     from wfc.execution import run_all_checks
 
     stub_readiness_probes(monkeypatch, git="ok", dvc="ok", docker="ok",
                           samples="ok")
-    assert [r.name for r in run_all_checks(tmp_path)] == [
-        "git", "dvc", "docker", "samples", "views"]
+    stub_drive_type(monkeypatch, answer, windows=windows)
+    rows = run_all_checks(tmp_path)
+    assert [r.name for r in rows] == [
+        "git", "dvc", "docker", "disk", "samples", "views"]
+    location = next(r for r in rows if r.name == "disk")
+    assert location.status == "ok", location

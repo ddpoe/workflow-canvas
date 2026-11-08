@@ -11,7 +11,14 @@ Functions:
 - :func:`build` — ``docker build -t <tag> <dir>`` with BuildKit enabled,
   plus a ``--label k=v`` flag per label asked for.
   ``DOCKER_BUILDKIT=1`` is merged into a copy of ``os.environ`` so the
-  caller's PATH / DOCKER_HOST / HOME / proxy vars survive the spawn.
+  caller's PATH / DOCKER_HOST / HOME / proxy vars survive the spawn. The
+  client runs in its own process group, marked as wfc's by
+  :data:`BUILD_CLIENT_MARK` in that same copy; each output line goes to an
+  optional sink as it is read; a Ctrl-C is passed on to the client
+  (:func:`interrupt_process_group`), and only a client that ignores it for
+  :data:`BUILD_INTERRUPT_WAIT_S` has its whole tree ended
+  (:func:`terminate_process_tree`). Either way it raises
+  :class:`BuildInterruptedError`.
 - :func:`image_inspect` — ``docker image inspect <ref> --format '{{.Id}}'``.
   Returns the digest string verbatim, including the ``sha256:`` prefix.
 - :func:`image_content` — ``docker image inspect <ref> --format '{{json .}}'``
@@ -79,18 +86,21 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Final
 
 from axiom_annotations import task
+
+from . import progress
 
 # BuildKit plain-progress step marker: `#7 [3/5] RUN pip install ...`,
 # optionally with a stage name (`#7 [stage-1 3/5] COPY ...`).
@@ -113,9 +123,215 @@ def _format_elapsed(seconds: float) -> str:
     return f"{s}s"
 
 
-@task(purpose="Run docker build -t <tag> <dir> with BuildKit enabled")
+# --- the build client's process group --------------------------------------
+#
+# A killed `docker build` client orphans its build: on Windows killing
+# docker.exe leaves its docker-buildx.exe plugin child (the real BuildKit
+# client) holding the build, which runs on. An interrupt sent to the client's
+# process group ends the build at once. So the build client runs in its own
+# group, and the only way wfc ends it is the interrupt first, then, for a
+# client that ignored it, the whole tree. Nothing here kills docker.exe alone.
+
+#: How long a build client may take to end on an interrupt before its tree
+#: is terminated. A client that obeys ends in a second or two.
+BUILD_INTERRUPT_WAIT_S: Final = 15.0
+
+#: How long a terminated process may take to go before it is killed.
+_TERMINATE_GRACE_S: Final = 5.0
+
+#: The variable :func:`build` sets to ``1`` in the environment of every
+#: client it starts in a process group of its own. Its plugin inherits it.
+#: An orphaned client that shows it leads a group wfc started, so
+#: ``wfc prune-envs`` may send that group an interrupt; any other orphan is
+#: terminated instead (``wfc.environments.build_clients``). It reaches only
+#: the client's environment: not the argv, the recipe, a build argument or
+#: anything an env's fingerprint is rendered from.
+BUILD_CLIENT_MARK: Final = "WFC_BUILD_OWN_GROUP"
+
+# The Windows constants, spelled out where the platform lacks them so both
+# branches can be exercised on any host.
+_CREATE_NEW_PROCESS_GROUP: Final = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP",
+                                           0x00000200)
+_CTRL_BREAK_EVENT: Final = getattr(signal, "CTRL_BREAK_EVENT", 1)
+
+
+class BuildInterruptedError(KeyboardInterrupt):
+    """A Ctrl-C stopped a ``docker build``; the interrupt was passed on to it.
+
+    A ``KeyboardInterrupt``, so a caller that does not know this type ends
+    on it as on any Ctrl-C.
+
+    Attributes:
+        client_ended: True when the client ended on the interrupt within the
+            bounded wait; False when its process tree had to be terminated.
+    """
+
+    def __init__(self, client_ended: bool):
+        super().__init__("docker build interrupted")
+        self.client_ended = client_ended
+
+
+class CopyOutInterruptedError(KeyboardInterrupt):
+    """A Ctrl-C stopped :func:`copy_out`; its container was removed first.
+
+    A ``KeyboardInterrupt``, so a caller that does not know this type ends
+    on it as on any Ctrl-C.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("copy-out interrupted")
+
+
+def _on_windows() -> bool:
+    """Say whether this host is Windows (the seam the process-group code reads)."""
+    return sys.platform == "win32"
+
+
+def _own_group_kwargs() -> dict:
+    """Return the ``Popen`` keywords that start a child in its own process group.
+
+    Windows: a new process group, so the console's Ctrl-C does not reach the
+    child and a ``CTRL_BREAK_EVENT`` can be sent to the group alone. POSIX: a
+    new session (and so a new group), so the terminal's ``SIGINT`` does not
+    reach it and ``os.killpg`` can signal it.
+    """
+    if _on_windows():
+        return {"creationflags": _CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+def interrupt_process_group(group_id: int) -> bool:
+    """Send an interrupt to a process group this process started.
+
+    Windows: ``CTRL_BREAK_EVENT`` to the group (``GenerateConsoleCtrlEvent``;
+    the group id is its leader's pid, and the group must share this
+    process's console). POSIX: ``SIGINT`` to the group (``os.killpg``).
+
+    Args:
+        group_id: The process group id: the pid of the child started with
+            :func:`_own_group_kwargs`.
+
+    Returns:
+        True when the interrupt was sent; False when it could not be (no
+        console to send it through, the group gone).
+    """
+    try:
+        if _on_windows():
+            os.kill(group_id, _CTRL_BREAK_EVENT)
+        else:
+            os.killpg(group_id, signal.SIGINT)  # type: ignore[attr-defined, unused-ignore]
+    except OSError:
+        return False
+    return True
+
+
+def _process_tree(pid: int) -> list:
+    """Return a process's descendants then the process, as psutil processes.
+
+    Args:
+        pid: The tree's root.
+
+    Returns:
+        The descendants (deepest reachable first in psutil's order) followed
+        by the root; empty when the root is gone or unreadable.
+    """
+    import psutil
+
+    try:
+        root = psutil.Process(pid)
+        return [*root.children(recursive=True), root]
+    except psutil.Error:
+        return []
+
+
+def terminate_process_tree(procs: list) -> bool:
+    """Terminate processes children first, then kill whatever outlives a grace.
+
+    The last resort for a client that ignored its interrupt. Given a client's
+    whole tree (:func:`_process_tree`), the plugin goes before
+    ``docker.exe``, so the process holding the build never outlives its
+    parent's end. A process already gone is skipped.
+
+    Args:
+        procs: psutil processes, in the order to terminate them.
+
+    Returns:
+        True when every process is gone without an error.
+    """
+    import psutil
+
+    ok = True
+    for proc in procs:
+        try:
+            proc.terminate()
+        except psutil.NoSuchProcess:
+            pass
+        except psutil.Error:
+            ok = False
+    try:
+        _, alive = psutil.wait_procs(procs, timeout=_TERMINATE_GRACE_S)
+        for proc in alive:
+            try:
+                proc.kill()
+            except psutil.NoSuchProcess:
+                pass
+        _, alive = psutil.wait_procs(alive, timeout=_TERMINATE_GRACE_S)
+    except psutil.Error:
+        return False
+    return ok and not alive
+
+
+def _end_build_client(proc: subprocess.Popen) -> bool:
+    """End a build client on Ctrl-C: interrupt, bounded wait, then the tree.
+
+    The tree is read before the interrupt, so a plugin whose ``docker.exe``
+    ends first is still known. Whatever of it is alive after the wait (or
+    after a second Ctrl-C cuts the wait short) is terminated.
+
+    Args:
+        proc: The running ``docker build`` client, started in its own group.
+
+    Returns:
+        True when the client ended on the interrupt within the wait.
+    """
+    before = _process_tree(proc.pid)
+    sent = interrupt_process_group(proc.pid)
+    if sent:
+        try:
+            proc.wait(timeout=BUILD_INTERRUPT_WAIT_S)
+        except (subprocess.TimeoutExpired, KeyboardInterrupt):
+            pass
+    ended = sent and proc.poll() is not None
+    known = {p.pid for p in before}
+    tree = [*before, *(p for p in _process_tree(proc.pid) if p.pid not in known)]
+    leftover = [p for p in tree if _still_running(p)]
+    if leftover:
+        terminate_process_tree(leftover)
+        proc.poll()
+    return ended
+
+
+def _still_running(proc) -> bool:
+    """Say whether a psutil process is still running (False once it is gone)."""
+    import psutil
+
+    try:
+        return bool(proc.is_running())
+    except psutil.Error:
+        return False
+
+
+@task(purpose="Run docker build -t <tag> <dir> with BuildKit enabled, the "
+              "client in a process group of its own and marked as wfc's in "
+              "its environment; a Ctrl-C is passed on to that group as an "
+              "interrupt, and only a client that ignores it for a bounded "
+              "wait has its whole process tree terminated",
+      critical="never kills docker.exe alone (its plugin would hold the "
+               "build on); the mark rides in the client's environment only, "
+               "never the argv, the recipe or a build argument")
 def build(dockerfile_dir: str | Path, tag: str,
-          labels: dict[str, str] | None = None) -> None:
+          labels: dict[str, str] | None = None, *,
+          sink: Callable[[str], None] | None = None) -> None:
     """Run ``docker build -t <tag> <dockerfile_dir>`` with BuildKit on.
 
     Each of *labels* becomes a ``--label key=value`` flag, so the image
@@ -128,7 +344,11 @@ def build(dockerfile_dir: str | Path, tag: str,
     instructions). We merge ``DOCKER_BUILDKIT=1`` into a *copy* of the
     process env so the user's PATH, HOME, DOCKER_HOST, HTTP(S)_PROXY, etc.
     survive — passing ``env={'DOCKER_BUILDKIT': '1'}`` alone would strip
-    every other variable and break the build on most setups.
+    every other variable and break the build on most setups. The same copy
+    carries :data:`BUILD_CLIENT_MARK` ``=1``: the mark that tells
+    ``wfc prune-envs`` an orphaned client leads a group wfc started, so it
+    may be interrupted. It is in no argv and no build argument, so the
+    recipe, the build context and the env fingerprint do not move with it.
 
     ``--provenance=false`` keeps BuildKit from attaching a provenance
     attestation, so the image is one manifest, not a manifest list holding
@@ -138,6 +358,18 @@ def build(dockerfile_dir: str | Path, tag: str,
     user-friendly status (``- building environment — step 3/7 (1m 12s)``)
     parsed from BuildKit's step markers — raw docker output is never
     printed on success.  Off-TTY (CI, piped logs) nothing is printed.
+    Every output line goes to *sink*, when given, as it is read. The argv
+    (not the environment) is logged as :func:`_run_docker` logs it: to
+    ``wfc register-env``'s log, on the thread that opened it only.
+
+    Ctrl-C: the client runs in its own process group, so the console's
+    interrupt reaches wfc only. wfc passes it on to the client's group
+    (Windows ``CTRL_BREAK_EVENT``, POSIX ``SIGINT``), which makes Docker
+    cancel the build, and waits up to :data:`BUILD_INTERRUPT_WAIT_S` for the
+    client to exit. Only a client that ignores the interrupt has its whole
+    process tree terminated (on Windows ``docker.exe`` and its
+    ``docker-buildx.exe`` plugin, which holds the build: killing
+    ``docker.exe`` alone would leave the build running).
 
     Args:
         dockerfile_dir: Directory containing the ``Dockerfile`` to build.
@@ -146,18 +378,26 @@ def build(dockerfile_dir: str | Path, tag: str,
             ``"my-env:_wfc-build"``).
         labels: Image labels by key (``org.opencontainers.image.source``),
             passed in key order; ``None`` or empty adds none.
+        sink: Called with each output line (no newline) as it is read, on
+            the reader thread. If it raises, it is called no more, the
+            output is still drained, and its exception is raised once the
+            client has exited (as the cause of a failed build's error).
 
     Raises:
         RuntimeError: If docker exits non-zero. The error message carries
             the last 40 lines of the interleaved build output (BuildKit
             reports errors on stdout/stderr mixed; the tail preserves the
-            real ``COPY failed`` / ``unable to resolve image`` text).
+            real ``COPY failed`` / ``unable to resolve image`` text). A
+            caller with a log of the full output adds its path.
+        BuildInterruptedError: On Ctrl-C, once the client has ended,
+            saying whether it ended on the interrupt.
     """
-    build_env = {**os.environ, "DOCKER_BUILDKIT": "1"}
+    build_env = {**os.environ, "DOCKER_BUILDKIT": "1", BUILD_CLIENT_MARK: "1"}
     label_flags = [flag for key, value in sorted((labels or {}).items())
                    for flag in ("--label", f"{key}={value}")]
     cmd = ["docker", "build", "--provenance=false", "-t", tag, *label_flags,
            str(dockerfile_dir)]
+    progress.command(cmd)
     proc = subprocess.Popen(
         cmd,
         env=build_env,
@@ -168,24 +408,32 @@ def build(dockerfile_dir: str | Path, tag: str,
         text=True,
         encoding="utf-8",
         errors="replace",
+        # Its own process group: the console's Ctrl-C reaches wfc only, and
+        # wfc passes it on to the client (see _end_build_client).
+        **_own_group_kwargs(),
     )
 
     # Collect docker's output off the pipe (never shown on success — users
-    # get the spinner below, not BuildKit noise) and track the latest
-    # `[x/y]` step marker for the spinner's progress text.
+    # get the spinner below, not BuildKit noise), hand each line to the
+    # caller's sink as it is read, and track the latest `[x/y]` step marker
+    # for the spinner's progress text.
     lines: list[str] = []
     latest_step: list[tuple[int, int] | None] = [None]
+    sink_error: list[BaseException] = []
 
     def _drain() -> None:
         assert proc.stdout is not None
         for raw in proc.stdout:
-            lines.append(raw.rstrip("\n"))
+            line = raw.rstrip("\n")
+            lines.append(line)
+            if sink is not None and not sink_error:
+                try:
+                    sink(line)
+                except Exception as exc:  # the pipe must keep draining
+                    sink_error.append(exc)
             step = _parse_build_step(raw)
             if step is not None:
                 latest_step[0] = step
-
-    reader = threading.Thread(target=_drain, daemon=True)
-    reader.start()
 
     # Single in-place spinner line on a TTY ("building environment — step
     # 3/7 (1m 12s)"); complete silence otherwise (CI / piped logs).
@@ -193,17 +441,27 @@ def build(dockerfile_dir: str | Path, tag: str,
     frames = "|/-\\"
     start = time.monotonic()
     frame = 0
-    while proc.poll() is None:
+    reader = threading.Thread(target=_drain, daemon=True)
+    try:
+        reader.start()
+        while proc.poll() is None:
+            if show_spinner:
+                step = latest_step[0]
+                step_txt = f" — step {step[0]}/{step[1]}" if step else ""
+                status = (
+                    f"\r{frames[frame % len(frames)]} building environment"
+                    f"{step_txt} ({_format_elapsed(time.monotonic() - start)})"
+                )
+                print(status.ljust(79), end="", file=sys.stderr, flush=True)
+                frame += 1
+            time.sleep(0.2 if show_spinner else 0.5)
+    except KeyboardInterrupt:
+        client_ended = _end_build_client(proc)
+        if reader.is_alive():
+            reader.join(timeout=10)
         if show_spinner:
-            step = latest_step[0]
-            step_txt = f" — step {step[0]}/{step[1]}" if step else ""
-            status = (
-                f"\r{frames[frame % len(frames)]} building environment"
-                f"{step_txt} ({_format_elapsed(time.monotonic() - start)})"
-            )
-            print(status.ljust(79), end="", file=sys.stderr, flush=True)
-            frame += 1
-        time.sleep(0.2 if show_spinner else 0.5)
+            print("\r" + " " * 79 + "\r", end="", file=sys.stderr, flush=True)
+        raise BuildInterruptedError(client_ended=client_ended) from None
     reader.join(timeout=10)
     if show_spinner:
         print("\r" + " " * 79 + "\r", end="", file=sys.stderr, flush=True)
@@ -212,7 +470,9 @@ def build(dockerfile_dir: str | Path, tag: str,
         tail = "\n".join(lines[-40:])
         raise RuntimeError(
             f"docker build failed (exit {proc.returncode}):\n{tail}"
-        )
+        ) from (sink_error[0] if sink_error else None)
+    if sink_error:
+        raise sink_error[0]
     if show_spinner:
         print(
             f"environment built ({_format_elapsed(time.monotonic() - start)})",
@@ -255,6 +515,11 @@ def _run_docker(args: list[str], *, timeout: float | None,
     ``push``) passes ``None``, since no fixed bound tells a slow transfer
     from a stalled one.
 
+    The argv run is logged to ``wfc register-env``'s log when the call is
+    on the thread that opened it (:func:`wfc.environments.progress.command`);
+    a call on another thread, or outside a registration, logs nothing. Only
+    the argv is logged, never the environment.
+
     Args:
         args: The arguments after ``docker``.
         timeout: Seconds before the docker client is stopped, or ``None``
@@ -268,9 +533,11 @@ def _run_docker(args: list[str], *, timeout: float | None,
     Raises:
         DockerTimeoutError: The command did not finish within *timeout*.
     """
+    cmd = ["docker", *args]
+    progress.command(cmd)
     try:
         return subprocess.run(
-            ["docker", *args],
+            cmd,
             capture_output=True,
             # docker always emits UTF-8; the Windows default cp1252 decode
             # crashes on its multi-byte progress characters.
@@ -848,6 +1115,9 @@ def _require_pinned(image: str) -> None:
 def _hardened_docker(cmd: list[str], *, timeout: float) -> subprocess.CompletedProcess:
     """Run one docker command of a hardened call; raise on failure.
 
+    The argv is logged as :func:`_run_docker` logs it: to ``wfc
+    register-env``'s log, on the thread that opened it only.
+
     Args:
         cmd: The full ``docker ...`` argv.
         timeout: Seconds before the docker process is stopped.
@@ -860,6 +1130,7 @@ def _hardened_docker(cmd: list[str], *, timeout: float) -> subprocess.CompletedP
         RuntimeError: If docker exits non-zero (with its stderr).
     """
     what = " ".join(cmd[:2])
+    progress.command(cmd)
     try:
         proc = subprocess.run(
             cmd,
@@ -917,20 +1188,26 @@ def _copied_size(path: Path) -> int:
     outputs="host path of the copied file or directory",
 )
 def copy_out(image: str, path: str, *, dest_dir: Path | None = None,
+             labels: Mapping[str, str] | None = None,
              timeout: float = HARDENED_TIMEOUT_S,
              output_cap: int = HARDENED_OUTPUT_CAP) -> Path:
     """Copy *path* out of *image* without running anything in it.
 
     ``docker create`` makes a container with the hardened flag set (network
-    off) and a command that never runs, ``docker cp`` copies *path* into
-    *dest_dir*, and ``docker rm --force`` removes the container, on success
-    or failure. The container is never started.
+    off), the *labels* given and a command that never runs, ``docker cp``
+    copies *path* into *dest_dir*, and ``docker rm --force`` removes the
+    container, on success, failure or Ctrl-C. The container is never
+    started.
 
     Args:
         image: A digest-pinned image reference.
         path: An absolute path inside the image, naming a file or directory.
         dest_dir: An existing host directory to copy into. When ``None`` a
             new temporary directory is made, and removed again on failure.
+        labels: ``{label: value}`` the container carries
+            (:func:`wfc.environments.containers.copy_out_labels`: the
+            project and this process, so ``wfc prune-envs`` can remove one a
+            crash left); ``None`` for none.
         timeout: Seconds each docker call may take.
         output_cap: The most bytes the copy may hold; a larger copy is
             deleted and refused.
@@ -945,6 +1222,8 @@ def copy_out(image: str, path: str, *, dest_dir: Path | None = None,
         RuntimeError: If a docker call fails (with Docker's stderr) or times
             out, the copy exceeds *output_cap*, or the container cannot be
             removed.
+        CopyOutInterruptedError: Ctrl-C stopped it; the container was
+            removed and the copy deleted first.
     """
     _require_pinned(image)
     source = PurePosixPath(path)
@@ -958,8 +1237,10 @@ def copy_out(image: str, path: str, *, dest_dir: Path | None = None,
     if copied.exists():
         raise ValueError(f"copy_out destination {copied} already exists")
     name = HARDENED_NAME_PREFIX + uuid.uuid4().hex[:12]
+    label_flags = [flag for key, value in (labels or {}).items()
+                   for flag in ("--label", f"{key}={value}")]
     try:
-        _hardened_docker(["docker", "create", "--name", name,
+        _hardened_docker(["docker", "create", "--name", name, *label_flags,
                           *hardened_flags(), image, _NEVER_STARTED_COMMAND],
                          timeout=timeout)
         _hardened_docker(["docker", "cp", f"{name}:{source}", str(target_dir)],
@@ -968,7 +1249,7 @@ def copy_out(image: str, path: str, *, dest_dir: Path | None = None,
         if size > output_cap:
             raise RuntimeError(f"copying {path} out of {image} gave {size} bytes, "
                                f"over the {output_cap}-byte cap")
-    except BaseException:
+    except BaseException as exc:
         _remove_container(name, quiet=True)
         if made_dir:
             shutil.rmtree(target_dir, ignore_errors=True)
@@ -976,6 +1257,8 @@ def copy_out(image: str, path: str, *, dest_dir: Path | None = None,
             shutil.rmtree(copied, ignore_errors=True)
         else:
             copied.unlink(missing_ok=True)
+        if isinstance(exc, KeyboardInterrupt) and not isinstance(exc, CopyOutInterruptedError):
+            raise CopyOutInterruptedError() from exc
         raise
     _remove_container(name, quiet=False)
     return copied

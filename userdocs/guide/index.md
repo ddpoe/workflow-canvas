@@ -140,4 +140,5 @@ reference/method-script-contract
 reference/pipeline-document
 reference/wf-canvas-toml
 reference/wfc-client-api
+reference/known-issues
 ```

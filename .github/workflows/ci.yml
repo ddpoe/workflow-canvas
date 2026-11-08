@@ -1,7 +1,13 @@
 name: CI
 
+# This file runs in both repos: the private ddpoe/workflow-canvas-dev, whose Actions
+# minutes are billed, and the public mirror ddpoe/workflow-canvas, whose are free. In the
+# private repo every job runs only on a manual run (`gh workflow run ci.yml`); the gate
+# for a release is the public repo's run on ci/<version>, which
+# `scripts/sync_public_mirror.py ci` pushes and dispatches (so a ci/ push starts no run).
 on:
   push:
+    branches-ignore: ["ci/**"]
   pull_request:
   workflow_dispatch:
     inputs:
@@ -21,6 +27,7 @@ concurrency:
 jobs:
   tests:
     name: Tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    if: github.repository != 'ddpoe/workflow-canvas-dev' || github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -70,6 +77,7 @@ jobs:
   client:
     # wfc-client runs inside users' method containers and supports Python 3.9+.
     name: wfc-client (Python ${{ matrix.python-version }})
+    if: github.repository != 'ddpoe/workflow-canvas-dev' || github.event_name == 'workflow_dispatch'
     # setup-python publishes no Python 3.9 build for ubuntu-latest (26.04):
     # 3.9 is past end of life. The 3.9 leg runs on the newest image that has one.
     runs-on: ${{ matrix.os }}
@@ -94,6 +102,7 @@ jobs:
 
   lint:
     name: Lint and type check
+    if: github.repository != 'ddpoe/workflow-canvas-dev' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -113,6 +122,7 @@ jobs:
 
   docs:
     name: Docs build
+    if: github.repository != 'ddpoe/workflow-canvas-dev' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -127,6 +137,7 @@ jobs:
 
   frontend:
     name: Canvas front end
+    if: github.repository != 'ddpoe/workflow-canvas-dev' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -148,7 +159,9 @@ jobs:
   integration:
     # Needs Linux containers, which GitHub's Windows and macOS runners do not provide.
     name: Integration (Docker)
-    if: github.event_name != 'pull_request'
+    if: >-
+      github.event_name != 'pull_request'
+      && (github.repository != 'ddpoe/workflow-canvas-dev' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -175,7 +188,8 @@ jobs:
     # any branch; never a pull request (one from a fork gets no packages: write).
     name: GHCR push and package link
     if: >-
-      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+      (github.event_name == 'push' && github.ref == 'refs/heads/main'
+       && github.repository != 'ddpoe/workflow-canvas-dev')
       || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:

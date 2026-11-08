@@ -233,6 +233,152 @@ def _cli_push_env(args) -> int:
     return apply_push(plan).exit_code
 
 
+def _leftover_inputs(project_dir):
+    """What the leftovers search needs that Environments may not read itself.
+
+    Execution's liveness (which also holds the project's pipeline ids) and
+    the images every method version records, read from Registration's
+    committed version lists as ``wfc push-env --all`` reads them.
+
+    Args:
+        project_dir: The project root.
+
+    Returns:
+        ``(liveness, recorded, unread)``: ``recorded`` is ``None`` and
+        ``unread`` says why when a version list cannot be read.
+    """
+    from .environments import pushable_envs
+    from .execution import run_liveness
+    from .registration import version_fingerprints_recording_env
+
+    liveness = run_liveness(project_dir)
+    try:
+        recorded = {name: version_fingerprints_recording_env(name, project_dir)
+                    for name in pushable_envs(project_dir)}
+    except ValueError as exc:
+        return liveness, None, str(exc)
+    return liveness, recorded, None
+
+
+def _leftover_counts(project_dir):
+    """``wfc list-envs``' footer counts: what there is to stop, over Execution's liveness.
+
+    Stop-only: no method version list is read and Docker is asked for no
+    image listing and no disk usage.
+    """
+    from .environments import leftover_counts
+    from .execution import run_liveness
+
+    liveness = run_liveness(project_dir)
+    return leftover_counts(project_dir, run_running=liveness,
+                           pipeline_ids=liveness.pipeline_ids, stop_only=True)
+
+
+def _cli_prune_envs(args) -> int:
+    """``wfc prune-envs``: print the plan, confirm, stop what it lists.
+
+    The plan and the apply are Environments' (:func:`wfc.environments.plan_prune`,
+    :func:`wfc.environments.apply_prune`); Execution's liveness, the project's
+    pipeline ids, its crashed pipelines, the runs a gone ``wfc try`` left,
+    the liveness's second look (the heartbeat guard) and the images method
+    versions record are passed in as values. Nothing to stop prints the plan
+    and asks nothing; ``--dry-run``
+    prints it and stops. Otherwise ``Proceed?`` goes through
+    :mod:`wfc.confirm`: no terminal and no ``--yes`` refuses naming
+    ``--yes``, and a no (or Ctrl-C at the question) stops nothing. Ctrl-C
+    during the apply ends with one line: the prune was interrupted, what is
+    still there to stop (counted again, stop-only, with
+    :func:`wfc.environments.leftover_counts`; a second Ctrl-C leaves the
+    count out) and ``wfc prune-envs`` to finish.
+
+    Args:
+        args: The parsed ``prune-envs`` arguments (``dry_run``, ``assume_yes``).
+
+    Returns:
+        0 when nothing was to be stopped or everything listed was stopped; 1
+        outside a project, on a declined or unconfirmable plan, or when
+        something could not be stopped; 130 when Ctrl-C interrupted the apply.
+    """
+    from dataclasses import replace
+
+    from .confirm import ConfirmationRequired, confirm
+    from .environments import apply_prune, leftover_counts, plan_prune
+
+    try:
+        project_dir = get_project_root()
+    except RuntimeError as exc:
+        print(f"ERROR: No wfc project found: {exc}", file=sys.stderr)
+        return 1
+    liveness, recorded, unread = _leftover_inputs(project_dir)
+    # The liveness the apply re-checks with: the second look once it is
+    # taken, so a Ctrl-C recount counts as the apply did.
+    used = [liveness]
+
+    def second_look():
+        looked = liveness.second_look()
+        used[0] = looked
+        return looked
+
+    plan = plan_prune(project_dir, run_running=liveness,
+                      pipeline_ids=liveness.pipeline_ids, recorded=recorded,
+                      crashed_pipelines=liveness.crashed_pipelines,
+                      dead_tries=liveness.dead_draft_steps,
+                      second_look=second_look)
+    if unread is not None:
+        plan = replace(plan, unused_images=None)
+    print("\n".join(plan.lines()))
+    if liveness.error is not None:
+        print(f"This project's runs could not be read ({liveness.error}), so every "
+              f"run counts as still running and no run container is listed.")
+    if unread is not None:
+        print(f"Env images were not counted: a method version list could not be "
+              f"read ({unread}).")
+    if args.dry_run:
+        print("Dry run: nothing was stopped.")
+        return 0
+    if not plan.to_clear:
+        return 0
+    try:
+        if not confirm("Proceed?", assume_yes=args.assume_yes,
+                       refusal=ConfirmationRequired(
+                           "wfc prune-envs: stopping needs confirmation and there "
+                           "is no terminal to ask on. Nothing was stopped. "
+                           "Re-run with --yes to stop what is listed above.")):
+            print("Nothing was stopped.")
+            return 1
+    except ConfirmationRequired as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("\nNothing was stopped.")
+        return 1
+    try:
+        result = apply_prune(plan)
+    except KeyboardInterrupt:
+        # Ctrl-C part way through the apply: count again what is still there,
+        # with the plan's own inputs. A second Ctrl-C (or a count that fails)
+        # ends without a count.
+        try:
+            left = leftover_counts(project_dir, run_running=used[0],
+                                   pipeline_ids=liveness.pipeline_ids, stop_only=True)
+        except (KeyboardInterrupt, Exception):  # noqa: BLE001 - the line still prints
+            left = None
+        if left is None:
+            still = "what is left was not counted"
+        elif left.containers is None:
+            parts = left.phrases()
+            still = ("Docker could not be reached, so its containers were not counted"
+                     + ("; still there: " + ", ".join(parts) if parts else ""))
+        else:
+            parts = left.phrases()
+            still = ("still there: " + ", ".join(parts)) if parts else "nothing is left to stop"
+        print(f"Stopped: the prune was interrupted; {still}. Run `wfc prune-envs` "
+              f"to finish.", file=sys.stderr)
+        return 130  # the shell's exit status for Ctrl-C
+    print("\n".join(result.lines()))
+    return result.exit_code
+
+
 #: The guide page that matches GitHub's package pages to what wfc records.
 _GITHUB_IMAGES_GUIDE_PAGE = "how-to/see-your-images-on-github.html"
 
@@ -714,7 +860,9 @@ def _cli_doctor(args) -> int:
     from .preflight import render_health_table
 
     results = run_all_checks(default_project_dir())
-    # The env-image rows (they only warn) under their own heading.
+    # The env-image rows under their own heading: the registry and versions
+    # rows only warn; the bind row fails when a step's container would see
+    # the project or the cache empty.
     images = env_image_checks(default_project_dir())
     # A demo an older wfc made: one warn row, from the demo itself.
     demo_row = demo_schema_check(default_project_dir())
@@ -1548,8 +1696,12 @@ def build_parser() -> argparse.ArgumentParser:
     # -- doctor --
     doctor_cmd = sub.add_parser(
         "doctor",
-        help="Check run-readiness (git / DVC / Docker / samples). Exits "
-             "non-zero on any fail.",
+        help="Check run-readiness: git, DVC, Docker, the project's disk, "
+             "samples and views; then the env images (registry, runnable "
+             "versions), whether a step's container sees the project, and "
+             "whether an earlier run or crash left containers or env builds "
+             "running (`wfc prune-envs` stops them). Exits non-zero on any "
+             "fail.",
     )
     _json_flag(doctor_cmd)
 
@@ -1806,8 +1958,9 @@ def build_parser() -> argparse.ArgumentParser:
     re_cmd.add_argument(
         "--from", dest="from_path", default=None, metavar="PATH",
         help="Lock file (pixi.lock) or conda explicit list to build "
-             "from, or a uv project directory or its uv.lock. Requires "
-             "--backend.",
+             "from, an env's own packages.lock (its pip packages, after "
+             "the pip marker, are installed too), or a uv project "
+             "directory or its uv.lock. Requires --backend.",
     )
     re_cmd.add_argument(
         "--group", dest="groups", action="append", default=None,
@@ -1881,6 +2034,22 @@ def build_parser() -> argparse.ArgumentParser:
     pe_cmd.add_argument("--yes", action="store_true", dest="assume_yes",
                         help="Push and write as stated without asking (for "
                              "scripts and CI)")
+
+    # -- prune-envs --
+    pr_cmd = sub.add_parser(
+        "prune-envs",
+        help="Stop what an earlier run or crash left running for this "
+             "project: run containers whose run has ended and env builds no "
+             "wfc command is waiting for. Lists them and asks first; never "
+             "touches a run that is still running or another project's. "
+             "Counts the env images nothing uses and the build cache, and "
+             "removes neither.",
+    )
+    pr_cmd.add_argument("--dry-run", action="store_true", dest="dry_run",
+                        help="Print what would be stopped and stop nothing")
+    pr_cmd.add_argument("--yes", action="store_true", dest="assume_yes",
+                        help="Stop what is listed without asking. With no "
+                             "terminal and no --yes, nothing is stopped.")
 
     # -- share --
     share_cmd = sub.add_parser(
@@ -2452,7 +2621,10 @@ def cli_main(argv: list[str] | None = None) -> int:
         from .environments import verbs
         from .registration import version_fingerprints_recording_env
         if not args.as_json:
-            return verbs.list_envs(versions_of=version_fingerprints_recording_env)
+            # The footer's leftover counts: Environments' search over
+            # Execution's liveness, passed in as a value.
+            return verbs.list_envs(versions_of=version_fingerprints_recording_env,
+                                   leftovers=_leftover_counts)
         from . import cli_render as render
         try:
             listing = verbs.env_listing(
@@ -2497,6 +2669,9 @@ def cli_main(argv: list[str] | None = None) -> int:
 
     elif args.command == "push-env":
         return _cli_push_env(args)
+
+    elif args.command == "prune-envs":
+        return _cli_prune_envs(args)
 
     elif args.command == "share":
         return _cli_share(args)

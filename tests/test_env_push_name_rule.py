@@ -79,9 +79,14 @@ def _set_base(project: Path) -> None:
 
 
 def _tree(root: Path) -> dict[str, bytes]:
+    """The project's ``.wfc`` state, without the db and register-env's logs."""
+    from wfc import layout
+
     state = root / ".wfc"
+    logs = layout.register_env_log_dir(root)
     return {p.relative_to(root).as_posix(): p.read_bytes()
-            for p in sorted(state.rglob("*")) if p.is_file() and p.name != "wfc.db"}
+            for p in sorted(state.rglob("*"))
+            if p.is_file() and p.name != "wfc.db" and not p.is_relative_to(logs)}
 
 
 @pytest.mark.parametrize("name", PUSHABLE)
@@ -138,6 +143,8 @@ def test_register_env_refuses_an_unpushable_name_before_docker(
     assert "--no-push" in err
     assert _tree(tmp_project) == before
     assert _git(tmp_project, "rev-parse", "HEAD") == head
+    log = Path(err.rstrip().splitlines()[-1].removeprefix("Log: "))
+    assert log.is_file(), err
 
     口 = Step(step_num=2, name="The same with --no-push",
              purpose="Registered; the line says push-env cannot push it")

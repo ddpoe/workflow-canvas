@@ -1,8 +1,9 @@
 """Subsystem test: docker_runner.build sets DOCKER_BUILDKIT=1 and preserves env.
 
-This is the one test file that mocks the subprocess boundary directly — it
-covers the spawn itself (now ``subprocess.Popen``, streaming). All other
-tests mock the ``wfc.environments.docker`` functions instead.
+This file and ``tests/test_docker_build_interrupt.py`` (the process group,
+the passed-on Ctrl-C and the output sink) fake the build's spawn itself
+(``subprocess.Popen``, streaming). All other tests mock the
+``wfc.environments.docker`` functions instead.
 """
 
 from __future__ import annotations

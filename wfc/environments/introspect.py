@@ -38,6 +38,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .. import layout
+from . import progress
 from .host import IMAGE_CONDA_PLATFORM
 
 # =============================================================================
@@ -63,14 +64,16 @@ def conda_list_explicit(env_path: str | Path) -> str:
         RuntimeError: If conda exits nonzero.
     """
     env_path = Path(env_path)
+    argv = ["conda", "list", "--explicit", "--md5", "--prefix", str(env_path)]
     try:
-        result = subprocess.run(
-            ["conda", "list", "--explicit", "--md5", "--prefix", str(env_path)],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
+        with progress.host_call("conda list --explicit", argv):
+            result = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
     except FileNotFoundError as e:
         raise FileNotFoundError(
             "conda executable not found on PATH — cannot fingerprint "
@@ -129,14 +132,16 @@ def pip_freeze_best_effort(env_python: str | Path) -> str:
     drift on top.
     """
     env_python = Path(env_python)
+    argv = [str(env_python), "-m", "pip", "freeze", "--disable-pip-version-check"]
     try:
-        result = subprocess.run(
-            [str(env_python), "-m", "pip", "freeze", "--disable-pip-version-check"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
+        with progress.host_call("pip freeze", argv):
+            result = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
     except FileNotFoundError as e:
         raise FileNotFoundError(
             f"Python interpreter not found at {env_python} — cannot run pip freeze"
@@ -193,15 +198,19 @@ def _run_conda(args: list[str], what: str) -> str:
         RuntimeError: If conda exits nonzero, or does not finish within
             :data:`CONDA_TIMEOUT_S`.
     """
+    argv = ["conda", *args]
+    # The phase is named by the subcommand and its flags, not the prefix path.
+    label = " ".join(["conda", *(a for a in args[:3] if a != "--prefix")][:3])
     try:
-        result = subprocess.run(
-            ["conda", *args],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=CONDA_TIMEOUT_S,
-        )
+        with progress.host_call(label, argv):
+            result = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=CONDA_TIMEOUT_S,
+            )
     except FileNotFoundError as e:
         raise FileNotFoundError(
             f"conda executable not found on PATH — cannot read {what}"

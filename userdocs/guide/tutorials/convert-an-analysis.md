@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/tutorials/convert-an-analysis @ f2caf34f5651; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/tutorials/convert-an-analysis @ 048bd4ec8d32; do not edit -->
 
 # Convert an Analysis into a Pipeline
 
@@ -10,7 +10,7 @@ Both tracks end with the same thing: each step of the analysis is a registered m
 
 ## The Example
 
-The example is a small plate assay: cells on two plates, four drug conditions, fold change over DMSO with a bootstrap interval, and a comparison of the two plates. The folder is [`examples/messy-analysis`](https://github.com/ddpoe/workflow-canvas/tree/main/examples/messy-analysis) in the wfc repository (`git clone https://github.com/ddpoe/workflow-canvas`, then copy that folder out); it runs in under a minute in a conda env with numpy, pandas and matplotlib.
+The example is a small single-cell drug-response analysis: each cell's fluorescence, measured from images of two plates, under four drug conditions, as fold change over DMSO with a bootstrap interval, and a comparison of the two plates. The folder is [`examples/single-cell-drug-response-analysis`](https://github.com/ddpoe/workflow-canvas/tree/main/examples/single-cell-drug-response-analysis) in the wfc repository (`git clone https://github.com/ddpoe/workflow-canvas`, then copy that folder out as `~/plate_assay`); it runs in under a minute in a conda env with numpy, pandas and matplotlib.
 
 ```text
 plate_assay/
@@ -65,7 +65,7 @@ It also flags what it found in your code, without changing what the analysis doe
 
 Nothing is written until you approve the map.
 
-**It builds an env, then drafts every step.** It registers your env without changing it (a copy when it needs to add something), which can take 30 to 60 minutes for a conda env on Windows or macOS. Then it writes each method, tries it as a draft, and runs the whole pipeline as drafts. For a value picked by eye, like the area threshold, it runs a few options and shows you the results before you choose.
+**It builds an env, then drafts every step.** It registers your env without changing it (a copy when it needs to add something), which takes a few minutes for a small conda env on Windows or macOS and longer for a large one. Then it writes each method, tries it as a draft, and runs the whole pipeline as drafts. For a value picked by eye, like the area threshold, it runs a few options and shows you the results before you choose.
 
 **It compares the results with yours.** Each output gets a verdict, with the tolerance stated:
 
@@ -101,7 +101,7 @@ conda run -n plates-lab-wfc pip install wfc-client
 wfc register-env plates-lab-wfc conda:plates-lab-wfc
 ```
 
-Don't copy it with `conda create --clone`: on Windows and macOS the clone's image doesn't build. The env is solved again for Linux, which took about 45 minutes here; [Register an Environment](registering-an-environment.md) explains what it records.
+Don't copy it with `conda create --clone`: on Windows and macOS the clone's image doesn't build. Registering it took about 5 minutes here, while wfc worked out the Linux versions of its packages and built an image from them; [Register an Environment](registering-an-environment.md) explains what it records.
 
 **2. Register the module and the plates.** A plate's `cells.csv` only means something with its `plate.json` (the well layout and the background), so each plate's folder becomes one sample:
 
@@ -182,7 +182,7 @@ Three changes go beyond the edges, and each is one you decide:
 - **The shared helper.** Three methods import `plate_utils.py`. Each method folder holds a copy of it, listed under `helpers:`, and `script:` names the main script.
 - **The filter that does nothing.** `02_compare_plates` builds `combined_clean = combined[combined["n_cells"] >= 50]` and then uses `combined`, so the filter never applies. `compare_plates` keeps the notebook's result by default (`min_cells: 0`) and lets you switch it on (`min_cells: 50`). Changing it is the analysis owner's call.
 
-The whole folder is in [`examples/messy-analysis-by-hand`](https://github.com/ddpoe/workflow-canvas/tree/main/examples/messy-analysis-by-hand). [Write a Method in Python](authoring-a-method-script.md) covers the script, and the [method.yaml Schema](../reference/method-yaml-schema.md) every key.
+The whole folder is in [`examples/single-cell-drug-response-pipeline`](https://github.com/ddpoe/workflow-canvas/tree/main/examples/single-cell-drug-response-pipeline). [Write a Method in Python](authoring-a-method-script.md) covers the script, and the [method.yaml Schema](../reference/method-yaml-schema.md) every key.
 
 **4. Try each method as a draft, upstream first.** `wfc try` runs a folder on a sample and records nothing. Each try prints a draft string, the name of that draft's result (`draft:<module>.<method>/<node>@<sample>`); the next method reads its upstream's output by passing it to `--parent-run-id`:
 

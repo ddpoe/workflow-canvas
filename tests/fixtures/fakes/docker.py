@@ -337,6 +337,95 @@ def refuse_docker(monkeypatch, reason: str = "docker must not be reached"
 
 
 @fake(
+    boundary="wfc.environments.bind_check._run_probe -- the docker run of the "
+             "launch's bind check: one short container from the launch's "
+             "image with a step's binds, printing what it sees",
+    preserves="the argv the check built (recorded by a callable replacement); "
+              "the check's own verdict over the probe's output, and every "
+              "caller's handling of it",
+    not_proven="that a container started from the image would print that "
+               "output, or that Docker shares those host paths",
+    backed_by="pm_mvp::tests.integration.test_launch_bind_check_docker::"
+              "test_a_real_project_is_visible_in_one_container_start_and_nothing_is_written",
+)
+def stub_bind_probe(monkeypatch, replacement) -> None:
+    """Replace the bind check's container run. A true external edge: the Docker CLI.
+
+    Armed suite-wide by default: ``tests/conftest.py``'s autouse fixture
+    ``_bind_probe_sees_the_project`` answers "visible" in every test not
+    marked ``integration``, since every ``run_pipeline`` and ``wfc try``
+    launch reaches this call. A test that wants another answer calls this
+    entry itself; the later patch wins.
+
+    Considered: ``ready_preflight`` (opt-in, and at another boundary: the
+    readiness probes), whose opt-in pattern would mean arming this fake in
+    the thirty or so files that drive ``run_pipeline``, and every new
+    pipeline test remembering to; ``fake_subprocess_run`` (every subprocess
+    at once, so the env preflight's and the engine's fakes would need a
+    handler too) and ``stub_dev_loop_launch`` (another caller's launch);
+    none stands at this boundary.
+
+    Args:
+        monkeypatch: An active ``pytest.MonkeyPatch``.
+        replacement: ``"visible"`` (the probe saw what the host has),
+            ``"empty"`` (the container sees no config file and an empty
+            cache), an exception raised (``DockerTimeoutError``, ``OSError``),
+            a ``CompletedProcess``, or a callable ``(argv, timeout=...)``.
+    """
+    import subprocess
+
+    from wfc.environments import bind_check
+
+    if replacement in ("visible", "empty"):
+        seen = replacement
+
+        def answer(argv, *, timeout):
+            config, cache = argv[-2], argv[-1]
+            lines = []
+            if config:
+                size = (_host_config_size(argv, config) if seen == "visible" else None)
+                lines.append(f"config {size}" if size is not None else "config none")
+            if cache:
+                lines.append(f"cache {_host_cache_count(argv) if seen == 'visible' else 0}")
+            return subprocess.CompletedProcess(argv, 0, stdout="\n".join(lines) + "\n",
+                                               stderr="")
+
+        replacement = answer
+    elif isinstance(replacement, subprocess.CompletedProcess):
+        replacement = _as_callable(replacement)
+    monkeypatch.setattr(bind_check, "_run_probe", _as_callable(replacement))
+
+
+def _bound_host(argv, container: str) -> str | None:
+    """The host side of the ``-v`` row bound at *container* in a docker argv."""
+    for flag, value in zip(argv, argv[1:]):
+        if flag == "-v":
+            host, _, rest = value.rpartition(":" + container)
+            if host and rest in ("", ":ro"):
+                return host
+    return None
+
+
+def _host_config_size(argv, config: str) -> int | None:
+    """The host size of the config file the probe was asked about."""
+    from pathlib import Path
+
+    host = _bound_host(argv, "/work")
+    if host is None:
+        return None
+    target = Path(host) / config.removeprefix("/work/")
+    return target.stat().st_size if target.is_file() else None
+
+
+def _host_cache_count(argv) -> int:
+    """The host cache's top-level entry count, read through its ``-v`` row."""
+    import os
+
+    host = _bound_host(argv, "/dvc-cache")
+    return len(os.listdir(host)) if host else 0
+
+
+@fake(
     boundary="wfc.environments.argv.build_docker_command -- the docker run "
              "argv builder the dev loop shares with dispatch",
     preserves="the inner argv the dev loop hands the builder, recorded",

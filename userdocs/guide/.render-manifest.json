@@ -133,7 +133,7 @@
   },
   "reference/cli-environments.md": {
     "doc_id": "pm_mvp::docs/consumer/reference/cli-environments",
-    "hash": "65d5942d213d"
+    "hash": "23c0d5f6e1ba"
   },
   "reference/cli-pipelines.md": {
     "doc_id": "pm_mvp::docs/consumer/reference/cli-pipelines",
@@ -141,7 +141,7 @@
   },
   "reference/cli-project.md": {
     "doc_id": "pm_mvp::docs/consumer/reference/cli-project",
-    "hash": "12246694595f"
+    "hash": "2f47efa3d45e"
   },
   "reference/cli-registration.md": {
     "doc_id": "pm_mvp::docs/consumer/reference/cli-registration",
@@ -150,6 +150,10 @@
   "reference/command-line.md": {
     "doc_id": "pm_mvp::docs/consumer/reference/command-line",
     "hash": "a957dcedc663"
+  },
+  "reference/known-issues.md": {
+    "doc_id": "pm_mvp::docs/consumer/reference/known-issues",
+    "hash": "2cdbab7b4b0b"
   },
   "reference/method-script-contract.md": {
     "doc_id": "pm_mvp::docs/consumer/reference/method-script-contract",
@@ -177,7 +181,7 @@
   },
   "tutorials/convert-an-analysis.md": {
     "doc_id": "pm_mvp::docs/consumer/tutorials/convert-an-analysis",
-    "hash": "f2caf34f5651"
+    "hash": "048bd4ec8d32"
   },
   "tutorials/drafting-a-method.md": {
     "doc_id": "pm_mvp::docs/consumer/tutorials/drafting-a-method",

@@ -5,12 +5,18 @@ the whole pipeline, in one message and before any run row, if a named
 sample's content is in neither the local cache nor the archive; make every
 image the nodes run runnable (an image the Docker daemon lacks is pulled
 once by its recorded registry digest and checked, or the pipeline is
-refused, again before any run row);
+refused, again before any run row); check the binds a step's container
+sees (Environments starts one short container from the image of the first
+step the launch dispatches, with a step's binds, and the launch is refused,
+before any run row, when the project or the cache comes up empty inside it);
 prepare the launch (the pipeline id, the log directories, the frozen
 documents); start the push worker; hand the loaded pipeline to the engine
 (Orchestration's ``invoke_engine``); then close the run: on a non-zero exit
 the failure sequence raises the engine's message, otherwise the success
-sequence writes the cancelled rows, archives and drains.
+sequence writes the cancelled rows, archives and drains. An interrupt
+(Ctrl-C) cuts the close short: Environments is asked to stop every container
+carrying this project's and the pipeline's labels, the interrupt goes on
+unchanged, and the pipeline record stays for the recovery.
 
 The ``run-pipeline`` verb, the canvas server and the test harness all call
 this one function. It returns nothing on success and raises
@@ -22,7 +28,10 @@ import json
 import sys
 from pathlib import Path
 
-from axiom_annotations import AutoStep, Step, workflow
+from axiom_annotations import AutoStep, Step, task, workflow
+
+# Environments' package exports (the interrupt's container stop).
+from ..environments import container_labels, stop_containers
 
 # Re-exported for init's ignore list (init may not import the engine layer).
 from ..orchestration import ENGINE_STATE_DIR_NAME as ENGINE_STATE_DIR_NAME
@@ -63,6 +72,91 @@ from .prepare import (
 _DEFAULT_VALUE_WIDTH = 60
 
 
+class BindsNotVisibleError(RuntimeError):
+    """A launch's container saw a bind empty; nothing was launched or recorded.
+
+    The message names the bind that came up empty, its host path, and
+    points to ``wfc doctor``.
+    """
+
+
+def launch_image(refs: dict[tuple[str, str], str], document: dict,
+                 root: Path) -> str | None:
+    """The image of the first step a launch will dispatch, for the bind check.
+
+    Args:
+        refs: The refs the env preflight resolved, in document order.
+        document: The substituted pipeline document.
+        root: The project root.
+
+    Returns:
+        The first registered step's ref; for an all-draft pipeline its first
+        draft's env image (made runnable by the draft preflight); ``None``
+        when no step runs in a container.
+    """
+    for ref in refs.values():
+        return ref
+    from ..environments import version_run_ref
+    from ..graph import is_draft_node
+    from ..registration import read_draft
+    from .node_env import resolve_node_env
+
+    for node in document.get("nodes") or []:
+        if not (isinstance(node, dict) and is_draft_node(node)):
+            continue
+        pointer = read_draft(str(node.get("module")), str(node.get("method")), root)
+        env = resolve_node_env(str(((pointer.contract if pointer else None) or {})
+                                   .get("env") or ""), root)
+        if env.record is not None:
+            return version_run_ref(env.name, env.record.env_fingerprint, root,
+                                   image=env.record.container)
+    return None
+
+
+@task(purpose="The launch's bind check: ask Environments to start one short "
+              "container from the launch's image with a step's binds and "
+              "refuse the launch when the project or the cache comes up empty "
+              "inside it; a check that cannot run prints one note and the "
+              "launch goes on",
+      inputs="project root, the image of the first step the launch dispatches",
+      outputs="nothing, or BindsNotVisibleError naming the bind and wfc doctor",
+      critical="runs before anything is recorded; a passing check prints "
+               "nothing")
+def refuse_unseen_binds(root: Path | str, image_ref: str | None) -> None:
+    """Refuse a launch whose container would see the project or cache empty.
+
+    Args:
+        root: The project root.
+        image_ref: The image the launch runs first; ``None`` (no step runs in
+            a container) checks nothing.
+
+    Raises:
+        BindsNotVisibleError: A bind came up empty inside the container.
+    """
+    if image_ref is None:
+        return
+    from .. import layout
+    from ..environments import (
+        BIND_EMPTY,
+        BIND_NOT_RUN,
+        check_binds,
+        host_bind_expectations,
+    )
+
+    root = Path(root)
+    cache = layout.dvc_cache_dir(root)
+    verdict = check_binds(image_ref, root, cache, host_bind_expectations(root, cache))
+    if verdict.outcome == BIND_NOT_RUN:
+        print(f"Note: could not check that a step's container sees the project "
+              f"({verdict.detail}); the launch goes on.", file=sys.stderr)
+    elif verdict.outcome == BIND_EMPTY:
+        raise BindsNotVisibleError(
+            f"A step's container would see an empty folder: the bind of "
+            f"{verdict.host} at {verdict.container} came up empty "
+            f"({verdict.detail}). Nothing was launched. Run `wfc doctor` to "
+            f"see why and what to do.")
+
+
 def _defaults_line(entry: FilledDefaults) -> str:
     """The run-pipeline line naming the declared defaults one node or variant runs.
 
@@ -89,12 +183,17 @@ def _defaults_line(entry: FilledDefaults) -> str:
 @workflow(
     purpose="Run a pipeline document end to end: substitute and load, refuse "
             "samples whose content is unreachable, make every env runnable, "
-            "prepare the launch, start "
-            "the push worker, hand the pipeline to the engine, and close the "
-            "run",
+            "check the binds a step's container sees, prepare the launch, "
+            "start the push worker, hand the pipeline to the engine, and "
+            "close the run; on an interrupt, stop the pipeline's containers "
+            "instead of closing it",
     inputs="Pipeline JSON path, project root, cores, the launch switches, the "
            "canvas's callbacks",
     outputs="Completed pipeline; all run rows written to DB. Raises on failure",
+    critical="An interrupt (Ctrl-C, SystemExit) propagates unchanged and "
+             "leaves the pipeline record for the recovery; its container "
+             "stop is bounded and best-effort, always by the project's label "
+             "as well as the pipeline's",
 )
 def run_pipeline(
     pipeline_path: str,
@@ -168,6 +267,18 @@ def run_pipeline(
     place, so once this process is gone the recovery judges the pipeline
     dead and its close-out writes the rows the end steps did not.
 
+    An interrupt also asks Environments to stop every container carrying
+    this project's label and the pipeline's label: Docker does not stop a
+    step container when its client goes. The stop is bounded and
+    best-effort; one that cannot finish prints one line, naming no Docker
+    command, and the interrupt goes on unchanged. A container the engine
+    starts after the stop is a leftover for ``wfc prune-envs``.
+
+    Before the launch is prepared, the bind check starts one short container
+    from the image of the first step the launch dispatches, with a step's
+    binds, and refuses the launch when the project or the cache comes up
+    empty inside it (``BindsNotVisibleError``, below).
+
     The push worker started for the pipeline is not left running on any
     ending: one no ending drained (an engine or an archive pass that raised)
     is drained on the way out, and every one gets a few seconds to finish
@@ -203,6 +314,13 @@ def run_pipeline(
             Docker does not answer.  Raised before ``prepare_launch``, so no
             run row was written; the message names the version, the env and
             the commands that recreate it.  (A ``RuntimeError``.)
+        BindsNotVisibleError: The bind check's container, started from the
+            image of the first step the launch dispatches with a step's
+            binds, saw the project or the cache empty. Raised before
+            ``prepare_launch``, so no run row or frozen document was written;
+            the message names the bind and points to ``wfc doctor``. A check
+            that cannot run prints one note and the launch goes on.  (A
+            ``RuntimeError``.)
         DatabaseUnreachableError: The composer could not reach the project
             database; nothing was launched.
         ProjectMismatchError: ``project_root`` is not the process's
@@ -281,7 +399,7 @@ def run_pipeline(
                       "once, before the engine starts; nothing is built, and "
                       "the nodes' own run-step never pulls")
     from ..graph import document_node as _document_node
-    preflight_pipeline_envs(
+    _refs = preflight_pipeline_envs(
         [(step.module_name, step.method_name,
           (_document_node(_substituted, step.node_id) or {}).get("version") or None)
          for step in loaded.pipeline.steps],
@@ -290,12 +408,18 @@ def run_pipeline(
     from .draft import preflight_drafts as _preflight_drafts
     _preflight_drafts(_substituted, _project_root, pipeline_id=pipeline_id)
 
-    口 = AutoStep(step_num=4, name="Prepare the launch")
+    # The image of the first step the launch dispatches: the first ref the
+    # env preflight resolved, or an all-draft pipeline's draft image.
+    _first_image = launch_image(_refs, _substituted, Path(_project_root))
+    口 = AutoStep(step_num=4, name="Check the binds a step's container sees")
+    refuse_unseen_binds(_project_root, _first_image)
+
+    口 = AutoStep(step_num=5, name="Prepare the launch")
     _launch = prepare_launch(
         Path(_project_root), Path(pipeline_path), _document, _substituted, pipeline_id,
     )
 
-    口 = Step(step_num=5, name="Record the pipeline",
+    口 = Step(step_num=6, name="Record the pipeline",
              purpose="Write the pipeline record into the pipeline run dir: the "
                      "pipeline id, the entry point, this process as the owner "
                      "(pid and creation time), no engine yet, no cancel. When "
@@ -339,10 +463,10 @@ def run_pipeline(
     _interrupted = False
     _push: PushWorker | None = None
     try:
-        口 = AutoStep(step_num=6, name="Start the push worker")
+        口 = AutoStep(step_num=7, name="Start the push worker")
         _push = start_push_worker(Path(_project_root))
 
-        口 = AutoStep(step_num=7, name="Hand the pipeline to the engine")
+        口 = AutoStep(step_num=8, name="Hand the pipeline to the engine")
         outcome = invoke_engine(
             loaded.pipeline, _project_root,
             pipeline_id=_launch.pipeline_id, log_dir=_launch.log_dir,
@@ -351,7 +475,7 @@ def run_pipeline(
             keep_going=keep_going, process_registry=_on_engine_started,
         )
 
-        口 = Step(step_num=8, name="Close the run",
+        口 = Step(step_num=9, name="Close the run",
                  purpose="On a non-zero exit the failure sequence raises the "
                          "engine's message (once, with the outcome); otherwise the "
                          "success sequence writes the cancelled rows (both stamp "
@@ -374,7 +498,7 @@ def run_pipeline(
                 pipeline_doc_hash=_launch.pipeline_doc_hash,
             )
         finally:
-            口 = Step(step_num=9, name="Print the pipeline summary",
+            口 = Step(step_num=10, name="Print the pipeline summary",
                      purpose="Count the pipeline's run rows and print the summary, "
                              "on both paths, after the pipeline-end walk has "
                              "written its failed and cancelled rows -- the same "
@@ -390,11 +514,22 @@ def run_pipeline(
         # record stays, so once this process is gone the recovery judges
         # the pipeline dead and its close-out writes the missing rows.
         _interrupted = not isinstance(_ending, Exception)
+        if _interrupted:
+            # A step container outlives the engine that started it: Docker
+            # does not stop it when its client goes. Stop what carries this
+            # project's and this pipeline's labels, then let the interrupt
+            # through as it was.
+            _labels = container_labels(_project_root, pipeline_id=_launch.pipeline_id)
+            口 = AutoStep(step_num=14, name="Stop the pipeline's containers")
+            _stopped = stop_containers(_labels)
+            if _stopped.error is not None:
+                print(f"[run_pipeline] pipeline {_launch.pipeline_id}'s containers "
+                      f"may still be running: {_stopped.error}", file=sys.stderr)
         raise
     finally:
         if not _interrupted:
             try:
-                口 = AutoStep(step_num=10, name="Remove the pipeline record, "
+                口 = AutoStep(step_num=11, name="Remove the pipeline record, "
                                                "unless an interrupt cut the end "
                                                "steps short")
                 remove_pipeline_record(_project_root, _launch.pipeline_id)
@@ -402,14 +537,14 @@ def run_pipeline(
                 print(f"[run_pipeline] could not remove the pipeline record: "
                       f"{_remove_exc}", file=sys.stderr)
             try:
-                口 = AutoStep(step_num=11, name="Store the pipeline's status and "
+                口 = AutoStep(step_num=12, name="Store the pipeline's status and "
                                                "end once the record is gone")
                 store_pipeline_outcome(_project_root, _launch.pipeline_id)
             except Exception as _store_exc:
                 print(f"[run_pipeline] could not store the pipeline's status: "
                       f"{_store_exc}", file=sys.stderr)
         if _push is not None:
-            口 = Step(step_num=12, name="Stop the push worker the endings did not",
+            口 = Step(step_num=13, name="Stop the push worker the endings did not",
                      purpose="On every ending, stop a push worker still "
                              "running: an engine or an archive pass that "
                              "raised reached no drain, so drain it here (not "

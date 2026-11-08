@@ -58,6 +58,9 @@ _GITIGNORE_LINES = [
     f"{layout.db_relpath()}-*",
     f"{layout.STATE_DIR_NAME}/cache/",
     f"{layout.STATE_DIR_NAME}/{layout.BUILD_DIR_NAME}/",
+    # register-env's logs (each log folder also ignores itself, for projects
+    # made before this line).
+    f"{layout.logs_relpath()}/",
     f"{layout.artifact_store_relpath()}/",
     f"{layout.restore_workspace_relpath()}/",
     f"{layout.DVC_DIR_NAME}/cache/",
@@ -626,7 +629,8 @@ def init_project(
         print(f"\n  WARNING: git setup did not complete: {exc}")
 
     口 = Step(step_num=8, name="Run-readiness health summary",
-             purpose="Pre-flight git/DVC/Docker/samples (Docker is a hard "
+             purpose="Run the readiness checks (git, DVC, Docker, the "
+                     "project's disk, samples, views; Docker is a hard "
                      "run-requirement init can detect but not install; the "
                      "samples probe reports the new project's empty registry) "
                      "and print the closing health table + honest archive "

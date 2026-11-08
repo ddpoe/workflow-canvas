@@ -85,7 +85,7 @@ Run `wfc <command> --help` for every flag. `wfc --help` does not list some hidde
    - a uv project: `wfc register-env <name> --backend uv --from <project-dir>`
    - an image of their own: `wfc register-env <name> --backend byo --image docker://<ref>`
 
-   Say how long it takes before starting: a conda env from Windows or macOS can take 30 to 60 minutes, so start it in the background. Use the env the user already has and never modify it; for a new env, recommend pixi (a `pixi.lock` that includes `linux-64` skips the solve) or, for Python-only work, uv. While it builds, follow `wfc register-env`'s own output: when it prints phase lines, a heartbeat line means it is still working. After an interrupted registration, run `wfc list-envs`; when its footer reports leftovers and `wfc prune-envs --help` works (not in 0.8.0b2), suggest `wfc prune-envs`, and pass `--yes` only after the user agrees. Never give the user raw Docker commands.
+   Say how long it takes before starting: a conda env from Windows or macOS takes a few minutes when it is small (about 5 minutes) and longer when it is large, most of it solving the env again for Linux and building its image (in 0.8.0b2 and earlier, 30 to 60 minutes), so start it in the background. Use the env the user already has and never modify it; for a new env, recommend pixi (a `pixi.lock` that includes `linux-64` skips the solve) or, for Python-only work, uv. While it builds, follow `wfc register-env`'s own output: when it prints phase lines, a heartbeat line means it is still working. After an interrupted registration, run `wfc list-envs`; when its footer reports leftovers and `wfc prune-envs --help` works (not in 0.8.0b2), suggest `wfc prune-envs`, and pass `--yes` only after the user agrees. Never give the user raw Docker commands.
 
    A Python method needs `wfc-client` installed in the env; when the user's env lacks it, make a copy with `wfc-client` added and register the copy, as the **creating-a-wfc-method** skill describes. An R or bash method's env is registered with `--interpreter` set to the interpreter's path inside the container (for example `/opt/conda/bin/Rscript` or `/bin/bash`), since the default is Python.
 4. `wfc register-module --name <module> --module-dir src/<module>`, with a one-line `module.yaml` (`description: ...`) in that folder.
@@ -107,21 +107,22 @@ If a page is missing or there is no network, work from this skill and `wfc <comm
 
 These are known wfc bugs in 0.8.0, planned to be fixed in 0.8.1. When `wfc --version` is 0.8.0 (or a 0.8.0 pre-release), use the workaround and tell the user you are doing so; when it is 0.8.1 or later, try the plain way first.
 
-- **A pipeline that references runs of an earlier pipeline fails before any step runs** with `MissingInputException`, naming files under `.wfc/runs/<id>/_workdir/`: those runs' outputs were stored. Run the first pipeline with `wfc run-pipeline --no-archive`, then the pipeline that references it, then `wfc cache archive`; a later rerun of the second pipeline fails again.
-- **A reference to a cache-hit run is refused as a run with no outputs.** Reference the run it reused instead (`wfc show-run` says `cache hit of run N`).
+- **A pipeline that references runs of an earlier pipeline fails before any step runs** with `MissingInputException`, naming files under `.wfc/runs/<id>/_workdir/`, once those runs' outputs are archived (`wfc run-pipeline` archives by default). Run the first pipeline with `wfc run-pipeline --no-archive`, then the pipeline that references it, then `wfc cache archive`. A later rerun of the second pipeline fails again; to rerun it, export the outputs it reads (`wfc export`), register them as samples and feed it from those, and tell the user wfc then no longer records which runs made them.
+- **A reference to a cached run is refused** (`Reference '<name>' is invalid for run <id> …; re-run that step and select the new run.`); re-running gives another cached run. Reference the run it reused instead (`wfc show-run` says `cache hit of run N`).
 - **`wfc check-pipeline` refuses a node with two inputs** (`only one edge per slot is supported`) when links name the slot with `target_slot`. Name each link's slots with `sourceHandle` and `targetHandle`.
 - **A draft fails with `ModuleNotFoundError` or a missing file** for a helper listed outside the method folder (`helpers: [../shared/x.py]`). While it is a draft, keep a copy of the helper in the method folder.
 - **A pipeline node with `"version": "draft"` and a relative `"folder"` is refused.** Leave `"folder"` out.
-- **A node left at `"version": "draft"` runs the draft without a warning.** Remove the draft pins before a final run and check none is left.
-- **A draft pipeline's summary says `Total runs: 0`** although its steps ran: they are draft runs, listed by `wfc runs` and the canvas History.
-- **`wfc run-pipeline` with uncommitted changes starts, then fails its steps** and leaves failed runs in History. Commit first; `wfc doctor` shows the tree's state.
-- **`wfc show-run` can list a stored output at a path that does not exist**, and a cache hit's log paths do not exist. `wfc export --run <id> --slot <slot> --path` gives the real file; a cache hit's logs are the source run's.
+- **A node left at `"version": "draft"` runs the draft without a warning.** Before a final run, search the pipeline file for `"version": "draft"` and remove each one.
+- **After a `wfc try` is killed (a closed terminal, a crash), the next try or run of that draft is refused as still in progress** (`… draft run is still in progress in pipeline <name>: wait for it to end, or cancel it, then run again.`), and `wfc cancel` does not close it. `wfc delete-draft <module>.<method> --outputs-only` removes that stuck draft run and its results and keeps the draft; ask the user first, since it shows what it deletes.
+- **A pipeline that runs drafts reports `Total runs: 0`** although its steps ran: they are draft runs, listed by `wfc runs` and the canvas History.
+- **`wfc run-pipeline` with uncommitted changes starts, then fails each step** (`Working tree has uncommitted changes to tracked files — commit before running.`) and leaves failed runs in History. Commit first; `wfc doctor` says whether there are uncommitted changes.
+- **`wfc show-run` can give an archived output a path that does not exist**, and a cached run's log paths do not exist. `wfc export --run <id> --slot <slot> --path` gives the real file; a cached run's logs are those of the run it reused.
 - **Registering a cloned conda env from Windows or macOS fails** (`Bad expected access`). Never copy an env with `conda create --clone`; build the copy from the packages it asked for, as the **creating-a-wfc-method** skill describes.
-- **`wfc register-env --dry-run` refuses an installed env.** Register it; it shows each phase and keeps a log.
+- **`wfc register-env --dry-run` refuses an env the user already has** (`conda:<env>`). Register it; it shows each phase and keeps a log.
 
 ## If wfc itself seems wrong
 
-Check the known issues above first: one of those is not a new bug, so use its workaround and say so, and don't offer to file it.
+Check the known issues above first. If it matches one, it is a known bug: use its workaround, say so, and don't offer to file it.
 
 Only wfc's own behaviour counts as a wfc bug: a wfc traceback or crash, a result that contradicts the docs or `--help` for the installed version, or an error that doesn't say what to do. An error from the user's script, Docker not running, or an env that isn't registered is setup: say so and point to `wfc doctor`. Something unintuitive that works as documented is a rough edge, not a bug.
 

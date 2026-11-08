@@ -168,6 +168,33 @@ def test_cancel_endpoint_idempotent_on_terminal_pipeline(
     assert res2.json()["noop"] is True
 
 
+def test_cancel_endpoint_stops_the_pipelines_containers(
+    client, db_engine, cancel_project, monkeypatch,
+):
+    """Case 3 through the canvas: the cancel route stops the containers
+    carrying the pipeline's and the project's labels, and only those, and the
+    running row ends cancelled."""
+    from tests.fixtures.fakes import fake_container_daemon
+    from wfc.environments import container_labels
+
+    pipeline_id = "p-cancel-containers"
+    root = cancel_project.project.root
+    run_id = claimed_run(root, monkeypatch=monkeypatch, method=CANCEL_METHOD,
+                         module=CANCEL_MODULE, sample=CANCEL_SAMPLE,
+                         pipeline_id=pipeline_id).run_id
+    daemon = fake_container_daemon(monkeypatch)
+    step = daemon.start(container_labels(root, pipeline_id=pipeline_id, run_id=str(run_id)))
+    other = daemon.start(container_labels(root, pipeline_id="p-other", run_id="9"))
+
+    res = client.post(f"/api/workflow/cancel/{pipeline_id}")
+
+    assert res.status_code == 200, res.text
+    assert daemon.killed == [step]
+    assert list(daemon.running) == [other]
+    with Session(db_engine) as session:
+        assert session.exec(select(Run).where(Run.id == run_id)).one().status == "cancelled"
+
+
 def test_cancel_endpoint_kills_live_subprocess_tree(client):
     """Fast unit-level check that the cancel endpoint terminates the
     parent ``proc`` registered in ``_active_jobs``.

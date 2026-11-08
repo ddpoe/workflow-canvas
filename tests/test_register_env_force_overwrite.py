@@ -67,7 +67,7 @@ def test_register_env_force_overwrites_existing(tmp_path, monkeypatch, capsys):
     (tmp_path / "pixi.lock").write_text("version: 6\n", encoding="utf-8")
 
     new_digest = "b" * 64
-    stub_docker_build(monkeypatch, lambda d, t: None)
+    stub_docker_build(monkeypatch, lambda d, t, **kwargs: None)
     stub_docker_image_content(monkeypatch)
     stub_docker_image_inspect(monkeypatch, f"sha256:{new_digest}")
 
@@ -156,7 +156,7 @@ def test_register_env_force_lists_the_methods_whose_newest_version_uses_it(
     )
     project = build_project(scenario, root=git_project, monkeypatch=monkeypatch)
     root = project.root
-    stub_docker_build(monkeypatch, lambda d, t: None)
+    stub_docker_build(monkeypatch, lambda d, t, **kwargs: None)
     stub_docker_image_content(monkeypatch)
     stub_docker_image_inspect(monkeypatch, f"sha256:{'d' * 64}")
     envs_mod.register(name=OTHER_ENV, backend="byo",

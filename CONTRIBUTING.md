@@ -118,6 +118,19 @@ maintainer carries the change over to the source.
    pass.
 4. Open a pull request that describes what changed and why, and links the issue.
 
+CI runs on every pull request: the tests on Linux, lint and type checks, the
+`wfc-client` and Canvas tests, and the docs build. The full run on Linux, macOS and
+Windows happens before each release.
+
+### How a pull request lands
+
+This repository is the published copy of Workflow Canvas: development happens in a
+private repository, and each release copies the code here. So a pull request is not
+merged here directly. The maintainer applies it to the development repository, it
+ships in the next release, and the pull request is closed with a note naming that
+release. You are credited as a co-author of the commit (`Co-authored-by:`) and in the
+[changelog](CHANGELOG.md).
+
 ## License
 
 By contributing, you agree that your contributions are licensed under the

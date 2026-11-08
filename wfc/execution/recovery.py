@@ -584,7 +584,8 @@ class CancelOutcome:
 
 @workflow(purpose="Cancel a pipeline through its record: set the cancel flag "
                   "before taking the close-out lock, then kill the engine's "
-                  "process tree when its identity matches and cancel the "
+                  "process tree when its identity matches, ask Environments to "
+                  "stop the pipeline's labelled containers, and cancel the "
                   "running rows for the user; then, only when the owner is "
                   "gone, walk with user, release and remove the record",
           inputs="project root, pipeline id",
@@ -642,7 +643,18 @@ def cancel_recorded_pipeline(project_root: Path | str, pipeline_id: str) -> Canc
                 print(f"[cancel] killing pipeline {pipeline_id}'s engine raised: "
                       f"{exc!r}", file=sys.stderr)
 
-        口 = Step(step_num=4, name="Cancel the running rows for the user",
+        # After the kill, whether it raised or found nothing: a step's
+        # container outlives the engine that started it. A stop that cannot
+        # finish is printed and the cancel carries on.
+        from ..environments import container_labels, stop_containers
+
+        口 = AutoStep(step_num=4, name="Stop the pipeline's containers")
+        stopped = stop_containers(container_labels(project_root, pipeline_id=pipeline_id))
+        if stopped.error is not None:
+            print(f"[cancel] pipeline {pipeline_id}'s containers may still be "
+                  f"running: {stopped.error}", file=sys.stderr)
+
+        口 = Step(step_num=5, name="Cancel the running rows for the user",
                  purpose="cancel_pipeline flips each running row to cancelled "
                          "with the user reason and removes the samples the "
                          "pipeline restored")
@@ -652,7 +664,7 @@ def cancel_recorded_pipeline(project_root: Path | str, pipeline_id: str) -> Canc
                        and probe_process(record.owner) is ProcessState.ALIVE)
         closed: CloseOut | None = None
         if not owner_alive:
-            口 = AutoStep(step_num=5, name="Owner gone: close out with the user reason")
+            口 = AutoStep(step_num=6, name="Owner gone: close out with the user reason")
             closed = close_out_pipeline(project_root, pipeline_id, user_cancelled=True)
         return CancelOutcome(pipeline_id=pipeline_id, had_record=record is not None,
                              engine_killed=killed, runs_cancelled=flipped,

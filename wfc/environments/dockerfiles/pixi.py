@@ -13,12 +13,19 @@ Recipe:
   WORKDIR /opt                                    # pixi reads pixi.toml from cwd
   COPY pixi.toml pixi.lock /opt/
   RUN --mount=type=cache,target=/root/.cache/rattler \
-      pixi install --locked --environment <env>   # tool-pinned env materialization
+      pixi install --locked --environment <env> \
+      && chmod -R a+rX /opt/.pixi/envs/<env>      # pair w/ --user
   COPY pip-freeze.txt /opt/                       # only with a freeze
   RUN --mount=type=cache,target=/root/.cache/pip \
       /opt/.pixi/envs/<env>/bin/python -m pip install --no-deps -r /opt/pip-freeze.txt  # only with a freeze
-  RUN chmod -R a+rX /opt/.pixi/envs/<env>         # pair w/ --user
   <the shared tail>                               # dockerfiles.tail
+
+The build runs as the base's root. The install ``RUN`` ends by giving every
+user read access to the env (search access on directories), for a step's
+``--user <uid>:<gid>``. The chmod belongs there: it touches only files that
+``RUN`` just wrote, while a later ``RUN`` over the whole env copies every
+file into a new layer and can take minutes. The pip layer's files are
+written at the default umask and are readable without a second chmod.
 
 The `--no-deps` pip layer runs AFTER `pixi install --locked` so the
 locked env establishes the dep graph; the freeze layer reconstructs the
@@ -134,7 +141,7 @@ def env_dir_path(env_name: str) -> str:
     pixi materializes the env under the project-relative ``.pixi/envs/``
     tree: ``/opt/.pixi/envs/<env_name>``. Verified empirically against the
     prefix-dev pixi base image (2026-07-21). This is the single source of
-    truth for that layout — the generator's pip stage, the chmod stage,
+    truth for that layout — the generator's pip stage, the install's chmod,
     and the dispatch-time interpreter default
     (:func:`wfc.environments.default_python_for_backend`) all derive from it.
 
@@ -185,9 +192,9 @@ def generate(
         Dockerfile text as a single string ending with a trailing newline.
     """
     # pixi installs envs under <cwd>/.pixi/envs/<env_name>; with WORKDIR
-    # /opt that is /opt/.pixi/envs/<env_name>. chmod that subtree so a
-    # --user-mismatched runtime can read every file (pair with the
-    # `--user <uid>:<gid>` flag dispatch passes to docker run).
+    # /opt that is /opt/.pixi/envs/<env_name>. The install RUN chmods that
+    # subtree so a --user-mismatched runtime can read every file (pair with
+    # the `--user <uid>:<gid>` flag dispatch passes to docker run).
     env_dir = env_dir_path(env_name)
     base = base_image if base_image is not None else PIXI_BASE
     # The python inside the pixi env is what runs the --no-deps freeze.
@@ -205,12 +212,11 @@ def generate(
         "",
         (
             "RUN --mount=type=cache,target=/root/.cache/rattler "
-            f"pixi install --locked --environment {env_name}"
+            f"pixi install --locked --environment {env_name} && "
+            f"chmod -R a+rX {env_dir}"
         ),
         "",
         *_pip_layers(pip_freeze_content, env_python),
-        f"RUN chmod -R a+rX {env_dir}",
-        "",
     ]
     return finish_recipe(lines)
 

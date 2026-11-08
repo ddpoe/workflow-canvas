@@ -346,7 +346,7 @@ def test_default_groups_other_than_dev_are_warned_and_not_installed(
     stub_binary_lookup(monkeypatch, uv=UV_ON_PATH)
     calls: list = []
     fake_subprocess_run(monkeypatch, _recording_export(calls), only="uv")
-    stub_docker_build(monkeypatch, lambda path, tag: None)
+    stub_docker_build(monkeypatch, lambda path, tag, **kwargs: None)
     stub_docker_image_inspect(monkeypatch, "sha256:" + "c" * 64)
     stub_docker_image_content(monkeypatch)
 
@@ -462,7 +462,7 @@ def test_a_uv_env_records_requirements_groups_extras_and_the_venv_interpreter(
     stub_binary_lookup(monkeypatch, uv=UV_ON_PATH)
     fake_subprocess_run(monkeypatch, _recording_export([], exported), only="uv")
     builds: list = []
-    stub_docker_build(monkeypatch, lambda path, tag: builds.append(path))
+    stub_docker_build(monkeypatch, lambda path, tag, **kwargs: builds.append(path))
     stub_docker_image_inspect(monkeypatch, "sha256:" + "c" * 64)
     stub_docker_image_content(monkeypatch)
 

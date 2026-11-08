@@ -113,4 +113,5 @@ def test_the_solve_recipe_writes_the_list_before_any_pip_layer():
     export = text.index(f"micromamba env export -n base --explicit > {IMAGE_EXPLICIT_LIST_PATH}")
     pip = text.index("pip install --no-deps -r /opt/pip-freeze.txt")
     assert install < export < pip
-    assert text.rindex("USER root", 0, export) > install
+    # The export runs as root: the last user switch before it is to root.
+    assert text.rindex("USER ", 0, export) == text.rindex("USER root", 0, export)

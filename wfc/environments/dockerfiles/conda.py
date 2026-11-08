@@ -11,14 +11,15 @@ Recipe:
   # syntax=docker/dockerfile:1.4
   FROM <MICROMAMBA_BASE>                          # digest-pinned
   COPY explicit-list.txt /opt/
+  USER root                                       # the installs run as root
   RUN --mount=type=cache,target=/opt/conda/pkgs \
-      micromamba install -y -n base -f /opt/explicit-list.txt
+      micromamba install -y -n base -f /opt/explicit-list.txt \
+      && find /opt/conda -path /opt/conda/pkgs -prune \
+         -o ! -type l -exec chmod a+rX {} +       # pair w/ --user
   COPY pip-freeze.txt /opt/
   ARG MAMBA_DOCKERFILE_ACTIVATE=1                 # base env's pip on PATH
   RUN --mount=type=cache,target=/root/.cache/pip \
       pip install --no-deps -r /opt/pip-freeze.txt
-  USER root                                       # /opt/conda is root-owned
-  RUN chmod -R a+rX <env_dir>                     # pair w/ --user
   USER $MAMBA_USER                                # restore base default user
   <the shared tail>                               # dockerfiles.tail
 
@@ -26,13 +27,24 @@ The conda install runs FIRST so the explicit list establishes the
 dep graph; the freeze runs `--no-deps` so the resolver isn't allowed to
 override what the explicit list pinned.
 
-The chmod stage is bracketed by USER directives: the micromamba base
-runs builds as its non-root default user (``$MAMBA_USER``, an ENV the
-base defines), but ships ``/opt/conda`` and ``/opt/conda/conda-meta``
-root-owned — writable, yet ``chmod`` requires *ownership*, so the
-unbracketed layer exits 1 and fails every conda build. Root runs the
-chmod; the bracket then restores the base's default user so the image's
-runtime user contract is unchanged.
+The installs run as root, between two USER directives. The micromamba
+base runs builds as its non-root default user (``$MAMBA_USER``, an ENV the
+base defines) but ships ``/opt/conda`` root-owned, and the package cache
+mount is root-owned too: as ``$MAMBA_USER`` micromamba cannot write the
+mount, falls back to ``~/.mamba/pkgs`` and leaves every package tarball in
+the image, and ``chmod`` over the root-owned tree fails, since it requires
+ownership. As root, the install fills the mount and its own ``RUN`` ends by
+giving every user read access to the env (search access on directories)
+for a step's ``--user <uid>:<gid>``. The chmod belongs in the install
+``RUN``: there it touches only files that ``RUN`` just wrote, in well under
+a second, while a later ``RUN`` over the whole env copies every file into
+a new layer and takes minutes even on a small env. It skips the
+mounted cache, which is not part of the image and which other builds may
+be writing, and symbolic links, whose targets it reaches anyway. The pip
+set is installed after it as root too, at the default umask, so its files
+are readable without a second chmod. The closing ``USER $MAMBA_USER``
+restores the base's default user, so the image's runtime user is
+unchanged; the env tree itself is root-owned.
 
 The micromamba and pip install RUNs are deliberately separate (the
 chained `&&` form would defeat the layer cache); the COPY pair is split
@@ -62,11 +74,15 @@ from .tail import finish_recipe
 # empirically against mambaorg/micromamba (2026-07-18): ``micromamba env
 # list`` reports base at ``/opt/conda`` (== MAMBA_ROOT_PREFIX) and NO
 # ``/opt/conda/envs`` directory exists — installs via ``-n base`` land
-# directly under ``/opt/conda``. Both the chmod stage below and the
+# directly under ``/opt/conda``. Both the install layer's chmod below and the
 # dispatch-time interpreter default
 # (:func:`wfc.environments.default_python_for_backend`) derive from these.
 CONDA_ENV_DIR = "/opt/conda"
 CONDA_ENV_PYTHON = f"{CONDA_ENV_DIR}/bin/python"
+#: micromamba's package cache under the env root: the install layers mount a
+#: BuildKit cache here, so packages persist across builds and stay out of the
+#: image.
+CONDA_PKGS_DIR = f"{CONDA_ENV_DIR}/pkgs"
 
 
 def generate(
@@ -95,10 +111,6 @@ def generate(
     Returns:
         Dockerfile text as a single string ending with a trailing newline.
     """
-    # micromamba's base env lives at /opt/conda itself in the mambaorg image
-    # (installs go to `-n base`; there is no /opt/conda/envs/<name> tree).
-    # chmod the real env tree so --user-mismatched runtimes can read it.
-    env_dir = CONDA_ENV_DIR
     base = base_image if base_image is not None else MICROMAMBA_BASE
 
     lines = [
@@ -107,13 +119,13 @@ def generate(
         "",
         "COPY explicit-list.txt /opt/",
         "",
-        (
-            "RUN --mount=type=cache,target=/opt/conda/pkgs "
-            "micromamba install -y -n base -f /opt/explicit-list.txt"
-        ),
+        "USER root",
+        "",
+        _install_run("micromamba install -y -n base -f /opt/explicit-list.txt"),
         "",
         *_pip_layers(pip_freeze_content),
-        *_permissions_layers(env_dir),
+        "USER $MAMBA_USER",
+        "",
     ]
     return finish_recipe(lines)
 
@@ -137,12 +149,14 @@ def generate_solve(
     A conda env from a host that is not linux-64 cannot install its own
     explicit list, so this recipe installs the pinned spec staged as
     :data:`SOLVE_SPEC_FILENAME` with micromamba, which solves it for the
-    image's platform from the spec's channels. Right after the solve, before
-    any pip layer, a root ``RUN`` writes ``micromamba env export -n base
+    image's platform from the spec's channels, and its ``RUN`` ends with the
+    same chmod as :func:`generate`'s install. Right after the solve, before
+    any pip layer, a ``RUN`` writes ``micromamba env export -n base
     --explicit`` (a ``# platform: linux-64`` header, ``@EXPLICIT`` and one
     ``url#md5`` line per package) to :data:`IMAGE_EXPLICIT_LIST_PATH`. The
-    pip set follows with ``--no-deps``, then the permissions pass and the
-    shared tail, as in :func:`generate`.
+    pip set follows with ``--no-deps``. Every ``RUN`` runs as root and the
+    recipe ends as ``$MAMBA_USER`` before the shared tail, as in
+    :func:`generate`.
 
     The list read back from that path is what the env records; the build
     context is then rewritten to :func:`generate`'s recipe over that list,
@@ -166,24 +180,20 @@ def generate_solve(
         "",
         f"COPY {SOLVE_SPEC_FILENAME} /opt/",
         "",
-        (
-            "RUN --mount=type=cache,target=/opt/conda/pkgs "
-            f"micromamba install -y -n base -f /opt/{SOLVE_SPEC_FILENAME}"
-        ),
-        "",
-        # /opt is root-owned; the list is written outside the env tree, as
-        # root, before pip can add packages the conda export does not know.
         "USER root",
         "",
+        _install_run(f"micromamba install -y -n base -f /opt/{SOLVE_SPEC_FILENAME}"),
+        "",
+        # The list is written outside the env tree (/opt is root-owned),
+        # before pip can add packages the conda export does not know.
         (
             f"RUN mkdir -p {list_dir} && "
             f"micromamba env export -n base --explicit > {IMAGE_EXPLICIT_LIST_PATH}"
         ),
         "",
+        *_pip_layers(pip_freeze_content),
         "USER $MAMBA_USER",
         "",
-        *_pip_layers(pip_freeze_content),
-        *_permissions_layers(CONDA_ENV_DIR),
     ]
     return finish_recipe(lines)
 
@@ -249,27 +259,27 @@ def _pip_layers(pip_freeze_content: str) -> list[str]:
     ]
 
 
-def _permissions_layers(env_dir: str) -> list[str]:
-    """The root-bracketed ``chmod -R a+rX`` over the env tree.
+def _install_run(install_command: str) -> str:
+    """The micromamba install ``RUN``, ending by opening the env for reading.
 
-    The base ships /opt/conda root-owned while builds run as its non-root
-    ``$MAMBA_USER``; chmod requires ownership, so the layer runs as root,
-    then hands back the base's default user.
+    The package cache is mounted at :data:`CONDA_PKGS_DIR`. After the
+    install, the same ``RUN`` adds read access for every user (and search
+    access on directories) to everything under :data:`CONDA_ENV_DIR` except
+    that mount and symbolic links. Run as root (the recipes' ``USER root``
+    precedes it).
 
     Args:
-        env_dir: The env tree to open for reading.
+        install_command: The ``micromamba install`` command line.
 
     Returns:
-        The recipe lines, ending with a blank line.
+        The ``RUN`` line.
     """
-    return [
-        "USER root",
-        "",
-        f"RUN chmod -R a+rX {env_dir}",
-        "",
-        "USER $MAMBA_USER",
-        "",
-    ]
+    return (
+        f"RUN --mount=type=cache,target={CONDA_PKGS_DIR} "
+        f"{install_command} && "
+        f"find {CONDA_ENV_DIR} -path {CONDA_PKGS_DIR} -prune "
+        "-o ! -type l -exec chmod a+rX {} +"
+    )
 
 
 # Conda platform directories (the ``<channel>/<platform>/<file>`` segment of a

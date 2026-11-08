@@ -151,6 +151,56 @@ def test_answering_no_leaves_everything_as_it_was(tmp_project, monkeypatch, proc
     assert engine.poll() is None, "the engine is still running"
 
 
+@pytest.mark.parametrize("engine_state", ["running", "gone"])
+@workflow(purpose="Case 3 through wfc cancel: after the engine kill (also when "
+                  "the kill finds the engine gone), Environments is asked to "
+                  "stop every container carrying the pipeline's and the "
+                  "project's labels; another pipeline's container and another "
+                  "project's stay running, and the rows end cancelled")
+def test_cancel_stops_the_pipelines_containers_after_the_engine_kill(
+        tmp_project, monkeypatch, processes, engine_state):
+    from tests.fixtures.fakes import fake_container_daemon
+    from wfc.environments import container_labels
+
+    pid = f"cli-cancel-containers-{engine_state}"
+    root, engine, _ = _recorded_running(tmp_project, monkeypatch, processes, pid)
+    if engine_state == "gone":
+        engine.kill()
+        engine.wait(timeout=10)
+    daemon = fake_container_daemon(monkeypatch)
+    step = daemon.start(container_labels(root, pipeline_id=pid, run_id="1"))
+    other = daemon.start(container_labels(root, pipeline_id="another", run_id="2"))
+    foreign = daemon.start(container_labels(root / "elsewhere", pipeline_id=pid))
+    engine_ended_at_stop: list[bool] = []
+    daemon.on_call = lambda args: engine_ended_at_stop.append(engine.poll() is not None)
+
+    result = run_cli("cancel", pid, "--yes")
+
+    assert result.returncode == 0, result.stderr
+    assert daemon.killed == [step]
+    assert set(daemon.running) == {other, foreign}
+    assert engine_ended_at_stop and all(engine_ended_at_stop)
+    assert {status for _, _, status, _ in _rows(pid)} == {"cancelled"}
+
+
+def test_a_container_stop_that_fails_is_printed_and_the_cancel_carries_on(
+        tmp_project, monkeypatch, processes):
+    """Docker not answering: the cancel still ends the rows, and says so without a Docker command."""
+    from tests.fixtures.fakes import fake_container_daemon
+
+    pid = "cli-cancel-containers-fail"
+    _recorded_running(tmp_project, monkeypatch, processes, pid)
+    daemon = fake_container_daemon(monkeypatch)
+    daemon.failure = "Cannot connect to the Docker daemon. Is the daemon running?"
+
+    result = run_cli("cancel", pid, "--yes")
+
+    assert result.returncode == 0, result.stderr
+    assert f"pipeline {pid}'s containers may still be running" in result.stderr
+    assert "docker ps" not in result.stderr and "docker kill" not in result.stderr
+    assert {status for _, _, status, _ in _rows(pid)} == {"cancelled"}
+
+
 def test_the_plan_says_an_engine_that_already_ended_is_not_stopped(
         tmp_project, monkeypatch, processes):
     """The plan names the engine as one to stop only while its recorded

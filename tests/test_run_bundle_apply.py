@@ -32,6 +32,7 @@ from tests.harness import Behavior, Scenario, node, selector, wire
 from tests.harness.scenario import DEFAULT_SAMPLE, SELECTOR_ID
 from tests.test_run_bundle_plan import _lineage
 from wfc import layout
+from wfc.environments.argv import without_labels
 from wfc.identity import (
     SampleIdentity,
     UpstreamRunIdentity,
@@ -63,23 +64,34 @@ def _manifest(bundle: Path) -> dict:
 
 
 @workflow(purpose="The argv rendered from a bundled step's invocation, with each mount's "
-                  "host side supplied, is the argv dispatch handed Docker",
+                  "host side supplied, is the argv dispatch handed Docker, less the "
+                  "container labels",
           inputs="One run through production's phases on the stub rung, the launch "
                  "argv the stub kept",
-          outputs="render_argv over the plan's invocation equals the launched argv")
+          outputs="render_argv over the plan's invocation equals the launched argv "
+                  "with its --label pairs removed")
 def test_the_command_rendered_from_the_invocation_is_the_command_dispatch_ran(
     tmp_project, monkeypatch,
 ):
-    """The invocation renders back to the launched argv."""
+    """The invocation renders back to the launched argv, labels aside.
+
+    The launch labels its container (whose it is, so a stop finds it), but
+    labels never enter the invocation record or a bundle's ``command.sh``:
+    they are not part of what the step ran. So the comparison drops them
+    from the launched side; the rendered side is left as the bundle has it.
+    """
     driven = completed_run(tmp_project, monkeypatch=monkeypatch)
     (record,) = driven.observation.runs.values()
     launched = record.dispatch_cmd
     assert launched is not None, "dispatch launched nothing"
+    assert "--label" in launched, "the launch labels its container"
 
     plan = plan_export([driven.run_id])
     invocation = plan.step(driven.run_id).invocation
+    rendered = render_argv(invocation, _hosts(launched))
 
-    assert render_argv(invocation, _hosts(launched)) == launched
+    assert "--label" not in rendered, "labels stay out of the invocation record"
+    assert rendered == without_labels(launched)
 
 
 @workflow(purpose="A bundled step's command.sh names the step, the run, the method "

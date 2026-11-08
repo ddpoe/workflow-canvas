@@ -27,15 +27,14 @@ def test_conda_generate_pip_layer_guard():
         )
         assert "pip install" not in dockerfile, f"freeze={freeze!r}"
         assert "pip-freeze.txt" not in dockerfile, f"freeze={freeze!r}"
-        # The conda layers and the permissions stage are untouched. The
-        # chmod must run as root (the base ships /opt/conda root-owned;
-        # chmod requires ownership) and hand back the base's default
-        # non-root user afterwards.
-        assert "micromamba install -y -n base -f /opt/explicit-list.txt" in dockerfile
+        # The conda install, its chmod, and the hand-back to the base's
+        # default user stay (the rules for them are in
+        # tests/test_recipe_permissions_in_install_run.py).
         assert (
-            "USER root\n\nRUN chmod -R a+rX /opt/conda\n\nUSER $MAMBA_USER"
+            "micromamba install -y -n base -f /opt/explicit-list.txt && find /opt/conda"
             in dockerfile
         ), f"freeze={freeze!r}"
+        assert dockerfile.endswith("USER $MAMBA_USER\n"), f"freeze={freeze!r}"
 
     # Real freeze: pip layers present, verbatim form unchanged.
     dockerfile = conda_gen.generate(

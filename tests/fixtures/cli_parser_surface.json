@@ -881,6 +881,39 @@
       "required": true
     }
   ],
+  "wfc prune-envs": [
+    {
+      "choices": null,
+      "default": false,
+      "dest": "assume_yes",
+      "nargs": 0,
+      "option_strings": [
+        "--yes"
+      ],
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": false,
+      "dest": "dry_run",
+      "nargs": 0,
+      "option_strings": [
+        "--dry-run"
+      ],
+      "required": false
+    },
+    {
+      "choices": null,
+      "default": "==SUPPRESS==",
+      "dest": "help",
+      "nargs": 0,
+      "option_strings": [
+        "-h",
+        "--help"
+      ],
+      "required": false
+    }
+  ],
   "wfc push-env": [
     {
       "choices": null,

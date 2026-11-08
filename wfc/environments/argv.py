@@ -34,7 +34,7 @@ GPU plumbing:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 
@@ -137,9 +137,36 @@ def _rendered_mounts(backend: str, project_root: str | Path,
     return tuple(replace(m, read_only=False) for m in table)
 
 
+def docker_bind_flags(mounts: Sequence[layout.Mount]) -> list[str]:
+    """Render mount-table rows as ``docker run``'s bind flags.
+
+    One ``-v <host>:<container>[:ro]`` per row, in table order, with
+    ``-w /work`` right after the project row. :func:`build_docker_command`
+    and the launch's bind check (:mod:`wfc.environments.bind_check`) both
+    render their binds here, so the check binds exactly what a step does.
+
+    Args:
+        mounts: The rows to bind, as :func:`_rendered_mounts` returns them.
+
+    Returns:
+        The flags, in a fresh list.
+    """
+    flags: list[str] = []
+    for mount in mounts:
+        flags.extend(["-v", layout.bind_spec(mount)])
+        if mount.container == layout.CONTAINER_WORKDIR:
+            flags.extend(["-w", layout.CONTAINER_WORKDIR])
+    return flags
+
+
+#: The flag :func:`build_docker_command` names each container label with.
+_LABEL_FLAG = "--label"
+
+
 @task(purpose="Assemble the docker run argv — --pull never, image ref, project + "
               "DVC-cache bind mounts, the run's code copy bound read-only when "
-              "Docker declares read-only binds, --user uid:gid, optional --gpus")
+              "Docker declares read-only binds, the labels given (whose the "
+              "container is), --user uid:gid, optional --gpus")
 def build_docker_command(
     image_ref: str,
     project_root: str | Path,
@@ -150,12 +177,14 @@ def build_docker_command(
     gid: int,
     gpus: bool = False,
     code_copy: str | Path | None = None,
+    labels: Mapping[str, str] | None = None,
 ) -> list[str]:
     """Assemble the ``docker run --rm --user <uid>:<gid> ...`` argv.
 
     The argv shape is verbatim::
 
-        docker run --rm --pull never --user <uid>:<gid>
+        docker run --rm --pull never [--label <name>=<value> ...]
+                   --user <uid>:<gid>
                    -v <project_root>:/work -w /work
                    -v <dvc_cache_dir>:/dvc-cache
                    [--gpus all]
@@ -195,6 +224,10 @@ def build_docker_command(
             bound last, at its own ``/work`` path, read-only when Docker
             declares read-only binds (:data:`READ_ONLY_BINDS`). ``None``
             binds no copy.
+        labels: The container's labels (``{name: value}``, from
+            :func:`wfc.environments.containers.container_labels`), one
+            ``--label name=value`` each, in the order given; ``None`` gives
+            none. They say whose the container is, so a stop finds it.
 
     Returns:
         argv list ready to pass to :func:`wfc.execution.dispatch._run_method_subprocess`.
@@ -203,17 +236,43 @@ def build_docker_command(
     # uses — with the workdir set on the project mount.
     # --pull never: Docker runs only an image the daemon already holds, so
     # nothing reaches a run without the pre-flight's fingerprint check.
-    cmd: list[str] = ["docker", "run", "--rm", "--pull", "never",
-                      "--user", f"{uid}:{gid}"]
-    for mount in _rendered_mounts("docker", project_root, dvc_cache_dir, code_copy):
-        cmd.extend(["-v", layout.bind_spec(mount)])
-        if mount.container == layout.CONTAINER_WORKDIR:
-            cmd.extend(["-w", layout.CONTAINER_WORKDIR])
+    cmd: list[str] = ["docker", "run", "--rm", "--pull", "never"]
+    for name, value in (labels or {}).items():
+        cmd.extend([_LABEL_FLAG, f"{name}={value}"])
+    cmd.extend(["--user", f"{uid}:{gid}"])
+    cmd.extend(docker_bind_flags(
+        _rendered_mounts("docker", project_root, dvc_cache_dir, code_copy)))
     if gpus:
         cmd.extend(["--gpus", "all"])
     cmd.append(image_ref)
     cmd.extend(list(inner_argv))
     return cmd
+
+
+def without_labels(argv: Sequence[str]) -> list[str]:
+    """Return a ``docker run`` argv with its ``--label <name>=<value>`` pairs removed.
+
+    :func:`build_docker_command` adds a container's labels to the argv
+    dispatch launches, but labels reach neither the invocation record nor
+    a bundle's ``command.sh``: they say whose a container is, not what the
+    step ran. So the launched argv, labels removed, is the argv rendered
+    back from the record. Only the label pairs go; every other flag stays,
+    in order.
+
+    Args:
+        argv: A ``docker run`` argv, as :func:`build_docker_command` built it.
+
+    Returns:
+        The argv without its label flags, in a fresh list.
+    """
+    stripped: list[str] = []
+    rest = iter(argv)
+    for item in rest:
+        if item == _LABEL_FLAG:
+            next(rest, None)
+            continue
+        stripped.append(item)
+    return stripped
 
 
 @task(purpose="Assemble the apptainer exec argv for the cluster path — docker:// "

@@ -4,11 +4,45 @@ Notable changes to Workflow Canvas. The format follows [Keep a Changelog](https:
 
 ## [Unreleased]
 
+## [0.8.0b3] — 2026-11-07
+
+### Upgrading
+- On Windows, keep your project on a local disk. A project on a network drive (a mapped drive such as `R:` or a `\\server\share` path) now gets a warning from `wfc init`, `wfc doctor` and the canvas before a run, because steps running in Docker see an empty folder there. Put the archive on the share instead (`wfc init --archive <path>`).
+- After upgrading, `wfc list-envs` may report things an earlier interrupted run or registration left behind; `wfc prune-envs` clears them.
+
 ### Added
+- `wfc prune-envs` stops and removes what an interrupted run or registration left behind: run containers (including those of a pipeline whose wfc crashed, or a `wfc try` that is gone), containers that were created and never finished, and env builds left running. It lists them and asks first; `--yes` answers for you and `--dry-run` only lists. It also reports how much space unused env images and Docker's build cache take, without removing them.
+- `wfc list-envs` and `wfc doctor` say when there is something for `wfc prune-envs` to clear.
+- `wfc register-env` prints each step as it starts and ends, with its time and a heartbeat while a long step runs, and keeps a log under `.wfc/logs/register-env/` that you can send with an issue.
+- `wfc register-env --from <packages.lock>` takes the package list wfc saved when it registered an env (`.wfc/captures/<name>/<fingerprint>/packages.lock`), the quick way to give another project the same env.
+- Before every run, wfc checks that the project's folders look the same inside a container as on your machine, and stops before any step runs when one comes up empty, naming the folder and the fix. `wfc doctor` shows the check as its `binds` row (whether steps can see the project's folders).
+- The guide has a Known Issues page, with a way around each one.
 - The `wfc` plugin has a third skill, `converting-an-analysis-to-a-wfc-pipeline`, for handing over a whole analysis (a folder of notebooks and scripts, or one large notebook with several steps). It asks which parts belong in wfc now, proposes a map of the steps, envs, samples and wiring for you to approve, drafts every method and the whole pipeline before anything is registered, compares the results with your original's, and registers only when you say yes. It keeps a record in `wfc-intake/`: `conversion.md` for the whole conversion, one file per env (what differs between your machine and the Linux image) and one per method.
 
 ### Changed
 - `creating-a-wfc-method` always keeps its intake record, from the first `wfc try`, with the env differences in `wfc-intake/envs/<env>.md` and a comparison with the original script's outputs when you have them. It is for one script or notebook that is one step; a whole analysis goes to the new skill.
+- Registering a conda env from Windows or macOS no longer copies the whole env a second time to set its permissions: a small env now registers in a few minutes instead of 30 to 60. The skills and the guide give the new times.
+- Ctrl-C while `wfc register-env` reads your env or builds its image stops it with one plain line.
+- The skills know the issues below and work around them for you.
+
+### Fixed
+- Ctrl-C or a cancel, from the terminal or the canvas, now stops the run's container; it used to keep running until the script ended.
+- An interrupted `wfc register-env` no longer leaves its Docker build running.
+
+### Known issues
+Each is on the guide's Known Issues page with its way around, and is planned to be fixed in 0.8.1.
+- A pipeline that reads an earlier pipeline's runs fails with `MissingInputException` once those runs' outputs are archived.
+- A reference to a cached run is refused.
+- `wfc check-pipeline` refuses a node with two inputs when its links use `target_slot`.
+- A draft can't find a helper listed outside its method folder.
+- A draft node with a relative `"folder"` is refused.
+- A node left on `"version": "draft"` runs the draft without a warning.
+- After a `wfc try` is killed, the next try of that draft is refused as still in progress.
+- A pipeline that runs drafts reports `Total runs: 0`.
+- `wfc run-pipeline` with uncommitted changes starts, then fails its steps.
+- `wfc show-run` can give a path that does not exist for an archived output or a cached run's logs.
+- Registering a conda env made with `conda create --clone` fails on Windows and macOS.
+- `wfc register-env --dry-run` refuses an env you already have.
 
 ## [0.8.0b2] — 2026-11-06
 

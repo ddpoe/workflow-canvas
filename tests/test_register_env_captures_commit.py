@@ -33,8 +33,15 @@ from tests.fixtures.fakes import (
     stub_readiness_probes,
 )
 from tests.fixtures.routes import init_test_project
+from wfc.environments import progress
 
 ATTRIBUTES_LINE = ".wfc/captures/** -text"
+
+
+def _refusal(err: str) -> str:
+    """stderr without register-env's phase lines: the refusal it printed."""
+    return "\n".join(line for line in err.splitlines()
+                     if not line.startswith(progress.LINE_PREFIX))
 
 SOURCES = {
     "pixi": {"pixi_lock_content": "version: 6\nenvironments: {}\n",
@@ -418,7 +425,7 @@ def test_re_register_over_a_changed_captures_folder_is_refused(
                      "the record, the folder, the working tree and HEAD are as "
                      "they were")
     assert rc == 1
-    assert out.err.startswith("ERROR: ")
+    assert _refusal(out.err).startswith("ERROR: ")
     printed = (out.err + out.out).replace(str(project), "<project>")
     assert "Traceback" not in printed
     if damage == "lock-edited":
@@ -511,7 +518,7 @@ def test_re_register_over_a_folder_holding_another_list_is_refused(
                      "remedy, no git command; the record, the captures, the "
                      "working tree and HEAD are as they were")
     assert rc == 1
-    assert out.err.startswith("ERROR: ")
+    assert _refusal(out.err).startswith("ERROR: ")
     printed = (out.err + out.out).replace(str(project), "<project>")
     assert "Traceback" not in printed
     assert _lock_differs_lead("tools", fingerprint) in out.err

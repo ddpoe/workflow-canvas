@@ -530,16 +530,18 @@ def run_dispatch(
 @task(purpose="Launch a method in its container and report how it ended: build "
               "the docker argv over Layout's mount table with every container "
               "variable from the one builder, hand the invocation to the "
-              "caller's pre-launch check, start the step log, run, re-check a "
-              "writable code copy and read the exit",
+              "caller's pre-launch check, start the step log, run (stopping "
+              "the run's labelled containers when the wait is interrupted), "
+              "re-check a writable code copy and read the exit",
       inputs="image ref, interpreter and env bin, the host script, the run "
              "directory, the step's WFC_* values, the declared names, the code "
              "copy, the step log's warnings, an optional pre-launch check",
       outputs="success, or the failure ending (changed-since-claim / "
               "launch-failure / method-failed, or the check's own) with its error",
-      critical="Knows no run id: a recorded run's ties to its row (the claim "
+      critical="Knows no run row: a recorded run's ties to its row (the claim "
                "check and the invocation record) arrive as the pre-launch "
-               "check, so the draft step shares this launch without them")
+               "check, so the draft step shares this launch without them; the "
+               "step's WFC_PIPELINE_ID and WFC_RUN_ID only label its container")
 def launch_container(*, image_ref: str, interpreter: str, env_bin: str | None,
                      script: Path, project_root: Path, run_dir: Path,
                      step_env: dict, declared: dict | None, host_env: dict,
@@ -574,7 +576,12 @@ def launch_container(*, image_ref: str, interpreter: str, env_bin: str | None,
     """
     import traceback as _tb
 
-    from ..environments import accepts_read_only_binds, build_docker_command
+    from ..environments import (
+        accepts_read_only_binds,
+        build_docker_command,
+        container_labels,
+        stop_containers,
+    )
     from .container_vars import container_variables
     from .container_vars import env_flags as _env_flags
 
@@ -597,11 +604,17 @@ def launch_container(*, image_ref: str, interpreter: str, env_bin: str | None,
     # path, never translated); the script itself is translated through the
     # same table the binds are rendered from.
     script_in_container = layout.translate_host_path(str(script), mounts)
+    # The container says whose it is (project, pipeline, run; a draft step's
+    # run is its draft ref), so a stop finds it. Labels reach neither the
+    # invocation record nor any cache key.
+    labels = container_labels(project_root,
+                              pipeline_id=step_env.get("WFC_PIPELINE_ID"),
+                              run_id=step_env.get("WFC_RUN_ID"))
     cmd = build_docker_command(
         image_ref=image_ref, project_root=project_root,
         dvc_cache_dir=dvc_cache_dir,
         inner_argv=[interpreter, script_in_container],
-        uid=_uid, gid=_gid, gpus=gpus, code_copy=code_dir,
+        uid=_uid, gid=_gid, gpus=gpus, code_copy=code_dir, labels=labels,
     )
     # Nothing else from the host (PYTHONPATH in particular) crosses the
     # container barrier. A backend that cannot bind the copy read-only binds
@@ -653,18 +666,29 @@ def launch_container(*, image_ref: str, interpreter: str, env_bin: str | None,
             cmd, cwd=str(project_root), env=host_env,
             stdout_log=stdout_log, stderr_log=stderr_log,
         )
-    except Exception as exc:
+    except BaseException as exc:
+        # Ctrl-C (or anything else) ending the wait leaves the container
+        # running: Docker does not stop it when its client goes. Stop what
+        # carries this run's labels, then let an interrupt through as it was.
+        口 = AutoStep(step_num=4, name="Stop the run's containers")
+        stopped = stop_containers(labels)
+        interrupted = not isinstance(exc, Exception)
+        if stopped.error is not None and interrupted:
+            print(f"[wfc] run {step_env.get('WFC_RUN_ID')}'s container may still "
+                  f"be running: {stopped.error}", file=sys.stderr)
+        if interrupted:
+            raise
         return {"ok": False, "ending": "launch-failure",
                 "error_message": str(exc), "error_traceback": _tb.format_exc()}
 
-    口 = AutoStep(step_num=4, name="Re-check a writable copy after the run")
+    口 = AutoStep(step_num=5, name="Re-check a writable copy after the run")
     written = _copy_written_during_run(copy_before, code_dir, copy_entry,
                                        project_root, writable=copy_writable)
     if written is not None:
         return {"ok": False, "ending": "method-failed",
                 "error_message": written, "error_traceback": written}
 
-    口 = Step(step_num=5, name="Read the exit",
+    口 = Step(step_num=6, name="Read the exit",
              purpose="On a non-zero exit, lift the method's real error from "
                      "what it wrote after wfc's warnings")
     if result.returncode != 0:

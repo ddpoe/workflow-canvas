@@ -16,9 +16,16 @@ Recipe:
   RUN uv venv --python /usr/local/bin/python3 /opt/venv
   RUN --mount=type=cache,target=/root/.cache/uv \
       uv pip install --python /opt/venv/bin/python \
-      --require-hashes --no-deps -r /opt/requirements.txt
-  RUN chmod -R a+rX /opt/venv                     # pair w/ --user
+      --require-hashes --no-deps -r /opt/requirements.txt \
+      && chmod -R a+rX /opt/venv                  # pair w/ --user
   <the shared tail>                               # dockerfiles.tail
+
+The build runs as the base's root. The install ``RUN`` ends by giving every
+user read access to the venv (search access on directories), for a step's
+``--user <uid>:<gid>``. The chmod belongs there: a later ``RUN`` over the
+whole venv copies every file into a new layer and can take minutes, while
+in the install ``RUN`` it touches the files that ``RUN`` just wrote and the
+few the ``uv venv`` layer made.
 
 The venv is made from the base's own interpreter, so the image's Python is
 the minor ``.python-version`` pins. ``uv export`` already resolved every
@@ -117,10 +124,9 @@ def generate(
         (
             "RUN --mount=type=cache,target=/root/.cache/uv "
             f"UV_LINK_MODE=copy uv pip install --python {VENV_PYTHON} "
-            f"--require-hashes --no-deps -r /opt/{REQUIREMENTS_FILENAME}"
+            f"--require-hashes --no-deps -r /opt/{REQUIREMENTS_FILENAME} && "
+            f"chmod -R a+rX {VENV_DIR}"
         ),
-        "",
-        f"RUN chmod -R a+rX {VENV_DIR}",
         "",
     ]
     return finish_recipe(lines)

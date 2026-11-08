@@ -21,7 +21,11 @@ launch when the database is unreachable (``DatabaseUnreachableError``).
 ``pipeline.py`` is ``run_pipeline``, the one entry point that runs a
 pipeline document: substitute and load through the composer, refuse the
 pipeline when a named sample's content is unreachable (Registration's
-``preflight_sample_content``, before any run row), prepare the launch, start
+``preflight_sample_content``, before any run row), check the binds a step's
+container will see (``refuse_unseen_binds``, the launch bind check: one short
+container from the first step's image with a step's binds; a bind that comes
+up empty refuses the launch with ``BindsNotVisibleError`` before any run row,
+and a check that cannot run lets the launch go on), prepare the launch, start
 the push worker, hand the pipeline to Orchestration's engine, and close the
 run (the failure sequence raises the engine's message).
 
@@ -47,12 +51,22 @@ every target, Storage's release, the record removed), and cancels one
 through its record (``cancel_recorded_pipeline``).
 
 ``readiness.py`` answers whether a run can start at all: the git, DVC,
-Docker, sample and view probes, each returning a uniform ``CheckResult``, and
-``run_all_checks``, which runs the five in display order. The view probe
-writes a scratch file into each directory it probes and removes it again.
+Docker, disk, sample and view probes, each returning a uniform
+``CheckResult``, and ``run_all_checks``, which runs the six in display order.
+The disk probe warns when the project is on a Windows network drive. The
+view probe writes a scratch file into each directory it probes and removes it
+again.
 ``wfc init``, ``wfc doctor`` and the canvas's run gate share them.
-``env_image_checks`` runs two more rows, the registry and the method
-versions that cannot run, which ``wfc doctor`` prints after them.
+``env_image_checks`` runs four more rows, which ``wfc doctor`` prints
+after them: the registry, the method versions that cannot run, whether a
+step's container sees the project, and what an earlier run or crash left
+running (``check_leftovers``, over Execution's own ``run_liveness``, which
+``wfc prune-envs`` and ``wfc list-envs`` pass to Environments too). That
+liveness counts a crashed pipeline's runs as ended (its record's owner and
+engine both gone: ``judge_liveness`` gives no alive, and ``RunLiveness.
+second_look`` re-reads its heartbeats before ``wfc prune-envs`` stops
+anything), and a running draft step whose recorded process is gone (a dead
+``wfc try``); a pipeline with no record keeps its running rows running.
 ``share_checks`` is ``wfc share``'s read-only checklist of what a
 collaborator will be missing.
 """
@@ -98,14 +112,18 @@ from .pipeline_record import (
 )
 from .readiness import (
     CheckResult,
+    RunLiveness,
+    check_disk,
     check_docker,
     check_dvc,
     check_git,
+    check_leftovers,
     check_registry,
     check_runnable_versions,
     check_samples,
     env_image_checks,
     run_all_checks,
+    run_liveness,
     share_checks,
 )
 from .recovery import (
@@ -149,14 +167,17 @@ __all__ = [
     "PipelineRecordError",
     "ProcessIdentity",
     "ProcessState",
+    "RunLiveness",
     "UnknownPipelineError",
     "Verdict",
     "assess_pipeline",
     "cancel_recorded_pipeline",
     "cancel_requested",
+    "check_disk",
     "check_docker",
     "check_dvc",
     "check_git",
+    "check_leftovers",
     "check_registry",
     "check_runnable_versions",
     "check_samples",
@@ -176,6 +197,7 @@ __all__ = [
     "read_pipeline_record",
     "request_cancel",
     "run_all_checks",
+    "run_liveness",
     "run_pipeline",
     "OneMethodRunRefusedError", "SavedOneMethodPipeline", "run_one_method",
     "save_one_method_pipeline", "params_fingerprint",

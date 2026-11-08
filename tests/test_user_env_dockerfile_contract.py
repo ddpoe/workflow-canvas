@@ -12,16 +12,14 @@ What is asserted here (negatives + the non-root-readable chmod):
   - No `pip install wfc` / `pip install workflow-canvas`.
   - No `COPY wfc/` / `COPY pyproject.toml` (the project source is never copied
     into a user-env image).
-  - For pixi/conda, the recipe's permissions pass is `RUN chmod -R a+rX
-    <env_dir>` at the *backend-native* env prefix (pixi
+  - The recipe's chmod targets the *backend-native* env prefix (pixi
     `/opt/.pixi/envs/{name}` — the env tree pixi materializes under the
     WORKDIR /opt project dir; conda `/opt/conda` — micromamba installs into
     `-n base`, whose prefix IS /opt/conda; there is no /opt/conda/envs/{name}
-    tree in the built image) — the non-root-readable target that pairs with
-    the runtime `--user` flag. For conda the chmod is bracketed
-    by `USER root` / `USER $MAMBA_USER` (the base ships /opt/conda
-    root-owned; chmod requires ownership) — the bracket itself is locked by
-    tests/test_conda_dockerfile_guard.py, not here.
+    tree in the built image; uv `/opt/venv`) — the non-root-readable target
+    that pairs with the runtime `--user` flag. Where that chmod sits (at the
+    end of the install RUN) and which user runs it are locked by
+    tests/test_recipe_permissions_in_install_run.py, not here.
 
 Deliberately NOT re-asserted here (already covered by
 `tests/test_dockerfile_generation.py`): pixi/conda base digest pinning and the
@@ -121,10 +119,14 @@ def test_user_env_dockerfile_is_wfc_free_single_upstream(
     assert "copy wfc " not in lower
     assert "copy pyproject.toml" not in lower
 
-    # The backend-native chmod target (non-root-readable, pairs with --user).
-    # pixi/conda chmod a dir their pixi/micromamba step creates.
-    assert f"RUN chmod -R a+rX {expected_env_dir}" in dockerfile, (
-        f"{backend}: expected `RUN chmod -R a+rX {expected_env_dir}` "
+    # The backend-native chmod target (non-root-readable, pairs with --user):
+    # the tree the backend's install step creates.
+    chmods = [ln for ln in dockerfile.splitlines() if "chmod a+rX" in ln
+              or "chmod -R a+rX" in ln]
+    assert len(chmods) == 1, f"{backend}: expected one chmod line; got {chmods}"
+    chmod = chmods[0].rpartition("&&")[2]
+    assert f" {expected_env_dir} " in f"{chmod} ", (
+        f"{backend}: expected the chmod over {expected_env_dir} "
         f"(non-root-readable env dir, pairs with --user); got:\n{dockerfile}"
     )
 

@@ -543,11 +543,14 @@ def export_requirements(project_dir: Path, *, groups: Sequence[str] = (),
         FileNotFoundError: ``uv`` is not on PATH.
         RuntimeError: ``uv export`` exits nonzero.
     """
+    from . import progress
+
     args = export_args(groups, extras)
     try:
-        result = subprocess.run(args, cwd=project_dir, capture_output=True,
-                                text=True, encoding="utf-8", errors="replace",
-                                timeout=EXPORT_TIMEOUT_S)
+        with progress.host_call("uv export", args):
+            result = subprocess.run(args, cwd=project_dir, capture_output=True,
+                                    text=True, encoding="utf-8",
+                                    errors="replace", timeout=EXPORT_TIMEOUT_S)
     except FileNotFoundError as exc:
         raise FileNotFoundError(
             f"uv executable not found on PATH — cannot export {project_dir}"

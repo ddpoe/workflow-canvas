@@ -96,7 +96,7 @@ def test_dev_loop_reuses_container_runner_helper(tmp_project, monkeypatch):
     calls: list[dict] = []
 
     def _fake_build(image_ref, project_root, dvc_cache_dir, inner_argv,
-                    *, uid, gid, gpus=False):
+                    *, uid, gid, gpus=False, labels=None):
         calls.append({
             "image_ref": image_ref,
             "project_root": Path(project_root),
@@ -105,6 +105,7 @@ def test_dev_loop_reuses_container_runner_helper(tmp_project, monkeypatch):
             "uid": uid,
             "gid": gid,
             "gpus": gpus,
+            "labels": labels,
         })
         return list(sentinel_argv) + list(inner_argv)
 
@@ -141,6 +142,12 @@ def test_dev_loop_reuses_container_runner_helper(tmp_project, monkeypatch):
     exec_call = calls[1]
     assert exec_call["image_ref"] == DAEMON_REF
     assert exec_call["inner_argv"] == ["python", "-c", "print(1)"]
+
+    # A dev-loop container carries the project label and no pipeline or run
+    # label: no stop by a run or a pipeline reaches it.
+    from wfc.environments import PROJECT_LABEL, project_label
+    for call in calls:
+        assert call["labels"] == {PROJECT_LABEL: project_label(proj)}
 
     # The argv handed to subprocess.run must include the per-verb
     # injected flags (-it for shell, -i for exec) spliced after --rm.

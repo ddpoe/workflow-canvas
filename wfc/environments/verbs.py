@@ -19,6 +19,7 @@ arrives as a callable too: the CLI asks it through :mod:`wfc.confirm`.
 
 from __future__ import annotations
 
+import logging
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -31,8 +32,11 @@ from .. import layout
 from ..persistence import project_root as get_project_root
 
 if TYPE_CHECKING:
+    from .leftovers import LeftoverCounts
     from .manifest import EnvRecord
     from .registry import RegistryChip
+
+logger = logging.getLogger(__name__)
 
 
 class _Refused(Exception):
@@ -155,15 +159,43 @@ def env_listing(project_dir: Path, *,
             for name, r in envs_mod.list_envs(project_dir)]
 
 
-def list_envs(*, versions_of: VersionsOf | None = None) -> int:
+def _leftovers_footer(project_dir: Path,
+                      leftovers: Callable[[Path], LeftoverCounts] | None) -> None:
+    """Print list-envs' footer when an earlier run or crash left something running.
+
+    The counts come from *leftovers*: only what there is to stop (the caller
+    passes Execution's liveness in it). Nothing to stop, Docker not
+    answering, or a count that fails prints nothing: the table above stands
+    as it is. A count that fails is logged at debug.
+    """
+    if leftovers is None:
+        return
+    try:
+        counts = leftovers(project_dir)
+    except Exception:  # noqa: BLE001 - the footer never fails the listing
+        logger.debug("list-envs: the leftovers footer could not be counted", exc_info=True)
+        return
+    if counts.containers is None or not counts.to_clear:
+        return
+    print(f"\n{counts.headline()} Run `wfc prune-envs` to see them and {counts.action()}.")
+
+
+def list_envs(*, versions_of: VersionsOf | None = None,
+              leftovers: Callable[[Path], LeftoverCounts] | None = None) -> int:
     """``wfc list-envs``: print every env in ``.wfc/envs.json`` as a table.
 
     The rows are :func:`env_listing`'s; the REGISTRY column says where each
-    env's image is, in the canvas Registry chip's words.
+    env's image is, in the canvas Registry chip's words. When an earlier
+    run or crash left run containers or env builds running, a footer gives
+    the counts and names ``wfc prune-envs``; with Docker not answering
+    there is no footer.
 
     Args:
         versions_of: Reads the method versions recording an env (the caller
             reads Registration); ``None`` counts no older images.
+        leftovers: Returns the project's
+            :class:`wfc.environments.LeftoverCounts` (the caller passes
+            Execution's liveness in it); ``None`` prints no footer.
 
     Returns:
         0 on success; 1 when no project is found or the manifest is unreadable.
@@ -183,6 +215,7 @@ def list_envs(*, versions_of: VersionsOf | None = None) -> int:
     if not listing:
         print("No container envs registered. "
               "Use `wfc register-env` to add one.")
+        _leftovers_footer(project_dir, leftovers)
         return 0
 
     # Fixed-width table: name | backend | container | built_at | registry
@@ -197,6 +230,7 @@ def list_envs(*, versions_of: VersionsOf | None = None) -> int:
     print(fmt.format(*headers))
     for row in rows:
         print(fmt.format(*row))
+    _leftovers_footer(project_dir, leftovers)
     return 0
 
 
@@ -437,10 +471,13 @@ def register_env(
        (``explicit-list.txt`` for conda, ``pixi.lock`` for pixi). For
        pixi, an adjacent ``pixi.toml`` next to the lock file is also
        copied when present. ``--backend`` is required in this mode (no
-       extension sniffing — keeps the contract simple).
+       extension sniffing — keeps the contract simple). The file may be an
+       env's own ``packages.lock``: its pip section is staged as the pip
+       freeze, so the image installs the pip set too; a plain list or lock
+       stages an empty pip freeze.
        :attr:`EnvRecord.source_fingerprint` is recorded here too (from the
-       staged lock / explicit-list, with an empty pip-freeze section), so
-       the package contents are inspectable via ``GET .../packages``.
+       staged lock / explicit-list and the pip freeze), so the package
+       contents are inspectable via ``GET .../packages``.
        For ``--backend uv``, ``--from`` names a uv project directory or its
        ``uv.lock``: :func:`wfc.environments.uv.capture_project` checks the
        project and exports its requirements, with ``--group``/``--extra``
@@ -507,8 +544,25 @@ def register_env(
     staging runs only on the host (the lock checks and ``uv export``), so
     its refusals come before any Docker work.
 
+    Past ``--dry-run``'s return (which opens no log) the registration is
+    reported by :func:`wfc.environments.progress.registration_log`: each
+    phase (the capture and each host call it makes, the staging, the build,
+    off linux-64 the solve build and its copy-out, the resolve, the record,
+    the push, the commit) prints a start and an end line with its time on
+    stderr, a heartbeat names a long phase off a terminal, and the lines,
+    the commands wfc ran and the build's full output go to
+    ``.wfc/logs/register-env/<name>-<UTC time>.log``. The log's path is
+    printed at the end and added to every error. Ctrl-C during the capture
+    (whose command gets the same Ctrl-C), during the build (which
+    :func:`wfc.environments.docker.build` ends) or during the solve build's
+    copy-out (whose container :func:`wfc.environments.docker.copy_out`
+    removes) ends the verb with one plain line naming the log, exit 130,
+    nothing recorded and no captures written. Ctrl-C anywhere else ends as
+    any interrupt does.
+
     Returns:
-        0 on success (the image reference is printed); 1 on any refusal.
+        0 on success (the image reference is printed); 1 on any refusal;
+        130 when Ctrl-C stopped the capture, the build or the copy-out.
     """
     try:
         project_dir = get_project_root()
@@ -533,24 +587,36 @@ def register_env(
 
     # ---- --dry-run early-exit ----
     # Render the Dockerfile only; no staging, no docker, no manifest write.
-    # Rides file mode for pixi/conda (the generators are pure string
-    # functions — the lock/list content is only read by docker at build
-    # time, so nothing needs staging to render).
+    # The --from file is read as the registration reads it, so the recipe
+    # rendered is the one the registration would build; nothing is written
+    # but the Dockerfile.
     if dry_run:
         from .uv import UV_BACKEND as _UV_BACKEND
 
         dry_source: dict = {}
-        if resolved_backend == _UV_BACKEND:
-            # The uv recipe's base is the project's Python minor, which the
-            # host-only checks and export read; nothing is staged.
-            try:
+        try:
+            if resolved_backend == _UV_BACKEND:
+                # The uv recipe's base is the project's Python minor, which
+                # the host-only checks and export read; nothing is staged.
                 if from_path is None:  # _check_register_args requires it
                     raise _Refused("--backend uv requires --from <project dir>")
                 dry_source = _stage_uv_project(Path(from_path).resolve(),
                                                groups, extras)
-            except _Refused as exc:
-                print(f"ERROR: {exc}", file=sys.stderr)
-                return 1
+            elif (from_path is not None
+                  and resolved_backend in ("conda", "pixi")
+                  and Path(from_path).resolve().is_file()):
+                # An env's own packages.lock carries a pip set after the
+                # pip-freeze delimiter: split as the registration splits it,
+                # so the recipe's pip layer shows. A path that is not a file
+                # renders with no pip layer, as before; the registration
+                # itself refuses it.
+                dry_source = _stage_from_path(
+                    backend=resolved_backend,
+                    from_path=Path(from_path).resolve(),
+                )
+        except (_Refused, ValueError, FileNotFoundError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
         return _register_env_dry_run(
             name=name,
             backend=resolved_backend,
@@ -560,64 +626,97 @@ def register_env(
             source=dry_source,
         )
 
-    # ---- Existing name, then Docker: both before any staging but uv's ----
-    try:
-        _refuse_existing_name(name=name, force=force, project_dir=project_dir)
-    except _Refused as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
+    # ---- From here on, phase lines and the log (--dry-run opens none) ----
+    from . import progress
+    from .docker import BuildInterruptedError, CopyOutInterruptedError
 
-    def stage() -> dict:
-        return _stage_source(
-            live=live,
-            spec=spec,
-            backend=resolved_backend,
-            from_path=from_path,
-            image=image,
-            project_dir=project_dir,
-            groups=groups,
-            extras=extras,
-        )
+    with progress.registration_log(project_dir, name) as reporter:
 
-    # A uv project is staged on the host alone (its lock checks and
-    # `uv export`), so its refusals come before Docker is asked.
-    from .uv import UV_BACKEND
+        def refuse(message: str) -> int:
+            reporter.log(message)
+            print(f"{message}{_log_suffix(reporter.log_path)}", file=sys.stderr)
+            return 1
 
-    source: dict | None = None
-    if resolved_backend == UV_BACKEND:
+        def stopped(what: str) -> int:
+            # Ctrl-C before anything is recorded: one plain line naming the
+            # log. The phase's own end line already says it was stopped.
+            line = f"Stopped: {what} was stopped and nothing was recorded."
+            reporter.log(line)
+            print(f"{line}{_log_suffix(reporter.log_path, inline=True)}",
+                  file=sys.stderr)
+            return INTERRUPTED_EXIT
+
+        # ---- Existing name, then Docker: both before any staging but uv's ----
+        try:
+            _refuse_existing_name(name=name, force=force,
+                                  project_dir=project_dir)
+        except _Refused as exc:
+            return refuse(f"ERROR: {exc}")
+
+        def stage() -> dict:
+            with progress.phase("capture"):
+                return _stage_source(
+                    live=live,
+                    spec=spec,
+                    backend=resolved_backend,
+                    from_path=from_path,
+                    image=image,
+                    project_dir=project_dir,
+                    groups=groups,
+                    extras=extras,
+                )
+
+        # A uv project is staged on the host alone (its lock checks and
+        # `uv export`), so its refusals come before Docker is asked; every
+        # other source is captured once Docker can build.
+        from .uv import UV_BACKEND
+
+        docker_first = resolved_backend != UV_BACKEND
+        if docker_first and (docker_message := docker_gate()) is not None:
+            return refuse(docker_message)
         try:
             source = stage()
         except _Refused as exc:
-            print(f"ERROR: {exc}", file=sys.stderr)
-            return 1
-    docker_message = docker_gate()
-    if docker_message is not None:
-        print(docker_message, file=sys.stderr)
-        return 1
+            return refuse(f"ERROR: {exc}")
+        except KeyboardInterrupt:
+            # Ctrl-C during the capture: the capture's command got the same
+            # Ctrl-C and subprocess.run has ended it; the capture writes
+            # nothing, so nothing is recorded or captured.
+            return stopped("the capture")
+        if not docker_first and (docker_message := docker_gate()) is not None:
+            return refuse(docker_message)
 
-    # ---- Full build path ----
-    try:
-        if source is None:
-            source = stage()
-        record = _register_record(
-            name=name,
-            backend=resolved_backend,
-            source=source,
-            base_image=base_image,
-            force=force,
-            project_dir=project_dir,
-            python_override=interpreter,
-            recording_versions=recording_versions,
-            recording_read_error=recording_read_error,
-            push=not no_push,
-        )
-    except _Refused as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
+        # ---- Full build path ----
+        try:
+            record = _register_record(
+                name=name,
+                backend=resolved_backend,
+                source=source,
+                base_image=base_image,
+                force=force,
+                project_dir=project_dir,
+                python_override=interpreter,
+                recording_versions=recording_versions,
+                recording_read_error=recording_read_error,
+                push=not no_push,
+            )
+        except _Refused as exc:
+            return refuse(f"ERROR: {exc}")
+        except BuildInterruptedError:
+            # Ctrl-C during the build: docker.build has ended the build
+            # before raising, and nothing is recorded or captured, since the
+            # record step comes after the build.
+            return stopped("the image build")
+        except CopyOutInterruptedError:
+            # Ctrl-C during the solve build's copy-out: copy_out has removed
+            # its container before raising; the record step comes later.
+            return stopped("the copy-out")
 
-    print(record.container)
-    if dependants:
-        _print_dependants(name, dependants)
+        print(record.container)
+        if dependants:
+            _print_dependants(name, dependants)
+        if reporter.log_path is not None:
+            print(f"Log: {reporter.log_path}", file=sys.stderr)
     return 0
 
 
@@ -849,6 +948,26 @@ def _refuse_existing_name(*, name: str, force: bool, project_dir: Path) -> None:
         refuse_existing_name(load_manifest_for_register(project_dir), name, force)
     except (FileExistsError, ValueError) as exc:
         raise _Refused(str(exc)) from exc
+
+
+#: The exit status of a registration stopped by Ctrl-C (128 + SIGINT).
+INTERRUPTED_EXIT = 130
+
+
+def _log_suffix(log_path: Path | None, *, inline: bool = False) -> str:
+    """Render where a registration's log is, to end an error with.
+
+    Args:
+        log_path: The log, or ``None`` when it could not be created.
+        inline: Put it on the same line (the Ctrl-C line) rather than its own.
+
+    Returns:
+        ``"Log: <path>"`` on a line of its own (or `` (log: <path>)``
+        inline), or ``""``.
+    """
+    if log_path is None:
+        return ""
+    return f" (log: {log_path})" if inline else f"\nLog: {log_path}"
 
 
 def _register_record(
@@ -1083,30 +1202,52 @@ def _stage_uv_project(from_path: Path, groups: Sequence[str],
 def _stage_from_path(backend: str, from_path: Path) -> dict:
     """Read a user-supplied source file and shape it for ``wfc.environments.register``.
 
+    The file is a conda explicit list, a ``pixi.lock``, or an env's own
+    ``packages.lock`` from its captures folder. A ``packages.lock`` is split
+    on :data:`~wfc.environments.packages.PIP_FREEZE_DELIMITER` as
+    :func:`~wfc.environments.packages.parse_packages` splits it: the part
+    before is the explicit list or the pixi lock, the part after is the pip
+    set, staged as a live capture's pip freeze so the recipe's pip layer
+    installs it. A file with no delimiter is the list or lock whole, with an
+    empty pip freeze.
+
     For pixi, an adjacent ``pixi.toml`` next to the lock is also copied
     when present.
+
+    Args:
+        backend: ``--backend``: ``conda`` or ``pixi``.
+        from_path: ``--from``: the resolved path of the file.
+
+    Returns:
+        The source payload: the list or lock, the optional ``pixi.toml`` and
+        the pip freeze.
 
     Raises:
         FileNotFoundError: If *from_path* does not exist.
         ValueError: If *backend* is not pixi or conda.
     """
+    from .packages import PIP_FREEZE_DELIMITER
+
     if not from_path.exists():
         raise FileNotFoundError(f"--from path does not exist: {from_path}")
 
-    source: dict = {}
-    if backend == "conda":
-        source["explicit_list_content"] = from_path.read_text(encoding="utf-8")
-    elif backend == "pixi":
-        source["pixi_lock_content"] = from_path.read_text(encoding="utf-8")
-        sibling_toml = from_path.parent / "pixi.toml"
-        if sibling_toml.exists():
-            source["pixi_toml_content"] = sibling_toml.read_text(encoding="utf-8")
-    else:
+    if backend not in ("conda", "pixi"):
         raise ValueError(
             f"--from is only valid for --backend pixi, conda or uv, not {backend!r}."
         )
-    # pip freeze is empty in file mode — no live env to introspect.
-    source["pip_freeze_content"] = ""
+    lock_part, _sep, pip_part = from_path.read_text(
+        encoding="utf-8").partition(PIP_FREEZE_DELIMITER)
+
+    source: dict = {}
+    if backend == "conda":
+        source["explicit_list_content"] = lock_part
+    else:
+        source["pixi_lock_content"] = lock_part
+        sibling_toml = from_path.parent / "pixi.toml"
+        if sibling_toml.exists():
+            source["pixi_toml_content"] = sibling_toml.read_text(encoding="utf-8")
+    # The pip set of an env's own packages.lock; empty for a plain list or lock.
+    source["pip_freeze_content"] = pip_part
     return source
 
 
@@ -1123,8 +1264,10 @@ def _register_env_dry_run(
 
     Render the Dockerfile and exit before any docker subprocess fires.
     Manifest is NOT mutated, and nothing is staged — the generators are
-    pure string functions; the lock/list content is only read by docker
-    at build time.
+    pure string functions; the list or lock is copied nowhere, since only
+    docker reads it, at build time. The pip layer follows the source's pip freeze, as the
+    registration's does: an env's own ``packages.lock`` renders one for its
+    pip set, a plain list or lock none.
 
     Args:
         name: The env name.
@@ -1132,8 +1275,10 @@ def _register_env_dry_run(
         base_image: The base-image override, or ``None``.
         image: The upstream image, for byo.
         project_dir: The wfc project root.
-        source: The source payload the backend row's generator arguments
-            are read from (a uv project's Python minor); empty otherwise.
+        source: The source payload, read but not staged: the pip freeze
+            (a pixi or conda ``--from`` file split by
+            :func:`_stage_from_path`) and the backend row's generator
+            arguments (a uv project's Python minor); empty for byo.
 
     Returns:
         0 when the Dockerfile was written (its path is printed) or byo has
@@ -1145,11 +1290,14 @@ def _register_env_dry_run(
     if base_image is not None:
         gen_kwargs["base_image"] = base_image
 
-    from .backends import BACKENDS
+    from .backends import BACKENDS, STAGED_PIP_FREEZE
 
     row = BACKENDS.get(backend)
     if row is not None and row.builds_image:
-        gen_kwargs["pip_freeze_content"] = ""
+        # The pip set the registration would stage: an env's own
+        # packages.lock carries one; a plain list or lock, none.
+        gen_kwargs["pip_freeze_content"] = (source or {}).get(
+            STAGED_PIP_FREEZE.source_key, "")
         if row.generator_args is not None:
             gen_kwargs.update(row.generator_args(source or {}))
     elif row is not None:

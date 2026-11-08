@@ -57,6 +57,37 @@ container command lines that run from them.
   :func:`accepts_read_only_binds` (each builder's read-only-bind
   declaration), :func:`daemon_ref` (the image reference Docker is handed for a record)
   and :func:`strip_docker_scheme`.
+- ``bind_check``: the launch's container bind check (:func:`check_binds`,
+  over the host side :func:`host_bind_expectations` measures): one short
+  container from the launch's image, with a step's binds, says whether it
+  sees the project's config file and the cache (:class:`BindCheck`:
+  :data:`BIND_VISIBLE`, :data:`BIND_EMPTY` naming the bind, or
+  :data:`BIND_NOT_RUN`).
+- ``containers``: the containers wfc starts: their labels
+  (:func:`container_labels`: :data:`PROJECT_LABEL`, a short hash of the
+  project root from :func:`project_label`, then :data:`PIPELINE_LABEL` and
+  :data:`RUN_LABEL` for a step; the copy-out's project and creator labels,
+  :func:`wfc.environments.containers.copy_out_labels`), and listing and stopping them by label
+  (:func:`list_containers`, :func:`stop_containers`, bounded and
+  best-effort: a :class:`ContainerStop`).
+- ``build_clients``: the env builds whose client still runs with no wfc
+  process behind it, found from the process table (an
+  :class:`OrphanedBuild`), and ending one: an interrupt to its client, a
+  bounded wait, then its process tree (a :class:`BuildStop`).
+- ``leftovers``: what an earlier crash left, for this project only:
+  ``wfc prune-envs``'s :func:`plan_prune` (a :class:`PrunePlan` of
+  :class:`LeftoverContainer` and :class:`OrphanedBuild` items to stop, the
+  containers wfc made that never finished to remove, plus
+  the env images nothing uses and the build cache's size, counted and kept;
+  it words itself and writes nothing) and :func:`apply_prune` (each item
+  re-checked, then stopped: a container by a kill, an unfinished one by a
+  plain remove, never forced, an orphaned build
+  through ``build_clients``; a :class:`PruneResult`), and
+  :func:`leftover_counts` (the same numbers, a :class:`LeftoverCounts`;
+  stop-only, for ``list-envs`` and ``wfc doctor``, it counts just what a
+  prune would stop or remove, with no image listing and no disk-usage query;
+  :func:`format_size` writes the cache size). The caller passes the run liveness, the project's pipeline ids and
+  the method versions recording each env.
 - ``interpreter``: the container-side interpreter a method script runs
   under: a version's own image's (:func:`version_interpreter`, asked by
   ``(env, fingerprint)``) and each backend's default
@@ -86,7 +117,17 @@ from .argv import (
     daemon_ref,
     strip_docker_scheme,
 )
+from .bind_check import (
+    BIND_EMPTY,
+    BIND_NOT_RUN,
+    BIND_VISIBLE,
+    BindCheck,
+    BindExpectations,
+    check_binds,
+    host_bind_expectations,
+)
 from .build import register
+from .build_clients import BuildStop, OrphanedBuild
 from .captures import (
     CaptureError,
     CaptureMismatchError,
@@ -100,6 +141,17 @@ from .captures import (
     verified_package_list,
 )
 from .check import check_method_env
+from .containers import (
+    PIPELINE_LABEL,
+    PROJECT_LABEL,
+    RUN_LABEL,
+    ContainerQueryError,
+    ContainerStop,
+    container_labels,
+    list_containers,
+    project_label,
+    stop_containers,
+)
 from .docker import local_image_ref, save_image
 from .fingerprint import capture_env_content, resolve_env_fingerprint
 from .gh import (
@@ -121,6 +173,16 @@ from .gh import (
     package_settings_url,
 )
 from .interpreter import default_python_for_backend, version_bin_dir, version_interpreter
+from .leftovers import (
+    LeftoverContainer,
+    LeftoverCounts,
+    PrunePlan,
+    PruneResult,
+    apply_prune,
+    format_size,
+    leftover_counts,
+    plan_prune,
+)
 from .manifest import (
     MANIFEST_FILENAME,
     MANIFEST_SCHEMA_VERSION,
@@ -178,94 +240,120 @@ from .runnable import (
 )
 
 __all__ = [
+    "BIND_EMPTY",
+    "BIND_NOT_RUN",
+    "BIND_VISIBLE",
     "CONNECT_REPOSITORY_STEPS",
-    "MANAGE_ACCESS_SECTION",
-    "PACKAGE_CONNECTED",
-    "PACKAGE_NOT_FOUND",
-    "PACKAGE_OTHER_REPOSITORY",
-    "PACKAGE_UNCONNECTED",
-    "PACKAGE_UNKNOWN",
-    "GhLogin",
-    "GhScopes",
-    "PackageConnection",
-    "gh_login",
-    "gh_scopes",
-    "package_connection",
-    "package_name",
-    "package_page_url",
-    "package_settings_url",
     "IMAGE_BYO_REGISTRY",
     "IMAGE_ELSEWHERE",
     "IMAGE_LOCAL",
     "IMAGE_MISSING",
     "IMAGE_PUSHED",
     "IMAGE_UNKNOWN",
+    "MANAGE_ACCESS_SECTION",
+    "MANIFEST_FILENAME",
+    "MANIFEST_SCHEMA_VERSION",
+    "PACKAGE_CONNECTED",
+    "PACKAGE_NOT_FOUND",
+    "PACKAGE_OTHER_REPOSITORY",
+    "PACKAGE_UNCONNECTED",
+    "PACKAGE_UNKNOWN",
+    "PIPELINE_LABEL",
+    "PIP_FREEZE_DELIMITER",
+    "PROJECT_LABEL",
+    "RUN_LABEL",
+    "BindCheck",
+    "BindExpectations",
+    "BuildStop",
+    "CaptureError",
+    "CaptureMismatchError",
+    "CaptureMissingError",
+    "ContainerQueryError",
+    "ContainerStop",
+    "EnvNotRunnableError",
+    "EnvRecord",
+    "GhLogin",
+    "GhScopes",
     "GitHubRepository",
+    "ImageInfo",
     "ImageState",
+    "LeftoverContainer",
+    "LeftoverCounts",
+    "OrphanedBuild",
+    "PackageConnection",
+    "PrunePlan",
+    "PruneResult",
     "PushItem",
     "PushPlan",
     "PushRefused",
     "PushResult",
+    "accepts_read_only_binds",
+    "apply_prune",
     "apply_push",
+    "build_apptainer_command",
+    "build_docker_command",
+    "capture_env_content",
+    "capture_exists",
+    "capture_files",
+    "capture_remedy",
     "check_base",
+    "check_binds",
+    "check_method_env",
     "chip_label",
     "chip_notes",
+    "container_labels",
+    "daemon_ref",
+    "default_python_for_backend",
+    "delete",
+    "ensure_runnable",
+    "ensure_version_runnable",
+    "env_record_for_spec",
+    "format_size",
+    "get",
+    "gh_login",
+    "gh_scopes",
     "github_repository",
+    "has_package_list",
+    "host_bind_expectations",
+    "image_info",
     "image_repository",
     "image_state",
+    "leftover_counts",
+    "list_containers",
+    "list_envs",
+    "load_manifest",
+    "load_manifest_for_register",
+    "local_image_ref",
+    "package_connection",
+    "package_name",
+    "package_page_url",
+    "package_settings_url",
+    "parse_packages",
+    "plan_prune",
     "plan_push",
     "probe_registry",
     "project_github_repository",
+    "project_label",
     "pullable_ref",
     "push_image",
     "push_name_problem",
     "push_tag",
     "push_target",
     "pushable_envs",
-    "registry_chip",
-    "registry_base",
-    "registry_host",
-    "registry_ref",
-    "unpushable_lines",
-    "MANIFEST_FILENAME",
-    "MANIFEST_SCHEMA_VERSION",
-    "PIP_FREEZE_DELIMITER",
-    "CaptureError",
-    "CaptureMismatchError",
-    "CaptureMissingError",
-    "EnvNotRunnableError",
-    "EnvRecord",
-    "ImageInfo",
-    "capture_exists",
-    "capture_files",
-    "capture_remedy",
-    "has_package_list",
-    "image_info",
-    "verified_package_list",
-    "build_apptainer_command",
-    "build_docker_command",
-    "accepts_read_only_binds",
-    "capture_env_content",
-    "check_method_env",
-    "daemon_ref",
-    "default_python_for_backend",
-    "delete",
-    "ensure_runnable",
-    "ensure_version_runnable",
-    "version_run_ref",
-    "env_record_for_spec",
-    "get",
-    "list_envs",
-    "load_manifest",
-    "local_image_ref",
-    "load_manifest_for_register",
-    "parse_packages",
     "recreate_command",
     "register",
+    "registry_base",
+    "registry_chip",
+    "registry_host",
+    "registry_ref",
     "resolve_env_fingerprint",
     "save_image",
     "save_manifest",
+    "stop_containers",
     "strip_docker_scheme",
+    "unpushable_lines",
+    "verified_package_list",
     "version_bin_dir",
     "version_interpreter",
+    "version_run_ref",
 ]

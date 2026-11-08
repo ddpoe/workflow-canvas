@@ -34,6 +34,7 @@ from .draft import (
 )
 from .lifecycle import freeze_launch_documents
 from .parents import parse_parent_entries
+from .pipeline import BindsNotVisibleError, launch_image, refuse_unseen_binds
 from .pipeline_outcome import (
     discard_pipeline_launch,
     record_pipeline_launch,
@@ -146,8 +147,35 @@ def _feeds_the_sample(document: Mapping[str, Any]) -> bool:
     return bool(document.get("links"))
 
 
+def try_image(document: dict[str, Any], root: Path) -> str | None:
+    """The image a try's draft step runs in, for the launch's bind check.
+
+    The draft preflight has just made the image runnable, but reading it
+    back can still fail (another writer changed the draft's pointer, or its
+    image record cannot be read). That is a refusal like any other before
+    the freeze, never a traceback.
+
+    Args:
+        document: The try's sparse document.
+        root: The project root.
+
+    Returns:
+        The image ref, or ``None`` when the step runs in no container.
+
+    Raises:
+        TryRefusedError: The image cannot be read; nothing was written.
+    """
+    from ..environments import EnvNotRunnableError
+
+    try:
+        return launch_image({}, document, root)
+    except (ValueError, OSError, EnvNotRunnableError) as exc:
+        raise TryRefusedError(f"the draft step's image cannot be read: {exc}") from exc
+
+
 @workflow(purpose="Run wfc try's draft step as a one-node pipeline: build and "
-                  "enrich its document, refuse it through the draft preflight, freeze both forms through the launch's "
+                  "enrich its document, refuse it through the draft preflight "
+                  "and the launch's bind check, freeze both forms through the launch's "
                   "freeze, write its pipeline_runs row, restore the sample, run "
                   "the draft step; then end any running draft step and store "
                   "the outcome, or remove the row when no step ran",
@@ -161,6 +189,11 @@ def run_try(request: TryRequest, root: Path, *,
             on_start: Callable[[], None] | None = None) -> TryOutcome:
     """Run one try end to end.
 
+    Before anything is written the try is refused when its document cannot
+    be built, the draft preflight refuses it, or the launch's bind check
+    (:func:`~wfc.execution.pipeline.refuse_unseen_binds`, step 3) finds
+    that a step's container would see the project or the cache empty.
+
     Args:
         request: The try.
         root: The project root: the process's own (any spelling that
@@ -172,9 +205,11 @@ def run_try(request: TryRequest, root: Path, *,
         How the try ended.
 
     Raises:
-        TryRefusedError: The document cannot be built or enriched, or the
-            draft preflight refuses it (nothing written; the previous
-            draft run stays).
+        TryRefusedError: The document cannot be built or enriched, the
+            draft preflight refuses it, the draft step's image cannot be
+            read, or the launch's bind check finds that a step's container
+            would see the project or the cache empty (nothing written; the
+            previous draft run stays).
         ProjectMismatchError: ``root`` is not the process's project root;
             nothing was written.
         KeyboardInterrupt: The try was interrupted; its draft step was ended
@@ -202,17 +237,24 @@ def run_try(request: TryRequest, root: Path, *,
     except ValueError as exc:
         raise TryRefusedError(str(exc)) from exc
 
-    口 = AutoStep(step_num=3, name="Freeze the documents")
+    image = try_image(sparse, root)
+    try:
+        口 = AutoStep(step_num=3, name="Check the binds a step's container sees")
+        refuse_unseen_binds(root, image)
+    except BindsNotVisibleError as exc:
+        raise TryRefusedError(str(exc)) from exc
+
+    口 = AutoStep(step_num=4, name="Freeze the documents")
     frozen = freeze_launch_documents(root, sparse, enriched)
     pipeline_id = frozen.pipeline_id
 
-    口 = AutoStep(step_num=4, name="Write the launch row")
+    口 = AutoStep(step_num=5, name="Write the launch row")
     record_pipeline_launch(pipeline_id, sparse)
 
     ending = {"status": "failed", "message": "wfc try ended before its step did",
               "cancel_reason": None}
     try:
-        口 = Step(step_num=5, name="Restore the sample",
+        口 = Step(step_num=6, name="Restore the sample",
                  purpose="Only when the sample feeds an input; a sample that "
                          "cannot be read refuses the try before its step")
         if _feeds_the_sample(sparse):
@@ -224,7 +266,7 @@ def run_try(request: TryRequest, root: Path, *,
                     pipeline_id=pipeline_id, returncode=1,
                     refusal=f"sample '{request.sample}' cannot be read: {exc}")
 
-        口 = AutoStep(step_num=6, name="Run the draft step")
+        口 = AutoStep(step_num=7, name="Run the draft step")
         rc = run_draft_step(request.method, request.sample, "default",
                             pipeline_id=pipeline_id, document=enriched,
                             parent_run_ids=request.parent_entries,
@@ -236,10 +278,10 @@ def run_try(request: TryRequest, root: Path, *,
                   "cancel_reason": CANCEL_REASON_USER}
         raise
     finally:
-        口 = AutoStep(step_num=7, name="End the try's running draft steps")
+        口 = AutoStep(step_num=8, name="End the try's running draft steps")
         end_running_draft_steps(pipeline_id, root=root, **ending)
 
-        口 = Step(step_num=8, name="Settle the pipeline row",
+        口 = Step(step_num=9, name="Settle the pipeline row",
                  purpose="Store the outcome through the status helper after the "
                          "last step write; a try that ran no step removes its "
                          "row, as a refused launch does")
