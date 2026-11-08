@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/tutorials/work-with-an-ai-agent @ d2a67edaf3c1; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/tutorials/work-with-an-ai-agent @ d6c2f495bff8; do not edit -->
 
 # Work with an AI Agent
 
@@ -12,10 +12,11 @@ This tutorial adds the plugin, then walks through a first session with an agent 
 
 ## Add the Plugin
 
-The plugin holds two skills, and the agent uses whichever fits what you ask:
+The plugin holds three skills, and the agent uses whichever fits what you ask:
 
 - **using-wfc**: working with wfc: its model, its commands, setting up a project, running pipelines and reading their results, and working out why something failed.
 - **creating-a-wfc-method**: bringing a script into wfc as a method, trying it as a draft before anything is registered.
+- **converting-an-analysis-to-a-wfc-pipeline**: handing over a whole analysis, a folder of notebooks and scripts, and getting back a pipeline you approved step by step, with a record of every change ([Convert an Analysis into a Pipeline](convert-an-analysis.md)).
 
 Where the agent runs on your computer, it runs `wfc` for you. A chat runs on the provider's servers: it cannot see your project or run `wfc`, but it answers questions about wfc and gives you the commands to run yourself. For a chat, download the plugin for this version of the docs and upload it as the tables below say:
 
@@ -54,7 +55,7 @@ codex plugin add wfc@workflow-canvas
 
 ### Other agents
 
-The skills are plain folders, each with a `SKILL.md`. If your agent reads skills in that format, unzip wfc-plugin.zip and copy the folders under `skills/` into its skills folder; otherwise, give it the two `SKILL.md` files to read.
+The skills are plain folders, each with a `SKILL.md`. If your agent reads skills in that format, unzip wfc-plugin.zip and copy the folders under `skills/` into its skills folder; otherwise, give it the three `SKILL.md` files to read.
 
 The skills read the documentation for the version of wfc you have installed.
 
