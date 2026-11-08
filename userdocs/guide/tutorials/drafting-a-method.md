@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/tutorials/drafting-a-method @ 29ff67e53e6e; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/tutorials/drafting-a-method @ a5612ce18ecf; do not edit -->
 
 # Draft a Method
 
@@ -10,6 +10,8 @@ You can work with a draft from the command line or in the canvas; both use the s
 
 - [Draft from the Command Line](../how-to/draft-from-the-command-line.md): try a folder on a sample with `wfc try`, look at its outputs, register it.
 - [Draft in the Canvas](../how-to/draft-in-the-canvas.md): make, check and run a draft in a pipeline, then register it.
+
+An AI agent with the wfc plugin works the same way: it tries a draft on your data until it runs, and registers it only when you say yes ([Work with an AI Agent](work-with-an-ai-agent.md)).
 
 ## A New Method or the Next Version
 

@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/reference/method-yaml-schema @ f27e32445270; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/reference/method-yaml-schema @ 75362b014faa; do not edit -->
 
 # method.yaml Schema
 
@@ -187,7 +187,7 @@ helpers:
   - ../shared/plotting.R
 ```
 
-Paths are relative to the method folder and may point elsewhere in the project with `../`. With `helpers:` set, the method is the main script plus the listed files, and registration refuses a method folder that holds any other script file. Each listed file must exist and have a recognized extension.
+Paths are relative to the method folder and may point elsewhere in the project with `../`. With `helpers:` set, the method is the main script plus the listed files, and registration refuses a method folder that holds any other script file. Each listed file must exist; it can be any file, such as a lookup table or a config, and is part of the method's code.
 
 
 ## Worked examples

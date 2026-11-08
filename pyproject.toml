@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "workflow-canvas"
 version = "0.8.0b2"
-description = "Reproducible computational pipelines with containerized methods, content-addressed caching, run lineage, and a visual pipeline builder; compiles to Snakemake"
+description = "An AI-native, visual dry-lab notebook for reproducible analysis: build pipelines in a canvas or with your AI agent, and rerun and check any result"
 authors = ["Dante <dantepoe@noboundssolutions.com>"]
 license = "BSD-3-Clause"
 readme = "README.md"
@@ -19,6 +19,11 @@ keywords = [
   "containers",
   "bioinformatics",
   "scientific-computing",
+  "ai-agents",
+  "claude-code",
+  "codex",
+  "agent-skills",
+  "lab-notebook",
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",

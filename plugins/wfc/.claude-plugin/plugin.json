@@ -2,7 +2,7 @@
   "name": "wfc",
   "displayName": "Workflow Canvas",
   "version": "0.8.0-beta.1",
-  "description": "Skills for working with Workflow Canvas (wfc): set up a project, run and read pipelines, and bring a script into wfc as a method, trying and drafting it before anything is registered.",
+  "description": "Build reproducible analysis pipelines in Workflow Canvas (wfc) with your agent: set up a project, turn your scripts, or a whole analysis, into pipeline steps, run them and read the results, trying each step as a draft and registering nothing until you agree.",
   "author": {
     "name": "Dante Poe",
     "url": "https://github.com/ddpoe"
@@ -10,5 +10,5 @@
   "homepage": "https://workflow-canvas.readthedocs.io/",
   "repository": "https://github.com/ddpoe/workflow-canvas",
   "license": "BSD-3-Clause",
-  "keywords": ["wfc", "workflow-canvas", "pipelines", "reproducibility", "snakemake", "containers"]
+  "keywords": ["wfc", "workflow-canvas", "pipelines", "reproducibility", "snakemake", "containers", "ai-native", "reproducible-analysis"]
 }

@@ -5,24 +5,63 @@
 [![Documentation](https://readthedocs.org/projects/workflow-canvas/badge/?version=stable)](https://workflow-canvas.readthedocs.io/en/stable/)
 [![License: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 
-Workflow Canvas (`wfc`) is a Python tool for reproducible computational pipelines,
-managed from the command line or a browser-based visual Canvas. It is built for
-researchers and computational scientists who need to know exactly which code,
-container, parameters, and inputs produced every result.
+**An AI-native, visual dry-lab notebook for reproducible analysis.**
+
+Workflow Canvas (`wfc`) turns your analysis into a pipeline you can see, and
+guarantees every result in it can be reproduced: its Python backend records the
+exact code, data, settings and software behind each result, so anyone can rerun it
+and check that it matches.
+
+Your AI agent can build the pipeline from your existing scripts and notebooks; you
+can write it yourself, or mix the two. Either way, every result is reproducible.
+
+For researchers, scientists and PhD students who want their analysis organized,
+reproducible, and easy to pass on to others.
 
 ![The Canvas Builder with the demo pipeline wired: three samples fanned across five methods](https://raw.githubusercontent.com/ddpoe/workflow-canvas/main/userdocs/guide/_images/builder-demo-pipeline.png)
 
-Workflow Canvas tracks your methods, their input/output contracts, run lineage, and
-content-addressed caching in a local SQLite database, then compiles pipelines to
-[Snakemake](https://snakemake.readthedocs.io/) Snakefiles so Snakemake handles
-execution, parallelism, and dependency resolution. Every method runs inside a
-container, and every output is stored in a content-addressed archive (DVC), so
-results are reproducible and re-running an unchanged pipeline does no duplicate work.
+## Build it with an AI agent
+
+The `wfc` plugin teaches Claude Code and Codex how Workflow Canvas works. Ask in
+plain words to set up a project, turn one of your scripts into a pipeline step, run
+it, or explain why a run failed. The agent tries each step on your data as a draft,
+shows you every change it made, and registers nothing until you agree. What it
+builds appears in the Canvas, with each step's settings and the results of every run.
+
+In Claude Code (run each line in a terminal):
+
+```bash
+claude plugin marketplace add ddpoe/workflow-canvas
+claude plugin install wfc@workflow-canvas
+```
+
+In Codex:
+
+```bash
+codex plugin marketplace add ddpoe/workflow-canvas
+codex plugin add wfc@workflow-canvas
+```
+
+The plugin has three skills:
+
+- `using-wfc`: working with wfc, from setting up a project to reading a failed run.
+- `creating-a-wfc-method`: bringing one script in as a method.
+- `converting-an-analysis-to-a-wfc-pipeline`: handing over a whole analysis, a
+  folder of notebooks and scripts, and getting back a pipeline you approved step
+  by step, with a record of every change.
+
+Each is a plain folder under `plugins/wfc/skills/`, with a `SKILL.md`, that you can
+copy into either tool's skills folder. For chats on claude.ai or ChatGPT, the desktop app and other
+agents, see
+[Work with an AI Agent](https://workflow-canvas.readthedocs.io/en/latest/tutorials/work-with-an-ai-agent.html).
 
 ## Key Features
 
 | Feature | What it does |
 |---|---|
+| **AI agent plugin** | Skills for Claude Code and Codex that set up a project, turn your scripts or a whole analysis into pipeline steps, run them and explain failures. Nothing is registered until you agree. |
+| **Drafts** | Run a step on your data as often as you like before registering it. Nothing a draft does is recorded. |
+| **Rerun bundles** | Export any result, with its samples and every step that led to it, as one zip that reruns on another computer with Python and Docker and checks each output against yours. |
 | **Core pipeline** | Register modules, methods, and samples; build a pipeline in the Canvas; generate and execute a Snakefile (`wfc run-pipeline`). |
 | **Contracts** | Two-tier validation (module + method) declared in `method.yaml` — wiring errors and missing outputs are caught before a run starts. |
 | **Caching** | A clean-git run gate plus a SHA-256 cache key over code, inputs, parameters, and the resolved container image — unchanged steps are skipped automatically; changing one method re-runs only what it touched. |
@@ -30,6 +69,15 @@ results are reproducible and re-running an unchanged pipeline does no duplicate 
 | **Environments** | Methods run in containers built from a `pixi`, `conda`, or bring-your-own (`byo`) backend via `wfc register-env`; image digests are pinned in `.wfc/envs.json`. |
 | **Parameter sweeps & fan-out** | Sweep parameters, fan out across variants and per-sample overrides, and reuse values with pipeline variables. |
 | **Canvas** | A browser-based UI (`wfc canvas`) with three views: a drag-and-drop Builder, a run-History viewer with lineage and artifacts, and a Registry browser. |
+
+## Under the hood
+
+Workflow Canvas tracks your methods, their input/output contracts, run lineage, and
+content-addressed caching in a local SQLite database, then compiles pipelines to
+[Snakemake](https://snakemake.readthedocs.io/) Snakefiles so Snakemake handles
+execution, parallelism, and dependency resolution. Every method runs inside a
+container, and every output is stored in a content-addressed archive (DVC), so
+results are reproducible and re-running an unchanged pipeline does no duplicate work.
 
 ## Requirements
 
@@ -51,7 +99,7 @@ wfc --help
 
 ## Quick Start
 
-New to Workflow Canvas? Start with the **Getting Started** tutorial in the
+New to Workflow Canvas? Start with the **Your First Pipeline** tutorial in the
 [documentation](#documentation).
 
 For the fastest first look, `wfc demo` populates a freshly initialized project
@@ -61,6 +109,10 @@ with a complete runnable example pipeline and opens it in the Canvas
 ```bash
 wfc init --dir ./demo_project && cd demo_project && wfc demo
 ```
+
+To have an agent do the setup instead, add the plugin
+([Build it with an AI agent](#build-it-with-an-ai-agent)) and ask it:
+`Set up a wfc project here.`
 
 The steps below show the same setup done manually with your own code and data:
 
@@ -104,29 +156,6 @@ Use the **Builder** to assemble pipelines by dragging and wiring method nodes, t
 and the **Registry** to inspect everything registered in the project. See the
 **Use the Canvas** how-to in the documentation for a walkthrough.
 
-## Use wfc with an AI agent
-
-The `wfc` plugin gives Claude Code and Codex two skills: `using-wfc`, for working with
-wfc, and `creating-a-wfc-method`, which brings a script into wfc as a method, trying it
-with `wfc try` and as a draft before anything is registered.
-
-In Claude Code:
-
-```
-/plugin marketplace add ddpoe/workflow-canvas
-/plugin install wfc@workflow-canvas
-```
-
-In Codex:
-
-```bash
-codex plugin marketplace add ddpoe/workflow-canvas
-codex plugin add wfc@workflow-canvas
-```
-
-Each skill is also a plain folder under `plugins/wfc/skills/`, with a `SKILL.md`, that
-you can copy into either tool's skills folder.
-
 ## Project Structure
 
 ```
@@ -155,8 +184,8 @@ archive (default `~/.wfc/archives/<project>`, outside the repo), indexed by
 Full user documentation is published at
 [workflow-canvas.readthedocs.io](https://workflow-canvas.readthedocs.io/en/stable/) and covers:
 
-- **Tutorials** — Getting Started, Exploring the Demo, Authoring a Method Script, Drafting a Method, Registering an Environment, Writing Contracts
-- **How-to** — Registration, the Canvas, Running & Inspecting Results, Sweeping Parameters & Fanning Out
+- **Tutorials** — Your First Pipeline, A Tour of the Demo, Work with an AI Agent
+- **How-to** — Build Your Own Pipeline, Write a Method, Draft a Method, Wire a Pipeline, Run and Inspect Your Pipelines, Share Runs as a Bundle Anyone Can Rerun
 - **Reference** — CLI Reference, Python API (`wfc-client`), `method.yaml` schema, `wf-canvas.toml`
 - **Explanation** — How a Run Executes, Caching & Reproducibility, Project Anatomy, Storage & Provenance
 

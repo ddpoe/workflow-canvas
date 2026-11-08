@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/how-to/build-your-own-pipeline @ 2f5e68631526; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/how-to/build-your-own-pipeline @ 60e8abf5cb39; do not edit -->
 
 # Build Your Own Pipeline
 
@@ -14,6 +14,8 @@ You have run [Your First Pipeline](../tutorials/getting-started.md). These are t
 | 4 | Add your data | `wfc register-sample` | [Register Samples](register-samples.md) |
 | 5 | Wire the steps into a pipeline | the canvas Builder, or a pipeline file | [Wire a Pipeline](wire-a-pipeline.md) |
 | 6 | Run it and look at the results | **Run** in the canvas, or `wfc run-pipeline` | [Run and Inspect Your Pipelines](run-and-inspect.md) |
+
+An AI agent with the wfc plugin can run these steps for you and asks before it registers anything; see [Work with an AI Agent](../tutorials/work-with-an-ai-agent.md). To see the steps done on a whole example analysis, by an agent and by hand, see [Convert an Analysis into a Pipeline](../tutorials/convert-an-analysis.md).
 
 ## Going further
 

@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/tutorials/wfc-demo @ 2400b99377b2; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/tutorials/wfc-demo @ 4950fe4c8956; do not edit -->
 
 # A Tour of the Demo
 
@@ -156,3 +156,5 @@ Nothing you register yourself is removed, because names starting with `__demo__`
 ## Next Steps
 
 To build a pipeline of your own, follow [Your First Pipeline](getting-started.md), then [Write a Method in Python](authoring-a-method-script.md). The demo's scripts under `.wfc/registry/methods/<module>/<name>/` are a second set of worked examples; copy them before you remove the demo.
+
+To bring your own scripts in with an AI agent instead, see [Work with an AI Agent](work-with-an-ai-agent.md).

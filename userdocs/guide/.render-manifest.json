@@ -29,7 +29,7 @@
   },
   "how-to/build-your-own-pipeline.md": {
     "doc_id": "pm_mvp::docs/consumer/how-to/build-your-own-pipeline",
-    "hash": "2f5e68631526"
+    "hash": "60e8abf5cb39"
   },
   "how-to/canvas-hub.md": {
     "doc_id": "pm_mvp::docs/consumer/how-to/canvas-hub",
@@ -117,7 +117,7 @@
   },
   "how-to/write-a-method.md": {
     "doc_id": "pm_mvp::docs/consumer/how-to/write-a-method",
-    "hash": "a74f34a33db6"
+    "hash": "211b09bc86a3"
   },
   "how-to/write-an-r-method.md": {
     "doc_id": "pm_mvp::docs/consumer/how-to/write-an-r-method",
@@ -125,7 +125,7 @@
   },
   "overview/what-is-workflow-canvas.md": {
     "doc_id": "pm_mvp::docs/consumer/overview/what-is-workflow-canvas",
-    "hash": "97227f58aac0"
+    "hash": "d30b57d69245"
   },
   "reference/cli-cache-export.md": {
     "doc_id": "pm_mvp::docs/consumer/reference/cli-cache-export",
@@ -157,11 +157,11 @@
   },
   "reference/method-yaml-schema.md": {
     "doc_id": "pm_mvp::docs/consumer/reference/method-yaml-schema",
-    "hash": "f27e32445270"
+    "hash": "75362b014faa"
   },
   "reference/pipeline-document.md": {
     "doc_id": "pm_mvp::docs/consumer/reference/pipeline-document",
-    "hash": "cba0669fdcb2"
+    "hash": "2cf6902e9757"
   },
   "reference/wf-canvas-toml.md": {
     "doc_id": "pm_mvp::docs/consumer/reference/wf-canvas-toml",
@@ -175,24 +175,28 @@
     "doc_id": "pm_mvp::docs/consumer/tutorials/authoring-a-method-script",
     "hash": "238ce1946465"
   },
+  "tutorials/convert-an-analysis.md": {
+    "doc_id": "pm_mvp::docs/consumer/tutorials/convert-an-analysis",
+    "hash": "f2caf34f5651"
+  },
   "tutorials/drafting-a-method.md": {
     "doc_id": "pm_mvp::docs/consumer/tutorials/drafting-a-method",
-    "hash": "29ff67e53e6e"
+    "hash": "a5612ce18ecf"
   },
   "tutorials/getting-started.md": {
     "doc_id": "pm_mvp::docs/consumer/tutorials/getting-started",
-    "hash": "1910fcf300af"
+    "hash": "7176e61bf472"
   },
   "tutorials/registering-an-environment.md": {
     "doc_id": "pm_mvp::docs/consumer/tutorials/registering-an-environment",
-    "hash": "89c809f43234"
+    "hash": "64d6b84d285a"
   },
   "tutorials/wfc-demo.md": {
     "doc_id": "pm_mvp::docs/consumer/tutorials/wfc-demo",
-    "hash": "2400b99377b2"
+    "hash": "4950fe4c8956"
   },
   "tutorials/work-with-an-ai-agent.md": {
     "doc_id": "pm_mvp::docs/consumer/tutorials/work-with-an-ai-agent",
-    "hash": "df08fc47bf87"
+    "hash": "d2a67edaf3c1"
   }
 }

@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/how-to/write-a-method @ a74f34a33db6; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/how-to/write-a-method @ 211b09bc86a3; do not edit -->
 
 # Write a Method
 
@@ -11,6 +11,8 @@ This page covers what is the same in every language: the contract, registering t
 - [Draft a Method](../tutorials/drafting-a-method.md): run a method folder on your data before you register it, from the command line or in the canvas.
 - [Write a Method in Python](../tutorials/authoring-a-method-script.md)
 - [Write a Method in R](write-an-r-method.md)
+
+Already have a script? An AI agent with the wfc plugin can turn it into a method folder, try it on your data and list each change it made; see [Bring a Script In as a Method](../tutorials/work-with-an-ai-agent.md#bring-a-script-in-as-a-method).
 
 For every `method.yaml` key and its default, see [method.yaml Schema](../reference/method-yaml-schema.md).
 

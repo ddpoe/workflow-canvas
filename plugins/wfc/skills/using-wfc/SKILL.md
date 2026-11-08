@@ -1,6 +1,6 @@
 ---
 name: using-wfc
-description: Use when working in a Workflow Canvas (wfc) project or with the `wfc` command, or asking how wfc works (projects, modules, methods, samples, envs, drafts and versions, caching, provenance, reproducibility), such as setting up a project, registering an environment, sample or method, running a pipeline, reading runs and their outputs, sharing a project, or working out why a wfc command or run failed. To turn a script into a wfc method or change a registered one, use the creating-a-wfc-method skill.
+description: Use when working in a Workflow Canvas (wfc) project or with the `wfc` command, or asking how wfc works (projects, modules, methods, samples, envs, drafts and versions, caching, provenance, reproducibility), such as setting up a project, registering an environment, sample or method, running a pipeline, reading runs and their outputs, sharing a project, or working out why a wfc command or run failed. To turn a script into a wfc method or change a registered one, use the creating-a-wfc-method skill; to turn a whole analysis (several steps) into a pipeline, use converting-an-analysis-to-a-wfc-pipeline.
 ---
 
 # Using wfc
@@ -20,7 +20,7 @@ Workflow Canvas (`wfc`) runs computational pipelines reproducibly: each step run
 
 The working order is: **try or draft, then register, then run, then share.**
 
-Answer a question about how wfc works from this model and the docs page it touches. Once the user asks you to bring a script in, or to change a method, switch to the **creating-a-wfc-method** skill.
+Answer a question about how wfc works from this model and the docs page it touches. Once the user asks you to bring a script in, or to change a method, switch to the **creating-a-wfc-method** skill; for a whole analysis with several steps (a folder of notebooks and scripts, or one large notebook), switch to **converting-an-analysis-to-a-wfc-pipeline**.
 
 ## Commands
 
@@ -56,7 +56,7 @@ Run `wfc <command> --help` for every flag. `wfc --help` does not list some hidde
 
 ## Rules that matter
 
-- **If you cannot run commands** (a chat with no access to the user's computer or project), say so once, then answer from this skill and the docs. Ask the user for `wfc --version` when the answer depends on it, and give each command for the user to run. Never say a command ran when you did not run it.
+- **If you cannot run commands** (a chat with no access to the user's computer or project), say so once, then answer from this skill and the docs. Ask the user for `wfc --version` when the answer depends on it, and give each command for the user to run. When they need files (a method folder, `module.yaml`, a pipeline file), write them in full: as one zip laid out as the project expects if this chat can create files for download, otherwise each in its own block headed with its path. You can still help register an env from its package list (`conda env export` and `pip freeze`, or `pixi.lock`) by giving the commands. Never say a command ran, or that a file works, when you did not see its output.
 - **Methods run in a Linux container, not on this machine.** A path, a package or a tool that exists only on the host is not there when a step runs. Everything a method uses comes from its env or its declared inputs.
 - **Outputs must be declared.** Every output a method saves needs a name under `outputs:` in `method.yaml`, and the script saves each with `ctx.save_artifact("<name>", path)`. Registration refuses a mismatch either way.
 - **Inputs are read-only.** A method writes into its run folder (`ctx.workdir`), never beside its inputs.
@@ -85,7 +85,9 @@ Run `wfc <command> --help` for every flag. `wfc --help` does not list some hidde
    - a uv project: `wfc register-env <name> --backend uv --from <project-dir>`
    - an image of their own: `wfc register-env <name> --backend byo --image docker://<ref>`
 
-   A Python method needs `wfc-client` installed in the env. An R or bash method's env is registered with `--interpreter` set to the interpreter's path inside the container (for example `/opt/conda/bin/Rscript` or `/bin/bash`), since the default is Python.
+   Say how long it takes before starting: a conda env from Windows or macOS can take 30 to 60 minutes, so start it in the background. Use the env the user already has and never modify it; for a new env, recommend pixi (a `pixi.lock` that includes `linux-64` skips the solve) or, for Python-only work, uv. While it builds, follow `wfc register-env`'s own output: when it prints phase lines, a heartbeat line means it is still working. After an interrupted registration, run `wfc list-envs`; when its footer reports leftovers and `wfc prune-envs --help` works (not in 0.8.0b2), suggest `wfc prune-envs`, and pass `--yes` only after the user agrees. Never give the user raw Docker commands.
+
+   A Python method needs `wfc-client` installed in the env; when the user's env lacks it, make a copy with `wfc-client` added and register the copy, as the **creating-a-wfc-method** skill describes. An R or bash method's env is registered with `--interpreter` set to the interpreter's path inside the container (for example `/opt/conda/bin/Rscript` or `/bin/bash`), since the default is Python.
 4. `wfc register-module --name <module> --module-dir src/<module>`, with a one-line `module.yaml` (`description: ...`) in that folder.
 5. Register the data a method will run on: `wfc register-sample --name <name> --source <file or folder>`. Trying a method needs a registered sample.
 6. To bring a script in as a method, use the **creating-a-wfc-method** skill.
@@ -101,7 +103,25 @@ Useful pages under that root: `tutorials/getting-started.html`, `how-to/build-yo
 
 If a page is missing or there is no network, work from this skill and `wfc <command> --help`, which always matches the installed version. Shortly after a pre-release, `/en/latest/` can still show the previous release's pages; when a page disagrees with `--help` or with what the installed wfc prints, the installed wfc is right, and say so to the user.
 
+## Known issues in 0.8.0
+
+These are known wfc bugs in 0.8.0, planned to be fixed in 0.8.1. When `wfc --version` is 0.8.0 (or a 0.8.0 pre-release), use the workaround and tell the user you are doing so; when it is 0.8.1 or later, try the plain way first.
+
+- **A pipeline that references runs of an earlier pipeline fails before any step runs** with `MissingInputException`, naming files under `.wfc/runs/<id>/_workdir/`: those runs' outputs were stored. Run the first pipeline with `wfc run-pipeline --no-archive`, then the pipeline that references it, then `wfc cache archive`; a later rerun of the second pipeline fails again.
+- **A reference to a cache-hit run is refused as a run with no outputs.** Reference the run it reused instead (`wfc show-run` says `cache hit of run N`).
+- **`wfc check-pipeline` refuses a node with two inputs** (`only one edge per slot is supported`) when links name the slot with `target_slot`. Name each link's slots with `sourceHandle` and `targetHandle`.
+- **A draft fails with `ModuleNotFoundError` or a missing file** for a helper listed outside the method folder (`helpers: [../shared/x.py]`). While it is a draft, keep a copy of the helper in the method folder.
+- **A pipeline node with `"version": "draft"` and a relative `"folder"` is refused.** Leave `"folder"` out.
+- **A node left at `"version": "draft"` runs the draft without a warning.** Remove the draft pins before a final run and check none is left.
+- **A draft pipeline's summary says `Total runs: 0`** although its steps ran: they are draft runs, listed by `wfc runs` and the canvas History.
+- **`wfc run-pipeline` with uncommitted changes starts, then fails its steps** and leaves failed runs in History. Commit first; `wfc doctor` shows the tree's state.
+- **`wfc show-run` can list a stored output at a path that does not exist**, and a cache hit's log paths do not exist. `wfc export --run <id> --slot <slot> --path` gives the real file; a cache hit's logs are the source run's.
+- **Registering a cloned conda env from Windows or macOS fails** (`Bad expected access`). Never copy an env with `conda create --clone`; build the copy from the packages it asked for, as the **creating-a-wfc-method** skill describes.
+- **`wfc register-env --dry-run` refuses an installed env.** Register it; it shows each phase and keeps a log.
+
 ## If wfc itself seems wrong
+
+Check the known issues above first: one of those is not a new bug, so use its workaround and say so, and don't offer to file it.
 
 Only wfc's own behaviour counts as a wfc bug: a wfc traceback or crash, a result that contradicts the docs or `--help` for the installed version, or an error that doesn't say what to do. An error from the user's script, Docker not running, or an env that isn't registered is setup: say so and point to `wfc doctor`. Something unintuitive that works as documented is a rough edge, not a bug.
 

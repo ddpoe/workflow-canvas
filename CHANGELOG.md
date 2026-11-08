@@ -2,6 +2,14 @@
 
 Notable changes to Workflow Canvas. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- The `wfc` plugin has a third skill, `converting-an-analysis-to-a-wfc-pipeline`, for handing over a whole analysis (a folder of notebooks and scripts, or one large notebook with several steps). It asks which parts belong in wfc now, proposes a map of the steps, envs, samples and wiring for you to approve, drafts every method and the whole pipeline before anything is registered, compares the results with your original's, and registers only when you say yes. It keeps a record in `wfc-intake/`: `conversion.md` for the whole conversion, one file per env (what differs between your machine and the Linux image) and one per method.
+
+### Changed
+- `creating-a-wfc-method` always keeps its intake record, from the first `wfc try`, with the env differences in `wfc-intake/envs/<env>.md` and a comparison with the original script's outputs when you have them. It is for one script or notebook that is one step; a whole analysis goes to the new skill.
+
 ## [0.8.0b2] — 2026-11-06
 
 ### Upgrading

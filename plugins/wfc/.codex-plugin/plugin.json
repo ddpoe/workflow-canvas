@@ -1,7 +1,7 @@
 {
   "name": "wfc",
   "version": "0.8.0-beta.1",
-  "description": "Skills for working with Workflow Canvas (wfc): set up a project, run and read pipelines, and bring a script into wfc as a method, trying and drafting it before anything is registered.",
+  "description": "Build reproducible analysis pipelines in Workflow Canvas (wfc) with your agent: set up a project, turn your scripts, or a whole analysis, into pipeline steps, run them and read the results, trying each step as a draft and registering nothing until you agree.",
   "author": {
     "name": "Dante Poe",
     "url": "https://github.com/ddpoe"
@@ -9,12 +9,12 @@
   "homepage": "https://workflow-canvas.readthedocs.io/",
   "repository": "https://github.com/ddpoe/workflow-canvas",
   "license": "BSD-3-Clause",
-  "keywords": ["wfc", "workflow-canvas", "pipelines", "reproducibility", "snakemake", "containers"],
+  "keywords": ["wfc", "workflow-canvas", "pipelines", "reproducibility", "snakemake", "containers", "ai-native", "reproducible-analysis"],
   "skills": "./skills/",
   "interface": {
     "displayName": "Workflow Canvas",
-    "shortDescription": "Use wfc and bring in scripts",
-    "longDescription": "Teaches the agent how Workflow Canvas (wfc) works: projects, modules, methods, samples, envs, pipelines, runs and drafts, with the wfc commands and the rules that matter. It brings a script into wfc as a method by trying it with wfc try and drafting it in the canvas, registers it only when you agree, and writes up what changed between your machine and the Linux container.",
+    "shortDescription": "Build reproducible wfc pipelines",
+    "longDescription": "Builds reproducible analysis pipelines with you in Workflow Canvas (wfc), an AI-native, visual dry-lab notebook. Teaches the agent how wfc works: projects, modules, methods, samples, envs, pipelines, runs and drafts, with the wfc commands and the rules that matter. It brings a script into wfc as a method by trying it with wfc try and drafting it in the canvas, registers it only when you agree, turns a whole analysis folder into a pipeline you approve step by step, and writes up what changed between your machine and the Linux container.",
     "developerName": "Dante Poe",
     "category": "Coding",
     "capabilities": ["Read", "Write"],

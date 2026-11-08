@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/reference/pipeline-document @ cba0669fdcb2; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/reference/pipeline-document @ 2cf6902e9757; do not edit -->
 
 # Pipeline Document
 
@@ -10,7 +10,7 @@ A document is refused before anything runs when it carries a key wfc does not re
 
 ```text
 ERROR: the pipeline document is refused:
-  Node 'cohort_in': unknown key 'mode' (a node takes env, env_strategy, fan_mode, id, keep_going, label, method, module, output_ext, params, position, run_id, samples, slot_outputs, slot_types, source, type, version)
+  Node 'cohort_in': unknown key 'mode' (a node takes env, env_strategy, fan_mode, folder, id, keep_going, label, method, module, output_ext, params, position, run_id, samples, slot_outputs, slot_types, source, type, version)
 ```
 
 ## Top-level keys
@@ -36,7 +36,8 @@ Every node has an `id`, unique in the document, and a `type`: `method` (the defa
 |---|---|
 | `module`, `method` | The registered method. |
 | `params` | Parameter values by name. A parameter left out runs at the default its `method.yaml` declares. |
-| `version` | Optional pin to a registered version, such as `"v2"`. Without it the node runs the newest version. A downloaded pipeline JSON pins every node to the version it ran. |
+| `version` | Optional pin to a registered version, such as `"v2"`, or `"draft"` to run the method's draft (made by `wfc try` or the canvas). A draft node and every node downstream of it run as drafts: nothing is recorded or cached. Without it the node runs the newest version. A downloaded pipeline JSON pins every node to the version it ran. |
+| `folder` | With `"version": "draft"`: the draft's folder, as an absolute path. Leave it out to run the method's current draft. |
 
 **Input selector** (`"type": "input_selector"`). Chooses registered samples.
 

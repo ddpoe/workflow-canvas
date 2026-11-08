@@ -1,10 +1,12 @@
-<!-- generated from pm_mvp::docs/consumer/tutorials/work-with-an-ai-agent @ df08fc47bf87; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/tutorials/work-with-an-ai-agent @ d2a67edaf3c1; do not edit -->
 
 # Work with an AI Agent
 
 ## Overview
 
-The wfc plugin teaches an AI agent how Workflow Canvas works. With it, you can ask in plain words to set up a project, turn one of your scripts into a method, run it, or explain why a run failed. Where the agent runs on your computer, as Claude Code and Codex do, it runs the same `wfc` commands you would and asks you before anything is registered. In a chat on claude.ai or ChatGPT, it answers your questions about wfc and gives you the commands to run yourself.
+The wfc plugin teaches an AI agent how Workflow Canvas works. With it, you can ask in plain words to set up a project, turn one of your scripts into a method, turn a whole analysis into a pipeline, run it, or explain why a run failed. Where the agent runs on your computer, as Claude Code and Codex do, it runs the same `wfc` commands you would and asks you before anything is registered. In a chat on claude.ai or ChatGPT, it answers your questions about wfc, writes method folders and pipeline files for you to download, and gives you the commands to run yourself.
+
+What the agent builds is an ordinary wfc method: it appears in the canvas Registry with its code, runs in its own container, and every run is recorded in History, so you can see and check what it built.
 
 This tutorial adds the plugin, then walks through a first session with an agent that runs on your computer. You need wfc installed and Docker running, as in [Your First Pipeline](getting-started.md).
 
@@ -84,9 +86,31 @@ The agent:
 4. shows you the `method.yaml` and the changes to the script, listing every change to what it computes, reads or writes;
 5. tries the folder on your sample with `wfc try`, fixes it until it runs, and exports an output for you to check;
 6. suggests keeping it as a draft while you check the outputs, including in the canvas, and registers it only when you say yes;
-7. if you want one, keeps an intake record of each registered version, by default in `wfc-intake/<module>.<method>.md`: what changed, how your machine and the method's container differ, and where those differences might change results. Each version gets its own dated section, newest first. wfc doesn't read this file; commit it with your method folder.
+7. keeps a record from the first try, in `wfc-intake/<module>.<method>.md`: where the method came from, every change to your script and why, the try results, and how they compare with your script's own outputs when you have them. How your machine and the method's container differ goes in `wfc-intake/envs/<env>.md`, once per env. Each registered version gets its own dated section, newest first. wfc doesn't read these files; commit them with your method folder.
 
 What a draft is, and how to try one yourself, is on [Draft a Method](../tutorials/drafting-a-method.md).
+
+## Hand Over a Whole Analysis
+
+Name the folder and the env you run it in:
+
+```text
+here is my analysis: ~/plate_assay. can you turn it into a wfc pipeline? I run it in my conda env plates-lab.
+```
+
+The agent works through it in stages and stops for you where the last column says so:
+
+| Stage | What the agent does | What you do |
+|---|---|---|
+| Ask | Asks which results you use and which parts belong in wfc now | Answer |
+| Run the original | Runs a copy of your analysis to keep its outputs for the comparison; your folder stays as it is | |
+| Map | Proposes the steps, envs, samples and wiring | Approve or change the map |
+| Envs | Registers the envs first, because building one is the slowest step | |
+| Methods | Writes each method and tries it as a draft; where a step needs a judgement, such as a threshold picked by eye, shows the options side by side | Pick |
+| Compare | Runs the whole pipeline as drafts and compares its results with your original's | Check the comparison |
+| Register | Registers the methods and the pipeline | Say yes |
+
+It keeps `wfc-intake/conversion.md` for the whole conversion beside the per-method and per-env records. [Convert an Analysis into a Pipeline](convert-an-analysis.md) walks through it on an example, by an agent and by hand.
 
 ## Run It and Read the Results
 

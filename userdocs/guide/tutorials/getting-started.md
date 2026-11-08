@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/tutorials/getting-started @ 1910fcf300af; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/tutorials/getting-started @ 7176e61bf472; do not edit -->
 
 # Your First Pipeline
 
@@ -7,6 +7,8 @@
 Workflow Canvas (wfc) runs your analysis scripts as pipeline steps, records what produced every result, and reuses a step's earlier result when its code, parameters, inputs and environment have not changed.
 
 This tutorial takes you from installation to a one-step pipeline you built yourself: you create a project, an environment, a module, a method and a sample, run the pipeline, and look at the result. To see a complete pipeline before writing anything, install wfc and then follow [A Tour of the Demo](wfc-demo.md). For the bigger picture, read [What is Workflow Canvas?](../index.md).
+
+To have an AI agent run these commands for you, see [Work with an AI Agent](work-with-an-ai-agent.md), which sets up a project and brings a script in as a method with Claude Code or Codex.
 
 ## Prerequisites
 
@@ -289,6 +291,7 @@ This adds v2, and the next `wfc run-pipeline` runs it. A folder that is not regi
 
 - [Build Your Own Pipeline](../how-to/build-your-own-pipeline.md): the same steps for your own analysis, in order, with the page for each one.
 - [A Tour of the Demo](wfc-demo.md): a five-method pipeline over three samples, set up with `wfc demo`.
+- [Work with an AI Agent](work-with-an-ai-agent.md): let Claude Code or Codex set up a project and bring your own scripts in as methods.
 - [Share Runs as a Bundle Anyone Can Rerun](../how-to/share-bundle.md): export your pipeline's result, with its samples, as one zip that reruns on another computer and checks each output.
 - [Write a Method in Python](authoring-a-method-script.md): the script API.
 - [Write a Method in R](../how-to/write-an-r-method.md): a method written in R.

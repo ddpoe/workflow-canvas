@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/tutorials/registering-an-environment @ 89c809f43234; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/tutorials/registering-an-environment @ 64d6b84d285a; do not edit -->
 
 # Register an Environment
 
@@ -16,6 +16,7 @@ You need Docker installed and running.
 
 If you have not set up a project yet, create one first (see [Your First Pipeline](getting-started.md)): `wfc init --dir wfc_project_root`, then `cd wfc_project_root`. Every command on this page runs from the project root.
 
+An AI agent with the wfc plugin registers an environment for you when it sets up a project; see [Work with an AI Agent](work-with-an-ai-agent.md).
 
 ## Why environments exist
 
