@@ -18,7 +18,7 @@ on:
       skip_windows:
         type: boolean
         default: false
-        description: "Test on Linux and macOS only (the Windows job takes about an hour)"
+        description: "Test on Linux and macOS only (leave out the Windows runners)"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -32,14 +32,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Linux on every push and pull request; Windows and macOS (a Windows
-        # minute bills twice, a macOS minute ten times) on main and on a
-        # manual run. A manual run with skip_windows leaves Windows out.
-        os: >-
-          ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.skip_windows)
-          && '["ubuntu-latest", "macos-latest"]'
-          || (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main')
-          && '["ubuntu-latest", "windows-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
+        # Linux on every push and pull request. macOS and Windows are their own
+        # jobs (tests-macos, tests-windows), each split across runners.
+        os: ["ubuntu-latest"]
         python-version: ["3.12"]
     steps:
       - uses: actions/checkout@v7
@@ -49,9 +44,6 @@ jobs:
           git config --global user.name "CI"
           git config --global user.email "ci@example.com"
           git config --global init.defaultBranch main
-      - name: Enable long paths (Windows)
-        if: runner.os == 'Windows'
-        run: git config --system core.longpaths true
       - run: pipx install poetry
       - uses: actions/setup-python@v7
         with:
@@ -66,12 +58,111 @@ jobs:
           poetry env use python
           poetry install --with dev
       - name: Test workflow-canvas
-        # Windows runs the suite in four parallel workers: serially it takes
-        # over an hour there, and `-n auto` counts physical cores, which is
-        # one on the runner. The tests wait on git, Snakemake and the
-        # filesystem, so four workers beat two on a two-CPU runner too.
-        run: poetry run pytest ${{ runner.os == 'Windows' && '-n 4' || '' }}
+        # Four workers: the public repo's Linux runner has four CPUs.
+        run: poetry run pytest -n 4
       - name: Test wfc-client
+        run: poetry run pytest wfc-client/tests
+
+  tests-macos:
+    # About half an hour on one macOS runner with no workers, so it is split
+    # across two (WFC_TEST_SHARD, tests/conftest.py), each running three
+    # workers (the runner has three CPUs). On main and on a manual run.
+    name: Tests (macos-latest, Python 3.12, shard ${{ matrix.shard }} of 2)
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/main'
+          && github.repository != 'ddpoe/workflow-canvas-dev')
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    env:
+      WFC_TEST_SHARD: ${{ matrix.shard }}/2
+    steps:
+      - uses: actions/checkout@v7
+      - name: Configure git
+        # The tests create and commit to throwaway repositories.
+        run: |
+          git config --global user.name "CI"
+          git config --global user.email "ci@example.com"
+          git config --global init.defaultBranch main
+      - run: pipx install poetry
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: poetry
+      # Some tests drive the Canvas's TypeScript through Node (22.6+); they skip without it.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: Install
+        run: |
+          poetry env use python
+          poetry install --with dev
+      - name: Test workflow-canvas
+        run: poetry run pytest -n 3
+      - name: Test wfc-client
+        if: matrix.shard == 1
+        run: poetry run pytest wfc-client/tests
+
+  tests-windows:
+    # The suite takes over an hour on one Windows runner, so it is split
+    # across five (WFC_TEST_SHARD, tests/conftest.py), each running four
+    # workers. On main and on a manual run; skip_windows leaves it out.
+    name: Tests (windows-latest, Python 3.12, shard ${{ matrix.shard }} of 5)
+    if: >-
+      (github.event_name == 'workflow_dispatch' && !inputs.skip_windows)
+      || (github.event_name == 'push' && github.ref == 'refs/heads/main'
+          && github.repository != 'ddpoe/workflow-canvas-dev')
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
+    env:
+      WFC_TEST_SHARD: ${{ matrix.shard }}/5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Configure git
+        # The tests create and commit to throwaway repositories.
+        run: |
+          git config --global user.name "CI"
+          git config --global user.email "ci@example.com"
+          git config --global init.defaultBranch main
+          git config --system core.longpaths true
+      - name: Stop Defender scanning the files the tests write
+        # Real-time scanning of every file the tests create (git repositories,
+        # DVC caches) slows the suite. This runner is thrown away after the job.
+        continue-on-error: true
+        shell: pwsh
+        run: Set-MpPreference -DisableRealtimeMonitoring $true
+      - name: Put the temp folder on the runner's work drive
+        # RUNNER_TEMP is on D:, beside the checkout; the default temp folder
+        # is on C:, the slower drive, under a longer path.
+        shell: pwsh
+        run: |
+          "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+      - run: pipx install poetry
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: poetry
+      # Some tests drive the Canvas's TypeScript through Node (22.6+); they skip without it.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: Install
+        run: |
+          poetry env use python
+          poetry install --with dev
+      - name: Test workflow-canvas
+        # Four workers per runner: `-n auto` counts physical cores, one here,
+        # and the tests wait on git, Snakemake and the filesystem.
+        run: poetry run pytest -n 4
+      - name: Test wfc-client
+        if: matrix.shard == 1
         run: poetry run pytest wfc-client/tests
 
   client:

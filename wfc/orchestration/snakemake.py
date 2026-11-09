@@ -140,37 +140,6 @@ def _input_path(
 # Rule body generator
 # =============================================================================
 
-#: Prefix that keeps reference ``input:`` keys in their own namespace, clear
-#: of the fan-in branch's ``{slot}_{i}`` and the single-upstream branch's
-#: ``data_0``. Without it, a method taking both a wired upstream and a
-#: reference on the same slot emits a repeated keyword — a Snakefile that
-#: does not parse, not a silent overwrite.
-REF_INPUT_KEY_PREFIX = "ref"
-
-
-def _ref_input_declarations(ref_pairs: list[tuple[str, str]]) -> list[str]:
-    """Build the ``input:`` block lines for a step's reference artifacts.
-
-    The keys in a generated rule's ``input:`` block are pure DAG
-    declaration — nothing in the emitted shell dereferences them — so they
-    are free to differ from the slot label. They are *not* free to repeat:
-    a Snakemake ``input:`` block is Python keyword syntax and a duplicated
-    key is a syntax error. Each reference therefore gets its own indexed,
-    prefixed key while the shell keeps repeating the real slot name.
-
-    Args:
-        ref_pairs: ``(label, path)`` per reference, in document order.
-
-    Returns:
-        One indented ``key="path"`` line per reference.
-    """
-    return [
-        f'        {REF_INPUT_KEY_PREFIX}{i}_{label}='
-        f'"{ref_path.replace(chr(92), "/")}"'
-        for i, (label, ref_path) in enumerate(ref_pairs)
-    ]
-
-
 @task(
     purpose="Generate Snakemake rule lines for a single pipeline step (shell-only)",
     inputs="StepDef, step lookup map",
@@ -195,7 +164,7 @@ def _generate_rule(
         pipeline_id: Pipeline execution ID.
         sample_restore_sentinel: The restore_sample sentinel, handed to a
             step that reads a per-sample sample; declared as an input beside
-            the step's upstream inputs and reference paths.
+            the step's upstream inputs.
         draft: Whether the step runs in draft mode (a draft, or downstream
             of one); its shell line passes ``--draft`` to ``wfc run-step``.
 
@@ -207,9 +176,8 @@ def _generate_rule(
     inp = _input_path(nid, step_map, pipeline_id=pipeline_id)
     lines: list[str] = []
 
-    # Reference artifacts, flattened to (label, path) in document order.
-    # The label repeats when several references target one slot; the ``input:``
-    # key does not (see ``_ref_input_declarations``).
+    # Reference artifacts, flattened to (label, path) in document order; the
+    # label repeats when several references target one slot.
     ref_pairs: list[tuple[str, str]] = [
         (label, ref_path)
         for label, ref_paths in step.run_ref_inputs.items()
@@ -219,12 +187,14 @@ def _generate_rule(
     lines.append(f"rule {nid}:")
 
     # -- input: declaration --
-    # One composition over the three input kinds, in whatever combination
-    # the step has: its upstream sentinels (a fan-in or multi-slot step's
-    # keyed per slot, a single upstream's as ``data_0``), the sample
-    # restore sentinel when the step reads a per-sample sample, and its
-    # reference artifacts. A lone upstream or a lone sentinel keeps the
-    # unnamed form; anything else is named, so every part has its own key.
+    # One composition over the two input kinds, in whatever combination the
+    # step has: its upstream sentinels (a fan-in or multi-slot step's keyed
+    # per slot, a single upstream's as ``data_0``) and the sample restore
+    # sentinel when the step reads a per-sample sample. A lone upstream or a
+    # lone sentinel keeps the unnamed form; both together are named, so each
+    # has its own key. A reference is not an input here: it reaches the
+    # step only through its shell's --ref-input flag (below), so a step fed
+    # only by references has no input: block at all.
     named: list[str] = []
     scalars: list[str] = []
     if isinstance(inp, dict):
@@ -237,8 +207,6 @@ def _generate_rule(
     if sample_restore_sentinel is not None:
         named.append(f"        sample_ready=\"{sample_restore_sentinel}\"")
         scalars.append(sample_restore_sentinel)
-    # Forward slashes, so a backslash never becomes a Python escape.
-    named.extend(_ref_input_declarations(ref_pairs))
     if len(named) == 1 and len(scalars) == 1:
         lines.append(f"    input: \"{scalars[0]}\"")
     elif named:

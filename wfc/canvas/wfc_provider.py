@@ -185,7 +185,7 @@ class WfcRun:
     # reports that and decides nothing, and lineage synthesis refuses it.
     versionIdentity: str | None = None
     timestamp: float = 0  # Unix timestamp in ms
-    duration: float = 0  # Duration in seconds
+    duration: float | None = 0  # Duration in seconds; None for a run that never started
     status: str = "unknown"
     inputs: dict[str, Any] = field(default_factory=dict)
     outputs: dict[str, Any] = field(default_factory=dict)
@@ -603,8 +603,12 @@ class WfcProvider:
                 # helper also accepts ISO strings).
                 started_ms = self._to_epoch_ms(run_row.started_at)
                 finished_ms = self._to_epoch_ms(run_row.finished_at)
-                duration = (
-                    (finished_ms - started_ms) / 1000.0
+                # A run that never started (refused at the claim, cancelled
+                # because an upstream failed) has no duration, not one
+                # measured from the epoch.
+                duration: float | None = (
+                    None if run_row.started_at is None
+                    else (finished_ms - started_ms) / 1000.0
                     if finished_ms > started_ms else 0
                 )
 

@@ -575,6 +575,9 @@ def test_a_release_refused_while_a_waiter_reads_the_lock_still_removes_it(
     release retries, so the lock never stays behind naming a holder that left."""
     from wfc.execution.pipeline_record import hold_lock_file
 
+    # The refusal is Windows's, so the run is too: elsewhere a refused
+    # removal is a real denial and is raised at once.
+    monkeypatch.setattr("wfc.storage.replace.HOLDS_REFUSE", True)
     lock = tmp_path / "close-out.lock"
     refused = fakes.refuse_path_unlink_once(monkeypatch, lock)
     with hold_lock_file(lock):

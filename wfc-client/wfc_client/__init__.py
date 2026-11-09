@@ -28,6 +28,6 @@ from .decorator import method
 from .main import run
 
 # The package version; kept equal to ``version`` in wfc-client/pyproject.toml.
-__version__ = "0.3.1b1"
+__version__ = "0.3.1"
 
 __all__ = ["method", "run", "RunContext", "InputPath"]

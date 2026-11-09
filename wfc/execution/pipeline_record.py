@@ -27,7 +27,7 @@ import json
 import os
 import re
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -36,16 +36,12 @@ from typing import Any
 from axiom_annotations import task
 
 from .. import layout
+from ..storage import replace_file, retry_while_held
 
 #: The entry point a pipeline was started from: the ``wfc run-pipeline`` verb
 #: (and any headless caller of ``run_pipeline``), or the canvas server.
 ENTRY_POINT_CLI = "cli"
 ENTRY_POINT_CANVAS = "canvas"
-
-#: How often, and how long apart, a write or read retries a file another
-#: process holds open (Windows refuses a replace over an open file).
-_RETRIES = 20
-_RETRY_SECONDS = 0.025
 
 
 #: What a pipeline id may be: one path segment of letters, digits, ``_``,
@@ -178,15 +174,15 @@ def _unlink_lock(lock: Path) -> None:
     """Remove a lock file, retrying while another process holds it open.
 
     On Windows a file another process has open (a waiter reading who holds
-    the lock) cannot be removed; the removal is retried for up to
-    ``_RETRIES * _RETRY_SECONDS`` seconds, as the record's own writes are, so
+    the lock) cannot be removed; the removal is retried while it is held
+    (Storage's ``retry_while_held``), as the record's own writes are, so
     a release never leaves the lock naming a holder that has moved on. A
     file already gone is left.
 
     Raises:
         PermissionError: The file was still held open after every retry.
     """
-    _retrying(lambda: lock.unlink(missing_ok=True))
+    retry_while_held(lambda: lock.unlink(missing_ok=True))
 
 
 def _create_exclusive(path: Path) -> bool:
@@ -403,23 +399,6 @@ class PipelineRecord:
         )
 
 
-def _retrying(action: Callable[[], Any]) -> Any:
-    """Run a file action, retrying while another process holds the file.
-
-    Args:
-        action: The action; a ``PermissionError`` is retried, briefly.
-
-    Returns:
-        What the action returns.
-    """
-    for _ in range(_RETRIES - 1):
-        try:
-            return action()
-        except PermissionError:
-            time.sleep(_RETRY_SECONDS)
-    return action()
-
-
 def _record_path(project_root: Path | str, pipeline_id: str) -> Path | None:
     """The record file of a pipeline, or None when the id is not a pipeline id.
 
@@ -454,7 +433,7 @@ def _store(project_root: Path, record: PipelineRecord) -> None:
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
         tmp.write_text(json.dumps(record.to_json(), indent=2), encoding="utf-8")
-        _retrying(lambda: os.replace(tmp, path))
+        replace_file(tmp, path)
     except OSError as exc:
         try:
             tmp.unlink(missing_ok=True)
@@ -517,7 +496,7 @@ def read_pipeline_record(project_root: Path | str, pipeline_id: str) -> Pipeline
     if path is None:
         return None
     try:
-        text = _retrying(lambda: path.read_text(encoding="utf-8"))
+        text = retry_while_held(lambda: path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
     except OSError as exc:
@@ -656,7 +635,7 @@ def remove_pipeline_record(project_root: Path | str, pipeline_id: str) -> bool:
 
     try:
         with _record_lock(project_root, pipeline_id):
-            return bool(_retrying(_unlink))
+            return bool(retry_while_held(_unlink))
     except OSError as exc:
         raise PipelineRecordError(f"could not remove the pipeline record {path}: {exc}") from exc
 

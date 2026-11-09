@@ -85,8 +85,7 @@ rule segment:
 rule quantify:
     input:
         data_0=".wfc/runs/sentinels/pin-selector-beside-method-and-reference/segment/{sample}/{variant}/.complete",
-        sample_ready=".wfc/workspace/samples/{sample}/.sample_ready",
-        ref0_model=".wfc/runs/run-m/model/model.pkl"
+        sample_ready=".wfc/workspace/samples/{sample}/.sample_ready"
     output: ".wfc/runs/sentinels/pin-selector-beside-method-and-reference/quantify/{sample}/{variant}/.complete"
     params:
         variant="{variant}",

@@ -49,12 +49,12 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .. import layout
 from ..reserved import DEMO_ENV_NAME
+from ..storage import replace_file
 
 MANIFEST_SCHEMA_VERSION = 3
 MANIFEST_FILENAME = layout.ENV_MANIFEST_FILENAME
@@ -263,34 +263,6 @@ def put_record(manifest: dict, name: str, record: dict) -> None:
     manifest["schema_version"] = MANIFEST_SCHEMA_VERSION
 
 
-#: Seconds :func:`save_manifest` waits before each retry of a replace another
-#: handle refused: five tries in all, the waits doubling from 50 ms.
-_REPLACE_RETRY_WAITS = (0.05, 0.1, 0.2, 0.4)
-
-
-def _replace_with_retry(source: str, target: Path) -> None:
-    """``os.replace`` *source* onto *target*, retrying a refused replace.
-
-    On Windows a replace fails with ``PermissionError`` while another
-    handle (a reader, an editor, a virus scanner) holds *target* open;
-    such a hold is usually brief. The replace is tried five times, waiting
-    :data:`_REPLACE_RETRY_WAITS` between tries, on every platform.
-
-    Args:
-        source: The file to move.
-        target: Where it goes.
-
-    Raises:
-        PermissionError: The fifth try was refused too.
-    """
-    for wait in _REPLACE_RETRY_WAITS:
-        try:
-            os.replace(source, target)
-            return
-        except PermissionError:
-            time.sleep(wait)
-    os.replace(source, target)
-
 
 def save_manifest(project_dir: Path, manifest: dict) -> None:
     """Atomically write *manifest* to ``.wfc/envs.json``.
@@ -298,8 +270,8 @@ def save_manifest(project_dir: Path, manifest: dict) -> None:
     Uses ``tempfile + os.replace`` so a partial write cannot leave the
     manifest in a corrupted state — readers see either the old content
     or the new content, never a half-flushed file. A replace refused
-    because another handle holds the file open is retried five times
-    over about 750 ms before it fails.
+    because another handle holds the file open (Windows) is retried for
+    about two seconds before it fails (Storage's ``replace_file``).
 
     Args:
         project_dir: Root directory of the wfc project (must contain ``.wfc/``).
@@ -328,7 +300,7 @@ def save_manifest(project_dir: Path, manifest: dict) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(manifest, fh, indent=2, sort_keys=True)
             fh.write("\n")
-        _replace_with_retry(tmp_path_str, path)
+        replace_file(tmp_path_str, path)
     except Exception:
         # Best-effort cleanup of the temp file on failure.
         try:

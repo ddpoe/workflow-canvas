@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from .dvc import (
     DVC_DIR_NAME,
+    UPDATE_CHECK_FILENAME,
     default_archive_url,
     dvc_cache_dir,
     dvc_cache_entry,
@@ -25,6 +26,7 @@ from .dvc import (
     dvc_config_path,
     dvc_dir,
     remote_path_from_url,
+    update_check_path,
 )
 from .mounts import (
     CONTAINER_WORKDIR,
@@ -233,7 +235,7 @@ __all__ = [
     # dvc
     "DVC_DIR_NAME", "dvc_dir", "dvc_config_path", "dvc_cache_dir",
     "dvc_cache_files_dir", "dvc_cache_entry", "remote_path_from_url",
-    "default_archive_url",
+    "default_archive_url", "UPDATE_CHECK_FILENAME", "update_check_path",
     # mounts
     "WORK_MOUNT", "DVC_CACHE_MOUNT", "CONTAINER_WORKDIR", "Mount",
     "mount_table", "bind_spec", "translate_host_path",

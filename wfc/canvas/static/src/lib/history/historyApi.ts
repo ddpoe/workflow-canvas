@@ -48,7 +48,8 @@ export interface WfcRun {
    */
   versionIdentity: string | null;
   timestamp: number;       // Unix epoch milliseconds
-  duration: number;        // seconds
+  /** Seconds from start to finish; null for a run that never started (refused or cancelled). */
+  duration: number | null;
   status: string;          // "success" | "failed" | "running" | "cancelled" | "unknown"
   inputs: Record<string, unknown>;
   outputs: Record<string, string>;

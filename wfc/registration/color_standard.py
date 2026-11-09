@@ -205,6 +205,19 @@ def _lab(rgb: tuple[float, float, float]) -> tuple[float, float, float]:
     return 116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)
 
 
+def color_distance(a: str, b: str) -> float:
+    """How far apart two colours look: the CIEDE2000 distance of two hex colours.
+
+    Args:
+        a: One colour, ``#rgb`` or ``#rrggbb``.
+        b: The other.
+
+    Returns:
+        The distance; under about 15 two colours read as alike.
+    """
+    return ciede2000(_lab(_rgb(normalize_hex(a))), _lab(_rgb(normalize_hex(b))))
+
+
 def ciede2000(lab1: tuple[float, float, float], lab2: tuple[float, float, float]) -> float:
     """CIEDE2000 colour difference (kL = kC = kH = 1).
 

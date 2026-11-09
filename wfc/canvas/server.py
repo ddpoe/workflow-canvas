@@ -22,6 +22,7 @@ from ..execution.pipeline_outcome import backfill_pipeline_runs
 from . import state
 from .recovery import PipelineRecovery, start_recovery
 from .routes import (
+    about,
     archive,
     artifacts,
     builder,
@@ -126,6 +127,7 @@ app.include_router(artifacts.router)
 app.include_router(archive.router)
 app.include_router(bundles.router)
 app.include_router(logs.router)
+app.include_router(about.router)
 
 
 # =============================================================================

@@ -62,8 +62,6 @@ rule all:
         expand(".wfc/runs/sentinels/pin-reference-root/report/{sample}/{variant}/.complete", sample=SAMPLES, variant=VARIANT_NAMES)
 
 rule report:
-    input:
-        ref0_baseline=".wfc/runs/run-r/table/table.parquet"
     output: ".wfc/runs/sentinels/pin-reference-root/report/{sample}/{variant}/.complete"
     params:
         variant="{variant}",

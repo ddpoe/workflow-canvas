@@ -217,7 +217,7 @@ def stub_seed_submission(monkeypatch, replacement: Callable) -> None:
 
 
 @fake(
-    boundary="wfc.version's importlib.metadata.version -- the installed "
+    boundary="wfc.release's importlib.metadata.version -- the installed "
              "distribution's metadata lookup. "
              "Why a test may take it: a test runs from an installed wfc, so "
              "metadata that is missing (a bare source tree) or unreadable "
@@ -242,14 +242,14 @@ def stub_distribution_metadata_missing(monkeypatch,
     """
     import importlib.metadata
 
-    from wfc import version
+    from wfc import release
 
     def _missing(name):
         if error is not None:
             raise error
         raise importlib.metadata.PackageNotFoundError(name)
 
-    monkeypatch.setattr(version.importlib.metadata, "version", _missing)
+    monkeypatch.setattr(release.importlib.metadata, "version", _missing)
 
 
 @fake(

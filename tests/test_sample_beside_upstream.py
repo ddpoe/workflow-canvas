@@ -400,6 +400,32 @@ def test_a_claim_refusal_is_a_visible_failure(git_project, monkeypatch):
     assert summary.total == tallied
 
 
+@workflow(purpose="A run that never started -- a step refused at the claim, "
+                  "and the descendant cancelled because of it -- reports no "
+                  "duration in History's runs, while a run that ran reports "
+                  "how long it took")
+def test_a_run_that_never_started_reports_no_duration(git_project, monkeypatch):
+    from tests.fixtures.fakes import bind_provider
+    from tests.fixtures.routes import canvas_client
+    from wfc.canvas.wfc_provider import WfcProvider
+
+    obs = run_scenario(_refused_mid_chain(), root=git_project, monkeypatch=monkeypatch)
+    [head] = obs.rows_for_node("head")
+    [mid] = obs.rows_for_node("mid")
+    [tail] = obs.rows_for_node("tail")
+    assert (mid["started_at"], tail["started_at"]) == (None, None)
+
+    client = canvas_client(obs.project.root, monkeypatch)
+    bind_provider(monkeypatch, WfcProvider(str(obs.project.root)))
+    runs = client.get("/api/wfc/runs")
+    assert runs.status_code == 200, runs.text
+    duration = {r["id"]: r["duration"] for r in runs.json()}
+
+    assert duration[str(mid["id"])] is None
+    assert duration[str(tail["id"])] is None
+    assert duration[str(head["id"])] >= 0
+
+
 @workflow(purpose="Opening the lineage of a run that never ran -- a step "
                   "refused at its claim, or its descendant cancelled against "
                   "it -- is refused in its own words: the canvas answers 422 "

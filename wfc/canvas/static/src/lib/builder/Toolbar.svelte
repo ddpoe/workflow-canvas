@@ -14,6 +14,7 @@
   import { requestRun, blockedReasons } from './lockFlow.js';
   import { validatePipeline } from '../machines/services.js';
   import ArchiveBadge from './ArchiveBadge.svelte';
+  import VersionLabel from '../about/VersionLabel.svelte';
   import { refreshDrafts } from './drafts.js';
   import { clearRefusals, refusalsByNode, showRefusals } from './nodeRefusals.js';
   import { isDraftNode } from './nodeData.js';
@@ -129,7 +130,10 @@
 </script>
 
 <div class="toolbar">
-  <span class="title">Workflow Canvas</span>
+  <div class="title-wrap">
+    <span class="title">Workflow Canvas</span>
+    <VersionLabel />
+  </div>
   <div class="tabs">
     <button class="tab" class:active={activeTab === 'builder'} onclick={() => onTabChange?.('builder')}>Builder</button>
     <button class="tab" class:active={activeTab === 'registry'} onclick={() => onTabChange?.('registry')}>Registry</button>
@@ -173,8 +177,12 @@
     gap: 14px;
     flex-shrink: 0;
   }
+  /* The title and the version label beside it; the version menu is placed
+     against this box, under the title, from the left. */
+  .title-wrap { position: relative; display: flex; align-items: baseline; gap: 8px; flex-shrink: 0; }
   .title { color: var(--text-primary); font-size: 22px; font-weight: 600; white-space: nowrap; }
   .tabs {
+    flex-shrink: 0;
     display: flex;
     gap: 2px;
     background: var(--bg-input);
@@ -199,14 +207,16 @@
     border: 1px solid var(--border);
     color: var(--text-primary);
     font-size: 13px;
-    /* 320px fits most pipeline names; the min-width keeps the action
-       buttons on-screen on narrow viewports. */
-    width: 320px;
+    /* 240px fits most pipeline names beside the version label; the name is
+       the one item that gives up width, down to 180px, so no button wraps
+       at 1280px. */
+    width: 240px;
     min-width: 180px;
     outline: none;
   }
-  .actions { display: flex; gap: 8px; align-items: center; }
+  .actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
   .btn {
+    white-space: nowrap;
     padding: 6px 10px;
     background: var(--bg-header);
     border-radius: 4px;
@@ -220,6 +230,13 @@
   .btn-run:disabled { background: #2e2e32; color: var(--text-muted); cursor: not-allowed; }
   .btn-stop { background: var(--status-failed); color: white; font-weight: 600; }
   .btn-muted { color: var(--text-secondary); }
+  /* Below the 1280px layout the items no longer fit on one line (the page
+     hides overflow), so the toolbar wraps: the actions move to a second
+     row, kept at the right edge, and every button stays on-screen. */
+  @media (max-width: 1279.98px) {
+    .toolbar { flex-wrap: wrap; row-gap: 8px; }
+    .actions { margin-left: auto; }
+  }
   .status-bar {
     padding: 5px 14px;
     background: #1e7a3e;

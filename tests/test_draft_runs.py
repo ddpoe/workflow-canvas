@@ -581,3 +581,74 @@ def test_draft_mode_steps_are_never_recorded_and_say_what_happened(git_project,
     row = _row(pid)
     assert (row.status, row.draft_mode, row.draft_step_count) == ("mixed", True, 3)
     assert row.ended_at is not None
+
+
+# --- Parallel draft steps of one draft ------------------------------------------
+
+def _record_states(root: str, node_id: str, errors) -> None:
+    """One parallel draft step recording its entry twenty times, the last completed."""
+    from pathlib import Path
+
+    from wfc.execution.draft import record_draft_step
+
+    try:
+        for status in ["running"] * 19 + ["completed"]:
+            record_draft_step("demo", "label", pipeline_id="p-parallel",
+                              pipeline_name="parallel",
+                              step={"node_id": node_id, "sample": "S1", "status": status},
+                              root=Path(root))
+    except Exception as exc:  # noqa: BLE001 -- reported to the test, which fails on it
+        errors.put(f"{node_id}: {exc!r}")
+
+
+def _poll_draft_run(root: str, reading, stop) -> None:
+    """A reader polling the draft's record, as the canvas and the other steps do."""
+    import time
+    from pathlib import Path
+
+    reading.release()
+    while not stop.is_set():
+        read_draft_run("demo", "label", Path(root))
+        time.sleep(0.001)
+
+
+@workflow(purpose="Five draft nodes of one draft run in parallel in one pipeline, "
+                  "each recording its entry twenty times, while other processes "
+                  "read the draft's record: every node's step is kept, "
+                  "completed, and no step fails")
+def test_every_parallel_draft_node_of_one_pipeline_is_kept(tmp_project):
+    """No step fails, and the record holds all five nodes, each completed."""
+    import multiprocessing
+
+    ctx = multiprocessing.get_context("spawn")
+    errors, stop, reading = ctx.Queue(), ctx.Event(), ctx.Semaphore(0)
+    readers = [ctx.Process(target=_poll_draft_run, args=(str(tmp_project), reading, stop),
+                           daemon=True)
+               for _ in range(2)]
+    nodes = [f"node{i}" for i in range(5)]
+    steps = [ctx.Process(target=_record_states, args=(str(tmp_project), n, errors),
+                         daemon=True)
+             for n in nodes]
+    try:
+        for reader in readers:
+            reader.start()
+        for _ in readers:
+            assert reading.acquire(timeout=60), "a reader never started"
+        for step in steps:
+            step.start()
+        for step in steps:
+            step.join(timeout=120)
+    finally:
+        stop.set()
+        for proc in [*steps, *readers]:
+            proc.join(timeout=30)
+            if proc.is_alive():
+                proc.terminate()
+    failed = []
+    while not errors.empty():
+        failed.append(errors.get())
+
+    assert failed == []
+    record = read_draft_run("demo", "label", tmp_project)
+    assert {node: by_sample["S1"]["status"] for node, by_sample in record["steps"].items()} \
+        == dict.fromkeys(nodes, "completed")

@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/reference/wf-canvas-toml @ f07212c9886a; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/reference/wf-canvas-toml @ 0a53dabafa70; do not edit -->
 
 # wf-canvas.toml
 
@@ -13,6 +13,7 @@ The file has these sections:
 - `[pixi]` and `[conda]` tell `wfc register-env` where to find local environments to capture. Both are optional.
 - `[registry]` sets the registry base that environment images are pushed to. `wfc push-env` writes it on its first run. It is optional.
 - `[previews]` sets how much memory and disk the canvas may use for the previews it makes of run outputs. It is optional.
+- `[updates]` sets whether the canvas checks once a day for a newer wfc, and whether betas are offered. `wfc init` writes it with the check on.
 
 For where the file sits among the project's other folders, see [Project Anatomy](../explanation/project-anatomy.md).
 
@@ -40,9 +41,13 @@ inputs = "stat-then-hash"           # How a step's inputs are checked: "stat-the
 [previews]
 memory_mb = 1024                    # Most memory image previews use at once, in MB (default 1024)
 cache_mb = 500                      # Most disk the saved previews take, in MB (default 500)
+
+[updates]
+check = true                        # Check PyPI once a day for a newer wfc (default true)
+prereleases = true                  # Offer betas too (default: betas only when the installed wfc is a beta)
 ```
 
-A new file from `wfc init` holds only the `[dvc]` section, with `url` set to the location you chose (default `~/.wfc/archives/<project>`). `wfc push-env` adds `[registry]` on its first run. Add `[pixi]`, `[conda]`, `[integrity]` or `[previews]` by hand when you need them.
+A new file from `wfc init` holds the `[dvc]` section, with `url` set to the location you chose (default `~/.wfc/archives/<project>`), and the `[updates]` section with `check = true` and `prereleases` commented out. `wfc push-env` adds `[registry]` on its first run. Add `[pixi]`, `[conda]`, `[integrity]` or `[previews]` by hand when you need them.
 
 ## [dvc]
 
@@ -108,6 +113,23 @@ cache_mb = 500
 
 Each value is a positive whole number of MB, written without quotes or a decimal point. Any other value is refused with a message that names the setting and its default: fix the line, or delete it to use the default. A change applies without restarting the canvas.
 
+
+## [updates]
+
+Whether the canvas checks for a newer wfc, and whether betas are offered.
+
+```toml
+[updates]
+check = true
+# prereleases = true
+```
+
+- `check` (default true) turns the update check on or off. Once a day the canvas asks PyPI, the Python package index, whether a newer wfc is out, and reads the new version's notes from wfc's public changelog. The request carries only `wfc/<version>`; nothing about your project is sent. A newer version shows in the menu under the version label beside the canvas's title, with the `pip` command that installs it. wfc never installs anything by itself. Offline, the check stays silent and asks again later. Set `check = false` to stop it: the canvas then sends nothing.
+- `prereleases` (no default) says whether betas are offered. Without it, betas follow the wfc you installed: a beta install is offered betas and stable releases, a stable install stable releases only. Set `prereleases = true` to be offered betas either way, or `prereleases = false` for stable releases only.
+
+The menu's last line says which of these applies: "Stable releases only", "Stable and beta releases" or "Update check is off", and the setting that changes it.
+
+Each value is `true` or `false`, written without quotes. Any other value is refused with a message that names the setting: fix the line, or delete it to use the default.
 
 ## [integrity]
 

@@ -17,13 +17,13 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from axiom_annotations import task
 
 from .. import layout
+from ..storage import replace_file, retry_while_held
 from ..version import (
     GitObject,
     HeadMovedError,
@@ -95,18 +95,6 @@ def _list_at(root: Path, base: str | None, data: bytes | None, module: str, meth
     return parse_version_list(data, module, method, f"{base}:{list_path.name}"), data
 
 
-def _replace_file(source: Path, dest: Path) -> None:
-    """Rename the file *source* over *dest*, waiting briefly while a reader holds it open."""
-    for attempt in range(20):
-        try:
-            os.replace(source, dest)
-            return
-        except PermissionError:
-            if attempt == 19:
-                raise
-            time.sleep(0.05 * (attempt + 1))  # Windows: open without delete sharing
-
-
 def _match_case(path: Path) -> None:
     """Give *path* its own spelling when the filesystem holds it under another case.
 
@@ -162,12 +150,12 @@ def _replace_tree(source: Path, target: Path) -> None:
         dest = target / rel
         if dest.is_dir() and not dest.is_symlink():
             shutil.rmtree(dest)
-        _replace_file(path, dest)
+        replace_file(path, dest)
         _match_case(dest)
     for path in sorted((p for p in target.rglob("*")
                         if p.is_file() or p.is_symlink()), reverse=True):
         if path.relative_to(target).as_posix() not in wanted:
-            path.unlink()
+            retry_while_held(path.unlink)
     for path in sorted((p for p in target.rglob("*") if p.is_dir()),
                        key=lambda p: len(p.parts), reverse=True):
         if not any(path.iterdir()):

@@ -63,9 +63,9 @@ def test_other_commands_without_metadata_log_no_version_warning(monkeypatch,
 
     stub_distribution_metadata_missing(monkeypatch)
 
-    with caplog.at_level(logging.WARNING, logger="wfc.version"):
+    with caplog.at_level(logging.WARNING, logger="wfc.release"):
         with pytest.raises(SystemExit) as exited:
             cli_main(["--help"])
 
     assert exited.value.code == 0
-    assert [r for r in caplog.records if r.name == "wfc.version"] == []
+    assert [r for r in caplog.records if r.name == "wfc.release"] == []

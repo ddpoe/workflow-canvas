@@ -4,10 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from ..version import _DISTRIBUTION
-
-#: Used when the package metadata is unavailable (a source checkout).
-_FALLBACK_ISSUES_URL = "https://github.com/ddpoe/workflow-canvas/issues"
+from .. import release
 
 
 def issues_url() -> str:
@@ -15,19 +12,9 @@ def issues_url() -> str:
 
     Returns:
         The ``Issues`` project URL, or the repository's issues page when the
-        metadata does not name one.
+        metadata does not name one (Project git's :func:`wfc.release.issues_url`).
     """
-    import importlib.metadata
-
-    try:
-        urls = importlib.metadata.metadata(_DISTRIBUTION).get_all("Project-URL") or []
-    except importlib.metadata.PackageNotFoundError:
-        return _FALLBACK_ISSUES_URL
-    for entry in urls:
-        label, _, url = entry.partition(",")
-        if label.strip().lower() == "issues" and url.strip():
-            return url.strip()
-    return _FALLBACK_ISSUES_URL
+    return release.issues_url()
 
 
 def not_copied_message(names: Sequence[str]) -> str:

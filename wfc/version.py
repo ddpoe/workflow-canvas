@@ -6,8 +6,10 @@ Public functions:
   path_is_committable(repo_root, path)  Would commit_paths commit it, not skip it.
   commit_holds_path(repo_root, c, path) Is commit c in the repo, holding path.
   git_remote_url(directory)             The project's remote URL (origin, else the only one).
-  installed_wfc_version()               The installed wfc version, or None.
   observing_commands(observer)          Hand each git argv run in a block to an observer.
+
+wfc's own release (the installed version, its project URLs and its
+changelog) is ``wfc.release``'s, the other half of Project git.
 
 The identities themselves — the content hash, the code fingerprint, the
 input fingerprint and the cache key — live in ``wfc.identity``; this module
@@ -33,7 +35,6 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
-import importlib.metadata
 import logging
 import os
 import signal
@@ -47,10 +48,6 @@ from pathlib import Path
 from .persistence import project_root
 
 logger = logging.getLogger(__name__)
-
-#: The distribution whose installed metadata names wfc's version (and its
-#: issues URL, which Registration's advice reads).
-_DISTRIBUTION = "workflow-canvas"
 
 #: Seconds a git query or staging call may take before it is stopped.
 GIT_TIMEOUT = 60
@@ -112,34 +109,6 @@ def commit_timeout() -> float:
             f"{GIT_COMMIT_TIMEOUT_ENV}={raw!r} is not a positive number of seconds"
         )
     return value
-
-
-def installed_wfc_version() -> str | None:
-    """Return the installed wfc version, read from the distribution's metadata.
-
-    An editable install answers the version its metadata was installed with.
-    Never raises: a run records the version it ran under, and a missing
-    answer must not stop the run.
-
-    Returns:
-        The version string of the ``workflow-canvas`` distribution, or None
-        (with a logged warning) when its metadata is not installed or cannot
-        be read.
-    """
-    try:
-        return importlib.metadata.version(_DISTRIBUTION)
-    except importlib.metadata.PackageNotFoundError:
-        logger.warning(
-            "The %s package metadata is not installed; the wfc version is "
-            "not recorded.", _DISTRIBUTION,
-        )
-        return None
-    except Exception as exc:  # noqa: BLE001 -- a run must not stop on this
-        logger.warning(
-            "The %s package metadata could not be read (%s: %s); the wfc "
-            "version is not recorded.", _DISTRIBUTION, type(exc).__name__, exc,
-        )
-        return None
 
 
 # =============================================================================

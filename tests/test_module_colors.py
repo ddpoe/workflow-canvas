@@ -20,6 +20,7 @@ from wfc.registration.color_standard import (
     PALETTE,
     PROTECTED,
     STATUS_MESSAGE,
+    color_distance,
     css_name,
     normalize_hex,
 )
@@ -99,9 +100,10 @@ def test_a_value_that_is_not_a_colour_is_refused_by_name():
 # ---- case 17: default assignment ---------------------------------------------
 
 @workflow(purpose="register-module stores each new module's default colour in "
-                  "modules.json in its registration commit: its name's palette "
-                  "slot, or the next free one; colours already stored never "
-                  "move as more modules are added, past sixteen too")
+                  "modules.json in its registration commit: the first module "
+                  "its name's palette slot, each later one a free palette "
+                  "colour; colours already stored never move as more modules "
+                  "are added, past sixteen too")
 def test_default_colours_are_stable_as_modules_are_added(tmp_project):
     names = [f"mod{i:02d}" for i in range(18)]
     seen: dict[str, str] = {}
@@ -121,6 +123,26 @@ def test_default_colours_are_stable_as_modules_are_added(tmp_project):
     assert seen[names[0]] == default_color(names[0])
     assert set(seen.values()) <= set(PALETTE_HEXES)
     assert len({seen[n] for n in names[:16]}) == 16
+
+
+@workflow(purpose="Modules registered one after another get default colours "
+                  "that do not look alike: each later module takes the free "
+                  "palette colour most unlike the colours already taken, so "
+                  "every pair of the first four is at least a CIEDE2000 "
+                  "distance of 15 apart")
+def test_each_new_module_gets_a_default_unlike_the_others(tmp_project):
+    names = ["mif_csv", "images", "qc", "stats"]
+    for name in names:
+        register_module(name=name, contracts=[])
+    stored = {n: e.color for n, e in read_module_colors(tmp_project).items()}
+
+    first, second = stored[names[0]], stored[names[1]]
+    assert second == max((hx for hx in PALETTE_HEXES if hx != first),
+                         key=lambda hx: color_distance(hx, first))
+    colours = [stored[n] for n in names]
+    closest = min(color_distance(a, b) for i, a in enumerate(colours)
+                  for b in colours[i + 1:])
+    assert closest >= 15, {n: stored[n] for n in names}
 
 
 # ---- case 16: setting a colour through the routes ----------------------------

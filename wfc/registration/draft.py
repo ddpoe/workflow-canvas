@@ -57,6 +57,7 @@ from axiom_annotations import AutoStep, Step, task, workflow
 from .. import layout
 from ..contracts import parse_method_yaml, validate_env_name
 from ..persistence import project_root as get_project_root
+from ..storage import write_file
 
 #: The two kinds of draft.
 DRAFT_VERSION, DRAFT_METHOD = "version", "method"
@@ -315,9 +316,8 @@ def _write_pointer(root: Path, pointer: DraftPointer) -> None:
     """Write ``draft.json`` whole: a reader finds the old pointer or the new one."""
     path = layout.draft_pointer_path(root, pointer.module, pointer.method)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    tmp.write_bytes(_to_json(pointer))
-    os.replace(tmp, path)
+    write_file(path, _to_json(pointer),
+               temporary=path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"))
 
 
 def read_draft(module: str, method: str, root: Path | None = None) -> DraftPointer | None:

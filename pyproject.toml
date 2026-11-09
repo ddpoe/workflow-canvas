@@ -1,12 +1,12 @@
 [tool.poetry]
 name = "workflow-canvas"
-version = "0.8.0b3"
-description = "An AI-native, visual dry-lab notebook for reproducible analysis: build pipelines in a canvas or with your AI agent, and rerun and check any result"
+version = "0.8.0"
+description = "A visual dry-lab notebook for reproducible analysis: build pipelines in a canvas or with your AI agent, and rerun and check any result"
 authors = ["Dante <dantepoe@noboundssolutions.com>"]
 license = "BSD-3-Clause"
 readme = "README.md"
-homepage = "https://workflow-canvas.readthedocs.io/en/latest/"
-documentation = "https://workflow-canvas.readthedocs.io/en/latest/"
+homepage = "https://workflow-canvas.readthedocs.io/en/stable/"
+documentation = "https://workflow-canvas.readthedocs.io/en/stable/"
 repository = "https://github.com/ddpoe/workflow-canvas"
 keywords = [
   "workflow",
@@ -26,7 +26,7 @@ keywords = [
   "lab-notebook",
 ]
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 4 - Beta",
   "Environment :: Console",
   "Environment :: Web Environment",
   "Intended Audience :: Science/Research",

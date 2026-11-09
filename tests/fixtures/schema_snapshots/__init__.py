@@ -17,7 +17,7 @@ import sqlite3
 from pathlib import Path
 
 #: The latest release, whose snapshot the schema-drift witness opens.
-SNAPSHOT_RELEASE = "0.7.0"
+SNAPSHOT_RELEASE = "0.8.0"
 
 #: The release whose databases the backfill tests upgrade: it predates the
 #: methods uniqueness rule and the runs' cancel reason.

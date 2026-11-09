@@ -33,7 +33,7 @@
   },
   "how-to/canvas-hub.md": {
     "doc_id": "pm_mvp::docs/consumer/how-to/canvas-hub",
-    "hash": "df7c8766a4a3"
+    "hash": "5e6de85cb607"
   },
   "how-to/check-and-run.md": {
     "doc_id": "pm_mvp::docs/consumer/how-to/check-and-run",
@@ -125,7 +125,7 @@
   },
   "overview/what-is-workflow-canvas.md": {
     "doc_id": "pm_mvp::docs/consumer/overview/what-is-workflow-canvas",
-    "hash": "d30b57d69245"
+    "hash": "4c673cec4687"
   },
   "reference/cli-cache-export.md": {
     "doc_id": "pm_mvp::docs/consumer/reference/cli-cache-export",
@@ -153,7 +153,7 @@
   },
   "reference/known-issues.md": {
     "doc_id": "pm_mvp::docs/consumer/reference/known-issues",
-    "hash": "2cdbab7b4b0b"
+    "hash": "382dc4838bd7"
   },
   "reference/method-script-contract.md": {
     "doc_id": "pm_mvp::docs/consumer/reference/method-script-contract",
@@ -165,11 +165,11 @@
   },
   "reference/pipeline-document.md": {
     "doc_id": "pm_mvp::docs/consumer/reference/pipeline-document",
-    "hash": "2cf6902e9757"
+    "hash": "2d0f09b9fd2e"
   },
   "reference/wf-canvas-toml.md": {
     "doc_id": "pm_mvp::docs/consumer/reference/wf-canvas-toml",
-    "hash": "f07212c9886a"
+    "hash": "0a53dabafa70"
   },
   "reference/wfc-client-api.md": {
     "doc_id": "pm_mvp::docs/consumer/reference/wfc-client-api",
@@ -181,7 +181,7 @@
   },
   "tutorials/convert-an-analysis.md": {
     "doc_id": "pm_mvp::docs/consumer/tutorials/convert-an-analysis",
-    "hash": "048bd4ec8d32"
+    "hash": "e49b5cb7dd1d"
   },
   "tutorials/drafting-a-method.md": {
     "doc_id": "pm_mvp::docs/consumer/tutorials/drafting-a-method",
@@ -201,6 +201,10 @@
   },
   "tutorials/work-with-an-ai-agent.md": {
     "doc_id": "pm_mvp::docs/consumer/tutorials/work-with-an-ai-agent",
-    "hash": "d6c2f495bff8"
+    "hash": "b77196745805"
+  },
+  "videos.md": {
+    "doc_id": "pm_mvp::docs/consumer/videos",
+    "hash": "a90006505881"
   }
 }

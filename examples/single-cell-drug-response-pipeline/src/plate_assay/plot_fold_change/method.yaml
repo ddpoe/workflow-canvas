@@ -1,0 +1,12 @@
+inputs:
+  bootstrap:
+    type: csv
+    description: One plate's bootstrap table (bootstrap_ci's output).
+  plate:
+    type: dir
+    description: The same plate's folder; only its plate.json is read, for the plate's name.
+outputs:
+  figure:
+    type: png
+    description: Mean fold change per condition with its 95% interval.
+env: plates-lab-wfc

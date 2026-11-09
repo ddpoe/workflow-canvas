@@ -1,0 +1,63 @@
+{
+  "name": "plates-draft",
+  "nodes": [
+    {
+      "id": "plates",
+      "type": "input_selector",
+      "fan_mode": "out",
+      "samples": [
+        "plate1",
+        "plate2"
+      ]
+    },
+    {
+      "id": "normalize_plate",
+      "module": "plate_assay",
+      "method": "normalize_plate",
+      "params": {
+        "min_area": 35
+      },
+      "version": "draft"
+    },
+    {
+      "id": "bootstrap_ci",
+      "module": "plate_assay",
+      "method": "bootstrap_ci",
+      "params": {
+        "n_boot": 200000,
+        "seed": 0
+      },
+      "version": "draft"
+    },
+    {
+      "id": "plot_fold_change",
+      "module": "plate_assay",
+      "method": "plot_fold_change",
+      "version": "draft"
+    }
+  ],
+  "links": [
+    {
+      "source": "plates",
+      "target": "normalize_plate",
+      "targetHandle": "plate"
+    },
+    {
+      "source": "normalize_plate",
+      "target": "bootstrap_ci",
+      "targetHandle": "normalized",
+      "sourceHandle": "normalized"
+    },
+    {
+      "source": "bootstrap_ci",
+      "target": "plot_fold_change",
+      "targetHandle": "bootstrap",
+      "sourceHandle": "bootstrap"
+    },
+    {
+      "source": "plates",
+      "target": "plot_fold_change",
+      "targetHandle": "plate"
+    }
+  ]
+}

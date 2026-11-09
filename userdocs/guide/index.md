@@ -1,13 +1,16 @@
-<!-- generated from pm_mvp::docs/consumer/overview/what-is-workflow-canvas @ d30b57d69245; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/overview/what-is-workflow-canvas @ 4c673cec4687; do not edit -->
 
 # What is Workflow Canvas?
 
 ## Why Workflow Canvas
 
-Workflow Canvas is an AI-native, visual dry-lab notebook for reproducible analysis. It turns your analysis into a pipeline you can see, and guarantees every result in it can be reproduced: it records the exact code, data, settings and software behind each result, so anyone can rerun it and check that it matches.
+Workflow Canvas is a visual dry-lab notebook for reproducible analysis. Your AI agent can turn your scripts and notebooks into a pipeline you can see, or you can write it yourself; either way, every result records the exact code, data, settings and software behind it, so anyone can rerun it and check that it matches.
 
-Your AI agent can build the pipeline from your existing scripts and notebooks; you can write it yourself, or mix the two. Either way, every result is reproducible.
-If you run your own multi-step analysis in Python, you know the failure mode: scripts multiply, and months later you can't say for certain which code, which inputs, and which environment produced a given figure or dataset — and neither can whoever inherits the project. Re-running redoes work that never changed. And the usual fix is its own burden: making your analysis reproducible and orchestrated this way normally means adopting infrastructure tools — a workflow engine and its language, containers, a provenance system — and taking on the job of learning and running them. That's a second job on top of the science.
+If you run your own multi-step analysis in Python, R or bash, you know the failure mode: scripts multiply, and months later you can't say for certain which code, which inputs, and which environment produced a given figure or dataset — and neither can whoever inherits the project. Re-running redoes work that never changed. And the usual fix is its own burden: making your analysis reproducible and orchestrated this way normally means adopting infrastructure tools — a workflow engine and its language, containers, a provenance system — and taking on the job of learning and running them. That's a second job on top of the science.
+
+**Workflow Canvas hands you that stack, pre-built.** You describe each analysis step once, with a contract saying what it takes in and what it produces, and Workflow Canvas runs the steps in order, each in its own container, skips work that hasn't changed, and records every run. You don't learn a workflow language or build the infrastructure yourself.
+
+Converting the example analysis in [Convert an Analysis into a Pipeline](tutorials/convert-an-analysis.md) caught a filter that was computed but never applied.
 
 :::{figure} _images/builder-demo-pipeline.png
 :alt: The Canvas Builder with the demo pipeline wired: three samples fanned across five methods, coloured by their three modules
@@ -23,9 +26,6 @@ wfc demo
 ```
 
 `wfc doctor` checks that git, Docker and your output archive are ready. Every line should say `OK` before you go on. `wfc demo` then spins up the exact pipeline shown above on your machine — see [A Tour of the Demo](tutorials/wfc-demo.md) for the tour. You'll need [Docker](https://docs.docker.com/get-started/get-docker/) running — every step executes in a container — plus Python 3.12 and git; see [Installation](tutorials/getting-started.md#installation) for the details.
-
-**Workflow Canvas hands you that stack, pre-built.** You describe each analysis step once — a contract saying what it takes in and what it produces — and Workflow Canvas takes it from there: it orchestrates the runs, isolates each step in its own container, skips work that hasn't changed, and records every run in a queryable database you can trace any result back through. You get workflow orchestration and a full provenance layer without learning a workflow language or building the infrastructure yourself — that engineering is part of what Workflow Canvas brings.
-Methods can be written in Python, R or bash, with the same contract in each, and each runs in the container environment it names.
 
 
 ## Build it with an AI agent
@@ -141,4 +141,12 @@ reference/pipeline-document
 reference/wf-canvas-toml
 reference/wfc-client-api
 reference/known-issues
+```
+
+```{toctree}
+:caption: Media
+:maxdepth: 2
+:hidden:
+
+videos
 ```

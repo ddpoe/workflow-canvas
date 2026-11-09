@@ -119,6 +119,29 @@ def test_a_tree_git_no_longer_holds_is_refused_naming_the_version(registered):
     assert not [p for p in layout.code_copies_dir(root).iterdir() if p.name.startswith(".")]
 
 
+@workflow(purpose="A copy's stamp another step holds open while it is "
+                  "replaced, released about 300 ms later (the Windows sharing "
+                  "violation of a parallel step reading it), is still written")
+def test_a_stamp_held_by_another_step_is_still_written(registered):
+    """The stamp is replaced once the other handle lets go; no temporary file is left."""
+    from wfc.registration.registered_code import _write_stamp
+
+    root, entry = registered
+    extract_version_copy(MODULE, METHOD, entry, root)
+    stamp = layout.code_copy_stamp(root, entry.tree_hash)
+    holder = open(stamp, "rb")  # noqa: SIM115 -- closed by the timer
+    release = threading.Timer(0.3, holder.close)
+    release.start()
+    try:
+        _write_stamp(stamp, "f" * 16)
+    finally:
+        release.join()
+        holder.close()
+
+    assert stamp.read_text(encoding="utf-8").strip() == "f" * 16
+    assert not [p.name for p in stamp.parent.iterdir() if p.name.startswith(f".{stamp.name}-")]
+
+
 def test_two_concurrent_extractions_leave_one_verified_copy(registered):
     root, entry = registered
     results, errors = [], []

@@ -335,14 +335,17 @@ def test_init_fresh_directory_leaves_clean_tree(tmp_path):
     assert _porcelain(proj) == ""
 
 
-@workflow(purpose="The generated config holds only [dvc]; a user-added [pixi] "
-                  "root and [conda] root are still read")
+@workflow(purpose="The generated config holds only [dvc] and [updates], which "
+                  "reads as the update check on and pre-releases following the "
+                  "install; a user-added [pixi] root and [conda] root are still "
+                  "read")
 def test_generated_config_holds_only_dvc(tmp_path):
     from wfc.persistence import read_config
     proj = tmp_path / "cfg"
     init_test_project(proj)
     cfg_path = proj / ".wfc" / "wf-canvas.toml"
-    assert set(tomllib.loads(cfg_path.read_text())) == {"dvc"}
+    assert set(tomllib.loads(cfg_path.read_text())) == {"dvc", "updates"}
+    assert read_config(proj)["updates"] == {"check": True, "prereleases": None}
     pixi_root = (tmp_path / "shared-pixi").as_posix()
     conda_root = (tmp_path / "conda-base").as_posix()
     cfg_path.write_text(

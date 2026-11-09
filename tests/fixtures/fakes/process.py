@@ -77,7 +77,9 @@ def refusing_process(reason: str):
              "the dev loop's docker run, and the docker wrappers in "
              "wfc.environments.docker with the timeout each passes: the "
              "daemon queries (image inspect, tag) DOCKER_QUERY_TIMEOUT_S, "
-             "manifest inspect REGISTRY_READ_TIMEOUT_S, pull and push none",
+             "manifest inspect REGISTRY_READ_TIMEOUT_S, docker version (the "
+             "bug report's server-version probe) DOCKER_VERSION_TIMEOUT_S, "
+             "pull and push none",
     preserves="the argv and kwargs the caller built; with `only`, every "
               "command for another program reaches the real subprocess.run",
     not_proven="that the program exists or answers as the canned result "

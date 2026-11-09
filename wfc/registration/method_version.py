@@ -179,6 +179,8 @@ def write_version_list_bytes(root: Path, module: str, method: str,
     import os
     import tempfile
 
+    from ..storage import replace_file
+
     path = layout.method_versions_path(root, module, method)
     path.parent.mkdir(parents=True, exist_ok=True)
     staging = layout.registry_staging_dir(root)
@@ -187,7 +189,7 @@ def write_version_list_bytes(root: Path, module: str, method: str,
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
-        os.replace(tmp, path)
+        replace_file(tmp, path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise

@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/reference/pipeline-document @ 2cf6902e9757; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/reference/pipeline-document @ 2d0f09b9fd2e; do not edit -->
 
 # Pipeline Document
 
@@ -70,8 +70,10 @@ The Canvas writes `sourceHandle` and `targetHandle` for the two slots; they are 
 
 These wirings are refused:
 
-- A method node with no incoming link. Only input selectors and run references start a pipeline.
+- A method node with no incoming link, in a document that has an input selector or a run reference: there, only input selectors and run references start a pipeline.
 - Two links into one input, unless every link into it comes from a run reference and the input is declared `multiple: true`; then they arrive as a list, in link order.
+- A `source_slot` or `target_slot` that names an output or input the node's version of the method does not declare. The refusal names the node and the slot, and lists the declared ones.
+- An input nothing is connected to, unless its `method.yaml` declares it `required: false`. The refusal names the node and the input.
 - More than one file into an input that takes one file (an input without `multiple: true` in its `method.yaml`), such as a fan-in selector bundling several samples into it. The refusal names the node and the input.
 - A method node fed by two per-sample selectors. Put both samples on one selector, or give the second its own method node.
 - A fan-in selector with no samples, or one whose consumer has another upstream node.

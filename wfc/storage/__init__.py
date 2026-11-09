@@ -83,7 +83,9 @@ first use, to push entries to the configured remote and pull them back.
   reader of an output meets is a :class:`ResolveOutputError`, a malformed
   cache entry included;
   :func:`resolve_run_reference_outputs` is Execution's composer's read of
-  the referenced runs' recorded outputs and sample.
+  each referenced run's recorded outputs and sample -- for a cache-hit
+  audit row, those of the run whose outputs it reused -- with its
+  ``unreadable_slots``, the outputs placed ``missing``.
 - ``restore``: restore a registered sample for a pipeline run
   (:func:`restore_sample`); :func:`sample_data_path` is the one answer to
   where a sample's restored data sits (Layout's sample workspace under the
@@ -102,6 +104,9 @@ first use, to push entries to the configured remote and pull them back.
   first push (:func:`store_sample_bytes`).
 - ``egress``: copy a cache entry out to a user's destination, writable
   (:func:`copy_out`).
+- ``replace``: rewrite a shared file whole while other processes may hold
+  it open (:func:`replace_file`, :func:`write_file`); a replace, a read or
+  a removal another handle refuses is tried again (:func:`retry_while_held`).
 - ``verify``: the ``wfc verify`` body (:func:`verify_project`): re-hash
   every sample, pre-archive output, archived cache entry, checkout and blob,
   list each that is not what wfc recorded by kind (:class:`VerifyReport`),
@@ -172,6 +177,7 @@ from .prune import (
     unpushed_record_hashes,
 )
 from .push_worker import first_push_status
+from .replace import replace_file, retry_while_held, write_file
 from .resolve import (
     KIND_SAMPLE,
     OUTPUT_LOCAL,
@@ -225,6 +231,9 @@ from .transport import PushOutcome, has_remote_configured, pull, pull_cache, pus
 from .verify import VERIFY_KINDS, VerifyProblem, VerifyReport, verify_project
 
 __all__ = [
+    "replace_file",
+    "retry_while_held",
+    "write_file",
     "VERIFY_KINDS",
     "VerifyProblem",
     "VerifyReport",

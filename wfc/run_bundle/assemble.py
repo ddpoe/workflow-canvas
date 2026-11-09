@@ -54,6 +54,7 @@ from ..identity import (
     build_input_fingerprint,
 )
 from ..persistence import project_root as get_project_root
+from ..release import installed_wfc_version
 from ..storage import (
     KIND_ENV_FINGERPRINT,
     KIND_PIPELINE_DOCUMENT,
@@ -61,7 +62,7 @@ from ..storage import (
     read_entry,
     resolve_output,
 )
-from ..version import archive_tree, installed_wfc_version
+from ..version import archive_tree
 from .command import command_script
 from .describe import render_crate, render_readme
 from .plan import ExportPlan, PlanStep, invocation_input_paths

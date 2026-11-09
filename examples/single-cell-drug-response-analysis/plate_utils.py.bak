@@ -1,0 +1,15 @@
+"""Helpers for the plate assay notebooks."""
+import json, os
+import pandas as pd
+
+def load_plate(data_dir, plate):
+    cells = pd.read_csv(os.path.join(data_dir, plate, "cells.csv"))
+    layout = json.load(open(os.path.join(data_dir, plate, "plate.json")))
+    cells["condition"] = cells["well"].map(layout["wells"])
+    return cells, layout
+
+def normalize(cells, background):
+    out = cells.copy()
+    out["signal"] = out["intensity"] - background
+    out["fold_change"] = out["signal"] / out.loc[out["condition"] == "DMSO", "signal"].median()
+    return out

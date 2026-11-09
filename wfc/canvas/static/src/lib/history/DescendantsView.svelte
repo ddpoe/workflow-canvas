@@ -33,6 +33,16 @@
   import { openDraftInRegistry } from '../shared/draftLinks.js';
   import { DRAFT_NODE_HELP, REVIEW_IN_REGISTRY, downstreamHelp } from '../builder/drafts.js';
   import { draftExceptionColor, draftOwner } from './historyDrafts.js';
+  import { tick } from 'svelte';
+  import {
+    FIT_MIN,
+    fitZoom,
+    zoomIn,
+    zoomOut,
+    loadZoomChoice,
+    saveZoomChoice,
+    type ZoomChoice,
+  } from './descendantsZoom.js';
 
   /** The status border, coloured only for an exception (SOP: History shows exceptions). */
   function borderColor(run: WfcRun): string {
@@ -72,9 +82,105 @@
       handleCardClick(run);
     }
   }
+
+  /*
+   * The card zoom. Each tree row (its cards and connectors) is drawn with CSS
+   * `zoom`; the sample labels and the scope banner keep their size. Fit is
+   * measured from the drawn rows; − and + choose a fixed percentage.
+   */
+  let zoomChoice = $state<ZoomChoice>(loadZoomChoice());
+  let fitPercent = $state(FIT_MIN);
+  let zoomPercent = $derived(zoomChoice === 'fit' ? fitPercent : zoomChoice);
+  let scroller = $state<HTMLElement | null>(null);
+
+  function chooseZoom(choice: ZoomChoice): void {
+    zoomChoice = choice;
+    saveZoomChoice(choice);
+  }
+
+  /**
+   * Measure the widest card at plain size and fit it to the view's width.
+   * A card is a flex item that shrinks (and wraps) when its row is too
+   * narrow, so it is measured with shrinking turned off for the read, giving
+   * its own width rather than the row's; nothing is painted in between.
+   */
+  function refit(): void {
+    if (!scroller || zoomChoice !== 'fit') return;
+    const z = zoomPercent / 100;
+    const cards = [...scroller.querySelectorAll<HTMLElement>('.tree-row > .tree-card')];
+    for (const card of cards) card.style.flexShrink = '0';
+    let natural = 0;
+    let rowsLeft = Infinity;
+    for (const card of cards) {
+      const left = card.parentElement!.getBoundingClientRect().left;
+      rowsLeft = Math.min(rowsLeft, left);
+      natural = Math.max(natural, (card.getBoundingClientRect().right - left) / z);
+    }
+    for (const card of cards) card.style.flexShrink = '';
+    if (!Number.isFinite(rowsLeft)) return;
+    const viewRight = scroller.getBoundingClientRect().left + scroller.clientLeft + scroller.clientWidth;
+    fitPercent = fitZoom(viewRight - rowsLeft, natural);
+  }
+
+  // Re-fit when the content changes: other runs, collapse state, select mode, back to Fit.
+  $effect(() => {
+    void $scopedDescendantForest;
+    void $descendantsCollapsed;
+    void $filters.selectMode;
+    if (!scroller || zoomChoice !== 'fit') return;
+    tick().then(refit);
+  });
+
+  // Re-fit when the view's width changes: the window, the run panel opening or resizing.
+  $effect(() => {
+    if (!scroller || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => refit());
+    ro.observe(scroller);
+    return () => ro.disconnect();
+  });
+
+  // Ctrl+wheel anywhere over the view, the zoom box included, zooms the cards
+  // (a non-passive listener, so the page itself does not zoom). A trackpad
+  // pinch sends many small deltas: one step per 50 accumulated, the count
+  // starting afresh after a pause.
+  let viewEl = $state<HTMLElement | null>(null);
+  $effect(() => {
+    const el = viewEl;
+    if (!el) return;
+    let acc = 0;
+    let last = -Infinity;
+    const onWheel = (e: WheelEvent) => {
+      // No cards (the box is hidden): leave the wheel to the page.
+      if (!e.ctrlKey || $scopedDescendantForest.length === 0) return;
+      e.preventDefault();
+      if (e.timeStamp - last > 250) acc = 0;
+      last = e.timeStamp;
+      acc += e.deltaY;
+      if (Math.abs(acc) < 50) return;
+      chooseZoom(acc < 0 ? zoomIn(zoomPercent) : zoomOut(zoomPercent));
+      acc = 0;
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  });
+
+  /** + = − 0 while the view has focus; never from a field, never with a modifier. */
+  function onViewKeydown(e: KeyboardEvent): void {
+    const t = e.target as HTMLElement | null;
+    const tag = t?.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || t?.isContentEditable) return;
+    if (e.ctrlKey || e.metaKey || e.altKey || $scopedDescendantForest.length === 0) return;
+    if (e.key === '+' || e.key === '=') { e.preventDefault(); chooseZoom(zoomIn(zoomPercent)); }
+    else if (e.key === '-') { e.preventDefault(); chooseZoom(zoomOut(zoomPercent)); }
+    else if (e.key === '0') { e.preventDefault(); chooseZoom('fit'); }
+  }
 </script>
 
-<div class="descendants-view">
+<!-- The view takes focus on a click so its zoom keys reach it; the keys are a
+     shortcut for the control box's buttons. -->
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<div class="descendants-view" role="region" aria-label="Descendants" tabindex="-1" onkeydown={onViewKeydown} bind:this={viewEl}>
+<div class="dv-scroll" bind:this={scroller}>
   {#if $descendantScope}
     <div class="scope-banner">
       <span class="scope-text">Descendants of <strong>{scopeLabel}</strong></span>
@@ -164,7 +270,7 @@
             {formatRelativeTime(run.timestamp)} {'·'} <button type="button" class="failed-link"
               title="Open this run's output"
               onclick={(e) => { e.stopPropagation(); openRunOn(run.id, 'output'); }}
-              onkeydown={(e) => e.stopPropagation()}><span aria-hidden="true">✗</span> Failed</button> after {formatDuration(run.duration)}
+              onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation(); }}><span aria-hidden="true">✗</span> Failed</button>{#if run.duration != null}{' '}after {formatDuration(run.duration)}{/if}
           {:else}
             {formatRelativeTime(run.timestamp)} {'·'} {formatDuration(run.duration)}
           {/if}
@@ -176,7 +282,7 @@
       <div class="section">
         <div class="section-label">{section.sample || '(no sample)'}</div>
         {#each descendantRows(section.roots, $descendantsCollapsed) as row (row.node.key)}
-          <div class="tree-row" style="padding-left: {row.depth * 24}px;">
+          <div class="tree-row" style="padding-left: {row.depth * 24}px; --dz: {zoomPercent / 100};">
             {#if row.node.children.length > 0}
               <button
                 class="caret"
@@ -196,12 +302,89 @@
     {/each}
   {/if}
 </div>
+  {#if $scopedDescendantForest.length > 0}
+    <!-- The card zoom, in the view's lower right (styled as the Builder's controls). -->
+    <div class="zoom-box" data-testid="descendants-zoom" role="group" aria-label="Card zoom">
+      <button type="button" class="z-btn" aria-label="Zoom out" title="Zoom out (−)" onclick={() => chooseZoom(zoomOut(zoomPercent))}>−</button>
+      <span class="z-level" data-testid="descendants-zoom-level">{zoomPercent}%</span>
+      <button type="button" class="z-btn" aria-label="Zoom in" title="Zoom in (+)" onclick={() => chooseZoom(zoomIn(zoomPercent))}>+</button>
+      <button type="button" class="z-btn z-fit" class:sel={zoomChoice === 'fit'} aria-label="Fit to view" aria-pressed={zoomChoice === 'fit'}
+              title="Fit the cards to the view (0)" onclick={() => chooseZoom('fit')}>Fit</button>
+    </div>
+  {/if}
+</div>
 
 <style>
+  /* The view fills its pane: the cards scroll inside it, the zoom box stays
+     in its lower right. */
   .descendants-view {
+    position: relative;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    outline: none;
+  }
+  .dv-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    /* A scrollbar that comes and goes would change the width Fit measures. */
+    scrollbar-gutter: stable;
     display: flex;
     flex-direction: column;
     gap: 4px;
+    /* Room to scroll the last card clear of the zoom box. */
+    padding-bottom: 44px;
+  }
+  .zoom-box {
+    position: absolute;
+    right: 16px;
+    bottom: 4px;
+    z-index: 6;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 3px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+  }
+  .z-btn {
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--xy-controls-button-background);
+    border: 1px solid var(--xy-controls-button-border-color);
+    border-radius: 3px;
+    color: var(--xy-controls-button-color);
+    font-family: inherit;
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .z-btn:hover {
+    background: var(--xy-controls-button-background-hover);
+    color: var(--xy-controls-button-color-hover);
+  }
+  .z-fit {
+    width: auto;
+    padding: 0 8px;
+    font-size: 11px;
+  }
+  .z-fit.sel {
+    border-color: var(--accent);
+    color: var(--xy-controls-button-color-hover);
+    background: color-mix(in oklab, var(--accent) 22%, var(--xy-controls-button-background));
+  }
+  .z-level {
+    min-width: 40px;
+    text-align: center;
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
   }
   .empty-state {
     display: flex;
@@ -252,10 +435,13 @@
     letter-spacing: 0.5px;
     margin: 0 0 8px;
   }
+  /* The card zoom (--dz, set per row) scales the row's cards and connectors
+     together, its indent included; the sample labels sit outside it. */
   .tree-row {
     display: flex;
     align-items: center;
     margin: 8px 0;
+    zoom: var(--dz, 1);
   }
   .caret {
     background: none;

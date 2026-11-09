@@ -3,12 +3,13 @@ Suite-wide pytest fixtures and skip-guards.
 
 Fixtures include tmp_project (a project root with DB, config and fixture
 methods) and cli (the in-process CLI runner); the tool skip-guards are the
-``requires_*`` marks. Pipeline fixtures are re-exported from
+``requires_*`` marks; ``WFC_TEST_SHARD`` runs one shard of the suite. Pipeline fixtures are re-exported from
 tests/fixtures/conftest.py; production-path builders live in the
 tests/fixtures/routes/ package.
 """
 
 import functools
+import os
 import shutil
 import subprocess
 import time
@@ -50,6 +51,41 @@ from tests.fixtures.routes import (  # noqa: F401
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+# =============================================================================
+# One shard of the suite, for CI's split Windows job
+# =============================================================================
+
+#: ``i/n`` (1-based): run only shard *i* of *n*. CI's Windows job sets it on
+#: each of its parallel runners (``.github/workflows/ci.yml``).
+SHARD_ENV_VAR = "WFC_TEST_SHARD"
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_collection_modifyitems(config, items):
+    """Keep one shard of the selected tests when ``WFC_TEST_SHARD`` is ``i/n``.
+
+    Runs after the marker selection, so the shards split the tests that run.
+    Shard *i* keeps every *n*-th test in node-id order, starting at the
+    *i*-th: the shards are disjoint, together they are the whole run, and
+    each holds about the same number of tests. Unset, nothing is deselected.
+    """
+    spec = os.environ.get(SHARD_ENV_VAR, "").strip()
+    if not spec:
+        return
+    try:
+        index, count = (int(part) for part in spec.split("/"))
+    except ValueError:
+        raise pytest.UsageError(f"{SHARD_ENV_VAR} must be i/n, such as 2/3, not {spec!r}") from None
+    if not 1 <= index <= count:
+        raise pytest.UsageError(f"{SHARD_ENV_VAR}={spec!r}: the shard must be between 1 and {count}")
+    order = sorted(range(len(items)), key=lambda k: items[k].nodeid)
+    kept = {k for rank, k in enumerate(order) if rank % count == index - 1}
+    deselected = [item for k, item in enumerate(items) if k not in kept]
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+        items[:] = [item for k, item in enumerate(items) if k in kept]
 
 
 # =============================================================================
@@ -141,10 +177,21 @@ def _home_archive_leak_guard():
     existing empty directory that writes nothing: there is no observable on
     disk. Everything that puts bytes in ~ is covered.
 
+    The update check's answer, ``~/.wfc/update-check.json``, is held to the
+    same rule: the session fails when it appeared or was written during the
+    run. A test reaches it only under ``redirect_home``.
+
     The full rule and the suite's other invariants are in
     ``tests/test_suite_invariants.py``.
     """
     archives = Path.home() / ".wfc" / "archives"
+    update_cache = Path.home() / ".wfc" / "update-check.json"
+
+    def update_cache_mtime() -> float | None:
+        try:
+            return update_cache.stat().st_mtime
+        except OSError:
+            return None
 
     def listing() -> list[str]:
         if not archives.is_dir():
@@ -162,8 +209,18 @@ def _home_archive_leak_guard():
         return None
 
     before = set(listing())
+    cache_before = update_cache_mtime()
     started = time.time()
     yield
+    cache_after = update_cache_mtime()
+    if cache_after is not None and cache_after != cache_before and cache_after >= started:
+        raise AssertionError(
+            "SUITE INVARIANT 4 — this run wrote wfc's update-check answer in "
+            f"the developer's home: {update_cache}. A test that runs the "
+            "update check must point the home at a temp directory first "
+            "(tests.fixtures.fakes.redirect_home); delete the file once the "
+            "test is fixed."
+        )
     after = listing()
     added = [name for name in after if name not in before]
     grew = []
@@ -206,6 +263,47 @@ def _home_archive_leak_guard():
 # Suite invariant: no push worker outlives the test that started it
 # =============================================================================
 
+#: How long the guard waits for a push worker that was told to stop to finish
+#: its last tick (seconds). A cancel's stop waits only
+#: ``PUSH_WORKER_STOP_SECONDS`` and leaves a longer last push to end on its
+#: own; on a loaded runner a push of a few files can take longer than that.
+PUSH_WORKER_LAST_TICK_GRACE_S = 60.0
+
+
+def _settle_push_workers(threads, *, grace: float = PUSH_WORKER_LAST_TICK_GRACE_S):
+    """End the push-worker threads a test left running; return the ones that leaked.
+
+    A worker whose stop event is already set was stopped by its pipeline and
+    is finishing its last tick, which a cancel does not wait for: it gets
+    *grace* seconds to end, and only one still running after them leaked. A
+    worker no one stopped leaked: its stop event is set here and it gets ten
+    seconds to end. Every thread is ended or given up on before this returns,
+    so the next test starts clean.
+
+    Args:
+        threads: The push-worker threads still alive after the test.
+        grace: Seconds a stopped worker gets to finish its last tick.
+
+    Returns:
+        The threads that leaked, in the order given.
+    """
+    import threading
+
+    leaked = []
+    for thread in threads:
+        events = [arg for arg in getattr(thread, "_args", ()) if isinstance(arg, threading.Event)]
+        if events and all(event.is_set() for event in events):
+            thread.join(timeout=grace)
+            if thread.is_alive():
+                leaked.append(thread)
+            continue
+        for event in events:
+            event.set()
+        thread.join(timeout=10)
+        leaked.append(thread)
+    return leaked
+
+
 @pytest.fixture(autouse=True)
 def _push_worker_leak_guard():
     """Fail the test that leaves a push-worker thread running.
@@ -218,10 +316,12 @@ def _push_worker_leak_guard():
     failures it causes land in whichever test runs next, far from the leak.
 
     So the test that leaks is the one that fails, naming the thread. The
-    guard stops and joins the thread first (its stop event is the second
-    argument the thread was started with), so the leak ends here and the
-    next test starts clean. A worker already running when the test started
-    is not this test's.
+    guard ends the thread first (``_settle_push_workers``; its stop event is
+    the second argument the thread was started with), so the leak ends here
+    and the next test starts clean. A worker its pipeline stopped that is
+    still finishing its last push, which a cancel leaves to end on its own,
+    is waited for, not failed. A worker already running when the test
+    started is not this test's.
     """
     import threading
 
@@ -233,14 +333,9 @@ def _push_worker_leak_guard():
 
     before = set(running())
     yield
-    leaked = [t for t in running() if t not in before]
+    leaked = _settle_push_workers([t for t in running() if t not in before])
     if not leaked:
         return
-    for thread in leaked:
-        for arg in getattr(thread, "_args", ()):
-            if isinstance(arg, threading.Event):
-                arg.set()
-        thread.join(timeout=10)
     pytest.fail(
         f"this test left {len(leaked)} push-worker thread(s) running "
         f"({', '.join(t.name + ' ' + str(t.ident) for t in leaked)}); the guard "
@@ -303,6 +398,45 @@ def _no_labelled_containers_running(request, monkeypatch):
 
         fake_leftover_daemon(monkeypatch)
         fake_build_processes(monkeypatch)
+
+
+#: How long the network guard waits for an update check a test started to end
+#: (seconds). A faked or refused request answers at once.
+UPDATE_CHECK_SETTLE_S = 10.0
+
+
+@pytest.fixture(autouse=True)
+def _no_unfaked_update_check_requests(monkeypatch):
+    """Fail the test that lets the update check reach the network.
+
+    ``wfc.release``'s update check is the one place wfc sends a request on
+    its own (PyPI's JSON, the public changelog), and the canvas's about
+    route starts it on a background thread. Left real, a test opening the
+    canvas would reach PyPI. The registered fake ``refuse_release_http``
+    stands at that seam in every test, integration included: a request it
+    refuses raises as an offline machine does, so the check's own handling
+    stays real, and the test that made it fails here, naming the URL.
+
+    A test that wants answers calls ``fake_release_http(monkeypatch, ...)``
+    itself; the later patch wins. The check a test started is waited for
+    before the patches are undone, so no thread outlives its test and
+    reaches the real seam.
+    """
+    from tests.fixtures.fakes import refuse_release_http
+    from wfc import release
+
+    refused = refuse_release_http(monkeypatch)
+    yield
+    release.wait_for_update_check(UPDATE_CHECK_SETTLE_S)
+    if refused:
+        pytest.fail(
+            "this test let wfc's update check send a request it did not fake: "
+            + ", ".join(refused)
+            + ". Arm tests.fixtures.fakes.fake_release_http(monkeypatch, "
+            "answers) with the answers the test needs, or turn the check off "
+            "([updates] check = false).",
+            pytrace=False,
+        )
 
 
 # =============================================================================

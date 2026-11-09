@@ -78,6 +78,9 @@ async function captureMain(base: string): Promise<void> {
     viewport: VIEWPORT,
     deviceScaleFactor: 2,
   });
+  // History's Descendants cards open at 100%, not Fit, so the shot shows
+  // more than one sample's tree (the zoom box still shows in its corner).
+  await page.addInitScript(() => localStorage.setItem('wfc.history.descendantsZoom', '100'));
 
   // ---- Builder with the demo pipeline loaded --------------------
   console.log('Builder…');

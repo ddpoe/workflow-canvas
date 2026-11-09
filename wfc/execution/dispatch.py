@@ -184,7 +184,7 @@ def _invocation_record(*, image_ref: str, interpreter: str, script: str,
         (``container``, ``role``, ``read_only``), ``env``, ``user``,
         ``gpus``, ``workdir`` and ``wfc_version``.
     """
-    from ..version import installed_wfc_version
+    from ..release import installed_wfc_version
 
     env: dict[str, str] = {}
     for flag, pair in zip(env_flags[::2], env_flags[1::2]):

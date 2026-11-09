@@ -13,8 +13,9 @@ The three shapes -- a collapsed fan-in with a restore rule, a
 ``run_reference`` root, and a step reading its sample beside an upstream
 method's output and a reference -- are the standing whole-file witnesses for
 the wiring column of the emitter's input table, where fragment assertions are
-weakest. The third pins the composed rule: the restore sentinel, the upstream
-sentinel and the reference path declared together on one rule. A change to the
+weakest. The third pins the composed rule: the restore sentinel and the
+upstream sentinel declared together on one rule, the reference reaching it
+only through the shell's ``--ref-input`` flag. A change to the
 emitter that alters the emitted text shows up here as a diff against the
 golden file. When a change to the text is intended, regenerate the golden
 files with::

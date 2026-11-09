@@ -34,8 +34,9 @@ re-run.
 - :func:`has_malformed_output_records` is the record-validity rule as a
   predicate, for Execution's cache lookup.
 - :func:`resolve_run_reference_outputs` serves Execution's composer: the
-  referenced runs' recorded output paths by slot, sample and method, in the
-  composer's session, for the Graph load's reference binding.
+  referenced runs' recorded output paths by slot (after the cache-hit hop),
+  the slots :func:`output_location` places ``missing``, sample and method,
+  in the composer's session, for the Graph load's reference binding.
 """
 
 from __future__ import annotations
@@ -1495,21 +1496,30 @@ def resolve_run_reference_outputs(
     run_ref_outputs: dict[str, dict],
     session,
 ) -> dict[str, dict]:
-    """Resolve artifact paths, sample and method for run_reference nodes.
+    """Resolve artifact paths, sample, method and readability for run_reference nodes.
 
-    The composer's read (``wfc.execution.load_pipeline_from_document``).
-    For each run_reference entry, DB-resolves:
-      - ``output_paths``: {slot: artifact_path} for every output record of
-        the referenced Run. Each edge picks from here: the output it names,
+    The composer's read (``wfc.execution.load_pipeline_from_document``) and
+    the claim's reference backstop. For each run_reference entry,
+    DB-resolves:
+      - ``output_paths``: {slot: artifact_path} for every output record the
+        referenced run's readers select from (:func:`_checked_output_rows`):
+        its own, or, for a cache-hit audit row, the records of the run whose
+        outputs it reused. Each edge picks from here: the output it names,
         or the only one when it names none.
-      - ``sample``: the referenced ``Run.sample``. Merged into the pipeline
-        samples list so a run_reference-rooted pipeline actually has work to
-        do.
+      - ``unreadable_slots``: the slots of ``output_paths`` that
+        :func:`output_location` places ``missing`` -- in neither the cache,
+        the run archive nor the remote -- so a link to one is refused before
+        anything runs. A ``remote`` output is readable: its reader pulls it.
+      - ``sample``: the referenced ``Run.sample`` (the audit row's, for a
+        cache hit). Merged into the pipeline samples list so a
+        run_reference-rooted pipeline actually has work to do.
       - ``method``: the referenced run's method name, for messages.
-      - ``malformed``: True when the referenced run has an output record
-        without a slot (the record-validity rule); ``output_paths`` stays
-        empty then, and the Graph load's binding reports the reference.
+      - ``malformed``: True when the referenced run has a malformed output
+        record (the record-validity rule); ``output_paths`` stays empty
+        then, and the Graph load's binding reports the reference.
 
+    The project root is the configured one, as every reader's here. The
+    placement is a probe: nothing is pulled and no network call is made.
     A referenced run with no output records leaves ``output_paths`` empty
     and logs a warning naming the node; the Graph load reports it as an
     invalid reference. A query that fails propagates as itself: the session
@@ -1520,12 +1530,13 @@ def resolve_run_reference_outputs(
         session: An open database session.
 
     Returns:
-        The same dict, mutated with ``output_paths``, ``sample``, ``method``
-        and ``malformed`` resolved where possible.
+        The same dict, mutated with ``output_paths``, ``unreadable_slots``,
+        ``sample``, ``method`` and ``malformed`` resolved where possible.
     """
     # Default fields on every entry so callers can rely on them existing.
     for info in run_ref_outputs.values():
         info.setdefault("output_paths", {})
+        info.setdefault("unreadable_slots", [])
         info.setdefault("sample", "")
         info.setdefault("method", "")
         info.setdefault("malformed", False)
@@ -1533,6 +1544,7 @@ def resolve_run_reference_outputs(
     if not run_ref_outputs:
         return run_ref_outputs
 
+    project_dir: Path | None = None
     for nid, info in run_ref_outputs.items():
         run_id = info.get("run_id", "")
         if not run_id:
@@ -1543,6 +1555,7 @@ def resolve_run_reference_outputs(
             continue
 
         run_row = session.get(Run, run_id_int)
+        output_rows: list[RunOutput] = []
         if run_row is not None:
             method = (session.get(Method, run_row.method_id)
                       if run_row.method_id else None)
@@ -1550,20 +1563,21 @@ def resolve_run_reference_outputs(
             # Referenced Run's sample (single value — one run, one sample)
             if run_row.sample:
                 info["sample"] = run_row.sample
-
-        # All output records of the referenced run → {slot: path}
-        output_rows = session.exec(
-            select(RunOutput).where(RunOutput.run_id == run_id_int)
-        ).all()
-        if run_row is not None and output_rows:
+            if project_dir is None:
+                project_dir = get_project_root()
+            # The records its readers select from: after the cache-hit hop,
+            # under the record-validity rule.
             try:
-                _check_records(session, run_row, output_rows)
+                output_rows = _checked_output_rows(session, run_row, project_dir)
             except MalformedRecordError:
                 info["malformed"] = True
                 continue
         for row in output_rows:
             if row.slot and row.artifact_path:
                 info["output_paths"][row.slot] = row.artifact_path
+                if (project_dir is not None
+                        and output_location(row, project_dir) == OUTPUT_MISSING):
+                    info["unreadable_slots"].append(row.slot)
 
         if not info["output_paths"]:
             logger.warning(

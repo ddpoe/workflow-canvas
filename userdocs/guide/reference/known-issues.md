@@ -1,22 +1,24 @@
-<!-- generated from pm_mvp::docs/consumer/reference/known-issues @ 2cdbab7b4b0b; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/reference/known-issues @ 382dc4838bd7; do not edit -->
 
 # Known Issues
 
 ## Reference: Known Issues
 
-These are known bugs in wfc 0.8.0 and its pre-releases, each with a way around it. They are planned to be fixed in 0.8.1.
+These are known bugs in wfc 0.8.0 and its pre-releases, each with a way around it. Each is planned to be fixed in 0.8.1 unless its entry says otherwise.
 
 If an AI agent is driving wfc with the wfc plugin's skills, it knows these and works around them for you.
 
-## A pipeline that reads an earlier pipeline's runs fails before any step runs
+## A step that reads several runs through references runs once per sample
 
-You see `MissingInputException in rule <step>`, naming files under `.wfc/runs/<id>/_workdir/`, for a pipeline whose run reference nodes point at an earlier pipeline's runs. It happens once the earlier pipeline's outputs are archived, which `wfc run-pipeline` does by default.
+When a node reads earlier runs through run references, and those runs were made for different samples, the node runs once for each of those samples, each time over all the referenced runs. History shows two identical runs of the step; the second is `⟳ CACHED`, so nothing is computed or stored twice.
 
-Run the first pipeline with `wfc run-pipeline --no-archive`, then the pipeline that reads its runs, then `wfc cache archive`. To run the second pipeline again later, export the outputs it reads (`wfc export`), register them as samples and feed it from those; wfc then no longer records which runs made them.
+You can ignore the extra run.
 
-## A reference to a cached run is refused
+## A step can't combine the outputs of a step that runs once per sample
 
-A run reference to a run that was served from the cache (`⟳ CACHED` in History) is refused: `Reference '<name>' is invalid for run <id> (<method>); re-run that step and select the new run.` Running the step again gives another cached run, so reference the run it reused instead: `wfc show-run --run <id>` says `cache hit of run N`.
+You see `Method node '<node>' (method=<method>) is sample-collapsed … a collapsed step cannot consume per-sample outputs of an upstream method step.` when a node fed by a fan-in input selector is also wired to a method that runs once per sample. The pipeline is refused before any step runs. Wired to the per-sample method alone, the node runs once per sample instead, so nothing is combined.
+
+Run the per-sample steps as one pipeline, then combine their runs in a second pipeline with a run-reference node for each run, as step 8 of [Convert an Analysis into a Pipeline](../tutorials/convert-an-analysis.md#track-2-by-hand) does. This one is planned for 0.9.0.
 
 ## wfc check-pipeline refuses a node with two inputs
 

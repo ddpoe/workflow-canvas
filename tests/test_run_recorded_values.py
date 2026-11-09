@@ -230,7 +230,7 @@ def test_a_claim_writes_its_row_when_the_wfc_version_is_missing(
     completed_run(tmp_project, monkeypatch=monkeypatch, method="rv_noversion",
                   module="rv_mod", sample="rv_a", params={"other": 0})
     stub_distribution_metadata_missing(monkeypatch)
-    with caplog.at_level(logging.WARNING, logger="wfc.version"):
+    with caplog.at_level(logging.WARNING, logger="wfc.release"):
         flag, run_id = pre_run(method_name="rv_noversion", module_name="rv_mod",
                                sample="rv_a", params={"other": 1},
                                selector_slot="data", git_commit="c" * 40)

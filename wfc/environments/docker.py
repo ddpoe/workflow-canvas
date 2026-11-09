@@ -554,6 +554,38 @@ def _run_docker(args: list[str], *, timeout: float | None,
         ) from exc
 
 
+#: Seconds the server-version probe may take: it runs while a user waits for
+#: the Report a bug page, so a daemon that does not answer at once reads as
+#: not running.
+DOCKER_VERSION_TIMEOUT_S: Final[float] = 5.0
+
+
+@task(purpose="Ask the Docker daemon its server version with a short timeout; "
+              "None when docker is missing, the daemon does not answer, or it "
+              "answers nothing")
+def docker_server_version() -> str | None:
+    """Return the Docker daemon's version, or ``None`` when it does not answer.
+
+    Runs ``docker version --format {{.Server.Version}}`` with a
+    :data:`DOCKER_VERSION_TIMEOUT_S` bound. Never raises: the answer only
+    fills a line of a bug report.
+
+    Returns:
+        The server version string (e.g. ``"27.3.1"``), or ``None`` when
+        ``docker`` is not installed, the daemon is not running or does not
+        answer in time, or the answer is empty.
+    """
+    try:
+        proc = _run_docker(["version", "--format", "{{.Server.Version}}"],
+                           timeout=DOCKER_VERSION_TIMEOUT_S)
+    except (DockerTimeoutError, OSError, subprocess.SubprocessError):
+        return None
+    version = (proc.stdout or "").strip()
+    if proc.returncode != 0 or not version:
+        return None
+    return version
+
+
 def _inspect_failure(ref: str, proc: subprocess.CompletedProcess[str]) -> RuntimeError:
     """Return the error a failed ``docker image inspect`` of *ref* raises."""
     message = (f"docker image inspect {ref!r} failed "

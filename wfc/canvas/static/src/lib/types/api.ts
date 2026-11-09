@@ -24,6 +24,61 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/about": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get About
+         * @description Answer the version menu: version, offer, changelog, footer and links.
+         *
+         *     Reads the project's ``[updates]``; with the check on, answers the cached
+         *     offer at once and starts the background check when it is due. An
+         *     invalid config still answers the version and the changelog, with no
+         *     offer and the config's refusal as the footer text; a missing
+         *     ``wf-canvas.toml`` answers the same, the footer naming the file.
+         *
+         *     Args:
+         *         since: The version the page saw last. Given, the changelog holds
+         *             every version newer than it up to the installed one, newest
+         *             first; omitted, the installed version alone.
+         */
+        get: operations["get_about_api_about_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/about/report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Bug Report
+         * @description Answer the new-issue URL Report a bug opens, prefilled for the user to edit.
+         *
+         *     Runs Environments' Docker probe now (never when the menu opens); the
+         *     body names the wfc version, the platform, Python and Docker (``not
+         *     running`` when it does not answer), and no project path.
+         */
+        get: operations["get_bug_report_api_about_report_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/contracts/{method_full}/output_options": {
         parameters: {
             query?: never;
@@ -1520,6 +1575,47 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * AboutFooter
+         * @description What the update check offers and how to change it, or why it cannot run.
+         */
+        AboutFooter: {
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "stable" | "prereleases" | "off" | "invalid";
+            /** Text */
+            text: string;
+        };
+        /**
+         * AboutLinks
+         * @description The menu's links, in the installed version's docs channel.
+         */
+        AboutLinks: {
+            /** Changelog */
+            changelog: string;
+            /** Docs */
+            docs: string;
+            /** Known Issues */
+            known_issues: string;
+            /** Plugin Install */
+            plugin_install: string;
+            /** Updates Guide */
+            updates_guide: string;
+        };
+        /**
+         * AboutResponse
+         * @description What the version menu shows.
+         */
+        AboutResponse: {
+            changelog: components["schemas"]["ReleaseNotes"];
+            footer: components["schemas"]["AboutFooter"];
+            links: components["schemas"]["AboutLinks"];
+            offer: components["schemas"]["UpdateOffer"] | null;
+            /** Version */
+            version: string | null;
+        };
+        /**
          * ArtifactPreview
          * @description ``GET /api/wfc/run/{id}/preview/{path}``: the start of a table, JSON or text file.
          */
@@ -1540,6 +1636,14 @@ export interface components {
             total_bytes: number;
             /** Truncated */
             truncated: boolean;
+        };
+        /**
+         * BugReportResponse
+         * @description The new-issue page Report a bug opens.
+         */
+        BugReportResponse: {
+            /** Url */
+            url: string;
         };
         /**
          * CacheStatusOutput
@@ -1603,6 +1707,30 @@ export interface components {
             status: "cached_local" | "cached_remote" | "outputs_missing" | "new_step_changed" | "new_upstream_reruns" | "blocked";
             /** Variant */
             variant: string;
+        };
+        /**
+         * ChangelogSection
+         * @description One ``### <Heading>`` block of a version's changelog entry.
+         */
+        ChangelogSection: {
+            /** Heading */
+            heading: string;
+            /** Intro */
+            intro: string;
+            /** Items */
+            items: string[];
+        };
+        /**
+         * ChangelogVersion
+         * @description One version's changelog entry, Upgrading first and Known issues last.
+         */
+        ChangelogVersion: {
+            /** Date */
+            date: string;
+            /** Sections */
+            sections: components["schemas"]["ChangelogSection"][];
+            /** Version */
+            version: string;
         };
         /**
          * ClearedDraft
@@ -2862,6 +2990,16 @@ export interface components {
             modules: components["schemas"]["RegistryModule"][];
         };
         /**
+         * ReleaseNotes
+         * @description The installed version's entries, or the Changelog link when there are none.
+         */
+        ReleaseNotes: {
+            /** Link */
+            link: string | null;
+            /** Versions */
+            versions: components["schemas"]["ChangelogVersion"][];
+        };
+        /**
          * RunArtifact
          * @description ``GET /api/wfc/run/{id}/artifacts``: one archived output of a run.
          */
@@ -3040,6 +3178,29 @@ export interface components {
             rows: string[][];
         };
         /**
+         * UpdateNotes
+         * @description The offered version's Upgrading and Known issues, and the link to all its notes.
+         */
+        UpdateNotes: {
+            /** Link */
+            link: string;
+            /** Sections */
+            sections: components["schemas"]["ChangelogSection"][];
+        };
+        /**
+         * UpdateOffer
+         * @description A newer release the installed wfc is offered, with its pip command.
+         */
+        UpdateOffer: {
+            /** Command */
+            command: string;
+            notes: components["schemas"]["UpdateNotes"];
+            /** Prerelease */
+            prerelease: boolean;
+            /** Version */
+            version: string;
+        };
+        /**
          * ValidateResponse
          * @description The validate route's verdict on a pipeline document.
          */
@@ -3124,6 +3285,57 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    get_about_api_about_get: {
+        parameters: {
+            query?: {
+                since?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AboutResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_bug_report_api_about_report_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BugReportResponse"];
                 };
             };
         };

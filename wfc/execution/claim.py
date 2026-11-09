@@ -1698,7 +1698,8 @@ def pre_run(
         UnregisteredSnapshotError,
         verify_registered_snapshot,  # from its defining module, so the AutoStep edge resolves
     )
-    from ..version import get_git_commit, installed_wfc_version
+    from ..release import installed_wfc_version
+    from ..version import get_git_commit
 
     params = params or {}
 

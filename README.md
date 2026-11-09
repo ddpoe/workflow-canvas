@@ -2,18 +2,20 @@
 
 [![PyPI](https://img.shields.io/pypi/v/workflow-canvas)](https://pypi.org/project/workflow-canvas/)
 [![CI](https://github.com/ddpoe/workflow-canvas/actions/workflows/ci.yml/badge.svg)](https://github.com/ddpoe/workflow-canvas/actions/workflows/ci.yml)
-[![Documentation](https://readthedocs.org/projects/workflow-canvas/badge/?version=stable)](https://workflow-canvas.readthedocs.io/en/stable/)
+[![Documentation](https://readthedocs.org/projects/workflow-canvas/badge/?version=latest)](https://workflow-canvas.readthedocs.io/en/latest/)
 [![License: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 
-**An AI-native, visual dry-lab notebook for reproducible analysis.**
+**A visual dry-lab notebook for reproducible analysis.**
 
-Workflow Canvas (`wfc`) turns your analysis into a pipeline you can see, and
-guarantees every result in it can be reproduced: its Python backend records the
-exact code, data, settings and software behind each result, so anyone can rerun it
-and check that it matches.
+Workflow Canvas (`wfc`) turns your analysis, in Python, R or bash, into a pipeline
+you can see, and records the exact code, data, settings and software behind each
+result, so anyone can rerun it and check that it matches.
 
 Your AI agent can build the pipeline from your existing scripts and notebooks; you
 can write it yourself, or mix the two. Either way, every result is reproducible.
+Converting the example analysis in
+[Convert an Analysis into a Pipeline](https://workflow-canvas.readthedocs.io/en/latest/tutorials/convert-an-analysis.html)
+caught a filter that was computed but never applied.
 
 For researchers, scientists and PhD students who want their analysis organized,
 reproducible, and easy to pass on to others.
@@ -55,6 +57,10 @@ copy into either tool's skills folder. For chats on claude.ai or ChatGPT, the de
 agents, see
 [Work with an AI Agent](https://workflow-canvas.readthedocs.io/en/latest/tutorials/work-with-an-ai-agent.html).
 
+Your agent sends what you type and the files it reads to its provider: see Anthropic's
+[Data usage](https://code.claude.com/docs/en/data-usage) page or OpenAI's
+[privacy policy](https://openai.com/policies/privacy-policy/).
+
 ## Key Features
 
 | Feature | What it does |
@@ -81,7 +87,7 @@ results are reproducible and re-running an unchanged pipeline does no duplicate 
 
 ## Requirements
 
-- **Python 3.12** — required (the config parser uses stdlib `tomllib`).
+- **Python 3.12** — required.
 - **Docker** — required. Methods always run inside a container; nothing runs without a working Docker installation. `wfc init` pre-flights it and `wfc doctor` checks it.
 - **Git** — required, but **local only**. wfc records a commit per run and refuses to run on uncommitted code. No GitHub account, login, or network is involved; wfc never pushes.
 
@@ -126,23 +132,25 @@ cd my_project
 wfc doctor
 
 # 2. Build and register the container environment your methods will run in.
-#    Docs → "Registering an Environment"
+#    Docs → "Register an Environment"
 wfc register-env analysis conda:analysis
 
 # 3. Register a module (from a module.yaml, recommended).
-#    Docs → "Registration"
-wfc register-module --name cell_analysis --module-dir modules/cell_analysis
+#    Docs → "Register a Module"
+wfc register-module --name cell_analysis --module-dir src/cell_analysis
 
-# 4. Register a method (AST-scans the script for its inputs, outputs, and params).
-#    Docs → "Authoring a Method Script" and "Writing Contracts"
-wfc register-method modules/cell_analysis/preprocess --module cell_analysis
+# 4. Register a method (reads the contract in its method.yaml and checks the
+#    script against it).
+#    Docs → "Write a Method in Python" and "Write a Method"
+wfc register-method src/cell_analysis/preprocess --module cell_analysis
 
 # 5. Register input data (content-hashed into the DVC store).
+#    Docs → "Register Samples"
 wfc register-sample --name CFPAC_ERKi --source /data/raw/cfpac_erki.csv
 
-# 6. Build a pipeline in the Canvas, then run it.
-#    Docs → "Running & Inspecting Results"
-wfc run-pipeline --cores 4
+# 6. Build a pipeline in the Canvas and save it, then run the file.
+#    Docs → "Run and Inspect Your Pipelines"
+wfc run-pipeline --pipeline pipelines/my_pipeline.json --cores 4
 ```
 
 ## Visual Canvas
@@ -158,36 +166,19 @@ and the **Registry** to inspect everything registered in the project. See the
 
 ## Project Structure
 
-```
-my_project/
-  .wfc/
-    wf-canvas.toml        # Project config (DB path, env root, DVC archive URL)
-    wfc.db                # SQLite database — single source of truth (not in git)
-    envs.json             # Registered container environments (tracked in git)
-    registry/methods/     # wfc's registered copy of each method, <module>/<method>/ (tracked in git)
-    workspace/samples/    # Ephemeral workspace; samples restored lazily at run time
-    runs/
-      sentinels/          # Zero-byte Snakemake DAG-wiring sentinels
-      {run_id}/           # Transient staging; bytes are moved to the DVC archive
-  .dvc/cache/             # Local content-addressed cache
-  .gitignore
-```
-
-Your own module and method source lives wherever you keep it (for example `src/`).
-
-Output bytes are not kept in `.wfc/runs/`; they live in the content-addressed DVC
-archive (default `~/.wfc/archives/<project>`, outside the repo), indexed by
-`.wfc/wfc.db`. Back up both `.wfc/` and the archive folder to keep results recoverable.
+A project is a local git repository. wfc keeps its config, its database and the
+registered copy of each method in `.wfc/`, and the output files in an archive folder
+outside the repository; your own method source lives wherever you keep it (for
+example `src/`). Back up both `.wfc/` and the archive folder to keep results
+recoverable.
+[Project Anatomy](https://workflow-canvas.readthedocs.io/en/latest/explanation/project-anatomy.html)
+maps every folder.
 
 ## Documentation
 
-Full user documentation is published at
-[workflow-canvas.readthedocs.io](https://workflow-canvas.readthedocs.io/en/stable/) and covers:
-
-- **Tutorials** — Your First Pipeline, A Tour of the Demo, Work with an AI Agent
-- **How-to** — Build Your Own Pipeline, Write a Method, Draft a Method, Wire a Pipeline, Run and Inspect Your Pipelines, Share Runs as a Bundle Anyone Can Rerun
-- **Reference** — CLI Reference, Python API (`wfc-client`), `method.yaml` schema, `wf-canvas.toml`
-- **Explanation** — How a Run Executes, Caching & Reproducibility, Project Anatomy, Storage & Provenance
+Full user documentation, with tutorials, how-to guides, the reference and
+explanations, is published at
+[workflow-canvas.readthedocs.io](https://workflow-canvas.readthedocs.io/en/latest/).
 
 ## Contributing
 

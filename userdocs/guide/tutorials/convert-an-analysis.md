@@ -1,16 +1,20 @@
-<!-- generated from pm_mvp::docs/consumer/tutorials/convert-an-analysis @ 048bd4ec8d32; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/tutorials/convert-an-analysis @ e49b5cb7dd1d; do not edit -->
 
 # Convert an Analysis into a Pipeline
 
 ## Overview
 
-You have an analysis that works on your machine: a folder of notebooks and scripts. This page turns one such folder into a wfc pipeline twice, once by handing it to an AI agent and once by hand, and ends by comparing the two results, so you can see it is the same pipeline either way.
+You have an analysis that works on your machine: a folder of notebooks and scripts. This page turns one such folder into a wfc pipeline twice, once by handing it to an AI agent and once by hand, and ends by comparing the two results, so you can see it is the same pipeline either way. Both conversions also find a bug the folder has carried all along: a filter that is computed and never applied.
 
 Both tracks end with the same thing: each step of the analysis is a registered method, the pipeline runs every plate in a container, its results match the notebooks', and a new plate reruns only its own steps. The agent track also leaves a written record of every change to your code.
 
 ## The Example
 
-The example is a small single-cell drug-response analysis: each cell's fluorescence, measured from images of two plates, under four drug conditions, as fold change over DMSO with a bootstrap interval, and a comparison of the two plates. The folder is [`examples/single-cell-drug-response-analysis`](https://github.com/ddpoe/workflow-canvas/tree/main/examples/single-cell-drug-response-analysis) in the wfc repository (`git clone https://github.com/ddpoe/workflow-canvas`, then copy that folder out as `~/plate_assay`); it runs in under a minute in a conda env with numpy, pandas and matplotlib.
+The example is a small single-cell drug-response analysis: each cell's fluorescence, measured from images of two plates, under four drug conditions, as fold change over DMSO with a bootstrap interval, and a comparison of the two plates. The folder is [`examples/single-cell-drug-response-analysis`](https://github.com/ddpoe/workflow-canvas/tree/main/examples/single-cell-drug-response-analysis) in the wfc repository (`git clone https://github.com/ddpoe/workflow-canvas`, then copy that folder out as `~/plate_assay`); it runs in under a minute, about 15 seconds of it per plate in the bootstrap, in the conda env `plates-lab`. To follow along, create that env first:
+
+```bash
+conda create -n plates-lab -c defaults python=3.12 numpy pandas matplotlib nbconvert ipykernel
+```
 
 ```text
 plate_assay/
@@ -69,7 +73,7 @@ Nothing is written until you approve the map.
 
 **It compares the results with yours.** Each output gets a verdict, with the tolerance stated:
 
-> normalized tables and the comparison table: identical numbers; `comparison.png`: identical bytes; bootstrap means and cell counts: identical, intervals within 6e-4 (your notebook's bootstrap was unseeded, so it differs from run to run by about that much); bar charts: the same by eye.
+> normalized tables and the comparison table: identical numbers; `comparison.png`: identical bytes; bootstrap means and cell counts: identical, intervals within [a relative] 6e-4 (your notebook's bootstrap was unseeded, so it differs from run to run by about that much); bar charts: the same by eye.
 
 **It shows you the code and asks to register.** You see every `method.yaml` and a diff of each script against your notebook cells, in an editor or in the canvas (Registry → **Methods** → **Drafts**). It registers only when you say yes, then runs the pipeline once so the run is recorded.
 
@@ -93,7 +97,7 @@ cd plate-assay
 wfc doctor
 ```
 
-Every method runs in a Linux container built from an env. The analysis runs in the conda env `plates-lab`, which has no `wfc-client`, the small library a method script uses to read its inputs and save its outputs. Leave `plates-lab` as it is and make a copy with `wfc-client` added. Build the copy from the packages `plates-lab` asked for, at the versions it has (`conda env export -n plates-lab --from-history` lists them, `conda list -n plates-lab` gives the versions):
+Every method runs in a Linux container built from an env. The analysis runs in the conda env `plates-lab`, which has no `wfc-client`, the small library a method script uses to read its inputs and save its outputs. Leave `plates-lab` as it is and make a copy with `wfc-client` added. Build the copy from the packages `plates-lab` asked for, at the versions it has (`conda env export -n plates-lab --from-history` lists them, `conda list -n plates-lab` gives the versions). The versions below are those of the env this page was run with; use yours:
 
 ```bash
 conda create -n plates-lab-wfc -c defaults python=3.12.16 numpy=2.5.4 pandas=3.1.0 matplotlib=3.11.1 nbconvert=7.17.2 ipykernel=7.3.0
@@ -184,7 +188,7 @@ Three changes go beyond the edges, and each is one you decide:
 
 The whole folder is in [`examples/single-cell-drug-response-pipeline`](https://github.com/ddpoe/workflow-canvas/tree/main/examples/single-cell-drug-response-pipeline). [Write a Method in Python](authoring-a-method-script.md) covers the script, and the [method.yaml Schema](../reference/method-yaml-schema.md) every key.
 
-**4. Try each method as a draft, upstream first.** `wfc try` runs a folder on a sample and records nothing. Each try prints a draft string, the name of that draft's result (`draft:<module>.<method>/<node>@<sample>`); the next method reads its upstream's output by passing it to `--parent-run-id`:
+**4. Try each method as a draft, upstream first.** `wfc try` runs a folder on a sample and records nothing. Each try prints a draft string, the name of that draft's result (`draft:<module>.<method>/<node>@<sample>`); the next method reads its upstream's output by passing it to `--parent-run-id` as `<input>:<output>:<draft string>`, naming this method's input and the upstream output it reads:
 
 ```bash
 wfc try src/plate_assay/normalize_plate --module plate_assay --sample plate1
@@ -199,7 +203,7 @@ wfc try src/plate_assay/plot_fold_change --module plate_assay --sample plate1 \
 **5. Run the whole pipeline as drafts.** In `pipelines/plates-draft.json`, an input selector (the node that picks which samples go in) feeds both plates to the three methods, each pinned to its draft with `"version": "draft"`:
 
 ```json
-{"id": "bootstrap", "module": "plate_assay", "method": "bootstrap_ci", "version": "draft",
+{"id": "bootstrap_ci", "module": "plate_assay", "method": "bootstrap_ci", "version": "draft",
  "params": {"n_boot": 200000, "seed": 0}}
 ```
 
@@ -208,12 +212,12 @@ wfc check-pipeline --pipeline pipelines/plates-draft.json
 wfc run-pipeline --pipeline pipelines/plates-draft.json
 ```
 
-Draft steps never use the cache, so this reruns the bootstrap each time. Then try `compare_plates` over both plates' bootstrap drafts, one `--parent-run-id` per plate on its `bootstraps` input:
+The whole file is [`pipelines/plates-draft.json`](https://github.com/ddpoe/workflow-canvas/blob/main/examples/single-cell-drug-response-pipeline/pipelines/plates-draft.json) in the example. Draft steps never use the cache, so this reruns the bootstrap each time. Then try `compare_plates` over both plates' bootstrap drafts, one `--parent-run-id` per plate on its `bootstraps` input. `wfc try` always takes a registered sample; `compare_plates` reads none, so here `--sample plate1` only names the draft:
 
 ```bash
 wfc try src/plate_assay/compare_plates --module plate_assay --sample plate1 \
-  --parent-run-id bootstraps:bootstrap:draft:plate_assay.bootstrap_ci/bootstrap@plate1 \
-  --parent-run-id bootstraps:bootstrap:draft:plate_assay.bootstrap_ci/bootstrap@plate2
+  --parent-run-id bootstraps:bootstrap:draft:plate_assay.bootstrap_ci/bootstrap_ci@plate1 \
+  --parent-run-id bootstraps:bootstrap:draft:plate_assay.bootstrap_ci/bootstrap_ci@plate2
 ```
 
 **6. Compare with the notebooks' results.** Export each draft's outputs (`wfc export --run <draft string> --all --dest <folder>`) and compare them with `results/`:
@@ -238,17 +242,16 @@ wfc register-method src/plate_assay/compare_plates --module plate_assay
 Copy `plates-draft.json` to `pipelines/plates.json` without the `"version": "draft"` pins and run it. That is the first recorded run: wfc caches each step, so the next plate reruns only what changed.
 
 ```bash
-wfc run-pipeline --pipeline pipelines/plates.json --no-archive
+wfc run-pipeline --pipeline pipelines/plates.json
 ```
 
-**8. Compare the plates.** A pipeline can't run each plate and then combine across plates, so the comparison is a second pipeline over the first one's runs: `pipelines/compare.json` feeds the two `bootstrap_ci` runs into `compare_plates` with run-reference nodes. Its `run_id` values are the example's; put in your own from `wfc runs`. The comparison runs once per registered sample, each time over both tables, so expect two identical `compare_plates` runs. Run it, then archive the outputs:
+**8. Compare the plates.** A pipeline can't run each plate and then combine across plates, so the comparison is a second pipeline over the first one's runs: `pipelines/compare.json` feeds the two `bootstrap_ci` runs into `compare_plates` with run-reference nodes. Its `run_id` values are the example's; put in your own from `wfc runs`. Run it:
 
 ```bash
 wfc run-pipeline --pipeline pipelines/compare.json
-wfc cache archive
 ```
 
-A run reference reads its run's outputs only until they are archived, so run the first pipeline with `--no-archive` and archive after the comparison. To compare again later as new plates arrive, export each plate's `bootstrap.csv` from its run, register it as a sample (`wfc register-sample --name plate1_bootstrap --source <file>`), feed `compare_plates` from those samples, and note in your record which run each sample came from. The [Pipeline Document](../reference/pipeline-document.md) reference lists every key both files use.
+To compare again as new plates arrive, run `plates.json` for them, add a run-reference node for each new `bootstrap_ci` run to `compare.json`, and run it again. The [Pipeline Document](../reference/pipeline-document.md) reference lists every key both files use.
 
 ## The Two Results Side by Side
 
@@ -263,7 +266,7 @@ Both tracks were run on this folder. The agent column is one evaluation run of t
 | Env | a copy of `plates-lab` with `wfc-client` added; `plates-lab` unchanged | the same |
 | Combining the plates | a second pipeline over the first one's results | a second pipeline over the first one's runs |
 | The unused filter | flagged; `min_cells` 0 keeps the notebook's result | the same |
-| Results against `results/` | tables equal, `comparison.png` identical, intervals within 6e-4 | the same |
+| Results against `results/` | tables equal, `comparison.png` identical, intervals within a relative 6e-4 | the same |
 | Record of the changes | `wfc-intake/`: the conversion, the env, each method, and a diff per script | what you write yourself |
 
 The two pipelines differ only in naming and in where the plate's name travels; the methods, settings and results are the same.

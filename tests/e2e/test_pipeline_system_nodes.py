@@ -268,6 +268,100 @@ def test_run_reference_pipeline(pipeline_factory, register_fixture_methods):
     )
 
 
+@workflow(
+    purpose="A run_reference naming a run whose outputs the archive pass stored "
+            "(its run folder emptied) runs its consumer through run_pipeline on "
+            "the recorded bytes",
+)
+def test_run_reference_to_a_stored_run_pipeline(pipeline_factory,
+                                                register_fixture_methods):
+    """A reference to a stored run works with no ``--no-archive``.
+
+    The first pipeline runs with the default end-of-run archive pass, which
+    stores its outputs in the cache and empties the run folder. A second
+    pipeline references that run; Snakemake schedules the consumer (the
+    reference is no input it waits on) and the consumer reads the bytes the
+    record names, served from the cache.
+    """
+    from wfc import layout
+    from wfc.persistence import Method
+
+    project_dir = register_fixture_methods
+
+    s = Step(
+        step_num=1,
+        name="Run a pipeline with the archive pass",
+        purpose="run_pipeline's default archive pass stores transform's output "
+                "and empties its run folder",
+    )
+    _create_sample_csv(project_dir, "stored_sample", num_rows=3)
+    first = pipeline_factory(
+        name="stored_initial",
+        nodes=[
+            {"id": "selector_1", "type": "input_selector",
+             "samples": ["stored_sample"]},
+            {"id": "transform_1", "method": "transform", "module": "test_pipeline",
+             "params": {"suffix": "_init"}},
+        ],
+        links=[{"source": "selector_1", "target": "transform_1"}],
+        samples=[],
+    )
+    run_pipeline(pipeline_path=str(first), project_root=str(project_dir), cores=1)
+
+    with get_session() as session:
+        prior_run, record = session.exec(
+            select(Run, RunOutput)
+            .join(RunOutput, RunOutput.run_id == Run.id)
+            .join(Method, Run.method_id == Method.id)
+            .where(Method.name == "transform")
+            .where(Run.sample == "stored_sample")
+            .where(RunOutput.output_name == "output.csv")
+        ).all()[-1]
+        prior_run_id, recorded_hash = prior_run.id, record.content_hash
+        recorded_path = Path(record.artifact_path)
+    assert recorded_hash, "the archive pass records the output's content hash"
+    assert not recorded_path.exists(), (
+        f"the archive pass leaves the run folder empty: {recorded_path}")
+    recorded = layout.dvc_cache_entry(project_dir, recorded_hash).read_text()
+
+    s = Step(
+        step_num=2,
+        name="Run a second pipeline whose reference names the stored run",
+        purpose="The link names the stored output; the consumer runs on it",
+    )
+    second = pipeline_factory(
+        name="stored_ref",
+        nodes=[
+            {"id": "runref_1", "type": "run_reference",
+             "run_id": str(prior_run_id)},
+            {"id": "transform_2", "method": "transform", "module": "test_pipeline",
+             "params": {"suffix": "_ref"}},
+        ],
+        links=[{"source": "runref_1", "target": "transform_2",
+                "source_slot": "output", "target_slot": "data"}],
+        samples=["stored_sample"],
+    )
+    run_pipeline(pipeline_path=str(second), project_root=str(project_dir),
+                 cores=1, archive=False)
+
+    s = Step(
+        step_num=3,
+        name="The consumer read the recorded bytes",
+        purpose="transform_2's output is the stored table, row for row, with "
+                "its own column added",
+    )
+    output = _find_run_output_path(
+        nf_process_name="transform", sample="stored_sample",
+        output_name="output.csv",
+    )
+    with open(output, newline="") as f:
+        consumed = list(csv.DictReader(f))
+    stored = list(csv.DictReader(recorded.splitlines()))
+    assert stored, "the recorded output has rows"
+    assert [{k: r[k] for k in stored[0]} for r in consumed] == stored
+    assert all(r["computed_ref"] == f"v_{r['id']}" for r in consumed)
+
+
 # =============================================================================
 # Negative/edge
 # =============================================================================

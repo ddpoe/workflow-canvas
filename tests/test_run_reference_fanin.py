@@ -4,9 +4,10 @@ Two user-story cases and the Tier-1 edges around them:
 
 * **Fan-in** — N ``run_reference`` nodes wired into one input slot deliver N
   artifacts under that one slot name. The generator emits the real slot name
-  once per occurrence in the shell, and an indexed key per occurrence in the
-  ``input:`` block (a Snakemake ``input:`` block is Python keyword syntax, so
-  a repeated key is a syntax error rather than a silent overwrite).
+  once per occurrence in the shell's ``--ref-input`` flags, the only way a
+  reference reaches its step: the rule's ``input:`` block declares no
+  reference, so a referenced run whose outputs live in the cache rather
+  than the run folder is no missing input to Snakemake.
 * **Lineage and invalidation** — a run fed by a reference records the
   referenced run as a lineage source, repointing the reference at a
   different run changes the consumer's own cache key, and leaving the
@@ -149,17 +150,17 @@ def test_single_reference_is_unchanged(git_project, monkeypatch):
 
 def test_single_reference_shell_line_is_byte_identical():
     """A one-reference rule's shell line matches its pinned form, character
-    for character.
+    for character, and the rule declares no input.
 
-    Only the ``input:`` block's dependency-declaration key carries the
-    reference namespace; the shell line names the real slot, so a
-    one-reference rule's command does not depend on how many references
-    the generator can fan in.
+    The shell line names the real slot, so a one-reference rule's command
+    does not depend on how many references the generator can fan in. The
+    reference is not a Snakemake input: a step fed only by references has
+    no ``input:`` block at all.
     """
     from wfc.graph import StepDef
     from wfc.orchestration.snakemake import _generate_rule
 
-    step = StepDef(method_name="m", module_name="mod", 
+    step = StepDef(method_name="m", module_name="mod",
                    params={}, node_id="n1", env="container:e",
                    run_ref_inputs={"data": ["/w/a.csv"]})
     lines = _generate_rule(step, {"n1": step}, pipeline_id="p")
@@ -172,32 +173,107 @@ def test_single_reference_shell_line_is_byte_identical():
         '--variant {params.variant}'
         ' --ref-input data=/w/a.csv"'
     )
-    # The dependency-declaration key carries the reference namespace.
-    assert '        ref0_data="/w/a.csv"' in lines
+    assert not [ln for ln in lines if ln.strip().startswith("input:")], lines
 
 
-def test_reference_keys_cannot_collide_with_an_upstream_on_the_same_slot():
-    """A wired upstream and a reference on one slot emit distinct ``input:`` keys.
-
-    A Snakemake ``input:`` block is Python keyword syntax, so a repeated key
-    is a syntax error in the generated file rather than a silent overwrite.
+def test_an_upstream_and_references_on_one_slot_declare_only_the_upstream():
+    """A wired upstream and two references on one slot: the ``input:`` block
+    holds only the upstream's sentinel, and the shell carries one
+    ``--ref-input`` per reference under the real slot name.
     """
+    from wfc import layout
     from wfc.graph import StepDef
     from wfc.orchestration.snakemake import _generate_rule
 
-    up = StepDef(method_name="up", module_name="mod", 
+    up = StepDef(method_name="up", module_name="mod",
                  params={}, node_id="up", env="container:e")
-    step = StepDef(method_name="m", module_name="mod", 
+    step = StepDef(method_name="m", module_name="mod",
                    params={}, node_id="n1", env="container:e",
                    depends_on=["up"], inputs={"data": ["up"]},
                    run_ref_inputs={"data": ["/w/a.csv", "/w/b.csv"]})
     lines = _generate_rule(step, {"n1": step, "up": up}, pipeline_id="p")
 
-    keys = [ln.strip().split("=", 1)[0]
-            for ln in "\n".join(lines).split(",\n")
-            if ln.strip().startswith(("data", "ref"))]
-    assert len(keys) == len(set(keys)), keys
-    assert "ref0_data" in keys and "ref1_data" in keys
+    upstream = layout.run_sentinel_relpath("p", "up", "{sample}", "{variant}")
+    assert [ln for ln in lines if ln.strip().startswith("input:")] == [
+        f'    input: "{upstream}"']
+    assert lines[-2].endswith(
+        ' --ref-input data=/w/a.csv --ref-input data=/w/b.csv"'), lines[-2]
+    assert "/w/a.csv" not in "\n".join(lines[:-3]), lines
+
+
+def _method_node(node_id: str) -> dict:
+    """A method node of a document loaded on an empty contract map."""
+    return {"id": node_id, "type": "method", "method": node_id, "module": "demo",
+            "script": f"methods/{node_id}/{node_id}.py", "env": "container:demo",
+            "params": {}}
+
+
+#: The referenced run's one output, as the load is handed it.
+_REFERENCED = {"ref": {"output_paths": {"table": ".wfc/runs/run-r/table/t.csv"},
+                       "sample": "s1"}}
+_REF_LINK = {"source": "ref", "target": "use", "source_slot": "table",
+             "target_slot": "data"}
+
+#: shape -> the consumer ``use``'s other wiring beside its reference.
+_REFERENCE_SHAPES = {
+    "upstream-and-reference": (
+        [{"id": "sel", "type": "input_selector", "samples": ["s1"]},
+         _method_node("up")],
+        [{"source": "sel", "target": "up", "target_slot": "data"},
+         {"source": "up", "target": "use", "source_slot": "out",
+          "target_slot": "data"}]),
+    "sample-and-reference": (
+        [{"id": "sel", "type": "input_selector", "samples": ["s1"]}],
+        [{"source": "sel", "target": "use", "target_slot": "raw"}]),
+    "reference-only": ([], []),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_REFERENCE_SHAPES))
+@workflow(purpose="A reference beside an upstream, beside a per-sample "
+                  "sample, or alone emits a Snakefile Snakemake parses, whose "
+                  "consumer rule declares no reference input and carries the "
+                  "reference in its shell's --ref-input flag")
+def test_each_reference_shape_emits_a_snakefile_snakemake_parses(shape, tmp_path):
+    import subprocess
+    import sys
+
+    from wfc.graph import load_pipeline
+    from wfc.orchestration import generate_snakefile
+
+    others, links = _REFERENCE_SHAPES[shape]
+    document = {"name": shape, "samples": ["s1"],
+                "nodes": [*others, _method_node("use"),
+                          {"id": "ref", "type": "run_reference", "run_id": "run-r"}],
+                "links": [*links, _REF_LINK]}
+    pipeline = load_pipeline(document, contract_map={},
+                             reference_outputs=_REFERENCED)
+    snakefile = generate_snakefile(pipeline, project_root=str(tmp_path),
+                                   pipeline_id=shape,
+                                   sample_hashes={"s1": "a" * 32})
+
+    rule = _rule_block(snakefile, "use")
+    declared = rule.split("    shell:", 1)[0]
+    assert "t.csv" not in declared, rule
+    assert rule.count("--ref-input data=.wfc/runs/run-r/table/t.csv") == 1, rule
+    expected = {
+        "upstream-and-reference": f"/{shape}/up/",
+        "sample-and-reference": "/.sample_ready",
+        "reference-only": None,
+    }[shape]
+    if expected is None:
+        assert "input:" not in rule, rule
+    else:
+        assert expected in declared, rule
+
+    path = tmp_path / "Snakefile"
+    path.write_text(snakefile, encoding="utf-8")
+    listed = subprocess.run(
+        [sys.executable, "-m", "snakemake", "--snakefile", str(path),
+         "--list-rules"],
+        cwd=tmp_path, capture_output=True, text=True, timeout=120)
+    assert listed.returncode == 0, listed.stderr
+    assert "use" in listed.stdout.split(), listed.stdout
 
 
 # =============================================================================

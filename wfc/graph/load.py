@@ -560,6 +560,34 @@ def _invalid_reference(ref_id: str, info: dict, source_slot: str | None) -> Valu
     )
 
 
+def _unreadable_reference(ref_id: str, info: dict, slot: str) -> ValueError:
+    """The error for a link whose chosen output wfc can no longer read.
+
+    The output is recorded, but its bytes are in neither the cache, the run
+    folder nor the remote (the resolver's ``unreadable_slots``), so the
+    consumer could never read it; the only fix is a new run to select.
+
+    Args:
+        ref_id: The reference node's id.
+        info: The reference's resolved entry (``run_id``, ``label``,
+            ``method``).
+        slot: The output the link reads.
+
+    Returns:
+        The error for the caller to raise.
+    """
+    logger.warning(
+        "Run reference node %s: output %r of run %s is recorded but its bytes "
+        "are in neither the cache, the run folder nor the remote",
+        ref_id, slot, info.get("run_id", ""),
+    )
+    return ValueError(
+        f"Reference '{_reference_name(ref_id, info)}' reads output '{slot}' of "
+        f"{_run_phrase(info)}, which wfc can no longer read from the cache, the "
+        f"run folder or the remote; re-run that step and select the new run."
+    )
+
+
 def _unnamed_output_reference(ref_id: str, info: dict) -> ValueError:
     """The error for a link naming no output on a run with several.
 
@@ -591,16 +619,21 @@ def reference_link_error(ref_id: str, info: dict,
     """The refusal for a reference link its referenced run cannot serve, if any.
 
     The one rule for whether a reference link resolves to an artifact: the
-    node names a run, the run's records are well formed, and the output the
+    node names a run, the run's records are well formed, the output the
     link names is one of the run's -- or, naming none, the run has exactly
-    one. The load's binding and the claim's reference branch both ask it, so
-    a link is refused for the same reason, with the same message, at either
-    moment.
+    one -- and that chosen output is not one wfc can no longer read
+    (``unreadable_slots``: in neither the cache, the run folder nor the
+    remote). Only the output the link uses is checked, so a run with one
+    unreadable output still serves links to its others. The load's binding
+    and the claim's reference branch both ask it, so a link is refused for
+    the same reason, with the same message, at either moment. It reads the
+    entry it is handed and opens nothing.
 
     Args:
         ref_id: The reference node's id.
         info: The reference's resolved entry (``run_id``, ``label``,
-            ``method``, ``malformed``, ``output_paths``).
+            ``method``, ``malformed``, ``output_paths``,
+            ``unreadable_slots``).
         source_slot: The output the link names, or ``None``.
 
     Returns:
@@ -614,12 +647,16 @@ def reference_link_error(ref_id: str, info: dict,
     if source_slot:
         if source_slot not in output_paths:
             return _invalid_reference(ref_id, info, source_slot)
-        return None
-    if len(output_paths) == 1:
-        return None
-    if not output_paths:
+        chosen = source_slot
+    elif len(output_paths) == 1:
+        chosen = next(iter(output_paths))
+    elif not output_paths:
         return _invalid_reference(ref_id, info, source_slot)
-    return _unnamed_output_reference(ref_id, info)
+    else:
+        return _unnamed_output_reference(ref_id, info)
+    if chosen in (info.get("unreadable_slots") or ()):
+        return _unreadable_reference(ref_id, info, chosen)
+    return None
 
 
 @task(purpose="Bind the referenced runs' resolved outputs and sample into the "
@@ -630,15 +667,16 @@ def bind_references(parsed: ParsedDocument, reference_outputs: dict[str, dict]) 
     """Bind resolved reference outputs into the parsed document, in place.
 
     ``reference_outputs`` is what the caller's resolver returns for the
-    document's references: ``{node id: {output_paths, sample, method,
-    malformed}}``. A reference with no entry, or one whose entry carries no
-    ``output_paths``, has no output to serve its links.
+    document's references: ``{node id: {output_paths, unreadable_slots,
+    sample, method, malformed}}``. A reference with no entry, or one whose
+    entry carries no ``output_paths``, has no output to serve its links.
 
     A reference node is the run it names, and each link names the output it
     draws from that run. Every link from a node that names no run fails the
     load. An output the link names must be one of the run's; a link that
     names none takes the run's only output, and fails when the run has
-    several or none.
+    several or none. The output a link takes must be readable: one in
+    ``unreadable_slots`` fails the load (:func:`reference_link_error`).
 
     Args:
         parsed: The parse stage's result; ``samples`` and the steps'

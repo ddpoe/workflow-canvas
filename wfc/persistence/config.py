@@ -3,8 +3,8 @@
 :func:`read_config` parses ``wf-canvas.toml`` — located through Layout's
 marker path — and returns the settings ``wfc`` reads back from it: the pixi
 and conda environment roots, the ``[dvc]`` archive entry, the
-``[integrity] inputs`` setting, the ``[registry]`` base and the
-``[previews]`` memory and disk limits.
+``[integrity] inputs`` setting, the ``[registry]`` base, the
+``[previews]`` memory and disk limits and the ``[updates]`` check settings.
 
 :func:`set_registry_url` writes the one key ``wfc`` sets after ``wfc init``,
 ``[registry] url``, by a text edit that leaves every other byte of the file
@@ -51,10 +51,18 @@ PREVIEWS_DEFAULTS = {
     PREVIEWS_CACHE_MB_KEY: PREVIEWS_CACHE_MB_DEFAULT,
 }
 
+#: ``[updates] check``: whether the canvas checks PyPI once a day for a newer
+#: wfc. True when the section or key is absent.
+UPDATES_CHECK_KEY = "check"
+#: ``[updates] prereleases``: whether pre-releases are offered. Absent (None)
+#: follows the installed wfc: a pre-release install is offered them.
+UPDATES_PRERELEASES_KEY = "prereleases"
+
 
 @task(purpose="Read the project wf-canvas.toml and return the environment roots, "
               "the [dvc] archive entry, the [integrity] inputs setting, the "
-              "[registry] base and the [previews] memory and disk limits")
+              "[registry] base, the [previews] memory and disk limits and the "
+              "[updates] check settings")
 def read_config(project_dir: Path) -> dict:
     """Read the project wf-canvas.toml and return parsed settings.
 
@@ -63,7 +71,7 @@ def read_config(project_dir: Path) -> dict:
 
     Returns:
         Dict with ``pixi_root``, ``conda_root``, ``dvc``, ``integrity``,
-        ``registry`` and ``previews``. The two roots are resolved absolute path strings to
+        ``registry``, ``previews`` and ``updates``. The two roots are resolved absolute path strings to
         the pixi and conda environment root directories (``conda_root`` is
         ``""`` when no ``[conda]`` root is declared); ``dvc`` is the parsed
         ``[dvc]`` archive entry, or ``None``; ``integrity`` is
@@ -73,15 +81,21 @@ def read_config(project_dir: Path) -> dict:
         ``[registry] url`` is absent or empty; ``previews`` is
         ``{"memory_mb": ..., "cache_mb": ...}``, the canvas's limits on the
         memory its image previews use at once (each conversion up to half)
-        and on the preview cache's disk use, in MB (1024 and 500 when absent).
+        and on the preview cache's disk use, in MB (1024 and 500 when absent);
+        ``updates`` is ``{"check": ..., "prereleases": ...}``, the settings
+        the canvas's daily update check is handed: ``check`` (``True`` when
+        absent) and ``prereleases`` (``None`` when absent, meaning betas
+        follow the installed wfc).
 
     Raises:
         FileNotFoundError: If wf-canvas.toml does not exist.
         ValueError: ``[integrity] inputs`` names a value other than
             ``stat-then-hash`` or ``hash``, ``[registry] url`` is not a
-            string, ``[previews]`` is not a table, or ``[previews]
+            string, ``[previews]`` is not a table, ``[previews]
             memory_mb`` or ``cache_mb`` is not a positive whole number (a
-            boolean, a float, zero, a negative or a string).
+            boolean, a float, zero, a negative or a string), ``[updates]``
+            is not a table, or ``[updates] check`` or ``prereleases`` is not
+            a boolean.
     """
     import tomllib
 
@@ -170,6 +184,14 @@ def read_config(project_dir: Path) -> dict:
 
     result["previews"] = _previews_entry(parsed, config_path)
 
+    口 = Step(step_num=9, name="Parse the update-check settings",
+             purpose="Read [updates] check (true when absent) and prereleases "
+                     "(None when absent: betas follow the installed wfc), and "
+                     "refuse a non-table section or a non-boolean value, naming "
+                     "the key, the value and the fix")
+
+    result["updates"] = _updates_entry(parsed, config_path)
+
     return result
 
 
@@ -209,6 +231,50 @@ def _previews_entry(parsed: dict, config_path: Path) -> dict:
                 f"whole number of MB; write it without quotes or a decimal "
                 f"point, e.g. {key} = {default} (the default), or delete the "
                 f"line to use the default"
+            )
+        entry[key] = value
+    return entry
+
+
+def _updates_entry(parsed: dict, config_path: Path) -> dict:
+    """Return ``{"check": ..., "prereleases": ...}`` from a parsed config.
+
+    Args:
+        parsed: The config as ``tomllib`` parsed it.
+        config_path: The file, named in a refusal.
+
+    Returns:
+        ``check``, the ``[updates] check`` boolean (``True`` when the section
+        or key is absent), and ``prereleases``, the ``[updates] prereleases``
+        boolean, or ``None`` when absent (betas follow the installed wfc: a
+        pre-release install is offered pre-releases, a release only releases).
+
+    Raises:
+        ValueError: ``[updates]`` is not a table, or ``check`` or
+            ``prereleases`` is not ``true`` or ``false``.
+    """
+    section = parsed.get("updates", {})
+    if not isinstance(section, dict):
+        raise ValueError(
+            f"{config_path}: updates = {_toml_spelling(section)} is not a table; "
+            f"write the settings as keys under an [updates] header (e.g. "
+            f"[updates] then check = true), or delete the line to keep the "
+            f"daily update check on"
+        )
+    entry: dict = {}
+    for key, default, fix in (
+        (UPDATES_CHECK_KEY, True, "check = true (the default) or check = false"),
+        (UPDATES_PRERELEASES_KEY, None,
+         "prereleases = true or prereleases = false"),
+    ):
+        value = section.get(key, default)
+        if value is not default and not isinstance(value, bool):
+            ending = ("to keep the check on" if key == UPDATES_CHECK_KEY
+                      else "to let betas follow the installed wfc")
+            raise ValueError(
+                f"{config_path}: [updates] {key} = {_toml_spelling(value)} is not "
+                f"true or false; write it without quotes, e.g. {fix}, or delete "
+                f"the line {ending}"
             )
         entry[key] = value
     return entry

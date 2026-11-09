@@ -1,0 +1,20 @@
+script: normalize_plate.py
+inputs:
+  plate:
+    type: dir
+    description: One plate's folder, holding cells.csv and plate.json (its well layout and background).
+outputs:
+  normalized:
+    type: csv
+    description: Every cell kept, with its condition, background-subtracted signal and fold change.
+  qc_histogram:
+    type: png
+    description: The area histogram with the threshold marked, to check by eye for each new plate.
+params:
+  min_area:
+    type: float
+    default: 35
+    description: Cells smaller than this (px) are debris and dropped. 35 was picked by eye from the histogram.
+helpers:
+  - plate_utils.py
+env: plates-lab-wfc

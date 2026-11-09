@@ -1,0 +1,23 @@
+{
+  "plate": "plate2",
+  "background": 131.0,
+  "imaged": "2026-10-14",
+  "wells": {
+    "A1": "DMSO",
+    "A2": "DMSO",
+    "A3": "DMSO",
+    "A4": "DMSO",
+    "B1": "drugA_1uM",
+    "B2": "drugA_1uM",
+    "B3": "drugA_1uM",
+    "B4": "drugA_1uM",
+    "C1": "drugA_10uM",
+    "C2": "drugA_10uM",
+    "C3": "drugA_10uM",
+    "C4": "drugA_10uM",
+    "D1": "drugB_1uM",
+    "D2": "drugB_1uM",
+    "D3": "drugB_1uM",
+    "D4": "drugB_1uM"
+  }
+}

@@ -16,7 +16,7 @@ Workflow Canvas (`wfc`) runs computational pipelines reproducibly: each step run
 - **Env**: a registered container image a method runs in, built from a conda, pixi or uv environment, or your own image.
 - **Pipeline**: a JSON document wiring samples into methods, usually built in the canvas and run with `wfc run-pipeline` or from the canvas.
 - **Run**: one step run on one sample, recorded with its code version, inputs, parameters and outputs.
-- **Draft**: a method folder tried before it is registered. `wfc try` runs it on a sample, and a draft runs in the canvas like any method. Nothing a draft does is recorded or cached, and only its latest results are kept.
+- **Draft**: a method folder tried before it is registered. `wfc try` runs it on a sample, and a draft runs in the canvas like any method. Nothing a draft does is recorded or cached. A draft keeps one draft run: the results of every node that ran it in its latest pipeline (or `wfc try`). Running it in another pipeline replaces them all, so run every node and sample you want to compare in one pipeline, or register the method to keep results.
 
 The working order is: **try or draft, then register, then run, then share.**
 
@@ -105,10 +105,8 @@ If a page is missing or there is no network, work from this skill and `wfc <comm
 
 ## Known issues in 0.8.0
 
-These are known wfc bugs in 0.8.0, planned to be fixed in 0.8.1. When `wfc --version` is 0.8.0 (or a 0.8.0 pre-release), use the workaround and tell the user you are doing so; when it is 0.8.1 or later, try the plain way first.
+These are known wfc bugs in 0.8.0, planned to be fixed in 0.8.1 unless the entry says otherwise. When `wfc --version` is 0.8.0 (or a 0.8.0 pre-release), use the workaround and tell the user you are doing so; when it is 0.8.1 or later, try the plain way first.
 
-- **A pipeline that references runs of an earlier pipeline fails before any step runs** with `MissingInputException`, naming files under `.wfc/runs/<id>/_workdir/`, once those runs' outputs are archived (`wfc run-pipeline` archives by default). Run the first pipeline with `wfc run-pipeline --no-archive`, then the pipeline that references it, then `wfc cache archive`. A later rerun of the second pipeline fails again; to rerun it, export the outputs it reads (`wfc export`), register them as samples and feed it from those, and tell the user wfc then no longer records which runs made them.
-- **A reference to a cached run is refused** (`Reference '<name>' is invalid for run <id> …; re-run that step and select the new run.`); re-running gives another cached run. Reference the run it reused instead (`wfc show-run` says `cache hit of run N`).
 - **`wfc check-pipeline` refuses a node with two inputs** (`only one edge per slot is supported`) when links name the slot with `target_slot`. Name each link's slots with `sourceHandle` and `targetHandle`.
 - **A draft fails with `ModuleNotFoundError` or a missing file** for a helper listed outside the method folder (`helpers: [../shared/x.py]`). While it is a draft, keep a copy of the helper in the method folder.
 - **A pipeline node with `"version": "draft"` and a relative `"folder"` is refused.** Leave `"folder"` out.
@@ -119,6 +117,8 @@ These are known wfc bugs in 0.8.0, planned to be fixed in 0.8.1. When `wfc --ver
 - **`wfc show-run` can give an archived output a path that does not exist**, and a cached run's log paths do not exist. `wfc export --run <id> --slot <slot> --path` gives the real file; a cached run's logs are those of the run it reused.
 - **Registering a cloned conda env from Windows or macOS fails** (`Bad expected access`). Never copy an env with `conda create --clone`; build the copy from the packages it asked for, as the **creating-a-wfc-method** skill describes.
 - **`wfc register-env --dry-run` refuses an env the user already has** (`conda:<env>`). Register it; it shows each phase and keeps a log.
+- **A step that reads several runs through references runs once per sample** when those runs were made for different samples: History shows two identical runs of the step, the second `⟳ CACHED`. Nothing is computed twice; tell the user they can ignore the extra run.
+- **A step can't combine the outputs of a step that runs once per sample** (`… is sample-collapsed … a collapsed step cannot consume per-sample outputs of an upstream method step.`). Run the per-sample steps as one pipeline, then combine their runs in a second pipeline with a run-reference node for each run. Planned for 0.9.0.
 
 ## If wfc itself seems wrong
 

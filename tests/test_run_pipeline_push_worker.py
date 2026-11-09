@@ -82,3 +82,42 @@ def test_no_push_worker_outlives_run_pipeline(git_project, monkeypatch, ending):
     assert seen_running == [1]
     assert _live_push_workers() == [], (
         f"run_pipeline ended ({ending}) and left its push worker running")
+
+
+def _worker(stop: threading.Event, *, last_tick: float) -> threading.Thread:
+    """A thread shaped like the push worker: ticks until stopped, then one last tick."""
+    import time
+
+    def loop(project_root, stop):
+        while not stop.wait(0.01):
+            pass
+        time.sleep(last_tick)
+
+    thread = threading.Thread(target=loop, args=("root", stop), daemon=True,
+                              name=PUSH_WORKER_THREAD_NAME)
+    thread.start()
+    return thread
+
+
+@workflow(purpose="The suite's leak guard waits for a push worker its pipeline "
+                  "stopped to finish its last push, which a cancel leaves to end "
+                  "on its own, and fails only a worker no one stopped or one "
+                  "still pushing after the grace; every thread has ended or been "
+                  "given up on when it returns")
+def test_the_leak_guard_waits_for_a_stopped_workers_last_push_and_fails_a_running_one():
+    """A stopped worker finishing is not a leak; an unstopped or stuck one is."""
+    from tests.conftest import _settle_push_workers
+
+    finishing_stop, running_stop, stuck_stop = (threading.Event() for _ in range(3))
+    finishing = _worker(finishing_stop, last_tick=0.5)
+    running = _worker(running_stop, last_tick=0.0)
+    stuck = _worker(stuck_stop, last_tick=3.0)
+    finishing_stop.set()
+    stuck_stop.set()
+
+    leaked = _settle_push_workers([finishing, running, stuck], grace=1.0)
+
+    assert leaked == [running, stuck]
+    assert not finishing.is_alive() and not running.is_alive()
+    assert running_stop.is_set()
+    stuck.join(timeout=5)

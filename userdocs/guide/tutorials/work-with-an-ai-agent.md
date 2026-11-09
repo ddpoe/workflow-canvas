@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/tutorials/work-with-an-ai-agent @ d6c2f495bff8; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/tutorials/work-with-an-ai-agent @ b77196745805; do not edit -->
 
 # Work with an AI Agent
 
@@ -18,7 +18,7 @@ The plugin holds three skills, and the agent uses whichever fits what you ask:
 - **creating-a-wfc-method**: bringing a script into wfc as a method, trying it as a draft before anything is registered.
 - **converting-an-analysis-to-a-wfc-pipeline**: handing over a whole analysis, a folder of notebooks and scripts, and getting back a pipeline you approved step by step, with a record of every change ([Convert an Analysis into a Pipeline](convert-an-analysis.md)).
 
-Where the agent runs on your computer, it runs `wfc` for you. A chat runs on the provider's servers: it cannot see your project or run `wfc`, but it answers questions about wfc and gives you the commands to run yourself. For a chat, download the plugin for this version of the docs and upload it as the tables below say:
+Your agent sends what you type and the files it reads to its provider: see Anthropic's [Data usage](https://code.claude.com/docs/en/data-usage) page or OpenAI's [privacy policy](https://openai.com/policies/privacy-policy/). For a chat, download the plugin for this version of the docs and upload it as the tables below say:
 
 [Download wfc-plugin.zip](../wfc-plugin.zip){.download-button}
 
@@ -39,6 +39,13 @@ claude plugin install wfc@workflow-canvas
 
 Already in a Claude Code session? Type the same two commands there with `/plugin` in place of `claude plugin`.
 
+When you upgrade wfc, update the plugin too, then restart Claude Code:
+
+```bash
+claude plugin marketplace update workflow-canvas
+claude plugin update wfc@workflow-canvas
+```
+
 ### ChatGPT and Codex
 
 | Where | What it can do | How to add it |
@@ -50,6 +57,14 @@ Already in a Claude Code session? Type the same two commands there with `/plugin
 :caption: Install the wfc plugin in Codex (run each line in a terminal)
 
 codex plugin marketplace add ddpoe/workflow-canvas
+codex plugin add wfc@workflow-canvas
+```
+
+When you upgrade wfc, reinstall the plugin from the refreshed marketplace, then start a new Codex session:
+
+```bash
+codex plugin remove wfc@workflow-canvas
+codex plugin marketplace upgrade workflow-canvas
 codex plugin add wfc@workflow-canvas
 ```
 
@@ -104,7 +119,7 @@ The agent works through it in stages and stops for you where the last column say
 | Stage | What the agent does | What you do |
 |---|---|---|
 | Ask | Asks which results you use and which parts belong in wfc now | Answer |
-| Run the original | Runs a copy of your analysis to keep its outputs for the comparison; your folder stays as it is | |
+| Run the original | Runs a copy of your analysis to keep its outputs for the comparison; your folder stays as it is. If the analysis doesn't run as it is, says so and records what had to change for it to run | Check any change it had to make |
 | Map | Proposes the steps, envs, samples and wiring | Approve or change the map |
 | Envs | Registers the envs first, because building one is the slowest step | |
 | Methods | Writes each method and tries it as a draft; where a step needs a judgement, such as a threshold picked by eye, shows the options side by side | Pick |
@@ -115,10 +130,16 @@ It keeps `wfc-intake/conversion.md` for the whole conversion beside the per-meth
 
 ## Run It and Read the Results
 
-Once the method is registered, the agent runs it once through a pipeline, so the run is recorded, and reads the result with `wfc runs` and `wfc show-run`. You can open the same runs in the canvas's History; see [Run and Inspect Your Pipelines](../how-to/run-and-inspect.md).
+Once the method is registered, the agent runs it once with `wfc run-method`, which saves a one-step pipeline for it in `pipelines/`, so the run is recorded, and reads the result with `wfc runs` and `wfc show-run`. You can open the same runs in the canvas's History; see [Run and Inspect Your Pipelines](../how-to/run-and-inspect.md).
 
 ## When Something Fails
 
-Ask the agent why. It runs `wfc doctor` first, to rule out setup such as Docker not running, then reads the failed run's log with `wfc show-run --run <run id> --log stderr`. For a problem in the method, it edits the method folder, tries it again with `wfc try` and registers the fix as a new version, when you agree. To check how wfc behaves before it answers, it uses a throwaway project rather than yours.
+Ask the agent why:
+
+```text
+My filter run failed. Can you find out why?
+```
+
+It runs `wfc doctor` first, to rule out setup such as Docker not running, then reads the failed run's log with `wfc show-run --run <run id> --log stderr`. For a problem in the method, it edits the method folder, tries it again with `wfc try` and registers the fix as a new version, when you agree. To check how wfc behaves before it answers, it uses a throwaway project rather than yours.
 
 If it thinks wfc itself is wrong, it says so at the end of the task, with what it expected, and offers to draft an issue on GitHub. It files the issue only when you agree.

@@ -29,6 +29,17 @@
  *     the sample's and each hash's copy icons copy.
  *   - Test G: a long param value shows truncated with its size and opens to
  *     a scrolling box of the pretty-printed value with a copy icon.
+ *   - Test H (1366×768): the card zoom box sits in the view's lower right;
+ *     the first visit opens at Fit, within 100–150% with the widest card
+ *     inside the view; the cards scale and the sample label does not; at
+ *     120% a card click opens its run and "✗ Failed" opens Output; zoom
+ *     keys typed into the search field stay there; the choice survives a
+ *     reload; a narrowed window re-fits the widest card
+ *     to the edge.
+ *   - Test H2 (its own fixture, a card wider than the cards' minimum): a
+ *     narrowed window brings Fit down to ~130% with that card at its own
+ *     width, not squeezed; Collapse all re-fits up and Expand all back; the
+ *     run panel opening re-fits down.
  */
 import { expect, test, type Page } from '@playwright/test';
 
@@ -128,6 +139,14 @@ const DIAMOND_RUNS: MockWfcRun[] = [
   mkRun({ id: 'kseg2', method: 'segment_tissue', dataSource: 'sample_d', parentRunIds: ['kload'], upstreamRunIds: ['kload'], timestamp: T0 + 90_000 }),
   mkRun({ id: 'kcmp', method: 'compare', dataSource: 'sample_d', parentRunIds: ['kseg1', 'kseg2'], upstreamRunIds: ['kseg1', 'kseg2'], timestamp: T0 + 200_000 }),
   mkRun({ id: 'kplot', method: 'plot', dataSource: 'sample_d', parentRunIds: ['kcmp'], upstreamRunIds: ['kcmp'], timestamp: T0 + 300_000 }),
+];
+
+// A chain whose deepest card is wider than the cards' minimum: a long method
+// name on a failed run.
+const WIDE_RUNS: MockWfcRun[] = [
+  mkRun({ id: 'wload', method: 'load_tiles', dataSource: 'sample_w', timestamp: T0 }),
+  mkRun({ id: 'wseg', method: 'segment', dataSource: 'sample_w', parentRunIds: ['wload'], upstreamRunIds: ['wload'], timestamp: T0 + 100_000 }),
+  mkRun({ id: 'wlong', method: 'quantify_per_cell_marker_intensities_across_every_channel', dataSource: 'sample_w', parentRunIds: ['wseg'], upstreamRunIds: ['wseg'], status: 'failed', duration: 754, timestamp: T0 + 200_000 }),
 ];
 
 // A step reading its sample beside an upstream: segment reads the sample,
@@ -283,6 +302,156 @@ test.describe('History descendants view (smoke)', () => {
     await page.locator('.status-chip', { hasText: 'Success' }).click();
     await expect(page.locator('.tree-card', { hasText: 'quantify' })).toHaveCount(0);
     await expect(page.locator('.tree-card')).toHaveCount(3);
+  });
+
+  test('Test H: the card zoom sits lower right, Fits within 100–150%, scales only the cards, and cards still click', async ({ page }) => {
+    await page.setViewportSize({ width: 1366, height: 768 });
+    await setupHistoryRoutes(page);
+    await page.goto('/?fixture=history-descendants');
+    await page.waitForSelector('.view-switcher', { timeout: 10_000 });
+    await expect(page.locator('.tree-card')).toHaveCount(4, { timeout: 5_000 });
+
+    // The control box is visible in the view's lower right.
+    const zoomBox = page.getByTestId('descendants-zoom');
+    await expect(zoomBox).toBeVisible();
+    const view = (await page.locator('.descendants-view').boundingBox())!;
+    const box = (await zoomBox.boundingBox())!;
+    expect(view.x + view.width - (box.x + box.width)).toBeLessThan(40);
+    expect(view.y + view.height - (box.y + box.height)).toBeLessThan(30);
+    expect(box.x).toBeGreaterThan(1366 / 2);
+    expect(box.y).toBeGreaterThan(768 / 2);
+
+    // The first visit opens at Fit: within 100–150%, the widest card inside the view.
+    const level = page.getByTestId('descendants-zoom-level');
+    const fitButton = zoomBox.getByRole('button', { name: 'Fit to view' });
+    await expect(fitButton).toHaveAttribute('aria-pressed', 'true');
+    const fitPct = Number.parseInt((await level.textContent()) ?? '');
+    expect(fitPct).toBeGreaterThanOrEqual(100);
+    expect(fitPct).toBeLessThanOrEqual(150);
+    const overrun = await page.evaluate(() => {
+      const sc = document.querySelector<HTMLElement>('.dv-scroll')!;
+      const edge = sc.getBoundingClientRect().left + sc.clientLeft + sc.clientWidth;
+      const right = Math.max(...[...document.querySelectorAll('.tree-card')].map(c => c.getBoundingClientRect().right));
+      return right - edge;
+    });
+    expect(overrun).toBeLessThanOrEqual(1);
+
+    // The cards scale with the zoom; the sample label does not.
+    const card = page.locator('.tree-card', { hasText: 'segment' });
+    const label = page.locator('.section-label').first();
+    const cardAtFit = (await card.boundingBox())!.width;
+    const labelAtFit = (await label.boundingBox())!.height;
+    while ((await level.textContent()) !== '100%') {
+      await zoomBox.getByRole('button', { name: 'Zoom out' }).click();
+    }
+    await expect(fitButton).toHaveAttribute('aria-pressed', 'false');
+    const cardAt100 = (await card.boundingBox())!.width;
+    expect(cardAtFit / cardAt100).toBeCloseTo(fitPct / 100, 1);
+    expect((await label.boundingBox())!.height).toBeCloseTo(labelAtFit, 0);
+
+    // At 120%, a click on a card opens its run panel and "✗ Failed" opens Output.
+    await zoomBox.getByRole('button', { name: 'Zoom in' }).click();
+    await zoomBox.getByRole('button', { name: 'Zoom in' }).click();
+    await expect(level).toHaveText('120%');
+    await card.locator('.card-method').click();
+    const panel = page.locator('.detail-panel');
+    await expect(panel).toBeVisible();
+    await expect(panel.locator('.facts-grid .fact-mono').first()).toHaveText('dseg');
+    await page.locator('.tree-card', { hasText: 'quantify' }).getByRole('button', { name: 'Failed' }).click();
+    await expect(panel.locator('.tab.active')).toHaveText(/Output/);
+    await expect(panel.getByTestId('run-hero-pill')).toHaveText('● Failed');
+
+    // Zoom keys typed into a field stay the field's (the search empties the
+    // view while it holds them; cleared, the cards come back at 120%).
+    const search = page.getByPlaceholder('Filter runs...');
+    await search.press('+');
+    await search.press('0');
+    await search.press('-');
+    await expect(search).toHaveValue('+0-');
+    await search.fill('');
+    await expect(page.locator('.tree-card')).toHaveCount(4);
+    await expect(level).toHaveText('120%');
+
+    // The choice is kept: a reload opens at 120%, not at Fit.
+    await page.reload();
+    await page.waitForSelector('.view-switcher', { timeout: 10_000 });
+    await expect(level).toHaveText('120%');
+
+    // Fit takes the widest card to the view's right edge: these narrow cards
+    // clamp at 150%; a window narrowed until they would fit at ~125% re-fits
+    // there, the widest card at the edge.
+    await zoomBox.getByRole('button', { name: 'Fit to view' }).click();
+    await expect(level).toHaveText('150%');
+    const extent = () => page.evaluate(() => {
+      const sc = document.querySelector<HTMLElement>('.dv-scroll')!;
+      const edge = sc.getBoundingClientRect().left + sc.clientLeft + sc.clientWidth;
+      const rowsLeft = Math.min(...[...document.querySelectorAll('.tree-row')].map(r => r.getBoundingClientRect().left));
+      const right = Math.max(...[...document.querySelectorAll('.tree-card')].map(c => c.getBoundingClientRect().right));
+      return { edge, rowsLeft, right };
+    });
+    const wide = await extent();
+    const natural = (wide.right - wide.rowsLeft) / 1.5;
+    const chrome = 1366 - (wide.edge - wide.rowsLeft);
+    await page.setViewportSize({ width: Math.round(natural * 1.25 + chrome), height: 768 });
+    await expect.poll(async () => Number.parseInt((await level.textContent()) ?? '')).toBeLessThan(150);
+    const narrowPct = Number.parseInt((await level.textContent()) ?? '');
+    expect(narrowPct).toBeGreaterThanOrEqual(122);
+    expect(narrowPct).toBeLessThanOrEqual(126);
+    const narrow = await extent();
+    expect(narrow.right).toBeLessThanOrEqual(narrow.edge + 1);
+    expect(narrow.edge - narrow.right).toBeLessThan(0.02 * (narrow.edge - narrow.rowsLeft));
+  });
+
+  test('Test H2: Fit follows a card wider than the minimum down and up: a narrower window, collapse, the run panel', async ({ page }) => {
+    await page.setViewportSize({ width: 1366, height: 768 });
+    await setupHistoryRoutes(page, WIDE_RUNS);
+    await page.goto('/?fixture=history-descendants');
+    await page.waitForSelector('.view-switcher', { timeout: 10_000 });
+    await expect(page.locator('.tree-card')).toHaveCount(3, { timeout: 5_000 });
+
+    const zoomBox = page.getByTestId('descendants-zoom');
+    const level = page.getByTestId('descendants-zoom-level');
+    const pct = async () => Number.parseInt((await level.textContent()) ?? '');
+    const long = page.locator('.tree-card', { hasText: 'quantify_per_cell' });
+    const extent = () => page.evaluate(() => {
+      const sc = document.querySelector<HTMLElement>('.dv-scroll')!;
+      const edge = sc.getBoundingClientRect().left + sc.clientLeft + sc.clientWidth;
+      const rowsLeft = Math.min(...[...document.querySelectorAll('.tree-row')].map(r => r.getBoundingClientRect().left));
+      const right = Math.max(...[...document.querySelectorAll('.tree-card')].map(c => c.getBoundingClientRect().right));
+      return { edge, rowsLeft, right };
+    });
+
+    // The long card's own width at 100%, and the window it would fit at ~130%.
+    while ((await level.textContent()) !== '100%') {
+      await zoomBox.getByRole('button', { name: 'Zoom out' }).click();
+    }
+    const longAt100 = (await long.boundingBox())!.width;
+    expect(longAt100).toBeGreaterThan(300);
+    const at100 = await extent();
+    const natural = at100.right - at100.rowsLeft;
+    const chrome = 1366 - (at100.edge - at100.rowsLeft);
+    await zoomBox.getByRole('button', { name: 'Fit to view' }).click();
+    await page.setViewportSize({ width: Math.round(natural * 1.3 + chrome), height: 768 });
+
+    // Fit comes down to ~130%, and the long card keeps its own width (no squeeze).
+    await expect.poll(pct).toBeLessThan(140);
+    const fitted = await pct();
+    expect(fitted).toBeGreaterThanOrEqual(127);
+    expect(fitted).toBeLessThanOrEqual(131);
+    expect((await long.boundingBox())!.width / (fitted / 100)).toBeCloseTo(longAt100, -1);
+    const fit = await extent();
+    expect(fit.right).toBeLessThanOrEqual(fit.edge + 1);
+
+    // Collapsing the tree leaves only the short root: Fit goes back up.
+    await page.locator('.collapse-all-btn').click();
+    await expect.poll(pct).toBeGreaterThan(fitted);
+    await page.locator('.expand-all-btn').click();
+    await expect.poll(pct).toBe(fitted);
+
+    // The run panel narrows the view: Fit comes down again.
+    await page.locator('.tree-card', { hasText: 'load_tiles' }).locator('.card-method').click();
+    await expect(page.locator('.detail-panel')).toBeVisible();
+    await expect.poll(pct).toBeLessThan(fitted);
   });
 
   test('Test B: Lineages — cached card marking, cached bucket, filters still apply', async ({ page }) => {

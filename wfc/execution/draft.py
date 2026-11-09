@@ -40,6 +40,7 @@ fingerprint, invocation record or ``command.sh`` reads it.
 """
 from __future__ import annotations
 
+import functools
 import json
 import os
 import shutil
@@ -56,6 +57,7 @@ from axiom_annotations import AutoStep, Step, task, workflow
 
 from .. import layout
 from ..persistence import project_root as get_project_root
+from ..storage import retry_while_held, write_file
 from .composer import PipelineDocumentError
 from .pipeline_record import ProcessIdentity, process_identity
 
@@ -150,7 +152,12 @@ def _now() -> str:
 
 @contextmanager
 def _store_lock(path: Path):
-    """Hold the draft run's lock file (one writer at a time, across processes)."""
+    """Hold the draft run's lock file (one writer at a time, across processes).
+
+    On Windows, creating the lock while its last holder is still removing it
+    is refused with ``PermissionError``; that is a held lock too, waited out
+    like one that exists.
+    """
     lock = path.with_name(path.name + ".lock")
     lock.parent.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
@@ -158,32 +165,53 @@ def _store_lock(path: Path):
         try:
             fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             break
-        except FileExistsError:
+        except (FileExistsError, PermissionError):
             if time.monotonic() - started > _LOCK_STALE_SECONDS:
-                lock.unlink(missing_ok=True)
+                retry_while_held(lambda: lock.unlink(missing_ok=True))
                 started = time.monotonic()
             time.sleep(0.02)
     try:
         yield
     finally:
         os.close(fd)
-        lock.unlink(missing_ok=True)
+        retry_while_held(lambda: lock.unlink(missing_ok=True))
 
 
-def _read_record(path: Path) -> dict | None:
+def _read_record(path: Path, *, strict: bool = False) -> dict | None:
+    """Read a draft-run record; a read another handle refuses is tried again first.
+
+    Args:
+        path: The record.
+        strict: For a writer holding the store lock: a record that is there
+            but cannot be read raises instead of reading as no draft run,
+            since a writer that took it for none would start a new draft
+            run and delete the other steps' results. A record that is not
+            valid JSON still reads as none.
+
+    Raises:
+        OSError: ``strict`` and the record could not be read.
+    """
     if not path.is_file():
         return None
     try:
-        record = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        text = retry_while_held(lambda: path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except OSError:
+        if strict:
+            raise
+        return None
+    try:
+        record = json.loads(text)
+    except ValueError:
         return None
     return record if isinstance(record, dict) else None
 
 
 def _write_record(path: Path, record: dict) -> None:
-    tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(record, indent=2, default=str), encoding="utf-8")
-    os.replace(tmp, path)
+    """Replace a draft-run record whole, while other processes may be reading it."""
+    write_file(path, json.dumps(record, indent=2, default=str).encode("utf-8"),
+               temporary=path.with_name(path.name + f".{os.getpid()}.tmp"))
 
 
 def _clear_results(module: str, method: str, root: Path) -> None:
@@ -199,7 +227,7 @@ def _clear_results(module: str, method: str, root: Path) -> None:
         if entry.is_dir() and not entry.is_symlink():
             shutil.rmtree(entry, ignore_errors=True)
         else:
-            entry.unlink(missing_ok=True)
+            retry_while_held(functools.partial(entry.unlink, missing_ok=True))
 
 
 def read_draft_run(module: str, method: str, root: Path | None = None) -> dict | None:
@@ -430,7 +458,7 @@ def end_running_draft_steps(pipeline_id: str, *, status: str, message: str,
     for module, method, _record in _all_draft_runs(root):
         path = layout.draft_run_path(root, module, method)
         with _store_lock(path):
-            record = _read_record(path)
+            record = _read_record(path, strict=True)
             if record is None or record.get("pipeline_id") != pipeline_id:
                 continue
             changed = False
@@ -538,7 +566,7 @@ def record_draft_step(module: str, method: str, *, pipeline_id: str,
     path = layout.draft_run_path(root, module, method)
     replaced: dict | None = None
     with _store_lock(path):
-        record = _read_record(path)
+        record = _read_record(path, strict=True)
         if record is None or record.get("pipeline_id") != pipeline_id:
             if record is not None:
                 old_id = str(record.get("pipeline_id"))

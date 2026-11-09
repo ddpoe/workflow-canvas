@@ -4,6 +4,48 @@ Notable changes to Workflow Canvas. The format follows [Keep a Changelog](https:
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-11-09
+
+### Upgrading
+- 0.8.0 includes everything in 0.8.0b1, 0.8.0b2 and 0.8.0b3 below; coming from 0.7.0, read their Upgrading notes too.
+- The canvas now checks PyPI once a day for a newer wfc and shows it in the version menu beside the title. It sends only the request, with `wfc/<version>` as its user agent, and never installs anything. A beta install is offered betas as well as stable releases; set `[updates] prereleases = true` or `false` in `wf-canvas.toml` to override that, or `[updates] check = false` to turn the check off.
+
+### Added
+- A `v<version>` label beside the canvas title opens a menu: Update available with the install command and what the new version changes, What's new and Known issues for the version you have, Report a bug, and links to the docs.
+- After an upgrade, What's new opens once by itself and lists every version since the one you last used.
+- Report a bug opens a GitHub issue already holding your wfc, OS, Python and Docker versions; nothing is sent until you submit it.
+- `wfc init` writes an `[updates]` section into `wf-canvas.toml`.
+- History's Descendants view has zoom controls in its lower right: −, +, and Fit, which enlarges the run cards to the width of the view (up to 150%). Ctrl+scroll and the `+`, `-` and `0` keys do the same. Sample names keep their size, and the zoom you choose is remembered in your browser.
+
+### Changed
+- A new module's default colour is now the palette colour least like the colours your other modules already have, so the first few modules in a project no longer come out in near-identical pinks. Colours already stored don't change, and you can still pick any colour in the Registry.
+- On Windows, when a file wfc is rewriting is briefly held open by another process (a parallel step, the canvas, a virus scanner), wfc waits up to about two seconds before giving up, the same for every file it rewrites.
+- The `using-wfc` skill now says that a draft keeps the results of every node from its latest pipeline, and that running it in another pipeline replaces them.
+
+### Fixed
+- On Windows, several draft nodes running in parallel (`wfc run-pipeline` with more than one core) no longer fail with `[WinError 5] Access is denied` on the draft's `draft-run.json`, or lose each other's results; every node's results are kept.
+- On Windows, steps of a newly registered method version that start together no longer fail with `[WinError 5] Access is denied` writing the version's code stamp.
+- A run that never started (refused before it ran, or cancelled because an earlier step failed) no longer shows a duration of decades in History; it reads "✗ Failed" with no time.
+- History's Pipelines view no longer cuts off the "Draft · Running" and other draft status pills, or the Stop button of a running pipeline.
+- A pipeline that reads an earlier run through a run reference now works when that run's outputs have been archived, which `wfc run-pipeline` and the canvas Run do by default. You no longer need `--no-archive`.
+- A reference to a run that was a cache hit now reads the outputs that run reused.
+- A reference whose output wfc can no longer read from the cache, the run folder or the remote is refused before anything runs, naming the run to re-run.
+
+### Known issues
+Each is on the guide's Known Issues page with its way around, and is planned to be fixed in 0.8.1 unless it says otherwise.
+- `wfc check-pipeline` refuses a node with two inputs when its links use `target_slot`.
+- A draft can't find a helper listed outside its method folder.
+- A draft node with a relative `"folder"` is refused.
+- A node left on `"version": "draft"` runs the draft without a warning.
+- After a `wfc try` is killed, the next try of that draft is refused as still in progress.
+- A pipeline that runs drafts reports `Total runs: 0`.
+- `wfc run-pipeline` with uncommitted changes starts, then fails its steps.
+- `wfc show-run` can give a path that does not exist for an archived output or a cached run's logs.
+- Registering a conda env made with `conda create --clone` fails on Windows and macOS.
+- `wfc register-env --dry-run` refuses an env you already have.
+- A step that reads several runs through references, made for different samples, runs once per sample; the extra runs are cache hits.
+- A step can't combine the outputs of a step that runs once per sample (`… is sample-collapsed …`); planned for 0.9.0.
+
 ## [0.8.0b3] — 2026-11-07
 
 ### Upgrading

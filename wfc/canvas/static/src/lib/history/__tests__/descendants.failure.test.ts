@@ -53,6 +53,19 @@ describe('a failed Descendants card', () => {
     expect(takePendingSection('bad')).toBe('output');
   });
 
+  it('reads ✗ Failed after its duration', () => {
+    runs.set([mkRun({ id: 'bad', status: 'failed', duration: 14.2 })]);
+    const { container } = render(DescendantsView);
+    expect(container.textContent).toMatch(/Failed\s+after 14\.2s/);
+  });
+
+  it('a run refused before it started reads ✗ Failed with no duration', () => {
+    runs.set([mkRun({ id: 'bad', status: 'failed', duration: null })]);
+    const { container, getByRole } = render(DescendantsView);
+    expect(getByRole('button', { name: 'Failed' })).toBeTruthy();
+    expect(container.textContent).not.toContain('after');
+  });
+
   it('a succeeded card has no failure link', () => {
     runs.set([mkRun({ id: 'ok' })]);
     const { queryByRole } = render(DescendantsView);

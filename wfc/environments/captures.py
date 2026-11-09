@@ -50,6 +50,7 @@ from axiom_annotations import task
 
 from .. import layout
 from ..reserved import DEMO_ENV_NAME
+from ..storage import replace_file
 from .packages import PIP_FREEZE_DELIMITER
 
 _HEX = frozenset("0123456789abcdef")
@@ -540,7 +541,7 @@ def _replace_pushed(folder: Path, record: PushedRecord) -> None:
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(record.to_json().encode("utf-8"))
-        os.replace(tmp, target)
+        replace_file(tmp, target)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise

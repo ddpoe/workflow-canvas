@@ -166,16 +166,20 @@ html, body, #app {
 }
 
 /* History Pipelines view: one set of column tracks per level, shared by
-   the level's header row and every row under it, so the columns line up. */
+   the level's header row and every row under it, so the columns line up.
+   Each cell clips its content, so the fixed tracks fit their widest
+   content: the status track the longest pill ("● DRAFT · CANCELLED"), the
+   same width at both levels; the actions track a running row's Stop,
+   "Watch in Canvas ↗" and ⋯. */
 .pipeline-grid {
   display: grid;
-  grid-template-columns: 96px minmax(140px, 1fr) minmax(220px, 340px) 64px 76px 170px;
+  grid-template-columns: 124px minmax(140px, 1fr) minmax(220px, 340px) 64px 76px 192px;
   gap: 10px;
   align-items: center;
 }
 .child-grid {
   display: grid;
-  grid-template-columns: 96px minmax(110px, 1.2fr) 64px minmax(90px, 1fr) minmax(44px, 0.6fr) 64px 92px;
+  grid-template-columns: 124px minmax(110px, 1.2fr) 64px minmax(90px, 1fr) minmax(44px, 0.6fr) 64px 92px;
   gap: 10px;
   align-items: center;
 }

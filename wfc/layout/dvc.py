@@ -1,9 +1,11 @@
-"""DVC shapes: the local cache under the project and the remote's location.
+"""DVC shapes, and the per-user files under ``~/.wfc/``.
 
 Catalog rows 12 (cache entry), ``dvc-remote-path`` and ``default-archive-url``
 of ``docs/system/layout.json``. The remote and archive derivations take the
 config value and the user's home as values — reading the config and
-``Path.home()`` stay with the callers.
+``Path.home()`` stay with the callers. The update check's answer sits beside
+the default archives in the same per-user ``~/.wfc/``, derived the same way
+from a home handed in.
 """
 from __future__ import annotations
 
@@ -15,6 +17,8 @@ from .tree import STATE_DIR_NAME
 DVC_DIR_NAME = ".dvc"
 #: The subdirectory of the user's home holding default per-project archives.
 ARCHIVES_DIR_NAME = "archives"
+#: The file in the user's ``~/.wfc/`` holding the update check's last answer.
+UPDATE_CHECK_FILENAME = "update-check.json"
 
 
 def dvc_dir(root: Path) -> Path:
@@ -94,3 +98,18 @@ def default_archive_url(home: Path, project_dir: Path) -> str:
     """
     return (Path(home) / STATE_DIR_NAME / ARCHIVES_DIR_NAME
             / Path(project_dir).name).resolve().as_posix()
+
+
+def update_check_path(home: Path) -> Path:
+    """Return the file holding the update check's last answer: ``<home>/.wfc/update-check.json``.
+
+    Per user, not per project: every project's canvas reads and writes the
+    one answer.
+
+    Args:
+        home: The user's home directory, handed in as a value.
+
+    Returns:
+        The file's path; nothing is created.
+    """
+    return Path(home) / STATE_DIR_NAME / UPDATE_CHECK_FILENAME

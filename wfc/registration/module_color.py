@@ -7,10 +7,13 @@ module's colour and the default it was given when first stored::
 
     {"modules": {"<name>": {"color": "#rrggbb", "default": "#rrggbb"}}}
 
-A default is chosen by the module's name, not its registry order: a hash of
-the name picks a palette slot, and when another stored module already shows
-that slot's colour the next free slot is taken (with every slot taken, the
-hashed one). Once stored it never moves when modules are added.
+A default is the free palette colour most unlike the colours other stored
+modules show (the farthest, by CIEDE2000, from the nearest of them), so a
+new module looks as different from the others as the palette allows. The
+first module, and every module once all sixteen colours are taken, gets the
+palette slot a hash of its name picks; a tie goes to the slot first reached
+counting on from that one. Once stored it never moves when modules are
+added.
 
 Every write is committed by pathspec through
 :func:`wfc.version.commit_paths` when the file is inside the project's git
@@ -31,7 +34,7 @@ from pathlib import Path
 from axiom_annotations import Step, task
 
 from .. import layout
-from .color_standard import PALETTE, ColorCheck, check_color, normalize_hex
+from .color_standard import PALETTE, ColorCheck, check_color, color_distance, normalize_hex
 
 #: One process-wide lock over the read-modify-write-commit of the store: the
 #: canvas serves requests on a thread pool.
@@ -115,7 +118,13 @@ def _render(store: dict[str, ModuleColor]) -> bytes:
 
 
 def default_color(name: str, taken: Sequence[str] = ()) -> str:
-    """A module's default colour: its name's palette slot, or the next free one.
+    """A module's default colour: the free palette colour most unlike those taken.
+
+    With no colour taken it is the name's palette slot. Otherwise it is the
+    free palette colour farthest, by CIEDE2000, from the nearest colour
+    already taken, so a new module looks as different from the others as the
+    palette allows; a tie goes to the slot first reached counting on from the
+    name's. With every slot taken it is the name's slot.
 
     Args:
         name: The module's name.
@@ -126,11 +135,11 @@ def default_color(name: str, taken: Sequence[str] = ()) -> str:
     """
     held = {normalize_hex(c) for c in taken}
     start = int.from_bytes(hashlib.sha256(name.encode("utf-8")).digest()[:8], "big") % len(PALETTE)
-    for offset in range(len(PALETTE)):
-        color = PALETTE[(start + offset) % len(PALETTE)][1]
-        if color not in held:
-            return color
-    return PALETTE[start][1]
+    from_name = [PALETTE[(start + offset) % len(PALETTE)][1] for offset in range(len(PALETTE))]
+    free = [color for color in from_name if color not in held]
+    if not held or not free:
+        return from_name[0]
+    return max(free, key=lambda color: min(color_distance(color, t) for t in held))
 
 
 def _write_and_commit(root: Path, data: bytes | None, message: str,
@@ -196,7 +205,8 @@ def assign_module_colors(root: Path, names: Sequence[str], *,
         store = read_module_colors(root)
         口 = Step(step_num=2, name="Assign missing defaults",
                  purpose="In registration order, give each module the store "
-                         "lacks its name's free palette slot")
+                         "lacks the free palette colour most unlike those "
+                         "already taken (the first module, its name's slot)")
         added = False
         for name in names:
             if name in store:

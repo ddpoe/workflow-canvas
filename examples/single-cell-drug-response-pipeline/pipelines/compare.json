@@ -1,0 +1,35 @@
+{
+  "name": "compare-plates",
+  "nodes": [
+    {
+      "id": "plate1_bootstrap",
+      "type": "run_reference",
+      "run_id": 3
+    },
+    {
+      "id": "plate2_bootstrap",
+      "type": "run_reference",
+      "run_id": 4
+    },
+    {
+      "id": "compare_plates",
+      "module": "plate_assay",
+      "method": "compare_plates",
+      "params": {
+        "plate_names": "plate1,plate2"
+      }
+    }
+  ],
+  "links": [
+    {
+      "source": "plate1_bootstrap",
+      "target": "compare_plates",
+      "targetHandle": "bootstraps"
+    },
+    {
+      "source": "plate2_bootstrap",
+      "target": "compare_plates",
+      "targetHandle": "bootstraps"
+    }
+  ]
+}

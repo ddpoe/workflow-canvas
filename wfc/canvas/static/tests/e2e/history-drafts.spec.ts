@@ -100,6 +100,36 @@ test.describe('History: draft runs (case 22)', () => {
     await expect(page.locator('[data-testid="summary-draft"]')).toContainText('2 draft');
   });
 
+  test('a running draft-mode pipeline shows Stop and every draft status pill whole in its column', async ({ page }) => {
+    // Routes added after setupRoutes win: the draft-mode pipeline is running
+    // and its draft steps read each status, the longest words included.
+    const statuses = ['running', 'pending', 'cancelled', 'failed', 'success'];
+    const steps = statuses.map((status, i) => ({
+      ...DOWNSTREAM, status, nodeId: `n${i + 3}`, draftString: `draft:demo.label/n${i + 3}@ctrl_01`,
+    }));
+    await setupRoutes(page);
+    await json(page, '**/api/wfc/pipelines', [{ ...SUMMARIES[0], status: 'running', draftSteps: steps }, SUMMARIES[1]]);
+    await json(page, '**/api/wfc/draft-steps', { steps });
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.goto('/?fixture=history-pipelines');
+    await page.waitForSelector('.view-switcher', { timeout: 10_000 });
+    await page.locator('.view-switcher .seg', { hasText: 'Pipelines' }).click();
+    const demo = page.locator('.pipeline-row', { hasText: 'demo' }).first();
+    await demo.locator('.name-cell').click();
+    await expect(page.locator('[data-testid="draft-pill"]')).toHaveCount(statuses.length);
+
+    // How far an element reaches past the grid cell (column) that holds it.
+    const overhang = (sel: string) => page.locator(sel).evaluateAll(els => els.map(el => {
+      let cell: Element = el;
+      while (cell.parentElement && !/(pipeline|child)-grid/.test(cell.parentElement.className)) cell = cell.parentElement;
+      const r = el.getBoundingClientRect(), c = cell.getBoundingClientRect();
+      return { text: (el as HTMLElement).innerText, px: Math.max(0, c.left - r.left) + Math.max(0, r.right - c.right) };
+    }));
+    for (const sel of ['[data-testid="pipeline-stop"]', '[data-testid="pipeline-watch"]', '[data-testid="draft-pill"]']) {
+      for (const { text, px } of await overhang(sel)) expect(px, `${text} is cut by ${px}px`).toBeLessThanOrEqual(0.5);
+    }
+  });
+
   test('Lineages marks the draft cards with DRAFT MODE and no star or run id', async ({ page }) => {
     await openHistory(page, 'Lineages');
     const cards = page.locator('[data-testid="draft-card"]');

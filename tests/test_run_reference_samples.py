@@ -43,6 +43,7 @@ def _ref_outputs() -> dict:
             "measurements": "/work/run62/measurements.csv",
             "labels": "/work/run62/labels.csv",
         },
+        "unreadable_slots": [],
         "sample": "SJ011",
         "method": "regionprops_quantification",
         "malformed": False,
@@ -94,6 +95,7 @@ def test_resolve_populates_sample_and_all_output_paths(referenced_run):
     assert literal["sample"] == info["sample"]
     assert literal["method"] == info["method"]
     assert literal["malformed"] == info["malformed"]
+    assert literal["unreadable_slots"] == info["unreadable_slots"]
     assert set(literal["output_paths"]) == set(info["output_paths"])
 
 

@@ -1,0 +1,11 @@
+plate assay - how to run (Sam, Oct 2026)
+
+1. conda activate plates-lab
+2. open 01_process_plates.ipynb, PLATE = "plate1", run all
+3. PLATE = "plate2", run all again
+4. open 02_compare_plates.ipynb, run all
+results end up in results/
+
+the QC cell: look at the histogram before trusting the numbers.
+explore_thresholds is where I picked MIN_AREA, don't need to rerun it.
+the bootstrap is the slow bit.

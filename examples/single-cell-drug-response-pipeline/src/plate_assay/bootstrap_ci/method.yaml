@@ -1,0 +1,21 @@
+script: bootstrap_ci.py
+inputs:
+  normalized:
+    type: csv
+    description: One plate's normalized cells (normalize_plate's output).
+outputs:
+  bootstrap:
+    type: csv
+    description: Per condition, the mean fold change, its 95% bootstrap interval and the number of cells.
+params:
+  n_boot:
+    type: int
+    default: 200000
+    description: Bootstrap resamples per condition.
+  seed:
+    type: int
+    default: 0
+    description: Random seed, so a rerun gives the same intervals. The notebook had none.
+helpers:
+  - plate_utils.py
+env: plates-lab-wfc

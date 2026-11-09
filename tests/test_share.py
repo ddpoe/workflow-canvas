@@ -159,7 +159,7 @@ def test_share_names_the_fix_for_every_missing_item(git_project, monkeypatch,
     assert images.startswith("  [WARN] images") and f"{ENV}:fp-" in images, images
     assert "wfc push-env --all" in images
     from wfc.cli import github_images_guide_url
-    from wfc.version import installed_wfc_version
+    from wfc.release import installed_wfc_version
 
     assert out.rstrip().endswith(
         "See your images on GitHub: "

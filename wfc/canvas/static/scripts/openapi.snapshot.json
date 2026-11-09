@@ -1,6 +1,109 @@
 {
   "components": {
     "schemas": {
+      "AboutFooter": {
+        "description": "What the update check offers and how to change it, or why it cannot run.",
+        "properties": {
+          "state": {
+            "enum": [
+              "stable",
+              "prereleases",
+              "off",
+              "invalid"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "text"
+        ],
+        "title": "AboutFooter",
+        "type": "object"
+      },
+      "AboutLinks": {
+        "description": "The menu's links, in the installed version's docs channel.",
+        "properties": {
+          "changelog": {
+            "title": "Changelog",
+            "type": "string"
+          },
+          "docs": {
+            "title": "Docs",
+            "type": "string"
+          },
+          "known_issues": {
+            "title": "Known Issues",
+            "type": "string"
+          },
+          "plugin_install": {
+            "title": "Plugin Install",
+            "type": "string"
+          },
+          "updates_guide": {
+            "title": "Updates Guide",
+            "type": "string"
+          }
+        },
+        "required": [
+          "docs",
+          "known_issues",
+          "updates_guide",
+          "plugin_install",
+          "changelog"
+        ],
+        "title": "AboutLinks",
+        "type": "object"
+      },
+      "AboutResponse": {
+        "description": "What the version menu shows.",
+        "properties": {
+          "changelog": {
+            "$ref": "#/components/schemas/ReleaseNotes"
+          },
+          "footer": {
+            "$ref": "#/components/schemas/AboutFooter"
+          },
+          "links": {
+            "$ref": "#/components/schemas/AboutLinks"
+          },
+          "offer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UpdateOffer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "version",
+          "offer",
+          "changelog",
+          "footer",
+          "links"
+        ],
+        "title": "AboutResponse",
+        "type": "object"
+      },
       "ArtifactPreview": {
         "description": "``GET /api/wfc/run/{id}/preview/{path}``: the start of a table, JSON or text file.",
         "properties": {
@@ -65,6 +168,20 @@
           "truncated"
         ],
         "title": "ArtifactPreview",
+        "type": "object"
+      },
+      "BugReportResponse": {
+        "description": "The new-issue page Report a bug opens.",
+        "properties": {
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "BugReportResponse",
         "type": "object"
       },
       "CacheStatusOutput": {
@@ -216,6 +333,60 @@
           "status"
         ],
         "title": "CacheStatusRowModel",
+        "type": "object"
+      },
+      "ChangelogSection": {
+        "description": "One ``### <Heading>`` block of a version's changelog entry.",
+        "properties": {
+          "heading": {
+            "title": "Heading",
+            "type": "string"
+          },
+          "intro": {
+            "title": "Intro",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "heading",
+          "intro",
+          "items"
+        ],
+        "title": "ChangelogSection",
+        "type": "object"
+      },
+      "ChangelogVersion": {
+        "description": "One version's changelog entry, Upgrading first and Known issues last.",
+        "properties": {
+          "date": {
+            "title": "Date",
+            "type": "string"
+          },
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/ChangelogSection"
+            },
+            "title": "Sections",
+            "type": "array"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "date",
+          "sections"
+        ],
+        "title": "ChangelogVersion",
         "type": "object"
       },
       "ClearedDraft": {
@@ -2934,6 +3105,35 @@
         "title": "RegistryModulesResponse",
         "type": "object"
       },
+      "ReleaseNotes": {
+        "description": "The installed version's entries, or the Changelog link when there are none.",
+        "properties": {
+          "link": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Link"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/ChangelogVersion"
+            },
+            "title": "Versions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "versions",
+          "link"
+        ],
+        "title": "ReleaseNotes",
+        "type": "object"
+      },
       "RunArtifact": {
         "description": "``GET /api/wfc/run/{id}/artifacts``: one archived output of a run.",
         "properties": {
@@ -3344,6 +3544,56 @@
         "title": "TablePreview",
         "type": "object"
       },
+      "UpdateNotes": {
+        "description": "The offered version's Upgrading and Known issues, and the link to all its notes.",
+        "properties": {
+          "link": {
+            "title": "Link",
+            "type": "string"
+          },
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/ChangelogSection"
+            },
+            "title": "Sections",
+            "type": "array"
+          }
+        },
+        "required": [
+          "sections",
+          "link"
+        ],
+        "title": "UpdateNotes",
+        "type": "object"
+      },
+      "UpdateOffer": {
+        "description": "A newer release the installed wfc is offered, with its pip command.",
+        "properties": {
+          "command": {
+            "title": "Command",
+            "type": "string"
+          },
+          "notes": {
+            "$ref": "#/components/schemas/UpdateNotes"
+          },
+          "prerelease": {
+            "title": "Prerelease",
+            "type": "boolean"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "prerelease",
+          "command",
+          "notes"
+        ],
+        "title": "UpdateOffer",
+        "type": "object"
+      },
       "ValidateResponse": {
         "additionalProperties": true,
         "description": "The validate route's verdict on a pipeline document.",
@@ -3504,6 +3754,72 @@
           }
         },
         "summary": "Root"
+      }
+    },
+    "/api/about": {
+      "get": {
+        "description": "Answer the version menu: version, offer, changelog, footer and links.\n\nReads the project's ``[updates]``; with the check on, answers the cached\noffer at once and starts the background check when it is due. An\ninvalid config still answers the version and the changelog, with no\noffer and the config's refusal as the footer text; a missing\n``wf-canvas.toml`` answers the same, the footer naming the file.\n\nArgs:\n    since: The version the page saw last. Given, the changelog holds\n        every version newer than it up to the installed one, newest\n        first; omitted, the installed version alone.",
+        "operationId": "get_about_api_about_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Since"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AboutResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get About"
+      }
+    },
+    "/api/about/report": {
+      "get": {
+        "description": "Answer the new-issue URL Report a bug opens, prefilled for the user to edit.\n\nRuns Environments' Docker probe now (never when the menu opens); the\nbody names the wfc version, the platform, Python and Docker (``not\nrunning`` when it does not answer), and no project path.",
+        "operationId": "get_bug_report_api_about_report_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BugReportResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Bug Report"
       }
     },
     "/api/contracts/{method_full}/output_options": {

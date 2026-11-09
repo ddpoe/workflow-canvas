@@ -89,13 +89,13 @@ class TestReadConfigDvc:
 
     def test_returns_only_the_environment_roots_dvc_integrity_registry_and_previews(
             self, tmp_project):
-        """One call answers six keys: the environment roots, [dvc], [integrity],
-        [registry] and [previews].
+        """One call answers seven keys: the environment roots, [dvc], [integrity],
+        [registry], [previews] and [updates].
 
         The file carries a ``[database]`` table and a project name; neither
         a database URL nor the name comes back. ``registry`` is ``None``
         until ``[registry] url`` is set, then ``{"url": ...}``; ``previews``
-        holds its defaults while the file has no ``[previews]`` table.
+        and ``updates`` hold their defaults while the file has neither table.
         """
         _write_config(tmp_project, textwrap.dedent("""
             [dvc]
@@ -106,9 +106,10 @@ class TestReadConfigDvc:
         cfg = read_config(tmp_project)
 
         assert set(cfg) == {"pixi_root", "conda_root", "dvc", "integrity",
-                            "registry", "previews"}
+                            "registry", "previews", "updates"}
         assert cfg["registry"] is None
         assert cfg["previews"] == {"memory_mb": 1024, "cache_mb": 500}
+        assert cfg["updates"] == {"check": True, "prereleases": None}
 
         _write_config(tmp_project, textwrap.dedent("""
             [dvc]
@@ -120,7 +121,7 @@ class TestReadConfigDvc:
         cfg = read_config(tmp_project)
 
         assert set(cfg) == {"pixi_root", "conda_root", "dvc", "integrity",
-                            "registry", "previews"}
+                            "registry", "previews", "updates"}
         assert cfg["registry"] == {"url": "ghcr.io/lab/project"}
 
     def test_dvc_section_absent(self, tmp_project):

@@ -1,4 +1,4 @@
--- LEGACY-SHAPE FIXTURE (frozen on purpose): the schema of wfc release 0.7.0.
+-- LEGACY-SHAPE FIXTURE (frozen on purpose): the schema of wfc release 0.8.0.
 --
 -- This is the one case the testing SOP permits raw CREATE TABLE DDL
 -- (Database-Schema Test Fixtures, schema-drift witness). It is NOT the current
@@ -7,7 +7,7 @@
 -- result equals a fresh create_all database.
 --
 -- Produced by building a SQLite database with create_all from
--- wfc/persistence/schema.py at commit ec4d9e4c (the 0.7.0 release commit)
+-- wfc/persistence/schema.py at commit 0bdc22a2 (the 0.8.0 release's models)
 -- and dumping sqlite_master.
 -- Refresh it at each release from that release's models.
 
@@ -16,6 +16,20 @@ CREATE TABLE modules (
 	name VARCHAR(200) NOT NULL, 
 	description VARCHAR, 
 	PRIMARY KEY (id)
+);
+
+CREATE TABLE pipeline_runs (
+	pipeline_id VARCHAR(200) NOT NULL, 
+	name VARCHAR(500), 
+	started_at DATETIME, 
+	status VARCHAR(50) NOT NULL, 
+	ended_at DATETIME, 
+	draft_mode BOOLEAN NOT NULL, 
+	drafts JSON, 
+	draft_step_count INTEGER NOT NULL, 
+	cleared_reason VARCHAR, 
+	cleared_at DATETIME, 
+	PRIMARY KEY (pipeline_id)
 );
 
 CREATE TABLE samples (
@@ -218,39 +232,41 @@ CREATE TABLE in_use_records (
 
 CREATE UNIQUE INDEX ix_modules_name ON modules (name);
 
+CREATE INDEX ix_pipeline_runs_status ON pipeline_runs (status);
+
 CREATE INDEX ix_samples_push_status ON samples (push_status);
 
 CREATE UNIQUE INDEX ix_samples_name ON samples (name);
 
 CREATE INDEX ix_blobs_push_status ON blobs (push_status);
 
-CREATE INDEX ix_methods_name ON methods (name);
-
 CREATE INDEX ix_methods_module_id ON methods (module_id);
+
+CREATE INDEX ix_methods_name ON methods (name);
 
 CREATE INDEX ix_module_contracts_module_id ON module_contracts (module_id);
 
-CREATE INDEX ix_method_versions_method_id ON method_versions (method_id);
-
 CREATE INDEX ix_method_versions_method_code ON method_versions (method_id, code_fingerprint);
+
+CREATE INDEX ix_method_versions_method_id ON method_versions (method_id);
 
 CREATE INDEX ix_tracked_functions_method_id ON tracked_functions (method_id);
 
 CREATE INDEX ix_param_defs_tracked_function_id ON param_defs (tracked_function_id);
 
-CREATE UNIQUE INDEX uq_runs_running_claim ON runs (method_id, sample, cache_key) WHERE cache_source_run_id IS NULL AND status = 'running' AND heartbeat IS NOT NULL;
+CREATE INDEX ix_runs_cache_key ON runs (cache_key);
 
 CREATE INDEX ix_runs_version_id ON runs (version_id);
 
 CREATE INDEX ix_runs_sample ON runs (sample);
 
-CREATE INDEX ix_runs_method_id ON runs (method_id);
-
 CREATE INDEX ix_runs_cancelled_due_to_run_id ON runs (cancelled_due_to_run_id);
+
+CREATE INDEX ix_runs_method_id ON runs (method_id);
 
 CREATE INDEX ix_runs_pipeline_id ON runs (pipeline_id);
 
-CREATE INDEX ix_runs_cache_key ON runs (cache_key);
+CREATE UNIQUE INDEX uq_runs_running_claim ON runs (method_id, sample, cache_key) WHERE cache_source_run_id IS NULL AND status = 'running' AND heartbeat IS NOT NULL;
 
 CREATE INDEX ix_method_contracts_method_id ON method_contracts (method_id);
 
@@ -262,8 +278,8 @@ CREATE INDEX ix_run_outputs_push_status ON run_outputs (push_status);
 
 CREATE INDEX ix_in_use_records_claim_token ON in_use_records (claim_token);
 
-CREATE INDEX ix_in_use_records_run_id ON in_use_records (run_id);
-
 CREATE INDEX ix_in_use_records_kind_key ON in_use_records (kind, "key");
 
 CREATE INDEX ix_in_use_records_pipeline_id ON in_use_records (pipeline_id);
+
+CREATE INDEX ix_in_use_records_run_id ON in_use_records (run_id);

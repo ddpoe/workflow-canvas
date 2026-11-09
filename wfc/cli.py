@@ -395,15 +395,9 @@ def github_images_guide_url(version: str | None) -> str:
     Returns:
         The page's URL.
     """
-    from packaging.version import InvalidVersion, Version
+    from .release import docs_url
 
-    try:
-        release = version is not None and not Version(version).is_prerelease
-    except InvalidVersion:
-        release = False
-    channel = "stable" if release else "latest"
-    return (f"https://workflow-canvas.readthedocs.io/en/{channel}/"
-            f"{_GITHUB_IMAGES_GUIDE_PAGE}")
+    return docs_url(version, _GITHUB_IMAGES_GUIDE_PAGE)
 
 
 def _shares_to_ghcr(project_dir) -> bool:
@@ -447,7 +441,7 @@ def _cli_share(args) -> int:
     from . import cli_render as render
     from .execution import share_checks
     from .preflight import render_health_table
-    from .version import installed_wfc_version
+    from .release import installed_wfc_version
 
     try:
         project_dir = get_project_root()
@@ -1143,7 +1137,7 @@ class _VersionAction(argparse.Action):
                          default=default, nargs=0, help=help)
 
     def __call__(self, parser, namespace, values, option_string=None):
-        from .version import installed_wfc_version
+        from .release import installed_wfc_version
 
         print(f"wfc {installed_wfc_version() or 'unknown'}")
         parser.exit()

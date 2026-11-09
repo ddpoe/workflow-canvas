@@ -457,15 +457,27 @@ def _copy_holds(copy_dir: Path, code_fingerprint: str) -> bool:
         return False
 
 
+def _read_stamp(stamp: Path) -> str:
+    """The fingerprint a copy's stamp records, read while another step may replace it."""
+    from ..storage import retry_while_held
+
+    return retry_while_held(lambda: stamp.read_text(encoding="utf-8")).strip()
+
+
 def _write_stamp(stamp: Path, code_fingerprint: str) -> None:
-    """Write the copy's stamp atomically (a temporary sibling, then replace)."""
+    """Write the copy's stamp atomically (a temporary sibling, then replace).
+
+    Parallel steps of one method version verify and stamp the same copy, so
+    the stamp may be held open by another step while it is replaced.
+    """
     import os
     import tempfile
 
+    from ..storage import write_file
+
     fd, tmp = tempfile.mkstemp(dir=stamp.parent, prefix=f".{stamp.name}-")
-    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(code_fingerprint + "\n")
-    os.replace(tmp, stamp)
+    os.close(fd)
+    write_file(stamp, (code_fingerprint + "\n").encode("utf-8"), temporary=Path(tmp))
 
 
 @task(purpose="Extract a method version's registered tree into its shared code "
@@ -513,7 +525,7 @@ def extract_version_copy(module: str, method: str, entry: VersionEntry,
     target = layout.code_copy_dir(root, entry.tree_hash)
     stamp = layout.code_copy_stamp(root, entry.tree_hash)
     stamped = (stamp.is_file()
-               and stamp.read_text(encoding="utf-8").strip() == entry.code_fingerprint)
+               and _read_stamp(stamp) == entry.code_fingerprint)
     if stamped and _copy_holds(target, entry.code_fingerprint):
         return target
 

@@ -51,7 +51,9 @@ container command lines that run from them.
   ``docker pull`` wrappers, among them ``image_content``, the inspect the
   env fingerprint is rendered from, and :func:`save_image` (``docker save``,
   the image copy a rerun bundle carries) with :func:`local_image_ref` (the
-  first of several references the daemon holds).
+  first of several references the daemon holds), and
+  :func:`docker_server_version` (the daemon's version, or ``None``, for a
+  bug report).
 - ``argv``: the ``docker run`` and ``apptainer exec`` argv builders
   (:func:`build_docker_command`, :func:`build_apptainer_command`),
   :func:`accepts_read_only_binds` (each builder's read-only-bind
@@ -152,7 +154,7 @@ from .containers import (
     project_label,
     stop_containers,
 )
-from .docker import local_image_ref, save_image
+from .docker import docker_server_version, local_image_ref, save_image
 from .fingerprint import capture_env_content, resolve_env_fingerprint
 from .gh import (
     CONNECT_REPOSITORY_STEPS,
@@ -305,6 +307,7 @@ __all__ = [
     "daemon_ref",
     "default_python_for_backend",
     "delete",
+    "docker_server_version",
     "ensure_runnable",
     "ensure_version_runnable",
     "env_record_for_spec",

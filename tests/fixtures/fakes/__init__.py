@@ -53,6 +53,10 @@ Index by boundary:
 **gh** -- the GitHub CLI reads of ``wfc share``.
   stub_gh.
 
+**release_http** -- the update check's HTTPS GETs (PyPI's JSON, the public changelog).
+  fake_release_http (canned answers, requests recorded), refuse_release_http
+  (the suite-wide network guard; armed for every test by conftest).
+
 **engine** -- the method process, the Snakemake spawn, the phases.
   stub_method_process (the harness's stub rung), mocked_snakemake,
   fake_engine_process, stub_pipeline_stage, stub_record_writers,
@@ -136,6 +140,7 @@ from .engine import (
     stub_runtime_phases,
 )
 from .gh import stub_gh
+from .release_http import fake_release_http, refuse_release_http
 from .process import (
     always_busy_socket,
     canned_process,
@@ -261,6 +266,8 @@ __all__ = [
     "BuildProcesses", "stub_posix_process_groups",
     # gh
     "stub_gh",
+    # release_http
+    "fake_release_http", "refuse_release_http",
     # engine
     "stub_method_process", "mocked_snakemake", "fake_engine_process",
     "stub_pipeline_stage", "stub_record_writers", "stub_runtime_phases",

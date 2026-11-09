@@ -1,0 +1,25 @@
+script: compare_plates.py
+inputs:
+  bootstraps:
+    type: csv
+    multiple: true
+    description: Each plate's bootstrap table (bootstrap_ci's output), in the order plate_names lists them.
+outputs:
+  comparison:
+    type: csv
+    description: Mean fold change per condition on each plate, their mean, and plate2 minus plate1.
+  figure:
+    type: png
+    description: plate1 against plate2 fold change, one point per condition.
+params:
+  plate_names:
+    type: str
+    default: plate1,plate2
+    description: The plates' names, comma-separated, in the order their tables arrive.
+  min_cells:
+    type: int
+    default: 0
+    description: Drop conditions with fewer cells than this before comparing. The notebook built this filter (50) but never used it, so 0 (no filter) keeps its results; 50 is what the filter meant.
+helpers:
+  - plate_utils.py
+env: plates-lab-wfc

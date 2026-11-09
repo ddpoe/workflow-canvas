@@ -21,7 +21,7 @@ export function formatTimestamp(ms: number): string {
  *
  * Returns e.g. "12.3s" or "2m 15s".
  */
-export function formatDuration(seconds: number): string {
+export function formatDuration(seconds: number | null): string {
   if (!seconds) return '--';
   if (seconds < 60) return `${seconds.toFixed(1)}s`;
   const mins = Math.floor(seconds / 60);

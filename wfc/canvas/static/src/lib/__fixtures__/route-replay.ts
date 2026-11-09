@@ -228,6 +228,128 @@ export async function setupRouteReplay(
   await page.route('**/api/modules', async (route: Route) => {
     await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
   });
+
+  // The version menu's about route: the installed version, no update offer.
+  // Each test's browser storage starts empty, so this first-ever load
+  // records the version silently and What's new stays closed.
+  await page.route('**/api/about**', async (route: Route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(aboutAnswer()),
+    });
+  });
+}
+
+// ---------- The version menu's about route ----------
+
+/** The guide links an about answer carries, for a stable install. */
+export const ABOUT_LINKS = {
+  docs: 'https://ddpoe.github.io/workflow-canvas/stable/',
+  known_issues: 'https://ddpoe.github.io/workflow-canvas/stable/reference/known-issues.html',
+  updates_guide: 'https://ddpoe.github.io/workflow-canvas/stable/reference/wf-canvas-toml.html#updates',
+  plugin_install: 'https://ddpoe.github.io/workflow-canvas/stable/tutorials/work-with-an-ai-agent.html#install',
+  changelog: 'https://github.com/ddpoe/workflow-canvas/blob/main/CHANGELOG.md',
+} as const;
+
+/** The footer's sentence per update setting (the about route's `_FOOTER_TEXT`). */
+export const ABOUT_FOOTER_TEXT = {
+  stable: 'Stable releases only. For betas, set `prereleases = true` in wf-canvas.toml',
+  prereleases: 'Stable and beta releases. For stable only, set `prereleases = false` in wf-canvas.toml',
+  off: 'Update check is off. To turn it on, set `check = true` in wf-canvas.toml',
+} as const;
+
+/** One changelog entry as the about route answers it. */
+export interface AboutChangelogVersion {
+  version: string;
+  date: string;
+  sections: { heading: string; intro: string; items: string[] }[];
+}
+
+/** The parts of an about answer a spec may set; the rest take a stable install's defaults. */
+export interface AboutAnswerOptions {
+  version?: string | null;
+  offer?: {
+    version: string;
+    prerelease?: boolean;
+    command?: string;
+    sections?: AboutChangelogVersion['sections'];
+  } | null;
+  versions?: AboutChangelogVersion[];
+  footer?: { state: 'stable' | 'prereleases' | 'off' | 'invalid'; text: string };
+}
+
+/**
+ * An answer of `GET /api/about`, shaped as the server's `AboutResponse`.
+ *
+ * Args:
+ *     opts: The version, offer, changelog entries and footer to answer;
+ *         by default 0.8.0, no offer, a one-section changelog, stable only.
+ *
+ * Returns:
+ *     The JSON body.
+ */
+export function aboutAnswer(opts: AboutAnswerOptions = {}): Record<string, unknown> {
+  const version = opts.version === undefined ? '0.8.0' : opts.version;
+  const offer = opts.offer ? {
+    version: opts.offer.version,
+    prerelease: opts.offer.prerelease ?? false,
+    command: opts.offer.command
+      ?? (opts.offer.prerelease ? `pip install workflow-canvas==${opts.offer.version}` : 'pip install -U workflow-canvas'),
+    notes: { sections: opts.offer.sections ?? [], link: ABOUT_LINKS.changelog },
+  } : null;
+  const versions = opts.versions ?? (version ? [{
+    version, date: '2026-11-01',
+    sections: [{ heading: 'Fixed', intro: '', items: ['A fixture fix.'] }],
+  }] : []);
+  return {
+    version,
+    offer,
+    changelog: { versions, link: versions.length ? null : ABOUT_LINKS.changelog },
+    footer: opts.footer ?? { state: 'stable', text: ABOUT_FOOTER_TEXT.stable },
+    links: ABOUT_LINKS,
+  };
+}
+
+/** What a spec's mocked about routes answer; a spec may change it between loads. */
+export interface AboutServer {
+  /** The about answer for a `since` (null: no `?since=`); null answers 502. */
+  answer: (since: string | null) => Record<string, unknown> | null;
+  /** The URL `GET /api/about/report` answers. */
+  reportUrl?: string;
+  /** Every `/api/about` URL asked, in order (path and query). */
+  aboutCalls: string[];
+  /** How many times the report route was asked. */
+  reportCalls: number;
+}
+
+/**
+ * Serve the version menu's two routes from `server`. Register it after any
+ * catch-all route, so it takes precedence.
+ *
+ * Args:
+ *     page: The Playwright page.
+ *     server: The answers, and the record of what was asked.
+ */
+export async function setupAboutRoutes(page: Page, server: AboutServer): Promise<void> {
+  await page.route('**/api/about**', async (route: Route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === '/api/about/report') {
+      server.reportCalls += 1;
+      await route.fulfill({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify({ url: server.reportUrl ?? 'https://github.com/ddpoe/workflow-canvas/issues/new?body=x' }),
+      });
+      return;
+    }
+    server.aboutCalls.push(url.pathname + url.search);
+    const body = server.answer(url.searchParams.get('since'));
+    if (body === null) {
+      await route.fulfill({ status: 502, contentType: 'text/plain', body: 'Bad Gateway' });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+  });
 }
 
 // ---------- A run's artifacts: listing, file, preview and image routes ----------
