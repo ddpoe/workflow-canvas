@@ -1,10 +1,10 @@
-<!-- generated from pm_mvp::docs/consumer/reference/known-issues @ 382dc4838bd7; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/reference/known-issues @ 1d3cf0273395; do not edit -->
 
 # Known Issues
 
 ## Reference: Known Issues
 
-These are known bugs in wfc 0.8.0 and its pre-releases, each with a way around it. Each is planned to be fixed in 0.8.1 unless its entry says otherwise.
+These are known bugs in wfc 0.8.0, its post-release 0.8.0.post1 and its pre-releases, each with a way around it. Each is planned to be fixed in 0.8.1 unless its entry says otherwise.
 
 If an AI agent is driving wfc with the wfc plugin's skills, it knows these and works around them for you.
 
@@ -75,3 +75,9 @@ Make the copy from the packages you installed in it instead: `conda env export -
 ## wfc register-env --dry-run refuses an env you already have
 
 `wfc register-env <name> conda:<env> --dry-run` is refused. Register the env instead: a small env takes a few minutes, and `wfc register-env` shows each step as it goes and keeps a log under `.wfc/logs/register-env/`.
+
+## Two projects that register an environment under the same name lose each other's image
+
+`wfc list-envs` shows `missing` for an environment, or a command stops with `env '<name>': its image sha256:… is not on this machine and was never pushed to a registry, so it cannot be pulled`, after another project on the same computer registered an environment with the same name. Its build replaced the image yours used. The `first-pipeline` environment of [Your First Pipeline](../tutorials/getting-started.md) and the demo's environment are named the same in every project.
+
+Give each project's environments a name of their own, such as `<project>-<env>`. A project that has already lost an image registers that environment again under such a name, points its methods' `env:` at the new name, and registers those methods again. Registering it again under the old name would take the image from the other project. No release is planned for this fix.

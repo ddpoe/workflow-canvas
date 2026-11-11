@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/tutorials/work-with-an-ai-agent @ b77196745805; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/tutorials/work-with-an-ai-agent @ 7d94ede0d7cd; do not edit -->
 
 # Work with an AI Agent
 
@@ -8,7 +8,7 @@ The wfc plugin teaches an AI agent how Workflow Canvas works. With it, you can a
 
 What the agent builds is an ordinary wfc method: it appears in the canvas Registry with its code, runs in its own container, and every run is recorded in History, so you can see and check what it built.
 
-This tutorial adds the plugin, then walks through a first session with an agent that runs on your computer. You need wfc installed and Docker running, as in [Your First Pipeline](getting-started.md).
+This tutorial adds the plugin, then walks through a first session with an agent that runs on your computer. You need wfc installed and Docker running, as [Install Workflow Canvas](../install.md) describes. If you have neither yet, add the plugin first and ask the agent to set you up: it takes you through the same install.
 
 ## Add the Plugin
 

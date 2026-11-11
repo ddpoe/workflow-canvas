@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/overview/what-is-workflow-canvas @ 4c673cec4687; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/overview/what-is-workflow-canvas @ 35123ad74d6f; do not edit -->
 
 # What is Workflow Canvas?
 
@@ -25,7 +25,7 @@ wfc doctor
 wfc demo
 ```
 
-`wfc doctor` checks that git, Docker and your output archive are ready. Every line should say `OK` before you go on. `wfc demo` then spins up the exact pipeline shown above on your machine — see [A Tour of the Demo](tutorials/wfc-demo.md) for the tour. You'll need [Docker](https://docs.docker.com/get-started/get-docker/) running — every step executes in a container — plus Python 3.12 and git; see [Installation](tutorials/getting-started.md#installation) for the details.
+`wfc doctor` checks that git, Docker and your output archive are ready. Every line should say `OK` before you go on. `wfc demo` then spins up the exact pipeline shown above on your machine — see [A Tour of the Demo](tutorials/wfc-demo.md) for the tour. You'll need [Docker](https://docs.docker.com/get-started/get-docker/) running — every step executes in a container — plus Python 3.12 and git; [Install Workflow Canvas](install.md) sets up all three.
 
 
 ## Build it with an AI agent
@@ -85,7 +85,8 @@ The deal is deliberately lopsided. **What you provide** is the raw material: you
 
 - **[A Tour of the Demo](tutorials/wfc-demo.md)** — run `wfc demo` to explore a complete working pipeline before writing any code, then export one of its results as a zip that reruns on any computer with Docker, without wfc.
 - **[Work with an AI Agent](tutorials/work-with-an-ai-agent.md)** — add the plugin, and let Claude Code or Codex set up a project and bring your scripts in as methods.
-- **[Your First Pipeline](tutorials/getting-started.md)** — install Workflow Canvas and take a project from empty to a running pipeline.
+- **[Install Workflow Canvas](install.md)** — get Docker, git and wfc onto your computer.
+- **[Your First Pipeline](tutorials/getting-started.md)** — take a project from empty to a running pipeline.
 - **[Write a Method in Python](tutorials/authoring-a-method-script.md)** and **[Write a Method](how-to/write-a-method.md)** — turn your own analysis code into registered methods with contracts.
 - **[Use the Canvas](how-to/canvas-hub.md)** — build and inspect pipelines visually instead of hand-editing pipeline JSON.
 
@@ -94,6 +95,14 @@ The deal is deliberately lopsided. **What you provide** is the raw material: you
 :hidden:
 
 self
+```
+
+```{toctree}
+:caption: Installation
+:maxdepth: 2
+:hidden:
+
+install
 ```
 
 ```{toctree}

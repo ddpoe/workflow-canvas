@@ -1,13 +1,12 @@
-<!-- generated from pm_mvp::docs/consumer/tutorials/wfc-demo @ 4950fe4c8956; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/tutorials/wfc-demo @ 2ae099e98487; do not edit -->
 
 # A Tour of the Demo
 
 ## What `wfc demo` does
 
-`wfc demo` adds a complete, runnable pipeline to a project and opens it in the Canvas, so you can watch a run end to end before writing any methods of your own. It needs the same prerequisites as [Getting Started](getting-started.md#prerequisites): Python, Docker running, and git.
+`wfc demo` adds a complete, runnable pipeline to a project and opens it in the Canvas, so you can watch a run end to end before writing any methods of your own. It needs wfc installed, with Docker running and git: see [Install Workflow Canvas](../install.md).
 
 ```bash
-pip install workflow-canvas
 wfc init --dir demo_project
 cd demo_project
 wfc doctor

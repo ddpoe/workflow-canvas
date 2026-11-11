@@ -103,6 +103,10 @@ pip install workflow-canvas
 wfc --help
 ```
 
+wfc runs on Python 3.12 only; on another Python, `pip` refuses it or installs an old release.
+[Install Workflow Canvas](https://workflow-canvas.readthedocs.io/en/latest/install.html)
+sets up Python 3.12, Docker and git step by step.
+
 ## Quick Start
 
 New to Workflow Canvas? Start with the **Your First Pipeline** tutorial in the

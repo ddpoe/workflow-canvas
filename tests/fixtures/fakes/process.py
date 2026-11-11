@@ -284,7 +284,8 @@ def refuse_path_unlink(monkeypatch, refused: pathlib.Path) -> None:
 @fake(
     boundary="pathlib.Path.unlink -- the removal of one named file, refused "
              "the first time only, as Windows refuses while another process "
-             "has the file open (WinError 32). "
+             "has the file open (WinError 32); storage's HOLDS_REFUSE is set "
+             "too, so the retry Windows gets runs on every OS. "
              "Why a test may take it: a reader holding the file open at the "
              "moment of the removal is a cross-process race no test can time "
              "on demand; the caller's retry is what is under test.",
@@ -299,6 +300,10 @@ def refuse_path_unlink(monkeypatch, refused: pathlib.Path) -> None:
 )
 def refuse_path_unlink_once(monkeypatch, refused: pathlib.Path) -> list[pathlib.Path]:
     """Make the first ``pathlib.Path.unlink`` of one file raise ``PermissionError``.
+
+    The refusal is Windows's, so storage is told it runs on Windows too
+    (``HOLDS_REFUSE``): elsewhere a refused removal is a real denial and is
+    raised at once, never retried.
 
     Args:
         monkeypatch: An active ``pytest.MonkeyPatch``.
@@ -321,6 +326,7 @@ def refuse_path_unlink_once(monkeypatch, refused: pathlib.Path) -> list[pathlib.
         return real(self, *args, **kwargs)
 
     monkeypatch.setattr(pathlib.Path, "unlink", unlink)
+    monkeypatch.setattr("wfc.storage.replace.HOLDS_REFUSE", True)
     return refusals
 
 

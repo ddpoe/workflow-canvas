@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/tutorials/getting-started @ 7176e61bf472; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/tutorials/getting-started @ c4cfca29ed91; do not edit -->
 
 # Your First Pipeline
 
@@ -14,21 +14,20 @@ To have an AI agent run these commands for you, see [Work with an AI Agent](work
 
 You need:
 
-- **Python 3.12** to install and run wfc.
-- **Docker**, installed and running. Each step runs in a container: a packaged copy of the software and dependencies your method needs (see [The Tools Behind Workflow Canvas](../explanation/how-the-pieces-fit-together.md)). On Windows and macOS this is Docker Desktop; on Linux, Docker Engine.
-- **Git**. wfc records the commit of your method code with every run and will not run while tracked files have uncommitted changes.
-- **conda** ([Miniconda](https://www.anaconda.com/docs/getting-started/installation), [Miniforge](https://conda-forge.org/download/) or Anaconda), used in this tutorial for the environment your method runs in.
+- **wfc installed**, with Docker running and git: [Install Workflow Canvas](../install.md) sets up all three.
+- **conda** ([Miniconda](https://www.anaconda.com/docs/getting-started/installation), [Miniforge](https://conda-forge.org/download/) or Anaconda) or **uv**, for the environment your method runs in. Step 3 gives the commands for each.
 
+wfc records the commit of your method code with every run, and will not run while tracked files have uncommitted changes.
 
 ## Installation
 
+Install wfc as [Install Workflow Canvas](../install.md) describes, and activate its environment in your terminal. Then:
+
 ```bash
-pip install workflow-canvas
 wfc --help
 ```
 
 `wfc --help` lists the available commands.
-
 
 ## Your First Pipeline
 
@@ -92,7 +91,20 @@ wfc register-env first-pipeline conda:first-pipeline
 
 The first name is what your methods will call the environment. `conda:first-pipeline` tells wfc which conda environment to copy. wfc reads the packages you installed and the versions you have, and builds the container from them. The first build takes a few minutes.
 
-If you use pixi or uv, have a lock file, or already have a container image, see [Register an Environment](registering-an-environment.md).
+**No conda?** Make the environment as a uv project instead. uv is the package manager [Install Workflow Canvas](../install.md) uses; these commands, run from the project root, make a folder that lists the packages and register it:
+
+```bash
+uv init --bare --python 3.12 envs/first-pipeline
+cd envs/first-pipeline
+uv python pin 3.12
+uv add wfc-client pandas
+cd ../..
+wfc register-env first-pipeline --backend uv --from envs/first-pipeline
+```
+
+`uv add` records the packages and their exact versions in that folder, and wfc builds the container from them. This build takes about a minute.
+
+If you use pixi, have a lock file, or already have a container image, see [Register an Environment](registering-an-environment.md).
 
 ### 4. Register a module
 

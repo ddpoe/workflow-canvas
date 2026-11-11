@@ -4,6 +4,24 @@ Notable changes to Workflow Canvas. The format follows [Keep a Changelog](https:
 
 ## [Unreleased]
 
+## [0.8.0.post1] — 2026-11-10
+
+### Upgrading
+- wfc's own code is the same as 0.8.0: this release republishes it with the plugin's new skills and the guide's install page. After upgrading wfc, update the wfc plugin too. In Claude Code: `/plugin marketplace update workflow-canvas`, then `/plugin`, the Installed tab, wfc, Update now. In Codex: `codex plugin marketplace upgrade workflow-canvas`, then a new thread.
+
+### Added
+- The guide has an [Install Workflow Canvas](https://workflow-canvas.readthedocs.io/en/stable/install.html) page: Docker, git and Python 3.12, then wfc with uv or conda, and what a wrong Python makes pip say.
+- [Your First Pipeline](https://workflow-canvas.readthedocs.io/en/stable/tutorials/getting-started.html) shows how to make the method's environment as a uv project, for readers who have no conda.
+- The `wfc` plugin's skills set up a user who has no wfc yet. The agent checks what the computer has, gives the link for each missing piece (uv or conda for Python 3.12, Docker, git), asks where the project should go, installs wfc into an environment of its own in that folder once you agree, and remembers where it is. It runs an installer for you only after showing you the command and getting your yes.
+
+### Changed
+- The `wfc` plugin's skills check `wfc --version` against the version they are written for. When your wfc is newer, the agent says the plugin looks out of date and gives the update for Claude Code or Codex; when it is older, it suggests upgrading wfc. It asks before running either.
+- When `wfc` is not found in the agent's shell, the skills look for an install that is not active there (the project's `.venv`, a conda env) before anything else, and do not install a second copy.
+
+### Known issues
+0.8.0's known issues below still apply, each planned to be fixed in 0.8.1 unless it says otherwise; the guide's Known Issues page has the way around each. One is new:
+- Two projects on one computer that register an environment under the same name lose each other's image. Name each project's environments `<project>-<env>`.
+
 ## [0.8.0] — 2026-11-09
 
 ### Upgrading
