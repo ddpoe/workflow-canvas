@@ -5,8 +5,8 @@ description = "A visual dry-lab notebook for reproducible analysis: build pipeli
 authors = ["Dante <dantepoe@noboundssolutions.com>"]
 license = "BSD-3-Clause"
 readme = "README.md"
-homepage = "https://workflow-canvas.readthedocs.io/en/stable/"
-documentation = "https://workflow-canvas.readthedocs.io/en/stable/"
+homepage = "https://workflow-canvas.readthedocs.io/en/latest/"
+documentation = "https://workflow-canvas.readthedocs.io/en/latest/"
 repository = "https://github.com/ddpoe/workflow-canvas"
 keywords = [
   "workflow",
