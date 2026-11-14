@@ -1,10 +1,10 @@
-<!-- generated from pm_mvp::docs/consumer/how-to/write-an-r-method @ 7ba7f314b679; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/how-to/write-an-r-method @ a330a17ad751; do not edit -->
 
 # Write a Method in R
 
 ## Write an R Method
 
-An R method is an R script and a `method.yaml` in a method folder. wfc runs the script with `Rscript` inside the method's environment. The script reads its input paths and parameters from environment variables and writes its outputs into the run directory.
+An R method is an R script and a `method.yaml` in a method folder. Workflow Canvas (wfc) runs the script with `Rscript` inside the method's environment. The script reads its input paths and parameters from environment variables and writes its outputs into the run directory.
 
 This page writes the `filter_data` method from [Write a Method in Python](../tutorials/authoring-a-method-script.md) in R: it keeps the rows of a CSV whose `score` is above a threshold, and also writes one CSV per value of its `group` column. It assumes a project with the module `my_analysis` registered; [Your First Pipeline](../tutorials/getting-started.md) sets one up.
 
@@ -30,7 +30,9 @@ wfc register-env r-analysis --backend byo \
   --image docker://local/r-analysis:1 --interpreter Rscript
 ```
 
+:::{warning}
 Give each rebuild a new tag (`:2`, `:3`). Each method version runs the image it was registered with, and a reused tag replaces that image.
+:::
 
 ### From a pixi project
 
@@ -139,7 +141,11 @@ jsonlite::write_json(results, file.path(run_dir, "_wfc_results.json"),
                      auto_unbox = TRUE)
 ```
 
-`outputs` maps each slot to its path inside the run directory, and `metrics` maps each name to a number or short string. Pass `auto_unbox = TRUE`: without it `jsonlite` writes every value as a one-element array (`"filtered": ["filtered.csv"]`) and the step fails. A script that records no metrics can leave the file out.
+`outputs` maps each slot to its path inside the run directory, and `metrics` maps each name to a number or short string. A script that records no metrics can leave the file out.
+
+:::{warning}
+Pass `auto_unbox = TRUE`: without it `jsonlite` writes every value as a one-element array (`"filtered": ["filtered.csv"]`) and the step fails.
+:::
 
 
 ## Try the script before registering

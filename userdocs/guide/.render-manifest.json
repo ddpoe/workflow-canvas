@@ -5,11 +5,11 @@
   },
   "explanation/how-a-run-executes.md": {
     "doc_id": "pm_mvp::docs/consumer/explanation/how-a-run-executes",
-    "hash": "7d8c019235e5"
+    "hash": "a108203e80b4"
   },
   "explanation/how-the-pieces-fit-together.md": {
     "doc_id": "pm_mvp::docs/consumer/explanation/how-the-pieces-fit-together",
-    "hash": "288fbbfc78ab"
+    "hash": "e87ca609131c"
   },
   "explanation/project-anatomy.md": {
     "doc_id": "pm_mvp::docs/consumer/explanation/project-anatomy",
@@ -17,7 +17,7 @@
   },
   "explanation/storage-and-provenance.md": {
     "doc_id": "pm_mvp::docs/consumer/explanation/storage-and-provenance",
-    "hash": "4d06d4a5300d"
+    "hash": "99118b5e5690"
   },
   "how-to/browse-history.md": {
     "doc_id": "pm_mvp::docs/consumer/how-to/browse-history",
@@ -29,7 +29,7 @@
   },
   "how-to/build-your-own-pipeline.md": {
     "doc_id": "pm_mvp::docs/consumer/how-to/build-your-own-pipeline",
-    "hash": "60e8abf5cb39"
+    "hash": "d3f299cef500"
   },
   "how-to/canvas-hub.md": {
     "doc_id": "pm_mvp::docs/consumer/how-to/canvas-hub",
@@ -49,11 +49,11 @@
   },
   "how-to/cli-run.md": {
     "doc_id": "pm_mvp::docs/consumer/how-to/cli-run",
-    "hash": "1b8304c54cd4"
+    "hash": "0616bc6de746"
   },
   "how-to/cli-runs.md": {
     "doc_id": "pm_mvp::docs/consumer/how-to/cli-runs",
-    "hash": "d2893a75520d"
+    "hash": "a23f172d36ff"
   },
   "how-to/draft-from-the-command-line.md": {
     "doc_id": "pm_mvp::docs/consumer/how-to/draft-from-the-command-line",
@@ -101,11 +101,11 @@
   },
   "how-to/share-bundle.md": {
     "doc_id": "pm_mvp::docs/consumer/how-to/share-bundle",
-    "hash": "31a3f5872eea"
+    "hash": "95d25605d4d4"
   },
   "how-to/sharing-a-project.md": {
     "doc_id": "pm_mvp::docs/consumer/how-to/sharing-a-project",
-    "hash": "306897516daa"
+    "hash": "f5c847f6dc6c"
   },
   "how-to/sweep-values.md": {
     "doc_id": "pm_mvp::docs/consumer/how-to/sweep-values",
@@ -117,19 +117,19 @@
   },
   "how-to/write-a-method.md": {
     "doc_id": "pm_mvp::docs/consumer/how-to/write-a-method",
-    "hash": "211b09bc86a3"
+    "hash": "51e5950daa1b"
   },
   "how-to/write-an-r-method.md": {
     "doc_id": "pm_mvp::docs/consumer/how-to/write-an-r-method",
-    "hash": "7ba7f314b679"
+    "hash": "a330a17ad751"
   },
   "install.md": {
     "doc_id": "pm_mvp::docs/consumer/install",
-    "hash": "f6325979e562"
+    "hash": "c367028584b7"
   },
   "overview/what-is-workflow-canvas.md": {
     "doc_id": "pm_mvp::docs/consumer/overview/what-is-workflow-canvas",
-    "hash": "35123ad74d6f"
+    "hash": "e703527cd426"
   },
   "reference/cli-cache-export.md": {
     "doc_id": "pm_mvp::docs/consumer/reference/cli-cache-export",
@@ -149,7 +149,7 @@
   },
   "reference/cli-registration.md": {
     "doc_id": "pm_mvp::docs/consumer/reference/cli-registration",
-    "hash": "b7efd089a0aa"
+    "hash": "41d80b097df3"
   },
   "reference/command-line.md": {
     "doc_id": "pm_mvp::docs/consumer/reference/command-line",
@@ -157,11 +157,11 @@
   },
   "reference/known-issues.md": {
     "doc_id": "pm_mvp::docs/consumer/reference/known-issues",
-    "hash": "1d3cf0273395"
+    "hash": "3a5c5c358604"
   },
   "reference/method-script-contract.md": {
     "doc_id": "pm_mvp::docs/consumer/reference/method-script-contract",
-    "hash": "fc449c88370a"
+    "hash": "40d0ac24293b"
   },
   "reference/method-yaml-schema.md": {
     "doc_id": "pm_mvp::docs/consumer/reference/method-yaml-schema",
@@ -177,35 +177,35 @@
   },
   "reference/wfc-client-api.md": {
     "doc_id": "pm_mvp::docs/consumer/reference/wfc-client-api",
-    "hash": "64b8324da71a"
+    "hash": "c05b3ced80bd"
   },
   "tutorials/authoring-a-method-script.md": {
     "doc_id": "pm_mvp::docs/consumer/tutorials/authoring-a-method-script",
-    "hash": "238ce1946465"
+    "hash": "f5425996341a"
   },
   "tutorials/convert-an-analysis.md": {
     "doc_id": "pm_mvp::docs/consumer/tutorials/convert-an-analysis",
-    "hash": "e49b5cb7dd1d"
+    "hash": "5f01e9efffdf"
   },
   "tutorials/drafting-a-method.md": {
     "doc_id": "pm_mvp::docs/consumer/tutorials/drafting-a-method",
-    "hash": "a5612ce18ecf"
+    "hash": "5aba544b683d"
   },
   "tutorials/getting-started.md": {
     "doc_id": "pm_mvp::docs/consumer/tutorials/getting-started",
-    "hash": "c4cfca29ed91"
+    "hash": "f8f0c5151e7e"
   },
   "tutorials/registering-an-environment.md": {
     "doc_id": "pm_mvp::docs/consumer/tutorials/registering-an-environment",
-    "hash": "64d6b84d285a"
+    "hash": "5acfc66d5d9a"
   },
   "tutorials/wfc-demo.md": {
     "doc_id": "pm_mvp::docs/consumer/tutorials/wfc-demo",
-    "hash": "2ae099e98487"
+    "hash": "7f780cc8bc11"
   },
   "tutorials/work-with-an-ai-agent.md": {
     "doc_id": "pm_mvp::docs/consumer/tutorials/work-with-an-ai-agent",
-    "hash": "7d94ede0d7cd"
+    "hash": "94adb6be4457"
   },
   "videos.md": {
     "doc_id": "pm_mvp::docs/consumer/videos",

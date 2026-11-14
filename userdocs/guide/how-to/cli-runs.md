@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/how-to/cli-runs @ d2893a75520d; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/how-to/cli-runs @ a23f172d36ff; do not edit -->
 
 # See What Ran
 
@@ -20,6 +20,14 @@ Total runs: 6  |  Passed: 4  |  Failed: 0  |  Cached: 2  |  Cancelled: 0
 To list the runs later, use `wfc runs`. It prints one line per run with its run ID, pipeline, node, method and version, sample and status; `wfc runs --pipeline <pipeline-id>` lists only that pipeline's runs, and `wfc runs --method <module>.<method>` only one method's runs.
 
 To read one run in full, use `wfc show-run --run <run id>`. It prints the run's status, method, sample, metrics, outputs, error and the last 40 lines of its stderr, so you can read why a past run failed without opening the canvas. `wfc show-run --run <run id> --log stderr` prints the whole log.
+
+:::{admonition} An AI agent can do this with you
+:class: agent-tip
+
+An agent with the wfc plugin can work out why a run failed: it runs `wfc doctor` first and reads the run's log. When the problem is in the method, it fixes the method folder, tries it again, and registers the fix as a new version when you agree; see [When Something Fails](../tutorials/work-with-an-ai-agent.md#when-something-fails).
+:::
+
+
 
 Each run records the values it ran with, what it read, and what it produced. The History tab in the Canvas shows all of this for every run, including runs started from the command line, and its detail panel has a button to copy a run's ID for `wfc export`; see [Browse Past Runs in History](browse-history.md).
 

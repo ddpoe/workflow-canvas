@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/explanation/how-the-pieces-fit-together @ 288fbbfc78ab; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/explanation/how-the-pieces-fit-together @ e87ca609131c; do not edit -->
 
 # The Tools Behind Workflow Canvas
 
@@ -14,7 +14,7 @@ Each of these has a well-established open-source tool. Workflow Canvas brings th
 
 ## git: the code
 
-[git](https://git-scm.com/) keeps the history of your project's files. Registering a method commits its code to your project's git repository, and every run records the commit it ran from. Runs start from committed code, so the code behind any result can always be looked up. See [Write a Method](../how-to/write-a-method.md).
+[git](https://git-scm.com/) keeps the history of your project's files. Registering a method commits its code to your project's git repository, once for each registration. A run makes no commit: it records the commit it ran from. Runs start from committed code, so the code behind any result can always be looked up. See [Write a Method](../how-to/write-a-method.md).
 
 ## DVC: the data
 

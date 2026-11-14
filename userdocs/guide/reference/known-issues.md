@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/reference/known-issues @ 1d3cf0273395; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/reference/known-issues @ 3a5c5c358604; do not edit -->
 
 # Known Issues
 
@@ -6,7 +6,11 @@
 
 These are known bugs in wfc 0.8.0, its post-release 0.8.0.post1 and its pre-releases, each with a way around it. Each is planned to be fixed in 0.8.1 unless its entry says otherwise.
 
-If an AI agent is driving wfc with the wfc plugin's skills, it knows these and works around them for you.
+:::{admonition} An AI agent can do this with you
+:class: agent-tip
+
+An agent with the wfc plugin knows these issues. When your wfc version has one, it uses the workaround and tells you it is doing so; see [Work with an AI Agent](../tutorials/work-with-an-ai-agent.md).
+:::
 
 ## A step that reads several runs through references runs once per sample
 
@@ -18,7 +22,7 @@ You can ignore the extra run.
 
 You see `Method node '<node>' (method=<method>) is sample-collapsed … a collapsed step cannot consume per-sample outputs of an upstream method step.` when a node fed by a fan-in input selector is also wired to a method that runs once per sample. The pipeline is refused before any step runs. Wired to the per-sample method alone, the node runs once per sample instead, so nothing is combined.
 
-Run the per-sample steps as one pipeline, then combine their runs in a second pipeline with a run-reference node for each run, as step 8 of [Convert an Analysis into a Pipeline](../tutorials/convert-an-analysis.md#track-2-by-hand) does. This one is planned for 0.9.0.
+Run the per-sample steps as one pipeline, then combine their runs in a second pipeline with a run-reference node for each run, as step 8 of [Convert an Analysis into a Pipeline](../tutorials/convert-an-analysis.md#convert-it-by-hand) does. This one is planned for 0.9.0.
 
 ## wfc check-pipeline refuses a node with two inputs
 

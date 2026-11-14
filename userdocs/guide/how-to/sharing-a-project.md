@@ -1,10 +1,10 @@
-<!-- generated from pm_mvp::docs/consumer/how-to/sharing-a-project @ 306897516daa; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/how-to/sharing-a-project @ f5c847f6dc6c; do not edit -->
 
 # Share a Project
 
 ## Share a project
 
-A wfc project keeps its pieces in three places, and everyone who works on it needs access to each:
+A Workflow Canvas (wfc) project keeps its pieces in three places, and everyone who works on it needs access to each:
 
 - the **git repository**: your code, the project config, and the record of every registered method and environment;
 - the **archive**: where wfc keeps a backup copy of your samples and results;

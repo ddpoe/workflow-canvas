@@ -1,10 +1,10 @@
-<!-- generated from pm_mvp::docs/consumer/reference/wfc-client-api @ 64b8324da71a; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/reference/wfc-client-api @ c05b3ced80bd; do not edit -->
 
 # wfc-client Python API
 
 ## Overview
 
-`wfc-client` is the package a Python method script uses to read its inputs and parameters and to record its outputs and metrics. Import it as `wfc`:
+`wfc-client` is a separate, optional helper library for Python method scripts: it reads a script's inputs and parameters and records its outputs and metrics. It is its own package, installed in the method's environment, and not part of wfc. A script does not need it: it can read the environment variables and write the files itself, as the [Method Script Contract](method-script-contract.md) describes. Import it as `wfc`:
 
 ```python
 import wfc_client as wfc

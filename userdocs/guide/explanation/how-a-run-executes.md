@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/explanation/how-a-run-executes @ 7d8c019235e5; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/explanation/how-a-run-executes @ a108203e80b4; do not edit -->
 
 # How a Run Executes
 
@@ -49,7 +49,7 @@ Paths in these variables are paths inside the container.
 
 Your method reads them, writes each declared output into `WFC_RUN_DIR`, and exits 0 on success or non-zero on failure. wfc finds the outputs by the file names your `method.yaml` declares. A method can also write a `_wfc_results.json` file into `WFC_RUN_DIR` to name its outputs and report metrics.
 
-For Python, the `wfc-client` package does this for you: decorate a function with `@wfc.method`, use `ctx.input(...)`, `ctx.params`, `ctx.save_artifact(...)` and `ctx.log_metric(...)`, and call `wfc.run()`; it writes `_wfc_results.json` on exit. In R, bash or any other language, read the variables and write the files directly. [Write a Method in Python](../tutorials/authoring-a-method-script.md) covers the decorator, the [Method Script Contract](../reference/method-script-contract.md) lists the variables and files, and [Write a Method in R](../how-to/write-an-r-method.md) writes a method in R.
+For Python, the optional `wfc-client` package, a separate helper library, does this for you: decorate a function with `@wfc.method`, use `ctx.input(...)`, `ctx.params`, `ctx.save_artifact(...)` and `ctx.log_metric(...)`, and call `wfc.run()`; it writes `_wfc_results.json` on exit. A script in any language, Python included, can instead read the variables and write the files directly, so a method does not need to import wfc. [Write a Method in Python](../tutorials/authoring-a-method-script.md) covers the decorator, the [Method Script Contract](../reference/method-script-contract.md) lists the variables and files, and [Write a Method in R](../how-to/write-an-r-method.md) writes a method in R.
 
 
 ## Where to go next

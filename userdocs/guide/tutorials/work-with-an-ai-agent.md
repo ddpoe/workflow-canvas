@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/tutorials/work-with-an-ai-agent @ 7d94ede0d7cd; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/tutorials/work-with-an-ai-agent @ 94adb6be4457; do not edit -->
 
 # Work with an AI Agent
 
@@ -18,7 +18,7 @@ The plugin holds three skills, and the agent uses whichever fits what you ask:
 - **creating-a-wfc-method**: bringing a script into wfc as a method, trying it as a draft before anything is registered.
 - **converting-an-analysis-to-a-wfc-pipeline**: handing over a whole analysis, a folder of notebooks and scripts, and getting back a pipeline you approved step by step, with a record of every change ([Convert an Analysis into a Pipeline](convert-an-analysis.md)).
 
-Your agent sends what you type and the files it reads to its provider: see Anthropic's [Data usage](https://code.claude.com/docs/en/data-usage) page or OpenAI's [privacy policy](https://openai.com/policies/privacy-policy/). For a chat, download the plugin for this version of the docs and upload it as the tables below say:
+Your agent sends what you type and the files it reads to its provider: see Anthropic's [Data usage](https://code.claude.com/docs/en/data-usage) page or OpenAI's [privacy policy](https://openai.com/policies/privacy-policy/). Claude can add the plugin straight from the wfc repository on GitHub, `ddpoe/workflow-canvas`, with nothing to download. Where an app only takes an upload, download the plugin for this version of the docs and upload it as the tables below say:
 
 [Download wfc-plugin.zip](../wfc-plugin.zip){.download-button}
 
@@ -28,7 +28,7 @@ Your agent sends what you type and the files it reads to its provider: see Anthr
 |---|---|---|
 | [Claude Code]{.product-name}, in a terminal or an editor | runs wfc for you | the two commands below; [Claude Code's plugin guide](https://code.claude.com/docs/en/plugins/install#add-a-marketplace) covers the rest |
 | The [Claude desktop app]{.product-name}'s Code tab | runs wfc for you | the plugin browser, as [Anthropic's desktop app guide](https://code.claude.com/docs/en/desktop#install-plugins) shows |
-| [claude.ai]{.product-name}, or a chat in the [Claude desktop app]{.product-name} | answers questions | upload wfc-plugin.zip, as [Anthropic's guide to plugins](https://claude.com/docs/plugins/overview#find-and-add-a-plugin) shows |
+| [claude.ai]{.product-name}, or a chat in the [Claude desktop app]{.product-name} | answers questions | add a marketplace and enter `ddpoe/workflow-canvas` as its URL, then add the wfc plugin from it; or upload wfc-plugin.zip. [Anthropic's guide to plugins](https://claude.com/docs/plugins/overview#find-and-add-a-plugin) shows both |
 
 ```{code-block} bash
 :caption: Install the wfc plugin in Claude Code (run each line in a terminal)

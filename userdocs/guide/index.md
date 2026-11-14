@@ -1,16 +1,16 @@
-<!-- generated from pm_mvp::docs/consumer/overview/what-is-workflow-canvas @ 35123ad74d6f; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/overview/what-is-workflow-canvas @ e703527cd426; do not edit -->
 
 # What is Workflow Canvas?
 
 ## Why Workflow Canvas
 
-Workflow Canvas is a visual dry-lab notebook for reproducible analysis. Your AI agent can turn your scripts and notebooks into a pipeline you can see, or you can write it yourself; either way, every result records the exact code, data, settings and software behind it, so anyone can rerun it and check that it matches.
+Workflow Canvas, `wfc` for short, is a visual dry-lab notebook for reproducible analysis. `wfc` is also the command you type to use it. Your AI agent can turn your scripts and notebooks into a pipeline you can see, or you can write it yourself; either way, every result records the exact code, data, settings and software behind it, so anyone can rerun it and check that it matches.
 
 If you run your own multi-step analysis in Python, R or bash, you know the failure mode: scripts multiply, and months later you can't say for certain which code, which inputs, and which environment produced a given figure or dataset — and neither can whoever inherits the project. Re-running redoes work that never changed. And the usual fix is its own burden: making your analysis reproducible and orchestrated this way normally means adopting infrastructure tools — a workflow engine and its language, containers, a provenance system — and taking on the job of learning and running them. That's a second job on top of the science.
 
 **Workflow Canvas hands you that stack, pre-built.** You describe each analysis step once, with a contract saying what it takes in and what it produces, and Workflow Canvas runs the steps in order, each in its own container, skips work that hasn't changed, and records every run. You don't learn a workflow language or build the infrastructure yourself.
 
-Converting the example analysis in [Convert an Analysis into a Pipeline](tutorials/convert-an-analysis.md) caught a filter that was computed but never applied.
+Most analysis folders hold things that make a result hard to reproduce: hard-coded paths, a random step with no seed, a threshold picked by eye, a helper shared between notebooks. [Convert an Analysis into a Pipeline](tutorials/convert-an-analysis.md) takes an example folder with all of these and turns it into a pipeline, step by step.
 
 :::{figure} _images/builder-demo-pipeline.png
 :alt: The Canvas Builder with the demo pipeline wired: three samples fanned across five methods, coloured by their three modules

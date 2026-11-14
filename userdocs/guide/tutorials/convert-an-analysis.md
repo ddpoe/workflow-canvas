@@ -1,12 +1,12 @@
-<!-- generated from pm_mvp::docs/consumer/tutorials/convert-an-analysis @ e49b5cb7dd1d; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/tutorials/convert-an-analysis @ 5f01e9efffdf; do not edit -->
 
 # Convert an Analysis into a Pipeline
 
 ## Overview
 
-You have an analysis that works on your machine: a folder of notebooks and scripts. This page turns one such folder into a wfc pipeline twice, once by handing it to an AI agent and once by hand, and ends by comparing the two results, so you can see it is the same pipeline either way. Both conversions also find a bug the folder has carried all along: a filter that is computed and never applied.
+You have an analysis that works on your machine: a folder of notebooks and scripts. This page takes one such folder, names the things in it that make its results hard to reproduce, and turns it into a Workflow Canvas (wfc) pipeline that deals with each of them.
 
-Both tracks end with the same thing: each step of the analysis is a registered method, the pipeline runs every plate in a container, its results match the notebooks', and a new plate reruns only its own steps. The agent track also leaves a written record of every change to your code.
+At the end each step of the analysis is a registered method, the pipeline runs every plate in a container, its results match the notebooks', and a new plate reruns only its own steps. The conversion is done by hand here, so you can see every step; an agent with the wfc plugin can do the same one with you, and the page ends by comparing the two.
 
 ## The Example
 
@@ -29,65 +29,33 @@ plate_assay/
   results/                         the notebooks' outputs from the last run
 ```
 
-It has what a real analysis folder usually has: one notebook holding several steps, one of them slow; a check where someone looks at a histogram before going on; a threshold picked by eye; hard-coded `C:\Users\...` paths; a random step with no seed; a helper shared by two notebooks; old copies; and one bug, a filter that is computed and never applied.
+It has what a real analysis folder usually has: one notebook holding several steps, one of them slow; a check where someone looks at a histogram before going on; a threshold picked by eye; hard-coded `C:\Users\...` paths; a random step with no seed; a helper shared by two notebooks; old copies; and one bug. The next section goes through them.
 
-## Track 1: By an Agent
+## What Makes a Result Hard to Reproduce
 
-Hand the folder to an agent that has the wfc plugin. [Work with an AI Agent](work-with-an-ai-agent.md) shows how to add it to Claude Code, Codex or a chat app. Then ask in your own words, naming the folder and the env you run it in:
+The example runs, and gives the right figures, on the computer it was written on. Eight things in it would stop someone else, or you a year from now, getting the same result. Each is common in analysis folders, and the conversion below deals with each at the step named here.
 
-```text
-here is my analysis: ~/plate_assay (my plate assay notebooks). can you turn it into a
-workflow canvas pipeline for me? I run it in my conda env plates-lab.
-```
+| What gets in the way | In the example | In the pipeline | Step |
+|---|---|---|---|
+| Software only one computer has | the conda env `plates-lab` | a container image, pinned | 1 |
+| A path only one computer has | `C:\Users\sam\Desktop\...` | each plate is a registered sample | 2 |
+| A setting edited by hand between runs | `PLATE = "plate1"`, then `"plate2"` | the pipeline runs every plate | 2 |
+| Steps run by hand, in order | `notes.txt` | wired methods, each cached | 3 |
+| A setting buried in the code | `MIN_AREA = 35` | a parameter, recorded with each run | 3 |
+| Random numbers that differ on every run | `np.random.choice(...)` | a `seed` parameter | 3 |
+| Shared code and old copies | `plate_utils.py`, `.bak`, `- Copy` | each method keeps the helper it ran with | 3 |
+| A result that uses the wrong table | a filter that does nothing | found while splitting the steps; a parameter | 3 |
 
-The plugin's `converting-an-analysis-to-a-wfc-pipeline` skill takes it from there. You make the calls that are yours; the agent does the wfc side. Here is what happens, with excerpts from a run on this example.
+:::{admonition} An AI agent can do this with you
+:class: agent-tip
 
-**It says how it will go.** A few questions, a map for you to approve before any code is written, everything built and run as drafts first, a comparison with your saved results, and nothing registered until you say yes. It also says it will keep a record of every change in `wfc-intake/`.
+An agent with the wfc plugin is instructed to look for these as it reads your files, and to ask before it changes what the analysis does: see [Have an Agent Do It](#have-an-agent-do-it).
+:::
 
-**It asks a few questions, one at a time.** Which results you actually use (here the two figures and `plate_comparison.csv`), how often new plates arrive, which parts are settled, where your saved results are, and where the project should live. If you name a network drive, it asks you to keep the project on a local disk; the archive can be on the share.
 
-**It reads every file and proposes a map.** The map shows what you run today next to the pipeline it proposes, which notebook cells each step comes from, what becomes a setting you can change, and what is left out and why:
+## Convert It by Hand
 
-```text
-TODAY (by hand)                               PIPELINE 1: process_plates (one branch per plate)
-
-01_process_plates, PLATE="plate1", run all     sample plate1 ─┐   (data/plate1: cells.csv + plate.json)
-01_process_plates, PLATE="plate2", run all     sample plate2 ─┤
-02_compare_plates, run all                                    ▼
-                                               1. normalize_plate   cells 3, 5, 6, 7
-                                               2. bootstrap_ci (SLOW) cell 9
-                                               3. plot_fold_change  cell 10
-
-                                               PIPELINE 2: compare_plates (all plates so far)
-                                               bootstrap of plate1 ─┐
-                                               bootstrap of plate2 ─┴─▶ 4. compare_plates
-```
-
-It also flags what it found in your code, without changing what the analysis does:
-
-> Cell 3 makes `combined_clean`, dropping conditions with fewer than 50 cells, but the next cell uses `combined`, so **the filter is never applied**. It matters for your data: plate2's drugB_1uM has only 29 cells and is in your current comparison. I won't change what the analysis does without your say: by default, `min_cells` = 0 keeps today's behaviour, and setting it to 50 applies the filter as the comment intended.
-
-Nothing is written until you approve the map.
-
-**It builds an env, then drafts every step.** It registers your env without changing it (a copy when it needs to add something), which takes a few minutes for a small conda env on Windows or macOS and longer for a large one. Then it writes each method, tries it as a draft, and runs the whole pipeline as drafts. For a value picked by eye, like the area threshold, it runs a few options and shows you the results before you choose.
-
-**It compares the results with yours.** Each output gets a verdict, with the tolerance stated:
-
-> normalized tables and the comparison table: identical numbers; `comparison.png`: identical bytes; bootstrap means and cell counts: identical, intervals within [a relative] 6e-4 (your notebook's bootstrap was unseeded, so it differs from run to run by about that much); bar charts: the same by eye.
-
-**It shows you the code and asks to register.** You see every `method.yaml` and a diff of each script against your notebook cells, in an editor or in the canvas (Registry → **Methods** → **Drafts**). It registers only when you say yes, then runs the pipeline once so the run is recorded.
-
-**You keep the record.** `wfc-intake/` in the project holds:
-
-- `conversion.md`: your answers, the map and every later change, the calls made and by whom, each step's status, what wasn't converted and why, and how to add the next plate or pick the work up in a later session;
-- `envs/<env>.md`: what differs between your machine and the Linux container (Python and package versions, paths, line endings), each with whether it might matter;
-- one file per method: where it came from, every change to the code and why, how its inputs and settings map to the notebook, and how its results compared with yours.
-
-wfc doesn't keep or read these files: commit them with your code.
-
-## Track 2: By Hand
-
-Do the same conversion yourself, step by step. Each step names the page that explains it in full.
+The conversion, step by step. Each step names the page that explains it in full.
 
 **1. Make the project and copy the env.** Create the project with its archive (the backup copy of your data and results). Keep the project on a local disk; the archive can be on a network share:
 
@@ -97,7 +65,7 @@ cd plate-assay
 wfc doctor
 ```
 
-Every method runs in a Linux container built from an env. The analysis runs in the conda env `plates-lab`, which has no `wfc-client`, the small library a method script uses to read its inputs and save its outputs. Leave `plates-lab` as it is and make a copy with `wfc-client` added. Build the copy from the packages `plates-lab` asked for, at the versions it has (`conda env export -n plates-lab --from-history` lists them, `conda list -n plates-lab` gives the versions). The versions below are those of the env this page was run with; use yours:
+**In the way: software only one computer has.** The analysis runs in the conda env `plates-lab` on Sam's Windows computer. To run it on another computer you would rebuild that env by hand and hope the versions match. In wfc you register the env once: wfc builds a Linux container image from it and pins that exact build, so every step runs with the same software on any computer with Docker ([Share a Project](../how-to/sharing-a-project.md) covers handing it over). `plates-lab` has no `wfc-client`, the small, optional helper library a method script can use to read its inputs and save its outputs. Leave `plates-lab` as it is and make a copy with `wfc-client` added. Build the copy from the packages `plates-lab` asked for, at the versions it has (`conda env export -n plates-lab --from-history` lists them, `conda list -n plates-lab` gives the versions). The versions below are those of the env this page was run with; use yours:
 
 ```bash
 conda create -n plates-lab-wfc -c defaults python=3.12.16 numpy=2.5.4 pandas=3.1.0 matplotlib=3.11.1 nbconvert=7.17.2 ipykernel=7.3.0
@@ -107,7 +75,26 @@ wfc register-env plates-lab-wfc conda:plates-lab-wfc
 
 Don't copy it with `conda create --clone`: on Windows and macOS the clone's image doesn't build. Registering it took about 5 minutes here, while wfc worked out the Linux versions of its packages and built an image from them; [Register an Environment](registering-an-environment.md) explains what it records.
 
-**2. Register the module and the plates.** A plate's `cells.csv` only means something with its `plate.json` (the well layout and the background), so each plate's folder becomes one sample:
+**2. Register the module and the plates.** 
+
+**In the way: a path only one computer has.** Both notebooks start by naming folders on Sam's desktop:
+
+```python
+DATA_DIR = r"C:\Users\sam\Desktop\plate_assay\data"
+OUT_DIR = r"C:\Users\sam\Desktop\plate_assay\results"
+```
+
+Nobody else has those folders. A registered sample replaces them: wfc hands the method the data's location, and outputs are saved by name.
+
+**In the way: a setting edited by hand between runs.** The same cell holds the plate to process:
+
+```python
+PLATE = "plate1"   # change to plate2 and run again
+```
+
+Which plate the saved results came from depends on what was typed last. With both plates registered as samples, one run of the pipeline processes each of them.
+
+A plate's `cells.csv` only means something with its `plate.json` (the well layout and the background), so each plate's folder becomes one sample:
 
 Create `src/plate_assay/module.yaml` holding one line, `description: Plate assay`, then:
 
@@ -117,7 +104,11 @@ wfc register-sample --name plate1 --source ../plate_assay/data/plate1
 wfc register-sample --name plate2 --source ../plate_assay/data/plate2
 ```
 
-**3. Split the notebooks into methods.** `01_process_plates` holds three steps; `02_compare_plates` is a fourth. The bootstrap is slow, so it gets a method of its own: a change to the plot then never reruns it.
+**3. Split the notebooks into methods.** 
+
+**In the way: steps run by hand, in order.** `notes.txt` is the only record of how to run the analysis: open this notebook, run all, change the plate, run all again, then open the other one. As wired methods, the order is part of the pipeline.
+
+`01_process_plates` holds three steps; `02_compare_plates` is a fourth. The bootstrap is slow, so it gets a method of its own: a change to the plot then never reruns it.
 
 | Method | From | Inputs | Outputs | Parameters |
 |---|---|---|---|---|
@@ -180,11 +171,12 @@ helpers:
 env: plates-lab-wfc
 ```
 
-Three changes go beyond the edges, and each is one you decide:
+Four changes go beyond the edges. Each deals with something that was in the way of reproducing the result:
 
-- **The seed.** The notebook's bootstrap was unseeded, so every run gave slightly different intervals. The method takes a `seed` parameter.
-- **The shared helper.** Three methods import `plate_utils.py`. Each method folder holds a copy of it, listed under `helpers:`, and `script:` names the main script.
-- **The filter that does nothing.** `02_compare_plates` builds `combined_clean = combined[combined["n_cells"] >= 50]` and then uses `combined`, so the filter never applies. `compare_plates` keeps the notebook's result by default (`min_cells: 0`) and lets you switch it on (`min_cells: 50`). Changing it is the analysis owner's call.
+- **A setting buried in the code.** The notebook drops cells smaller than a threshold, set by one line in one cell of a long notebook: `MIN_AREA = 35`. Nothing records which value made the saved results; the old copy of the notebook says `30`. As the parameter `min_area`, you see it on the step, and every run records the value it used.
+- **Random numbers that differ on every run.** `bootstrap_ci` estimates its error bars by drawing cells at random, many times over (a bootstrap), with `np.random.choice`. The notebook never gives the random number generator a seed, the starting number that makes it repeat the same draws, so every run gave slightly different error bars and no rerun could match the saved ones. The method takes a `seed` parameter, recorded with each run, so a rerun draws the same cells.
+- **Shared code and old copies.** Both notebooks import `plate_utils.py`, and the folder also holds `plate_utils.py.bak` and `01_process_plates - Copy.ipynb`; nothing records which version made the saved results. Each method folder holds a copy of the helper, listed under `helpers:`, and registering the method saves that copy with it. `script:` names the main script.
+- **A result that uses the wrong table.** `02_compare_plates` builds a filtered table, `combined_clean = combined[combined["n_cells"] >= 50]`, and then carries on with the unfiltered `combined`. Conditions with fewer than 50 cells stay in the comparison (plate2's drugB_1uM has 29), nothing fails, and the figure looks fine. wfc does not find a bug like this for you: it shows up here, when you split the notebook and have to say what each step takes in and gives out. `compare_plates` keeps the notebook's result by default (`min_cells: 0`) and lets you switch the filter on (`min_cells: 50`). Changing it is the analysis owner's call.
 
 The whole folder is in [`examples/single-cell-drug-response-pipeline`](https://github.com/ddpoe/workflow-canvas/tree/main/examples/single-cell-drug-response-pipeline). [Write a Method in Python](authoring-a-method-script.md) covers the script, and the [method.yaml Schema](../reference/method-yaml-schema.md) every key.
 
@@ -253,9 +245,30 @@ wfc run-pipeline --pipeline pipelines/compare.json
 
 To compare again as new plates arrive, run `plates.json` for them, add a run-reference node for each new `bootstrap_ci` run to `compare.json`, and run it again. The [Pipeline Document](../reference/pipeline-document.md) reference lists every key both files use.
 
+## Have an Agent Do It
+
+An agent that has the wfc plugin can do the same conversion with you. [Work with an AI Agent](work-with-an-ai-agent.md) shows how to add the plugin to Claude Code, Codex or a chat app. Then ask in your own words, naming the folder and the env you run it in:
+
+```text
+here is my analysis: ~/plate_assay (my plate assay notebooks). can you turn it into a
+workflow canvas pipeline for me? I run it in my conda env plates-lab.
+```
+
+The plugin's `converting-an-analysis-to-a-wfc-pipeline` skill takes it from there. You make the calls that are yours; the agent does the wfc side:
+
+- **It asks a few questions, then proposes a map** of your notebooks next to the pipeline it would build: which cells each step comes from, what becomes a setting, and what is left out and why. Nothing is written until you approve it.
+- **It flags what it finds without changing what the analysis does.** On this example:
+
+  > Cell 3 makes `combined_clean`, dropping conditions with fewer than 50 cells, but the next cell uses `combined`, so **the filter is never applied**. It matters for your data: plate2's drugB_1uM has only 29 cells and is in your current comparison. I won't change what the analysis does without your say: by default, `min_cells` = 0 keeps today's behaviour, and setting it to 50 applies the filter as the comment intended.
+
+- **It builds the env and drafts every step**, then compares each output with your saved results and states the tolerance. For a value picked by eye, like the area threshold, it runs a few options and shows you the results before you choose.
+- **It registers only when you say yes**, after showing you every `method.yaml` and a diff of each script against your notebook cells.
+- **It leaves a record** in `wfc-intake/` in the project: your answers and the map, every change to the code and why, what differs between your machine and the Linux container, and how each result compared with yours. wfc doesn't keep or read these files: commit them with your code.
+
+
 ## The Two Results Side by Side
 
-Both tracks were run on this folder. The agent column is one evaluation run of the skill; the by-hand column is the steps above.
+Both conversions were run on this folder. The agent column is one evaluation run of the skill; the by-hand column is the steps above.
 
 | | By an agent | By hand |
 |---|---|---|

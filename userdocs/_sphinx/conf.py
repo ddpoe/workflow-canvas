@@ -53,6 +53,7 @@ html_logo = "static/wfc-logo.svg"
 
 extensions = [
     "myst_parser",
+    "sphinx_design",
     "sphinxcontrib.mermaid",
     "sphinx_sitemap",
     "sphinxext.opengraph",
@@ -121,12 +122,20 @@ from plugin_zip import build_plugin_zip  # noqa: E402
 
 build_plugin_zip(_REPO_ROOT / "plugins" / "wfc", _REPO_ROOT / "userdocs" / "guide" / "wfc-plugin.zip")
 html_css_files = ["custom.css"]
+# Click a screenshot to see it full size; step through a gallery with arrows.
+html_js_files = ["screenshots.js", "sidebar.js", "repo-facts.js"]
 # Dark mode on first visit; the header's theme button switches it and the
 # reader's choice is remembered.
 html_context = {"default_mode": "dark"}
 html_theme_options = {
     # Right-hand "Contents" panel lists the page's sections two levels deep.
     "show_toc_level": 2,
+    # The right-hand panel's title (the theme's default is "Contents").
+    "toc_title": "On this page",
+    # Above the article, at the right: the repository with its version, stars
+    # and forks, then the
+    # theme's download, full-screen and light/dark buttons.
+    "article_header_end": ["wfc-badges.html", "article-header-buttons.html"],
     # The intro page is already listed under the Overview caption that
     # group_index.py writes, so the theme does not add it a second time.
     "home_page_in_toc": False,

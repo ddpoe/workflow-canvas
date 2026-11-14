@@ -4,6 +4,9 @@ Notable changes to Workflow Canvas. The format follows [Keep a Changelog](https:
 
 ## [Unreleased]
 
+### Changed
+- The guide's [Install Workflow Canvas](https://workflow-canvas.readthedocs.io/en/stable/install.html) page ends by creating a project and running `wfc doctor` in it, so the install is checked with Docker and git before the first tutorial.
+
 ## [0.8.0.post1] — 2026-11-10
 
 ### Upgrading

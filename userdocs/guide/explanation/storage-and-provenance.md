@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/explanation/storage-and-provenance @ 4d06d4a5300d; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/explanation/storage-and-provenance @ 99118b5e5690; do not edit -->
 
 # Storage & Provenance
 
@@ -8,7 +8,7 @@ A pipeline run produces two things: the **output files** your methods write, and
 
 - **Output files** go into the project's cache, which stores each distinct file once. wfc also copies them to your archive, where it keeps a backup copy of your data and results.
 - **The record** of every run lives in the project database, `.wfc/wfc.db`. It records which stored file is each run's output.
-- **Git** holds your method code. Every run records the commit it ran at.
+- **Git** holds your method code. wfc commits it once, when you register the method. A run makes no commit: it records the commit the project was at.
 
 For how to find and read a run's outputs, see the History tab in [Browse Past Runs in History](../how-to/browse-history.md), or [Use the Command Line](../how-to/cli-hub.md) for `wfc export`. For when a step is reused instead of re-run, see [Caching & Reproducibility](caching-and-reproducibility.md).
 

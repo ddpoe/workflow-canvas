@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/tutorials/authoring-a-method-script @ 238ce1946465; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/tutorials/authoring-a-method-script @ f5425996341a; do not edit -->
 
 # Write a Method in Python
 
@@ -6,7 +6,13 @@
 
 A *method* is one step of a pipeline: it takes input files and parameters, does its work, and writes output files. In this tutorial you write a small Python method that keeps the rows of a CSV whose `score` is above a threshold, then register it.
 
-The script uses the `wfc-client` decorator: you decorate one function, read inputs from a context object, and declare each output you write. Methods can also be written in R or bash; see [Write a Method in R](../how-to/write-an-r-method.md) and the [Method Script Contract](../reference/method-script-contract.md).
+The script uses the decorator from `wfc-client`, a separate, optional helper library: you decorate one function, read inputs from a context object, and declare each output you write. A method does not need it: a script in Python, R or bash can read the environment variables and write the files directly; see [Write a Method in R](../how-to/write-an-r-method.md) and the [Method Script Contract](../reference/method-script-contract.md).
+
+:::{admonition} An AI agent can do this with you
+:class: agent-tip
+
+Already have a Python script for this step? An agent with the wfc plugin can write its `method.yaml` and change the script only where it reads inputs and saves outputs, then show you every change; see [Bring a Script In as a Method](work-with-an-ai-agent.md#bring-a-script-in-as-a-method).
+:::
 
 You need a project first; [Your First Pipeline](getting-started.md) sets one up. The commands on this page run from the project root, called `wfc_project_root` here (`wfc init --dir wfc_project_root`, then `cd wfc_project_root`).
 

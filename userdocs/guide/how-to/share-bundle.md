@@ -1,10 +1,10 @@
-<!-- generated from pm_mvp::docs/consumer/how-to/share-bundle @ 31a3f5872eea; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/how-to/share-bundle @ 95d25605d4d4; do not edit -->
 
 # Share Runs as a Bundle Anyone Can Rerun
 
 ## Share runs as a bundle anyone can rerun
 
-`wfc export-run` packages runs, and every run above them, as one zip. The person who receives it does not need wfc: they unzip it and run `python rerun.py`, which reruns each step in Docker and compares every output with the recorded one.
+`wfc export-run` packages runs, and every run above them, as one zip. The person who receives it does not need Workflow Canvas (wfc): they unzip it and run `python rerun.py`, which reruns each step in Docker and compares every output with the recorded one.
 
 **The zip always holds the samples those runs read**, so whoever receives it gets that data. Check your data-sharing agreements before you send it. This is the difference from sharing the project, which carries no samples ([What sharing through git does not carry](sharing-a-project.md#what-sharing-through-git-does-not-carry)). The options below add the outputs and the images; the samples are in every bundle.
 
@@ -37,7 +37,9 @@ It needs Python 3.11 or newer and Docker. It prints `same` or `DIFFERENT` for ea
 - **With images included** (`--with-image`, or **Include images** in the Canvas): Python 3.11 or newer and Docker. The zip holds the samples, the code and the images, so nothing else is needed.
 - **Without images:** the same, and each image must be pullable from the project's registry. A public image needs no login. A private GHCR image needs a GitHub login with `read:packages` and read access to the repository; see [Access by role](sharing-a-project.md#access-by-role).
 
+:::{warning}
 An image that was never pushed to a registry has to be included, or the receiver cannot run that step.
+:::
 
 ### If a step says DIFFERENT
 

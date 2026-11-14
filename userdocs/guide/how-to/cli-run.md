@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/how-to/cli-run @ 1b8304c54cd4; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/how-to/cli-run @ 0616bc6de746; do not edit -->
 
 # Run a Pipeline
 
@@ -27,7 +27,9 @@ Options:
 
 The full list is in the [Pipeline Commands](../reference/cli-pipelines.md#wfc-run-pipeline).
 
+:::{tip}
 To check a pipeline file without running it, use `wfc check-pipeline --pipeline my-pipeline.json`. It runs the checks the Canvas Validate button runs, needs no Docker, and exits 1 on an error.
+:::
 
 To stop a running pipeline from another terminal, run `wfc cancel <pipeline id>`. It shows what it will stop and asks first; `--yes` skips the question.
 

@@ -1,12 +1,12 @@
-<!-- generated from pm_mvp::docs/consumer/reference/method-script-contract @ fc449c88370a; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/reference/method-script-contract @ 40d0ac24293b; do not edit -->
 
 # Method Script Contract
 
 ## Overview
 
-A method is a process that reads a few environment variables and writes files. wfc sets the variables when it starts the step, and collects the files when the script exits. A method can be written this way in any language, with no wfc package installed.
+A method is a process that reads a few environment variables and writes files. wfc sets the variables when it starts the step, and collects the files when the script exits. A method can be written this way in any language, Python included, with no wfc package installed, so your scripts do not depend on wfc.
 
-The Python package `wfc-client` ([wfc-client Python API](wfc-client-api.md)) does this for you. [Write a Method in R](../how-to/write-an-r-method.md) uses it from R.
+The Python package `wfc-client` ([wfc-client Python API](wfc-client-api.md)) is a separate, optional helper library that does this for you. A Python script does not need to import it. [Write a Method in R](../how-to/write-an-r-method.md) uses it from R.
 
 
 ## What wfc gives the method

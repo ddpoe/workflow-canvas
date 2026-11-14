@@ -1,8 +1,12 @@
 /* Widen the article column (the theme caps it at 60em, which renders UI
    screenshots too small to read). Screenshots are captured at 2x device
    scale, so they stay sharp at this width. */
+/* The page (both sidebars and the article) is at most 125rem wide and sits in
+   the middle of a wider window, with the spare space split left and right. */
 .bd-page-width {
-    max-width: none;
+    max-width: 125rem;
+    margin-left: auto;
+    margin-right: auto;
 }
 
 .bd-main .bd-content .bd-article-container {
@@ -16,6 +20,415 @@
         width: 16%;
         min-width: 15rem;
     }
+}
+
+/* The current page and section in the two sidebars: teal, not the theme's blue. */
+html[data-theme="dark"] .bd-sidebar-primary,
+html[data-theme="dark"] .bd-sidebar-secondary {
+    --pst-color-primary: #2dd4bf;
+    --pst-color-link-hover: #5eead4;
+}
+
+html[data-theme="light"] .bd-sidebar-primary,
+html[data-theme="light"] .bd-sidebar-secondary {
+    --pst-color-primary: #0d9488;
+    --pst-color-link-hover: #0f766e;
+}
+
+/* The right-hand panel's title, "On this page": larger and bold. */
+/* A wider right-hand panel on desktop, so its larger entries stay on one line. */
+@media (min-width: 1200px) {
+    .bd-sidebar-secondary {
+        flex: 0 0 24rem;
+        width: 24rem;
+        max-width: 24rem;
+    }
+}
+
+/* Entries in the right-hand panel: the size of the left sidebar's entries. */
+.bd-sidebar-secondary nav.page-toc .nav-link {
+    font-size: 1rem;
+}
+
+.bd-sidebar-secondary .onthispage {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: var(--pst-color-text-base);
+}
+
+/* Scrollbars: the logo's orange, dimmed and thin. In the two sidebars the bar
+   shows only while the pointer is over the sidebar. */
+html {
+    scrollbar-color: rgba(227, 154, 92, 0.7) transparent;
+    scrollbar-width: thin;
+}
+
+.bd-sidebar-primary,
+.bd-sidebar-secondary,
+.bd-sidebar-primary .sidebar-primary-items__start {
+    scrollbar-color: transparent transparent;
+    scrollbar-width: thin;
+}
+
+.bd-sidebar-primary:hover,
+.bd-sidebar-secondary:hover,
+.bd-sidebar-primary:hover .sidebar-primary-items__start {
+    scrollbar-color: rgba(227, 154, 92, 0.7) transparent;
+}
+
+/* Left sidebar: larger text, and each top-level group is a toggle (sidebar.js). */
+.bd-sidebar-primary nav.bd-links .bd-sidenav {
+    font-size: 1rem;
+}
+
+.bd-sidebar-primary nav.bd-links p.caption,
+.bd-sidebar-primary nav.bd-links p.caption .caption-text {
+    font-size: 1.15rem;
+    font-weight: 700;
+}
+
+.bd-sidebar-primary p.caption.wfc-group-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    cursor: pointer;
+    user-select: none;
+}
+
+.bd-sidebar-primary p.caption.wfc-group-toggle::after {
+    /* a drawn chevron: points right when closed, down when open */
+    content: "";
+    flex: 0 0 auto;
+    width: 0.6rem;
+    height: 0.6rem;
+    margin-right: 1.1rem;
+    border-right: 3px solid #2dd4bf;
+    border-bottom: 3px solid #2dd4bf;
+    transform: rotate(-45deg);
+    transition: transform 0.15s ease;
+}
+
+.bd-sidebar-primary p.caption.wfc-group-open::after {
+    transform: rotate(45deg);
+}
+
+.bd-sidebar-primary p.caption.wfc-group-toggle:hover {
+    color: #2dd4bf;
+}
+
+/* A heading jumped to from a link: a teal wash that fades out, in place of
+   the theme's lasting yellow bar. */
+@keyframes wfc-target-fade {
+    from { background-color: rgba(45, 212, 191, 0.3); }
+    to { background-color: transparent; }
+}
+
+.bd-main .bd-content .bd-article-container .bd-article :target > :is(h1, h2, h3, h4, h5) {
+    background-color: transparent;
+    animation: wfc-target-fade 2.5s ease-out;
+}
+
+/* The repository beside the buttons above the article: a GitHub mark, the
+   repository's name, and under it the version, stars and forks. */
+.bd-header-article .header-article-items__end {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: center;
+}
+
+.wfc-source {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-right: 1rem;
+    padding: 0.2rem 0.6rem;
+    border-radius: 0.4rem;
+    color: var(--pst-color-text-base);
+    text-decoration: none;
+    line-height: 1.2;
+}
+
+.wfc-source:hover {
+    color: #2dd4bf;
+    text-decoration: none;
+}
+
+.wfc-source__icon {
+    font-size: 1.7rem;
+}
+
+.wfc-source__text {
+    display: flex;
+    flex-direction: column;
+}
+
+.wfc-source__repo {
+    font-size: 0.85rem;
+    font-weight: 600;
+}
+
+.wfc-source__facts {
+    display: flex;
+    gap: 0.7rem;
+    font-size: 0.72rem;
+}
+
+/* The same grey as the buttons beside it; teal on hover. */
+.bd-header-article a.wfc-source,
+.bd-header-article a.wfc-source:visited,
+.bd-header-article a.wfc-source * {
+    color: var(--pst-color-text-muted) !important;
+}
+
+.bd-header-article a.wfc-source:hover,
+.bd-header-article a.wfc-source:hover * {
+    color: #2dd4bf !important;
+}
+
+.wfc-source__fact[hidden] {
+    display: none;
+}
+
+/* The page's place in the guide, above its title (sidebar.js). */
+.bd-article .wfc-crumbs {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.6rem;
+    font-size: 0.9rem;
+    color: var(--pst-color-text-muted);
+}
+
+.bd-article .wfc-crumbs a {
+    color: #5fa8a0;  /* a muted teal */
+    text-decoration: none;
+}
+
+.bd-article .wfc-crumbs a:hover {
+    text-decoration: underline;
+}
+
+.bd-article .wfc-crumbs-sep {
+    color: #e39a5c;
+    opacity: 0.7;
+}
+
+.bd-article .wfc-crumbs-here {
+    color: var(--pst-color-text-muted);
+}
+
+/* Bold page and section headings (the theme draws them at normal weight). */
+.bd-article h1,
+.bd-article h2,
+.bd-article h3,
+.bd-article h4 {
+    font-weight: 700;
+}
+
+/* Tell the page title from its section headings: a larger title with a short
+   teal bar under it, and a thin divider under each section heading. */
+.bd-article h1 {
+    font-size: 2.6rem;
+    margin-bottom: 1.5rem;
+}
+
+.bd-article h1 {
+    display: table;  /* as wide as its text, so the bar below spans the title */
+}
+
+.bd-article h1::after {
+    content: "";
+    display: block;
+    width: 100%;
+    height: 3px;
+    margin-top: 0.6rem;
+    border-radius: 2px;
+    opacity: 0.7;
+    /* the logo's teal and orange, fading into each other and back */
+    background: repeating-linear-gradient(
+        to right,
+        #0d9488 0,
+        #e39a5c 4rem,
+        #0d9488 8rem
+    );
+}
+
+.bd-article h2 {
+    margin-top: 2.75rem;
+}
+
+/* The same bar as the title's, across the column. */
+.bd-article h2::after {
+    content: "";
+    display: block;
+    width: 100%;
+    height: 2px;
+    margin-top: 0.4rem;
+    border-radius: 2px;
+    opacity: 0.7;
+    background: repeating-linear-gradient(
+        to right,
+        #0d9488 0,
+        #e39a5c 4rem,
+        #0d9488 8rem
+    );
+}
+
+/* Subsection headings: the same bar, one pixel tall. */
+.bd-article h3::after {
+    content: "";
+    display: block;
+    width: 100%;
+    height: 1px;
+    margin-top: 0.35rem;
+    opacity: 0.7;
+    background: repeating-linear-gradient(
+        to right,
+        #0d9488 0,
+        #e39a5c 4rem,
+        #0d9488 8rem
+    );
+}
+
+/* Diagrams: no code-box background, centred, and no taller than they need. */
+.bd-article pre.mermaid {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    padding: 0;
+    margin: 1.25rem 0;
+    text-align: center;
+}
+
+.bd-article pre.mermaid,
+.bd-article pre.mermaid svg,
+.bd-article .mermaid-container {
+    filter: none !important;  /* the theme inverts diagrams in dark mode */
+}
+
+.bd-article pre.mermaid svg {
+    max-height: 11rem;
+    width: auto;
+    max-width: 100%;
+}
+
+/* Diagram colours: teal boxes and orange arrows, as in the logo. */
+.bd-article pre.mermaid .node rect,
+.bd-article pre.mermaid .node polygon,
+.bd-article pre.mermaid .node circle {
+    fill: #134e4a !important;
+    stroke: #2dd4bf !important;
+}
+
+.bd-article pre.mermaid .nodeLabel,
+.bd-article pre.mermaid .node text {
+    color: #f0fdfa !important;
+    fill: #f0fdfa !important;
+}
+
+.bd-article pre.mermaid .flowchart-link {
+    stroke: #e39a5c !important;
+}
+
+.bd-article pre.mermaid .marker,
+.bd-article pre.mermaid .arrowMarkerPath {
+    fill: #e39a5c !important;
+    stroke: #e39a5c !important;
+}
+
+/* Screenshots placed as figures: a frame so a dark screenshot has an edge on a
+   dark page, one standard height, a caption, and click to see it full size
+   (screenshots.js). */
+.bd-article figure {
+    margin: 1.5rem auto;
+    text-align: center;
+}
+
+.bd-article figure img,
+.bd-article p > img[src*="_images/"] {
+    max-height: 30rem;
+    width: auto;
+    max-width: 100%;
+    border: 1px solid var(--pst-color-border);
+    border-radius: 0.5rem;
+    box-shadow: 0 0.25rem 1rem rgba(0, 0, 0, 0.35);
+    cursor: zoom-in;
+}
+
+/* A screenshot written as a plain image sits in a paragraph: centre it too. */
+.bd-article p > img[src*="_images/"] {
+    display: block;
+    margin: 1.5rem auto;
+}
+
+.bd-article figure figcaption {
+    margin-top: 0.6rem;
+    font-size: 0.9rem;
+    color: var(--pst-color-text-muted);
+}
+
+.wfc-lightbox {
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+    background: rgba(0, 0, 0, 0.85);
+    cursor: zoom-out;
+}
+
+.wfc-lightbox img {
+    max-width: 100%;
+    max-height: 100%;
+    border-radius: 0.5rem;
+}
+
+/* A gallery: several figures shown one at a time, stepped through with arrows. */
+.bd-article .wfc-gallery {
+    margin: 1.5rem 0;
+    padding: 1rem;
+    border: 1px solid var(--pst-color-border);
+    border-radius: 0.6rem;
+}
+
+.bd-article .wfc-gallery figure {
+    margin: 0 auto;
+}
+
+.bd-article .wfc-gallery-ready figure {
+    min-height: 34rem;
+}
+
+.bd-article .wfc-gallery-bar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1rem;
+    margin-top: 0.75rem;
+}
+
+.bd-article .wfc-gallery-bar button {
+    padding: 0.2rem 0.9rem;
+    border: 1px solid #0d9488;
+    border-radius: 0.4rem;
+    background: transparent;
+    color: var(--pst-color-text-base);
+    font-size: 1.2rem;
+    cursor: pointer;
+}
+
+.bd-article .wfc-gallery-bar button:hover {
+    background: #0d9488;
+    color: #ffffff;
+}
+
+.bd-article .wfc-gallery-count {
+    font-size: 0.9rem;
+    color: var(--pst-color-text-muted);
 }
 
 /* CLI reference: indent each flag list under its "Named/Positional
@@ -54,6 +467,22 @@
     background: #0f766e;
     color: #ffffff;
     text-decoration: none;
+}
+
+/* A callout marked :class: agent-tip: "an AI agent can do this with you".
+   Teal, the colour of the logo and the download button. */
+.bd-article div.admonition.agent-tip {
+    border-color: #0d9488;
+}
+
+.bd-article div.admonition.agent-tip > .admonition-title,
+.bd-article div.admonition.agent-tip > .admonition-title::before {
+    background-color: rgba(13, 148, 136, 0.22);
+}
+
+.bd-article div.admonition.agent-tip > .admonition-title::after {
+    color: #0d9488;
+    content: "\f06a";  /* Font Awesome exclamation mark in a circle */
 }
 
 /* A product name marked {.product-name}, such as the AI-agent tutorial's tables. */

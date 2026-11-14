@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/tutorials/getting-started @ c4cfca29ed91; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/tutorials/getting-started @ f8f0c5151e7e; do not edit -->
 
 # Your First Pipeline
 
@@ -8,7 +8,11 @@ Workflow Canvas (wfc) runs your analysis scripts as pipeline steps, records what
 
 This tutorial takes you from installation to a one-step pipeline you built yourself: you create a project, an environment, a module, a method and a sample, run the pipeline, and look at the result. To see a complete pipeline before writing anything, install wfc and then follow [A Tour of the Demo](wfc-demo.md). For the bigger picture, read [What is Workflow Canvas?](../index.md).
 
-To have an AI agent run these commands for you, see [Work with an AI Agent](work-with-an-ai-agent.md), which sets up a project and brings a script in as a method with Claude Code or Codex.
+:::{admonition} An AI agent can do this with you
+:class: agent-tip
+
+To have an AI agent run these commands for you, add the wfc plugin as [Work with an AI Agent](work-with-an-ai-agent.md) shows. It sets up a project and an environment and brings a script in as a method, registering it only when you say yes.
+:::
 
 ## Prerequisites
 
@@ -17,7 +21,11 @@ You need:
 - **wfc installed**, with Docker running and git: [Install Workflow Canvas](../install.md) sets up all three.
 - **conda** ([Miniconda](https://www.anaconda.com/docs/getting-started/installation), [Miniforge](https://conda-forge.org/download/) or Anaconda) or **uv**, for the environment your method runs in. Step 3 gives the commands for each.
 
-wfc records the commit of your method code with every run, and will not run while tracked files have uncommitted changes.
+wfc commits your method's code once, when you register it. A run makes no commit: it records the commit the project is at.
+
+:::{warning}
+A run will not start while files git already tracks have uncommitted changes. Commit them first; `wfc doctor` says whether you have any. Files git does not track yet don't stop a run.
+:::
 
 ## Installation
 
@@ -75,7 +83,7 @@ If a line doesn't say `OK`, the line under it says how to fix it. Fix it and run
 
 An environment is the software your method runs with: Python and the packages your code imports. wfc packages it into a container, a sealed copy that runs the same on any computer.
 
-Start from a conda environment. You can use one you already have, as long as it has pandas, which this tutorial's method uses. Or create one for this tutorial. Either way, install `wfc-client`, the small package your method script uses to talk to wfc:
+Start from a conda environment. You can use one you already have, as long as it has pandas, which this tutorial's method uses. Or create one for this tutorial. Either way, install `wfc-client`, the small, optional helper library this tutorial's script uses to read its inputs and record its outputs:
 
 ```bash
 conda create -n first-pipeline python=3.12 pandas

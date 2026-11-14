@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/reference/cli-registration @ b7efd089a0aa; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/reference/cli-registration @ 41d80b097df3; do not edit -->
 
 # Registration Commands
 
@@ -33,7 +33,7 @@ wfc register-module --name my_analysis --module-dir src/my_analysis
 wfc register-method src/my_analysis/filter_data --module my_analysis
 ```
 
-Register a method from its directory: find the script, scan a Python script for its parameters, read `method.yaml`, check it against the module's contracts, save a registered copy of the method, and commit that copy to git. Your source directory is not committed. Other files in the source directory are not copied: the command prints a "Not registered" list naming them, with the advice to register data files as samples and wire them as inputs. Before it writes anything, the command prints whether the method is new (registers it as v1), changed since its newest version (adds the next version, naming what changed) or the same as it (no version is added). When a version would be added it asks `Proceed? [y/N]`; any answer but `y` prints `Nothing was registered.` and exits with an error. `--yes` skips the question, and with no terminal and no `--yes` a new version is refused. Earlier versions stay registered and runnable. After you edit a method's script or `method.yaml`, run `wfc register-method` again. A method name can be used in more than one module.
+Register a method from its directory: find the script, read the contract you declare in `method.yaml`, check it against the module's contracts, check that a Python script follows it, save a registered copy of the method, and commit that copy to git. Your source directory is not committed. Other files in the source directory are not copied: the command prints a "Not registered" list naming them, with the advice to register data files as samples and wire them as inputs. Before it writes anything, the command prints whether the method is new (registers it as v1), changed since its newest version (adds the next version, naming what changed) or the same as it (no version is added). When a version would be added it asks `Proceed? [y/N]`; any answer but `y` prints `Nothing was registered.` and exits with an error. `--yes` skips the question, and with no terminal and no `--yes` a new version is refused. Earlier versions stay registered and runnable. After you edit a method's script or `method.yaml`, run `wfc register-method` again. A method name can be used in more than one module.
 
 The script is the one named by `--script`, else by the `script:` key in `method.yaml`, else the single `<name>.py`, `.R`, `.r` or `.sh` file in the directory. If the script cannot be found or the check fails, it prints an `ERROR:` line and registers nothing.
 

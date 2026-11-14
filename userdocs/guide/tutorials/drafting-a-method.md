@@ -1,4 +1,4 @@
-<!-- generated from pm_mvp::docs/consumer/tutorials/drafting-a-method @ a5612ce18ecf; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/tutorials/drafting-a-method @ 5aba544b683d; do not edit -->
 
 # Draft a Method
 
@@ -11,7 +11,11 @@ You can work with a draft from the command line or in the canvas; both use the s
 - [Draft from the Command Line](../how-to/draft-from-the-command-line.md): try a folder on a sample with `wfc try`, look at its outputs, register it.
 - [Draft in the Canvas](../how-to/draft-in-the-canvas.md): make, check and run a draft in a pipeline, then register it.
 
-An AI agent with the wfc plugin works the same way: it tries a draft on your data until it runs, and registers it only when you say yes ([Work with an AI Agent](work-with-an-ai-agent.md)).
+:::{admonition} An AI agent can do this with you
+:class: agent-tip
+
+An agent with the wfc plugin works the same way: it tries a draft on your data and fixes it until it runs, and registers it only when you say yes; see [Work with an AI Agent](work-with-an-ai-agent.md#bring-a-script-in-as-a-method).
+:::
 
 ## A New Method or the Next Version
 
@@ -23,7 +27,11 @@ A draft runs its folder as it is now. Edit the script and run the draft again; n
 
 ## Where Draft Results Are
 
-Only a draft's latest run is kept: the next run of the draft replaces it, from any pipeline. Draft steps are listed beside the recorded runs. On the command line, `wfc runs` lists each one with its draft string, such as `draft:my_analysis.filter_data/filter_data@scores`, which `wfc export --run` takes. In the canvas, History marks them **DRAFT**, and the draft's **Draft run** tab in the Registry shows its last run.
+:::{warning}
+Only a draft's latest run is kept: the next run of the draft replaces it, from any pipeline. Export the outputs you want to keep with `wfc export` before you run it again.
+:::
+
+ Draft steps are listed beside the recorded runs. On the command line, `wfc runs` lists each one with its draft string, such as `draft:my_analysis.filter_data/filter_data@scores`, which `wfc export --run` takes. In the canvas, History marks them **DRAFT**, and the draft's **Draft run** tab in the Registry shows its last run.
 
 ## Draft Mode in a Pipeline
 

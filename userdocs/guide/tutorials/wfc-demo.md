@@ -1,16 +1,16 @@
-<!-- generated from pm_mvp::docs/consumer/tutorials/wfc-demo @ 2ae099e98487; do not edit -->
+<!-- generated from pm_mvp::docs/consumer/tutorials/wfc-demo @ 7f780cc8bc11; do not edit -->
 
 # A Tour of the Demo
 
-## What `wfc demo` does
+## Start the Demo
 
 `wfc demo` adds a complete, runnable pipeline to a project and opens it in the Canvas, so you can watch a run end to end before writing any methods of your own. It needs wfc installed, with Docker running and git: see [Install Workflow Canvas](../install.md).
 
 ```bash
-wfc init --dir demo_project
-cd demo_project
-wfc doctor
-wfc demo
+wfc init --dir demo_project   # makes the demo_project folder and sets up a wfc project in it
+cd demo_project               # moves into that folder
+wfc doctor                    # checks that git, Docker and the archive are ready
+wfc demo                      # adds the demo pipeline and opens it in the Canvas
 ```
 
 `wfc demo` works in an existing project, so run `wfc init` first; when it asks where to keep the archive, press Enter to use the suggested folder. `wfc doctor` checks that git, Docker and the archive are ready: every line it prints should say `OK`, and any line that doesn't says how to fix it. `wfc demo` then:
@@ -22,29 +22,37 @@ wfc demo
 
 Press **Run** to run all five steps for all three samples.
 
-![The Canvas Builder with the demo pipeline pre-wired: an Input Selector with the three demo samples feeding five method nodes in three module colours](../_images/builder-demo-pipeline.png)
+:::{figure} ../_images/builder-demo-pipeline.png
+:alt: The Canvas Builder with the demo pipeline pre-wired: an Input Selector with the three demo samples feeding five method nodes in three module colours
+
+The demo pipeline in the Builder: three samples feeding five methods, coloured by module.
+:::
 
 The Canvas keeps running until you press Ctrl+C in the terminal. To come back to it later, run `wfc canvas` and open `http://127.0.0.1:8500/?pipeline=demo`.
 
 To rebuild the demo from scratch, for example after upgrading wfc, run `wfc demo --force`. It removes the existing demo and its runs first.
 
 
-## The Pipeline
+## The Five Steps
 
-Every name the demo registers starts with `__demo__`; this page leaves the prefix off.
+The pipeline runs five methods on each sample. Every name the demo registers starts with `__demo__`; this page leaves the prefix off.
 
-The pipeline runs five methods on each sample:
-
+```{mermaid}
+flowchart LR
+    preprocess --> filter_cells --> label
+    label --> summarize
+    label --> plot
 ```
-preprocess -> filter_cells -> label -> summarize
-                                    -> plot
-```
 
-- **preprocess** (module `cleanup`) drops rows with no `intensity` value.
-- **filter_cells** (`cleanup`) keeps rows with `quality` at or above `min_quality` (0.5).
-- **label** (`labeling`) adds a `label` column: `above` or `below`, depending on whether `intensity` reaches `threshold` (150).
-- **summarize** (`labeling`) reports the row count and mean intensity for each label.
-- **plot** (`plotting`) draws the sample's intensity distribution: a smooth density curve over a faint histogram, shaded blue below the threshold and green above it. Its `bins` param sets the number of bars and `smoothing` how smooth the curve is (1.0 by default, higher is smoother).
+| Step | Module | What it does |
+|---|---|---|
+| **preprocess** | `cleanup` | drops rows with no `intensity` value |
+| **filter_cells** | `cleanup` | keeps rows with `quality` at or above `min_quality` (0.5) |
+| **label** | `labeling` | adds a `label` column: `above` or `below`, depending on whether `intensity` reaches `threshold` (150) |
+| **summarize** | `labeling` | reports the row count and mean intensity for each label |
+| **plot** | `plotting` | draws the sample's intensity distribution: a smooth density curve over a faint histogram, shaded blue below the threshold and green above it |
+
+`plot`'s `bins` param sets the number of bars and `smoothing` how smooth the curve is (1.0 by default, higher is smoother).
 
 The method scripts are copied into your project under `.wfc/registry/methods/<module>/<name>/`, for example `.wfc/registry/methods/__demo__plotting/__demo__plot/`. Each one has comments that match its code to its `method.yaml` (each input, parameter and output), so you can use them as a starting point for your own methods. See [Write a Method in Python](authoring-a-method-script.md).
 
@@ -53,13 +61,31 @@ The method scripts are copied into your project under `.wfc/registry/methods/<mo
 
 When the run finishes, open the **History** tab and select a `plot` run. Its **Artifacts** tab lists the figure under its image heading, with its preview closed: click the arrow beside it to show the preview in the panel. Click the file's name to open it in the viewer, where you can zoom in and move around the plot. The download icon beside each file saves it. If the panel feels narrow, drag its left edge to widen it. See [Look at a Run's Results](../how-to/run-details.md) for everything the run detail panel shows.
 
-![A completed plot run's detail panel on the Artifacts tab, with the figure's preview open](../_images/run-detail-panel.png)
+::::{div} wfc-gallery
 
-![treat_02's figure open in the viewer: a density curve over a faint histogram, blue below the threshold and green above it](../_images/run-detail-viewer.png)
+:::{figure} ../_images/run-detail-panel.png
+:alt: A completed plot run's detail panel on the Artifacts tab, with the figure's preview open
+
+A `plot` run's Artifacts tab, with the figure's preview open in the panel.
+:::
+
+:::{figure} ../_images/run-detail-viewer.png
+:alt: treat_02's figure open in the viewer: a density curve over a faint histogram, blue below the threshold and green above it
+
+The same figure opened in the viewer, where you can zoom in and move around.
+:::
+
+::::
+
+
 
 On the run's **Overview** tab, open the **Cache-key inputs** card at the bottom. It lists what wfc compared to decide whether it could reuse the run: the method's code, its environment, its inputs and its params. Change one of the `plot` step's params, run the pipeline again and open the new `plot` run: in the cache key, only its `params` hash differs from the earlier run's, which is why that step ran again while the steps above it were reused.
 
-![The Cache-key inputs card of a demo plot run, with its method, env, slots table and params table](../_images/run-detail-cache-key-inputs.png)
+:::{figure} ../_images/run-detail-cache-key-inputs.png
+:alt: The Cache-key inputs card of a demo plot run, with its method, env, slots table and params table
+
+The Cache-key inputs card: what wfc compared to decide whether to reuse the run.
+:::
 
 To copy any step's output out of wfc, use the run ID shown in the detail panel:
 

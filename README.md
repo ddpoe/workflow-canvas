@@ -13,9 +13,12 @@ result, so anyone can rerun it and check that it matches.
 
 Your AI agent can build the pipeline from your existing scripts and notebooks; you
 can write it yourself, or mix the two. Either way, every result is reproducible.
-Converting the example analysis in
+
+Most analysis folders hold things that make a result hard to reproduce: hard-coded
+paths, a random step with no seed, a threshold picked by eye, a helper shared
+between notebooks.
 [Convert an Analysis into a Pipeline](https://workflow-canvas.readthedocs.io/en/latest/tutorials/convert-an-analysis.html)
-caught a filter that was computed but never applied.
+takes an example folder with all of these and turns it into a pipeline, step by step.
 
 For researchers, scientists and PhD students who want their analysis organized,
 reproducible, and easy to pass on to others.
@@ -85,11 +88,18 @@ execution, parallelism, and dependency resolution. Every method runs inside a
 container, and every output is stored in a content-addressed archive (DVC), so
 results are reproducible and re-running an unchanged pipeline does no duplicate work.
 
+A method is an ordinary script that reads a few environment variables and writes
+files, so it does not need to import wfc. You declare its contract (inputs, outputs
+and parameters) in `method.yaml`; registering the method checks a Python script
+against that contract and commits a copy of the code to git. `wfc-client` is a
+separate, optional Python helper library: its `@wfc.method` decorator does the
+reading and writing for you.
+
 ## Requirements
 
 - **Python 3.12** — required.
 - **Docker** — required. Methods always run inside a container; nothing runs without a working Docker installation. `wfc init` pre-flights it and `wfc doctor` checks it.
-- **Git** — required, but **local only**. wfc records a commit per run and refuses to run on uncommitted code. No GitHub account, login, or network is involved; wfc never pushes.
+- **Git** — required, but **local only**. wfc commits a method's code once, when you register it. A run makes no commit: it records the commit the project is at, and refuses to start on uncommitted code. No GitHub account, login, or network is involved; wfc never pushes.
 
 DVC and Snakemake ship with Workflow Canvas — you do not install them separately.
 
